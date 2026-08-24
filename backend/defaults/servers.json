@@ -7,8 +7,78 @@
     "home": "/data/gpfs03/mdye",
     "queue_system": "lsf",
     "bjobs_cmd": "bjobs -l {job_id}",
+    "bhost_cmd": "bash -c \"source /opt/ibm/lsfsuite/lsf/conf/profile.lsf >/dev/null 2>&1; bhosts\"",
+    "bqueues_cmd": "bash -c \"source /opt/ibm/lsfsuite/lsf/conf/profile.lsf >/dev/null 2>&1; bqueues\"",
+    "nodes_query_cmd": "bash -c \"source /opt/ibm/lsfsuite/lsf/conf/profile.lsf >/dev/null 2>&1; echo ===BHOST===; bhosts; echo ===BQUEUES===; bqueues\"",
     "submit_cmd": "bsub < submit.sh",
     "remote_base": "/data/gpfs03/mdye/projects/test",
-    "batch_check_path": "/data/gpfs03/mdye/tools/vasp_skill/batch_check.py"
+    "batch_check_path": "/data/gpfs03/mdye/tools/vasp_skill/batch_check.py",
+    "node_groups": [
+      {
+        "queue": "normal_2week",
+        "prefix": "b",
+        "start": 1,
+        "end": 14,
+        "cores_per_node": 48,
+        "walltime_days": 14,
+        "cpu_model": "Intel E5",
+        "cpu_freq": "12.5",
+        "suspend_risk": "low",
+        "paid": false,
+        "price_per_core_hour": 0
+      },
+      {
+        "queue": "ocean_530_1day",
+        "prefix": "hd",
+        "start": 1,
+        "end": 28,
+        "cores_per_node": 24,
+        "walltime_days": 1,
+        "cpu_model": "Intel Platinum",
+        "cpu_freq": "15",
+        "suspend_risk": "medium",
+        "paid": false,
+        "price_per_core_hour": 0
+      },
+      {
+        "queue": "ocean6226R_1day",
+        "prefix": "hd",
+        "start": 29,
+        "end": 41,
+        "cores_per_node": 32,
+        "walltime_days": 1,
+        "cpu_model": "Intel Platinum",
+        "cpu_freq": "15",
+        "suspend_risk": "high",
+        "paid": false,
+        "price_per_core_hour": 0
+      },
+      {
+        "queue": "normal_1day_new",
+        "prefix": "s",
+        "start": 6,
+        "end": 18,
+        "cores_per_node": 24,
+        "walltime_days": 1,
+        "cpu_model": "Intel Platinum",
+        "cpu_freq": "15",
+        "suspend_risk": "low",
+        "paid": false,
+        "price_per_core_hour": 0
+      },
+      {
+        "queue": "charge",
+        "prefix": "s",
+        "start": 19,
+        "end": 30,
+        "cores_per_node": 32,
+        "walltime_days": null,
+        "cpu_model": "Intel Platinum",
+        "cpu_freq": "15",
+        "suspend_risk": "low",
+        "paid": true,
+        "price_per_core_hour": 0.015
+      }
+    ]
   }
 }

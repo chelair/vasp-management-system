@@ -1,7 +1,7 @@
 # 待办清单（TODO）
 
 > 创建时间：2026-08-24
-> 适用项目：`vasp-management-system`（v0.1.1）
+> 适用项目：`vasp-management-system`（v0.2.0）
 > 勾选约定：`[ ]` 未开始 · `[x]` 已完成
 
 ## 当前进度概览
@@ -14,6 +14,8 @@
 - [x] SSH 连接配置页（服务器增删改、模拟握手测试、连接/断开）
 - [x] 页面切换动画、卡片悬停、骨架屏加载
 - [x] Mock 数据层（`src/data/mock/` + `src/api/`），字段与现有 Python 后端对齐
+- [x] 作业管理模块完整前端框架：项目-子项树、POSCAR 导入预览、INCAR 参数编辑器、
+      KPOINTS 自动生成、续算流程、提交脚本生成（节点状态 Mock）
 - [x] 局域网访问（Vite `host: true`），README 已含防火墙/内网穿透说明
 - [x] 依赖升级至 Vite 7 / React Router 7，`npm audit` 0 漏洞
 
@@ -58,7 +60,7 @@
   - `fetchServerConfigs` → `GET /api/ssh/config`
   - `persistServerConfigs` → `PUT /api/ssh/config`
   - `testRemoteConnection` → `POST /api/ssh/test`（真实握手）
-- [ ] 顶栏 SSH 状态改为轮询 `GET /api/ssh/status`（当前由 `src/context/SSHContext.tsx` 提供全局状态，接口替换即可，页面零改动）
+- [x] 顶栏 SSH 状态改为轮询 `GET /api/ssh/status`（后端常驻连接池真实状态，前端回退 UI 状态）
 - [ ] 前端请求封装：统一 loading / 错误提示（当前 `src/api/client.ts` 仅为模拟延迟）
 
 ### 2. 文件型存储（网站同级目录，不使用数据库）
@@ -86,14 +88,38 @@
 
 ### 5. 作业管理模块（Jobs）
 
-- [ ] 本地 / 远程目录同步（scp / rsync），界面提供手动同步按钮与同步日志
-- [ ] 生成 VASP 输入文件：INCAR / POSCAR / KPOINTS / POTCAR
-  - 默认参数可参考现有 `config/task_registry.json`（`default_incar` 等）
-  - 当前 `src/data/mock/vaspFiles.ts` 为占位内容，需改为后端读取/生成真实文件
-- [ ] 续算流程：CONTCAR → POSCAR、WAVECAR 续算
-  - 可复用 `task_registry.json` 中的 `continuation_rules`（walltime_killed / completed 分支）
+- [x] 前端框架：左侧项目树 + 右侧编辑区（概览 / POSCAR / INCAR / KPOINTS / 提交脚本 五个标签页）
+- [x] POSCAR 导入（本地文件上传 / 从其他任务复制）+ 晶格信息解析预览（a/b/c、角度、体积）
+- [x] INCAR 参数编辑器：分类表单、布尔复选框、枚举下拉（含说明）、数值科学计数法输入，
+      低/中/高精度一键填充（可转自定义微调）、保存/加载预设（localStorage 持久化）、
+      复制参数到其他作业、实时预览生成 INCAR
+- [x] KPOINTS 自动生成：按 POSCAR 晶格常数 + 密度系数（默认 20）推荐网格，
+      Gamma-centered / Monkhorst-Pack 两种模式
+- [x] 续算流程前端：同类型（con1/con2…）/ 跨类型（电子结构/自由能等）两种模式，
+      展示文件操作清单并在会话内生成新子项
+- [x] 提交脚本生成：节点状态摘要（Mock 节点/CPU/可用核）、队列/分区、核数与作业名设置，
+      LSF / Slurm 脚本生成 + 可编辑预览 + 保存提示
+- [x] 本地目录统一管理：后端 `GET/PUT /api/jobs/tasks/{task_id}/files/...`（白名单文本文件读写，
+      目录约定 `data/projects/<项目>/<类型>/<子项>/files/`）
+- [x] 真实节点状态：后端 `GET /api/jobs/nodes`（bhosts 主数据 + bqueues 补充），
+      节点-队列映射固化在 servers.json `node_groups`（b001-b014 → normal_2week 等五组），
+      SSH 不可用/失败时回退模拟负载；60 秒缓存 + `?refresh=1` 强制刷新
+- [x] 提交脚本页可视化队列拥堵：队列卡片（总/运行/空闲核、拥堵率、walltime、CPU、挂起风险、
+      付费单价、bqueues 作业数）+ 节点明细表（bhost 状态/核数占用），队列下拉用真实映射
+- [x] 节点查询提速与时机：单次 SSH 连接合并 bhosts+bqueues（非登录 shell，约 16s → 10s），
+      打开/刷新网站时后台更新快照，提交脚本页直接读取并支持手动「刷新」按钮
+- [x] 常驻 SSH 连接池：系统启动时后台建立连接并保活（30s keepalive）、复用、空闲 5 分钟回收、
+      断线自动重连；`GET /api/ssh/status` 提供真实状态，顶栏每 15 秒轮询显示「SSH 已连接」
+- [x] 首次打开/刷新自动扫描各子项本地目录，文件就绪状态与 POSCAR/INCAR/KPOINTS 内容自动读取
+      （已有 POSCAR 无需重复导入）
+- [x] POSCAR 导入真实写入本地 `files/POSCAR`；INCAR / KPOINTS / submit.sh 生成与保存同样落盘
+- [ ] POTCAR 生成：后端按 POSCAR 元素拼接伪势（pymatgen），当前仅占位
+- [ ] 新子项 / 续算创建时真实建立本地目录并复制文件（当前为会话级）
+- [ ] 续算真实文件操作：CONTCAR → POSCAR、WAVECAR 续算（可复用 `task_registry.json`
+      的 `continuation_rules`，含 walltime_killed / completed 分支）
+- [ ] 真实节点状态：由后端 SSH 读取（LSF bnodes / Slurm sinfo）替换 `src/data/mock/cluster.ts`
+- [ ] 子任务创建/续算持久化到 `data/projects.json`，并与后端状态机打通
 - [ ] 文件预览区改为读取远程真实文件
-- [ ] 子任务状态（pending/queued/running/completed/zombied/archived）与后端状态机打通
 
 ### 6. 报告模块（Report）
 
@@ -126,7 +152,8 @@
 
 - SSH「测试连接」为前端模拟握手，未建立真实连接
 - 服务器配置保存在浏览器 localStorage，多浏览器/多设备不共享，正式版需迁移到 `data/config/servers.json`
-- 「生成报告」「生成输入文件」「续算」均为占位交互，不产生真实文件
+- 作业管理的「续算」「新子项创建」为前端会话级交互；POSCAR/INCAR/KPOINTS/submit.sh
+  已可真实读写本地目录；POTCAR 仍为占位，节点状态已接真实 bhosts（SSH 失败时回退模拟）
 - 无用户认证，公网穿透暴露时存在安全风险，仅建议临时演示
 
 ---

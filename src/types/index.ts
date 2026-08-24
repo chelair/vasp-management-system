@@ -204,6 +204,217 @@ export interface ConnectionTestResult {
   message: string;
 }
 
+/* ============================================================
+   作业管理模块类型
+   ============================================================ */
+
+/** INCAR 参数值类型 */
+export type IncarValueType = 'bool' | 'enum' | 'number' | 'string';
+
+/** 枚举参数选项 */
+export interface IncarOption {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+/** 单个 INCAR 参数定义 */
+export interface IncarParamDef {
+  key: string;
+  label: string;
+  type: IncarValueType;
+  unit?: string;
+  hint?: string;
+  options?: IncarOption[];
+  placeholder?: string;
+  defaultValue: string;
+}
+
+/** INCAR 参数分类 */
+export interface IncarCategory {
+  key: string;
+  label: string;
+  params: IncarParamDef[];
+}
+
+/** 精度档位 */
+export type PrecisionMode = 'low' | 'medium' | 'high' | 'custom';
+
+export const PRECISION_LABELS: Record<PrecisionMode, string> = {
+  low: '低精度',
+  medium: '中精度',
+  high: '高精度',
+  custom: '自定义',
+};
+
+/** INCAR 预设 */
+export interface IncarPreset {
+  id: string;
+  name: string;
+  params: Record<string, string>;
+  /** 内置模板（不可删除） */
+  builtin?: boolean;
+  createdAt?: string;
+}
+
+/** 提交脚本格式 */
+export type ScriptFormat = 'lsf' | 'slurm';
+
+export const SCRIPT_FORMAT_LABELS: Record<ScriptFormat, string> = {
+  lsf: 'LSF (bsub)',
+  slurm: 'Slurm (sbatch)',
+};
+
+export const NODE_STATUS_LABELS: Record<NodeStatus, string> = {
+  ok: '正常',
+  warning: '较忙',
+  busy: '满载',
+  closed: '关闭',
+  unavail: '不可用',
+};
+
+export const SUSPEND_RISK_LABELS: Record<SuspendRisk, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+};
+
+/** 集群节点运行状态 */
+export type NodeStatus = 'ok' | 'warning' | 'busy' | 'closed' | 'unavail';
+
+/** 挂起风险等级 */
+export type SuspendRisk = 'low' | 'medium' | 'high';
+
+/** 集群节点（bhost 主数据 + node_groups 映射） */
+export interface ClusterNode {
+  name: string;
+  /** 所属队列（node_groups 映射） */
+  queue: string;
+  /** 单节点最大核数 */
+  maxCores: number;
+  /** 运行中核数（bhost RUN） */
+  runningCores: number;
+  /** 挂起核数（bhost SSUSP） */
+  suspendedCores: number;
+  /** 不可用核数（bhost UNAVAIL） */
+  unavailCores: number;
+  /** 空闲核数 = MAX - RUN - SSUSP - UNAVAIL */
+  idleCores: number;
+  status: NodeStatus;
+  cpuModel: string;
+  cpuFreq: string;
+  walltime: string;
+  suspendRisk: SuspendRisk;
+  paid: boolean;
+  price: number;
+}
+
+/** 队列级汇总（node_groups 映射 + bqueues 补充） */
+export interface ClusterQueueSummary {
+  queue: string;
+  walltime: string;
+  coresPerNode: number;
+  cpuModel: string;
+  cpuFreq: string;
+  suspendRisk: SuspendRisk;
+  paid: boolean;
+  price: number;
+  nodeCount: number;
+  totalCores: number;
+  runningCores: number;
+  idleCores: number;
+  busyPercent: number;
+  /** bqueues 补充信息（无数据时为空对象） */
+  bqueues?: Record<string, number | string>;
+}
+
+/** 集群快照（GET /api/jobs/nodes） */
+export interface ClusterSnapshot {
+  source: 'real' | 'mock';
+  error?: string | null;
+  queriedAt: string;
+  nodes: ClusterNode[];
+  queues: ClusterQueueSummary[];
+  bhost_raw?: string;
+  bqueues_raw?: string;
+}
+
+/** 队列/分区选项 */
+export interface QueueOption {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+/** 提交脚本生成参数 */
+export interface SubmitScriptOptions {
+  format: ScriptFormat;
+  jobName: string;
+  queue: string;
+  cores: number;
+  remoteDir: string;
+}
+
+/** POSCAR 解析结果（晶格信息） */
+export interface PoscarInfo {
+  comment: string;
+  scale: number;
+  lattice: number[][];
+  elements: string[];
+  counts: number[];
+  coordMode: string;
+  lengths: { a: number; b: number; c: number };
+  angles: { alpha: number; beta: number; gamma: number };
+  volume: number;
+}
+
+/** VASP 任务文件清单项 */
+export interface VaspTaskFile {
+  name: string;
+  kind: 'input' | 'output' | 'script';
+  present: boolean;
+  note?: string;
+}
+
+/** 单任务的前端工作区（文件内容 / INCAR 参数，后续由后端落盘） */
+export interface JobWorkspace {
+  incarParams: Record<string, string>;
+  precision: PrecisionMode;
+  poscarContent: string | null;
+  poscarPath: string | null;
+  kpointsContent: string | null;
+  files: Record<string, boolean>;
+  scriptFormat: ScriptFormat;
+}
+
+/** 新建子项请求 */
+export interface NewTaskPayload {
+  modelName: string;
+  taskType: TaskType;
+  localDir: string;
+  remoteDir: string;
+}
+
+/** 续算创建结果 */
+export interface ContinuationPayload {
+  name: string;
+  taskType: TaskType;
+  localDir: string;
+  remoteDir: string;
+  ops: string[];
+  crossType: boolean;
+}
+
+/** 复制参数目标任务引用 */
+export interface TaskRef {
+  projectId: string;
+  projectName: string;
+  taskId: string;
+  taskName: string;
+  taskType: TaskType;
+  status: TaskStatus;
+}
+
 /** 后端 /api/servers 返回的服务器选项 */
 export interface ServerOption {
   name: string;

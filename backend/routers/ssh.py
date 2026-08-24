@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from config import CONFIG_DIR, load_servers
 from envelope import fail, ok
+from ssh import get_pool_status
 
 router = APIRouter(prefix="/ssh", tags=["ssh"])
 
@@ -31,6 +32,15 @@ CONFIG_KEYS = (
     "queue_system",
     "remote_base",
 )
+
+
+@router.get("/status")
+def ssh_status():
+    """常驻 SSH 连接池状态（顶栏真实连接指示）。"""
+    try:
+        return ok("查询成功", get_pool_status())
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"查询 SSH 状态失败：{e}"))
 
 
 def _atomic_write_servers(servers: Dict[str, Any]) -> None:

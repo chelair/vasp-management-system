@@ -77,7 +77,7 @@ export default function Sidebar({ open, onNavigate }: Props) {
         <div className="storage-badge">
           <div>存储方式：文件型存储（JSON）</div>
           <div style={{ marginTop: 4, color: 'var(--color-text-muted)', fontSize: 11 }}>
-            v0.1.1
+            v0.2.0
           </div>
         </div>
       </div>

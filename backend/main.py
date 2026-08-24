@@ -8,10 +8,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import PROJECT_ROOT, ensure_data_dirs
+from config import PROJECT_ROOT, ensure_data_dirs, load_servers
 from dependencies import INSTALL_HINT, check_dependencies
 from envelope import fail
-from routers import inspections, meta, projects, ssh
+from routers import inspections, jobs, meta, projects, ssh
+from ssh import warmup_connection
 
 
 @asynccontextmanager
@@ -29,6 +30,17 @@ async def lifespan(_: FastAPI):
 
     # 后台线程检查依赖，不阻塞启动
     threading.Thread(target=_check_deps, daemon=True).start()
+
+    def _warmup_ssh() -> None:
+        try:
+            servers = load_servers()
+            if servers:
+                warmup_connection(next(iter(servers)))
+        except Exception:  # noqa: BLE001 - 预热失败不阻塞启动
+            pass
+
+    # 启动时后台建立常驻 SSH 连接（保持登录状态）
+    threading.Thread(target=_warmup_ssh, daemon=True).start()
     yield
 
 
@@ -88,6 +100,7 @@ async def validation_handler(_, exc: RequestValidationError):
 
 app.include_router(meta.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
 app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
 

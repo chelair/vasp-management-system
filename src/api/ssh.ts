@@ -100,6 +100,26 @@ export interface ServerConfigsResult {
   source: 'backend' | 'local';
 }
 
+/** 后端常驻 SSH 连接池状态（/api/ssh/status） */
+export interface SshStatus {
+  connected: boolean;
+  mock: boolean;
+  server: string | null;
+  host: string | null;
+  user: string | null;
+  lastUsedAt: string | null;
+  idleSeconds: number | null;
+}
+
+/** 查询后端常驻 SSH 连接状态；后端不可用时返回 null（由前端回退 UI 状态） */
+export async function fetchSshStatus(): Promise<SshStatus | null> {
+  try {
+    return await request<SshStatus>('/ssh/status');
+  } catch {
+    return null;
+  }
+}
+
 /** 获取服务器配置：优先后端，失败回退本地缓存/Mock */
 export async function fetchServerConfigs(): Promise<ServerConfigsResult> {
   try {

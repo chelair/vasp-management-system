@@ -1,0 +1,347 @@
+# VASP 计算项目管理系统 · 前端框架
+
+基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
+
+当前版本（v0.1.1）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面已具备完整界面；
+**「新增项目」「巡检中心」已接入真实后端**（Python + FastAPI，流程对齐参考实现 `add_project.py` / `check_remote.py`），其余模块仍使用 Mock 数据。
+
+> 注意：本项目放在 `D:\Skill\vasp-project-manager-web`。旧项目 `vasp-project-manager` 仅作为**功能迁移参考**，
+> **运行时不依赖旧项目目录**——真实数据（项目库、配置、本地项目目录、备份、巡检结果）已全部迁入本项目
+> `data/`，系统自包含，打包部署不会漏文件。
+
+---
+
+## 技术栈
+
+| 层 | 选型 |
+| --- | --- |
+| 框架 | React 18 + TypeScript |
+| 构建 | Vite 7（已配置 `host: true`，支持局域网访问） |
+| UI | Ant Design 5 + 自定义设计令牌（主色 `#5B8DEF`，辅助色 `#67C6B0`） |
+| 动画 | Framer Motion（页面切换淡入淡出 + 卡片悬停上浮） |
+| 路由 | React Router 7 |
+| 后端 | Python + FastAPI（Uvicorn 运行，端口 3001，自带 Swagger 文档 `/docs`） |
+| SSH | Paramiko（密钥认证远程目录同步） |
+| 存储 | 文件型 JSON：`data/projects.json` + 本地目录 + 自动备份（不用数据库） |
+| 数据 | 项目接口走真实后端；巡检/报告仍为 Mock（`src/data/mock/`） |
+
+## 快速开始
+
+环境要求：**Node.js ≥ 20.19**（开发机当前为 Node 24）+ **Python ≥ 3.11**（开发机为 3.12）。
+
+```bash
+cd vasp-project-manager-web
+npm install
+npm run server    # 终端 1：启动后端 API（端口 3001）
+npm run dev       # 终端 2：启动前端开发服务器（端口 5173）
+```
+
+浏览器打开 http://localhost:5173 即可使用。「新增项目」会真实调用后端完成校验、优先级计算、本地目录创建与数据库写入。
+
+真实数据已迁移到本项目 `data/`（`projects.json` + `config/` + `projects/` + `backups/` + `checks/`），
+默认 `npm run server` 即为真实数据模式：总览 / 巡检 / 新增项目都作用于真实项目（如 Ag_20260830）。
+
+> 数据目录可用 `python backend/run.py --data-dir <目录>` 覆盖（测试隔离 / 其他机器部署时使用）。
+> `data/` 为运行时数据（已 gitignore），**打包部署时需连同 `data/` 一起复制或单独备份**，否则会丢失项目数据。
+
+首次使用后端前安装 Python 依赖（核心依赖 fastapi / uvicorn / paramiko）：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+后端启动时会**在后台检查依赖**：核心依赖缺失会提示安装命令，可选依赖（pymatgen / ase /
+apscheduler / openai）缺失只提示、不影响当前功能；前端顶部也会显示同样的提示条。
+
+> 未启动后端时页面显示空数据（已清理演示项目，不再回退 Mock 项目/巡检数据）。
+> 后端在线时可直接打开 http://localhost:3001/docs 查看 FastAPI 自动生成的接口文档。
+
+## 在 A 电脑运行，B 电脑通过局域网访问
+
+1. 在 A 电脑启动 `npm run dev`（Vite 已配置监听 `0.0.0.0`，启动时会打印 Network 地址）。
+2. 在 A 电脑查询局域网 IP：
+
+   ```powershell
+   ipconfig
+   ```
+
+   例如本机局域网 IP 为 `172.18.83.222`，则启动日志会显示：
+
+   ```text
+   Local:   http://localhost:5173/
+   Network: http://172.18.83.222:5173/
+   ```
+
+3. B 电脑（同一局域网 / 同一 Wi-Fi，且未开启访客网络隔离）直接访问：
+
+   ```text
+   http://172.18.83.222:5173
+   ```
+
+4. 如果 B 电脑无法访问，通常是 Windows 防火墙拦截了 Node.js。在 A 电脑以管理员身份打开 PowerShell，放行 5173 端口：
+
+   ```powershell
+   netsh advfirewall firewall add rule name="VASP Web 5173" dir=in action=allow protocol=TCP localport=5173
+   ```
+
+   或者：防火墙 → 允许应用通过防火墙 → 勾选 Node.js（专用网络）。
+
+## 不在同一局域网时：内网穿透
+
+任选一种工具，把 A 电脑的 5173 端口映射为公网地址，B 电脑通过公网地址访问：
+
+**cpolar**（推荐，国内访问快）
+
+```bash
+cpolar http 5173
+```
+
+**ngrok**
+
+```bash
+ngrok http 5173
+```
+
+**frp（自建服务器）**
+
+frpc.ini：
+
+```ini
+[common]
+server_addr = 你的服务器IP
+server_port = 7000
+
+[vasp-web]
+type = tcp
+local_ip = 127.0.0.1
+local_port = 5173
+remote_port = 5173
+```
+
+> 安全提示：当前为演示版本、无用户认证，公网暴露时建议仅临时使用，或为隧道增加访问密码 / 认证。
+
+## 构建与部署（生产模式）
+
+```bash
+npm run build       # 产出 dist/
+npm run server      # FastAPI 同时托管 API 和 dist/，单端口 3001 访问
+```
+
+此时浏览器直接访问 http://localhost:3001 或局域网 `http://<本机IP>:3001`；
+也可用 `npm run preview` 只预览前端（4173 端口），或将 `dist/` 放到 Nginx / IIS 托管并单独反代 `/api`。
+
+## 目录结构
+
+```text
+vasp-project-manager-web/
+├── index.html
+├── vite.config.ts          # host:true（局域网）+ /api 代理 + 分包优化
+├── package.json
+├── requirements.txt        # Python 依赖（核心 + 可选，运行时检查缺失）
+├── backend/                # ★ 后端 API（Python + FastAPI）
+│   ├── run.py              #   启动入口：python backend/run.py
+│   ├── main.py             #   FastAPI 应用（统一信封/错误翻译/静态托管 dist）
+│   ├── routers/            #   /api/projects、/api/servers、/api/task-types、/api/deps
+│   │                       #   + /api/ssh/config、/api/inspections
+│   ├── models.py           #   Pydantic 输入模型（对齐 schemas.py 校验规则）
+│   ├── priority.py         #   工作量/紧急度/优先级象限（对齐 priority.py）
+│   ├── storage.py          #   文件型数据库（原子写入 + 自动备份 20 份）
+│   │                       #   + 任务状态机（对齐 project_db.py）
+│   ├── ssh.py              #   远程执行/上传/下载（Paramiko，含本地模拟模式）
+│   ├── batch_check.py      #   服务器端批量检查脚本（自动上传，解析 bjobs/OUTCAR/力收敛）
+│   ├── inspection_runner.py#   巡检编排（筛选→上传→远程解析→回填→归档）
+│   ├── checks_store.py     #   巡检结果存取（data/checks/）与前端行映射
+│   ├── dependencies.py     #   运行时依赖检查（后台执行 + 提示安装）
+│   └── defaults/           #   服务器/设置/任务类型默认配置
+├── data/                   # ★ 运行时数据（默认空库，不再写入演示项目；已 gitignore）
+│   ├── projects.json       #   项目数据库（存在 project_db.json 时优先读真实系统库）
+│   ├── config/             #   servers.json / settings.json / task_registry.json
+│   ├── projects/           #   每个项目的本地目录结构
+│   ├── backups/            #   数据库自动备份（保留 20 份）
+│   └── checks/             #   巡检结果 check_results_*.json + runs.json
+├── scripts/
+│   └── make_mock_fixtures.py # 生成本地模拟远程目录夹具（离线测试巡检用）
+└── src/
+    ├── main.tsx            # 入口（ConfigProvider + Router + 动画容器）
+    ├── App.tsx             # 路由 + AnimatePresence 页面切换动画
+    ├── styles/global.css   # 全局设计令牌与样式（颜色/字体/间距/响应式）
+    ├── theme/index.ts      # Ant Design 5 主题令牌
+    ├── types/index.ts      # 类型定义（与后端字段对齐）+ 文案映射
+    ├── utils/format.ts
+    ├── hooks/              # useClock（顶栏时钟）
+    ├── context/SSHContext.tsx  # SSH 全局状态（连接/测试/配置，供顶栏实时联动）
+    ├── api/                # ★ 数据访问层：项目接口已接真实后端，其余为 Mock
+    │   ├── client.ts       #   统一延迟/请求封装位置
+    │   ├── projects.ts
+    │   ├── inspections.ts
+    │   ├── reports.ts
+    │   └── ssh.ts          #   SSH 服务器配置 + 模拟握手
+    ├── data/mock/          # ★ Mock 数据（项目/巡检/报告/VASP 输入文件/SSH 服务器）
+    ├── components/
+    │   ├── layout/         # 侧边栏、顶栏、整体布局、Logo
+    │   └── common/         # 统计卡片、状态标签、进度条、趋势图、页面头等
+    └── pages/              # 模块页面
+        ├── Dashboard.tsx   # 总览
+        ├── Inspection.tsx  # 巡检中心
+        ├── Jobs.tsx        # 作业管理
+        ├── Report.tsx      # 智能报告
+        └── SSH.tsx         # SSH 连接配置
+```
+
+## 模块说明（当前均为演示）
+
+### 总览 Dashboard
+- 统计卡片：项目总数 / 运行中任务 / 今日完成 / 异常警告项
+- 项目进度总览（渐变进度条 + 剩余时间）
+- 近 7 天运行任务趋势（SVG 面积折线图）
+- 最近更新任务表格
+- 「新增项目」弹窗：服务器 / 子任务（任务类型 + 模型名）动态列表，提交后真实调用后端
+
+### 巡检中心 Inspection
+- 状态筛选胶囊（全部/正常/警告/错误，带计数）
+- 关键词搜索 + 类别筛选（收敛性/资源/文件/SSH/队列）+ **分析范围筛选**（全部 / 需结构分析）
+- 「立即巡检」按钮：真实调用后端（筛选任务 → 上传 batch_check → 服务器批量解析 → 状态机回填 → 归档）
+- 自动巡检状态指示（每 2 小时；调度执行器后续接入 APScheduler）
+- 结果表格 + **详情抽屉**：能量 / 最大力随离子步曲线（带收敛阈值基准线）、
+  结构分析（VESTA a/b/c 三轴对比图、力收敛历史表）、收敛判定徽标与分析范围标记；
+  结构分析按 **ISIF** 智能切换：ISIF=2（默认，晶格固定）显示 POSCAR→CONTCAR
+  **原子位移分析**（最大 / RMS / 平均位移），ISIF 为其他值时显示晶格参数与体积对比
+- 结果持久化：每次巡检归档到 `data/checks/check_results_*.json`，**重新打开网站无需重新巡检即显示上次结果**
+
+### 作业管理 Jobs
+- 左侧项目列表（进度、子任务数、剩余时间），右侧子任务表格
+- 每项展示本地路径 / 远程路径 / 作业号 / 最近能量 / 状态
+- 「输入文件」弹窗（INCAR/POSCAR/KPOINTS/POTCAR 生成流程演示）
+- 「续算」确认操作（占位）
+- 输入文件预览区（Tabs + 深色代码块，演示内容）
+
+### 智能报告 Report
+- 报告模板展示区：标题 / 摘要 / 风险列表（高/中/低标签）/ 改进建议
+- 「生成报告」按钮（模拟延迟后生成新报告并入历史）
+- 报告历史记录列表
+- 大模型 API 配置弹窗（模型服务 / API Key / Base URL，仅前端占位）
+
+### SSH 连接 SSH
+- 服务器列表：连接状态指示、主机/端口/用户名、认证方式、延迟、测试/连接/编辑/删除
+- 新建 / 编辑弹窗：主机、端口、用户名、认证方式（密钥文件 / 密码）、队列系统、
+  **项目远程根目录**（后续新增项目都建在此根目录下）、高级设置（用户主目录）
+- 「测试连接」：模拟 SSH 握手（约 1.1s），返回延迟并写入最近测试时间
+- 「连接 / 断开」：同一时间仅一个服务器处于连接状态，顶部状态栏实时联动
+- 配置（含项目远程根目录）**实时同步到后端** `data/config/servers.json`；连接/延迟等 UI 状态保存在浏览器
+
+## 后续如何接入真实后端
+
+**已完成：新增项目**
+
+- 后端：`backend/`（Python + FastAPI），`POST /api/projects` 复刻 `add_project.py` 全流程——
+  输入校验 → 服务器/任务类型配置校验 → 工作量/紧急度/优先级象限计算 →
+  本地目录创建（失败回滚）→ 可选远程同步目录 → 原子写库 + 自动备份
+- 数据：`data/projects.json`（真实库已迁移自旧项目）+ `data/projects/` 目录结构 +
+  `data/backups/`（保留 20 份），`data/config/` 存放服务器/设置/任务类型配置
+- 前端：`src/api/projects.ts` 的 `createProject` / `fetchProjects` 已接真实接口；
+  「新增项目」表单含服务器下拉与子任务动态列表（任务类型 + 模型名）
+
+**其余模块接入方式**
+
+1. 巡检 / 报告 / 作业管理：替换 `src/api/` 下对应函数为 `fetch('/api/...')`，页面组件无需改动。
+2. **SSH 状态**：`src/context/SSHContext.tsx` 已把连接状态做成全局状态，顶部状态栏实时联动；
+   接入后端时替换 `src/api/ssh.ts` 中的 `fetchServerConfigs` / `persistServerConfigs` / `testRemoteConnection`
+   为 `GET/PUT /api/ssh/config`、`POST /api/ssh/test` 即可，页面与顶栏无需改动。
+3. **自动巡检**：后端定时任务每 2 小时触发巡检脚本，前端巡检页改为从 `/api/inspections` 拉取。
+4. **报告生成**：后端组装项目进度 + 巡检结果 + 作业信息为 Prompt，调用大模型 API，生成固定格式报告并落盘。
+
+## 新增项目 API 说明
+
+### 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/projects` | 项目列表（含派生字段 progress / remainingHours / local_dir） |
+| POST | `/api/projects` | 新增项目（`{action:"add_project", project:{name,deadline,server,tasks,...}}`） |
+| GET | `/api/servers` | 服务器下拉选项 |
+| GET | `/api/task-types` | 任务类型下拉选项（含 workload_weight） |
+| GET | `/api/deps` | 运行时依赖检查（缺失项 + 安装提示） |
+| GET/PUT | `/api/ssh/config` | SSH 服务器配置读写（含项目远程根目录） |
+| GET | `/api/inspections` | 巡检结果列表（按任务合并最近一次结果） |
+| POST | `/api/inspections/run` | 立即巡检（可选 project_name / task_id 限定范围） |
+| GET | `/api/inspections/meta` | 自动巡检调度信息（间隔 / 上次 / 下次执行） |
+| GET | `/api/inspections/{task_id}` | 单任务巡检详情（力历史 + 结构分析 + VESTA 对比图） |
+| GET | `/docs` | FastAPI 自动生成的 Swagger 接口文档 |
+
+### 校验规则（Pydantic 模型，对齐参考实现 `schemas.py`）
+
+- `name`：`^[A-Za-z0-9][A-Za-z0-9_]*$`；`deadline`：`^\d{4}-\d{2}-\d{2}$` 且必须是合法日期
+- `server` 必须存在于 `data/config/servers.json`；`task_type` 必须注册于 `task_registry.json`
+- `tasks` 至少 1 项，每项含 `task_type`、`model_name`（同 name 规则），状态可选（默认 `pending`）
+- `frequency`（频率计算）与 `free_energy` 绑定：**不能在新项目中直接创建**，前端下拉已隐藏，后端也会拒绝
+- Web 端扩展字段：`description`、`estimated_hours`（原 Schema `additionalProperties=false` 之外显式放行）
+
+### 优先级计算（与参考实现 `priority.py` 一致）
+
+- 工作量 = 任务权重之和（structure_opt=1 / neb=5 / electronic_structure=0.4 / **free_energy=1.2** / frequency=1）
+- 工作量 ≥ 20 为 `large`，否则 `small`；剩余天数 < 15 为 `urgent`，否则 `not_urgent`
+- 优先级象限 = `<urgency>_<workload>`（如 `urgent_large`）
+
+### 远程同步目录
+
+`data/config/settings.json` 中 `sync_remote_dirs: true` 时，创建项目会用 Paramiko（密钥认证）
+在服务器上 `mkdir -p` 每个任务目录，失败则回滚本地目录并报错。
+**默认关闭**（避免未配置密钥时误连真实集群）；确认 SSH 可用后手动开启，或用环境变量
+`VASP_SYNC_REMOTE_DIRS=1` 临时覆盖。
+
+## 巡检系统（已实现，对齐参考实现 check_remote.py）
+
+### 流程
+
+1. 筛选待巡检任务（跳过 `pending` / `archived`），按服务器分组；
+2. 自动上传 `backend/batch_check.py` 与 `check_registry.json` 到服务器 `batch_check_path`；
+3. 服务器端运行 batch_check：`bjobs -l` 判定队列状态，解析 OUTCAR 能量 / 成功或错误标记 /
+   结构优化 TOTAL-FORCE 力收敛历史（阈值 0.02 / 0.01 eV/A）；
+4. 下载结果 → 按**状态机**回填数据库（非法流转保持原状态并记录警告）；
+5. `structure_opt` 到达终态时同步 POSCAR/CONTCAR 到本地 `files/` 并校验非空；
+6. 富化（prev_status / observed_changed / analysis_needed）归档到 `data/checks/check_results_*.json`，
+   轮次摘要记录到 `runs.json`。
+
+**结构分析范围（analysis_needed）**：仅当任务类型为结构优化、且两次巡检之间状态发生变化
+（如 running→completed / running→zombied）时才标记为需结构分析；此时才会下载并校验
+POSCAR/CONTCAR，避免对未变化任务重复下载。
+
+**结果保留策略**：同一子项只保留一条最新结果（按 task_id 合并，不删除历史行）；
+新一次巡检更新状态 / 能量 / 检查时间，但若本次未下载检查（无新标记 / 力历史），
+自动沿用上一次的检查标记、力历史与力统计，避免内容被覆盖丢失。
+
+### 接口
+
+- `POST /api/inspections/run`：立即巡检，请求体 `{"project_name": "Ag_20260830"}` 可限定范围
+- `GET /api/inspections`：巡检结果列表（按任务合并最近一次结果）
+- `GET /api/inspections/meta`：自动巡检间隔（默认 2 小时）、上次 / 下次执行时间
+
+### 本地模拟模式（离线测试）
+
+```powershell
+$env:VASP_SSH_MOCK = '1'            # 启用模拟 SSH
+$env:VASP_MOCK_REMOTE_ROOT = 'D:\Skill\vasp-project-manager-web\data\mock_remote'
+$env:VASP_BATCH_NO_BJOBS = '1'      # 跳过 bjobs
+$env:VASP_BATCH_LOCAL_ROOT = $env:VASP_MOCK_REMOTE_ROOT
+python scripts/make_mock_fixtures.py   # 生成模拟远程目录夹具
+python backend/run.py
+```
+
+模拟模式下远程路径原样映射到 `VASP_MOCK_REMOTE_ROOT`，`python3 batch_check ...` 改为本地 Python 执行，
+可在不连接真实集群的情况下完整验证巡检流程。
+
+### 真实运行
+
+确认 SSH 密钥可用后（SSH 连接页已能连接），直接在前端巡检中心点「立即巡检」，
+或 `POST /api/inspections/run`。测试目录示例：`/data/gpfs03/mdye/projects/test/Ag_20260830`
+（对应数据库中 Ag_20260830 项目的 remote_dir）。
+
+## 后续迭代计划（本次未实现）
+
+- ~~后端骨架 + 新增项目~~（已完成）
+- ~~项目查询 / 状态更新 / 巡检集成~~（已完成：项目 CRUD、状态机、巡检编排）
+- 自动巡检调度（APScheduler 每 2 小时触发，前端展示调度状态）
+- 目录同步 / 文件操作 API（作业管理模块）
+- 大模型 API 集成与报告生成
+- SSH 配置页与后端 `data/config/servers.json` 打通（真实握手测试）
+- 用户认证与权限管理（如需要）

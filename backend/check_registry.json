@@ -1,0 +1,10 @@
+{
+  "force_convergence": {
+    "description": "检查力收敛情况",
+    "script": "batch_check.py",
+    "thresholds": {
+      "max_force_threshold": 0.02,
+      "rms_force_threshold": 0.01
+    }
+  }
+}

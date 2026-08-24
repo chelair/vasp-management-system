@@ -1,0 +1,11 @@
+{
+  "urgent_days_threshold": 15,
+  "workload_large_threshold": 20,
+  "vesta_path": "D:\\DFT\\VESTA-win64\\VESTA.exe",
+  "vesta_zoom": 1.7,
+  "embed_images": true,
+  "energy_precision": 8,
+  "sync_remote_dirs": false,
+  "auto_inspection_enabled": true,
+  "inspection_interval_hours": 2
+}

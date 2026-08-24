@@ -1,0 +1,14 @@
+{
+  "server1": {
+    "host": "hpc.xmu.edu.cn",
+    "user": "mdye",
+    "port": 22,
+    "key_path": "~/.ssh/id_rsa",
+    "home": "/data/gpfs03/mdye",
+    "queue_system": "lsf",
+    "bjobs_cmd": "bjobs -l {job_id}",
+    "submit_cmd": "bsub < submit.sh",
+    "remote_base": "/data/gpfs03/mdye/projects/test",
+    "batch_check_path": "/data/gpfs03/mdye/tools/vasp_skill/batch_check.py"
+  }
+}

@@ -1,0 +1,9 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+paramiko>=3.4
+
+# 可选依赖：运行时后台检查缺失并提示安装（后续功能将用到）
+pymatgen>=2024.10.1
+ase>=3.23
+apscheduler>=3.10
+openai>=1.40

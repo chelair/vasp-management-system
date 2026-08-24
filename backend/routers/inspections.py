@@ -153,6 +153,7 @@ def inspection_detail(task_id: str):
                 "force_history": history,
                 "errors": entry.get("error_messages", []) or [],
                 "notes": entry.get("notes", "") or "",
+                "current_output": task.get("current_output") or entry.get("current_output") or None,
                 "analysis": analysis,
             },
         )

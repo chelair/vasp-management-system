@@ -109,9 +109,11 @@ def _run_server_batch(
 
 
 def _sync_and_validate_structure(
-    project: Dict[str, Any], task: Dict[str, Any]
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    latest_dir: str = "",
 ) -> List[str]:
-    """下载 POSCAR/CONTCAR 到本地 files/ 并校验非空，返回缺失标记。"""
+    """下载 POSCAR（主目录）与最新 CONTCAR（续算目录优先）到本地 files/。"""
     markers: List[str] = []
     local_files = (
         PROJECTS_DIR
@@ -122,8 +124,14 @@ def _sync_and_validate_structure(
     )
     local_files.mkdir(parents=True, exist_ok=True)
     remote_dir = str(task.get("remote_dir", "")).rstrip("/")
-    for filename in ("POSCAR", "CONTCAR"):
-        remote_path = f"{remote_dir}/{filename}"
+    pairs = [("POSCAR", f"{remote_dir}/POSCAR")]
+    contcar_remote = (
+        f"{remote_dir}/{latest_dir}/CONTCAR" if latest_dir else f"{remote_dir}/CONTCAR"
+    )
+    pairs.append(("CONTCAR", contcar_remote))
+    if latest_dir:
+        markers.append(f"结构对比使用续算输出 {latest_dir}/CONTCAR")
+    for filename, remote_path in pairs:
         local_path = local_files / filename
         ok = False
         try:
@@ -161,6 +169,10 @@ def _apply_result(
     observed_changed = server_status != old_status
     energy = result.get("last_energy")
     queue_status = result.get("queue_status")
+    current_output = result.get("current_output")
+    latest_dir = ""
+    if isinstance(current_output, dict):
+        latest_dir = str(current_output.get("latest_dir") or "")
     notes_markers: List[str] = [str(m) for m in result.get("error_messages", []) or []]
     if not task.get("job_id") and new_status != "completed":
         notes_markers.append("未见有效完成日志")
@@ -174,7 +186,7 @@ def _apply_result(
         and new_status in ("completed", "zombied")
     ):
         try:
-            markers = _sync_and_validate_structure(project, task)
+            markers = _sync_and_validate_structure(project, task, latest_dir)
         except Exception as e:  # noqa: BLE001 - 结构校验异常不阻塞巡检
             markers.append(f"结构文件同步异常：{e}")
     notes_markers.extend(markers)
@@ -190,6 +202,8 @@ def _apply_result(
         extra_fields["job_id"] = task["job_id"]
     if notes:
         extra_fields["notes"] = notes
+    if current_output:
+        extra_fields["current_output"] = current_output
     try:
         update_task_status(
             db, project["name"], task_id, new_status, extra_fields or None

@@ -105,12 +105,7 @@ export default function NewTaskModal({ open, project, taskTypes, onCancel, onCre
             onChange={(v: TaskType) => setTaskType(v)}
             options={availableTypes.map((t) => ({
               value: t.type,
-              label: (
-                <div>
-                  <div>{t.description}</div>
-                  <div className="select-option-hint">权重 {t.workload_weight}</div>
-                </div>
-              ),
+              label: t.description,
             }))}
           />
         </Form.Item>

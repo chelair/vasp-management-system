@@ -58,6 +58,7 @@ def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
                 "notes": _str(task.get("notes"), ""),
                 "continuation_ready": task.get("continuation_ready") is True,
                 "continuation_dir": _str(task.get("continuation_dir"), "") or None,
+                "current_output": task.get("current_output") or None,
                 "remote_dir": _str(task.get("remote_dir"), ""),
                 "local_dir": local_dir.replace("\\", "/"),
             }

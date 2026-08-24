@@ -37,6 +37,8 @@ export interface Task {
   remote_dir: string;
   /** 前端展示用本地目录，后端接入后由配置/接口提供 */
   local_dir: string;
+  /** 最新输出定位（续算 conN 优先，巡检后回填） */
+  current_output?: CurrentOutput | null;
 }
 
 export interface Project {
@@ -70,6 +72,23 @@ export interface InspectionResult {
   /** 是否在结构分析范围内（巡检前后状态有变化或运行中） */
   analysis_needed?: boolean;
   has_force_history?: boolean;
+  /** 最新输出目录（续算 conN 优先，无则为 null=主目录） */
+  latest_dir?: string | null;
+  /** 最新输出状态：finished / running / failed / waiting */
+  output_status?: 'finished' | 'running' | 'failed' | 'waiting' | null;
+}
+
+/** 任务最新输出定位（续算 conN 优先） */
+export interface CurrentOutput {
+  latest_dir: string | null;
+  dir: string;
+  contcar_path: string;
+  outcar_path: string;
+  oszicar_path: string;
+  status: 'finished' | 'running' | 'failed' | 'waiting';
+  reason: string;
+  is_continuation: boolean;
+  is_latest_con: boolean;
 }
 
 export interface ForceHistoryPoint {
@@ -135,6 +154,7 @@ export interface InspectionDetail {
   force_history: ForceHistoryPoint[];
   errors: string[];
   notes: string;
+  current_output: CurrentOutput | null;
   analysis: StructureAnalysis | null;
 }
 

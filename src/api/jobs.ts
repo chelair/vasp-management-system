@@ -113,3 +113,12 @@ export async function saveTaskFile(
     body: JSON.stringify({ content }),
   });
 }
+
+/** 在服务器本机打开任务本地目录（定位到 files/） */
+export async function openTaskFolder(
+  taskId: string,
+): Promise<{ path: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/open-folder`, {
+    method: 'POST',
+  });
+}

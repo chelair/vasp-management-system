@@ -59,6 +59,7 @@ SUCCESS_MARKERS = (
 ERROR_KEYWORDS = ("EEEE", "Error", "Segmentation fault", "forrtl: severe")
 ENDED_STATUS_TOKENS = ("DONE", "EXIT", "COMPLETED", "FAILED", "CANCELLED")
 FORCE_HEADER = "TOTAL-FORCE (eV/Angst)"
+CON_DIR_RE = re.compile(r"^con(\d+)$")
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,36 @@ def load_thresholds() -> Dict[str, float]:
             "rms_force_threshold": float(rms_force),
         }
     return dict(DEFAULT_THRESHOLDS)
+
+
+def resolve_latest_output(remote_dir: str):
+    """在任务目录下定位最新有效输出目录（续算 conN）。
+
+    返回 (latest_subdir, status)；latest_subdir 为空串表示主目录。
+    从最大编号 con* 开始，第一个 OUTCAR 末尾含正常结束标志的即为最新输出。
+    """
+    base = Path(remote_dir)
+    if not base.is_dir():
+        return "", ""
+    cons = sorted(
+        (
+            p
+            for p in base.iterdir()
+            if p.is_dir() and CON_DIR_RE.fullmatch(p.name)
+        ),
+        key=lambda p: int(CON_DIR_RE.fullmatch(p.name).group(1)),
+    )
+    for con in reversed(cons):
+        outcar = con / "OUTCAR"
+        if not outcar.is_file():
+            continue
+        try:
+            tail = outcar.read_text(encoding="utf-8", errors="replace")[-8192:]
+        except Exception:  # noqa: BLE001 - 单个目录读取失败继续检查
+            continue
+        if any(marker in tail for marker in SUCCESS_MARKERS):
+            return con.name, "finished"
+    return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +314,7 @@ def _new_result(task: Dict[str, Any]) -> Dict[str, Any]:
         "force_converged": None,
         "force_history": None,
         "error_messages": [],
+        "current_output": None,
     }
 
 
@@ -299,6 +331,7 @@ def _analyze_outcar(
     remote_dir: str,
     task_type: str,
     thresholds: Dict[str, float],
+    poscar_dir: str = "",
 ) -> None:
     outcar_path = Path(remote_dir) / "OUTCAR"
     if not outcar_path.is_file() or not os.access(outcar_path, os.R_OK):
@@ -324,7 +357,7 @@ def _analyze_outcar(
         result["error_messages"].append("Job ended without normal termination")
 
     if task_type == "structure_opt":
-        _parse_forces(result, remote_dir, text, thresholds)
+        _parse_forces(result, poscar_dir or remote_dir, text, thresholds)
 
 
 def _parse_forces(
@@ -384,11 +417,23 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         job_id = task.get("job_id") or ""
         remote_dir = _local_remote_dir(str(task.get("remote_dir", "")))
         task_type = str(task.get("task_type", ""))
-        outcar_path = Path(remote_dir) / "OUTCAR"
+        # 定位最新输出目录（续算 conN 优先），OUTCAR/OSZICAR/CONTCAR 从该目录读取
+        latest_dir, _ = resolve_latest_output(remote_dir)
+        work_dir = str(Path(remote_dir) / latest_dir) if latest_dir else remote_dir
+        result["current_output"] = {
+            "latest_dir": latest_dir or None,
+            "dir": work_dir,
+            "contcar_path": f"{work_dir}/CONTCAR",
+            "outcar_path": f"{work_dir}/OUTCAR",
+            "oszicar_path": f"{work_dir}/OSZICAR",
+        }
+        outcar_path = Path(work_dir) / "OUTCAR"
 
         if not job_id:
             if outcar_path.is_file():
-                _analyze_outcar(result, remote_dir, task_type, thresholds)
+                _analyze_outcar(
+                    result, work_dir, task_type, thresholds, poscar_dir=remote_dir
+                )
             else:
                 result["status"] = "pending"
         else:
@@ -399,7 +444,9 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
             elif queue_status == "RUN":
                 result["status"] = "running"
             else:
-                _analyze_outcar(result, remote_dir, task_type, thresholds)
+                _analyze_outcar(
+                    result, work_dir, task_type, thresholds, poscar_dir=remote_dir
+                )
     except Exception as e:  # noqa: BLE001 - 单任务容错
         result["error_messages"].append(f"unexpected error: {e}")
         if result["status"] in ("pending",) and result["queue_status"] == "UNKNOWN":

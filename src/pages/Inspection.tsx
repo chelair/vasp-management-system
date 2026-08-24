@@ -53,6 +53,13 @@ const CATEGORY_META: Record<CheckCategory, { color: string; bg: string }> = {
 type StatusFilter = 'all' | CheckStatus;
 type AnalysisScope = 'all' | 'needed';
 
+const OUTPUT_STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  finished: { label: '已完成', color: 'success' },
+  running: { label: '计算中', color: 'processing' },
+  failed: { label: '失败', color: 'error' },
+  waiting: { label: '等待', color: 'default' },
+};
+
 export default function Inspection() {
   const { message } = App.useApp();
   const [results, setResults] = useState<InspectionResult[]>([]);
@@ -181,6 +188,24 @@ export default function Inspection() {
       key: 'status',
       width: 90,
       render: (s: CheckStatus) => <StatusTag status={s} />,
+    },
+    {
+      title: '输出位置',
+      key: 'output',
+      width: 140,
+      render: (_, row) => {
+        const meta = row.output_status ? OUTPUT_STATUS_LABELS[row.output_status] : null;
+        return (
+          <div className="cell-output">
+            <Tooltip title={row.latest_dir ? `续算目录 ${row.latest_dir}/` : '任务主目录'}>
+              <span className="path-cell">
+                {row.latest_dir ? `${row.latest_dir}/` : '主目录/'}
+              </span>
+            </Tooltip>
+            {meta && <Tag color={meta.color}>{meta.label}</Tag>}
+          </div>
+        );
+      },
     },
     {
       title: '信息',
@@ -329,6 +354,25 @@ export default function Inspection() {
               <Descriptions.Item label="检查时间">
                 {detailData.check_time ?? '—'}
               </Descriptions.Item>
+              {detailData.current_output &&
+                (() => {
+                  const co = detailData.current_output;
+                  const meta = OUTPUT_STATUS_LABELS[co.status];
+                  return (
+                    <Descriptions.Item label="最新输出">
+                      {co.latest_dir ? `${co.latest_dir}/（续算目录）` : '主目录'}
+                      {meta && (
+                        <Tag color={meta.color} style={{ marginLeft: 8 }}>
+                          {meta.label}
+                        </Tag>
+                      )}
+                      <div className="preview-note" style={{ marginTop: 4 }}>
+                        CONTCAR：{co.contcar_path}
+                      </div>
+                      <div className="preview-note">OSZICAR：{co.oszicar_path}</div>
+                    </Descriptions.Item>
+                  );
+                })()}
               <Descriptions.Item label="队列状态">
                 {detailData.queue_status ?? '—'}
               </Descriptions.Item>

@@ -9,6 +9,9 @@
 """
 
 from datetime import datetime
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -88,6 +91,16 @@ def _files_dir(task_dir: Path) -> Path:
     return files_dir if files_dir.is_dir() else task_dir
 
 
+def _open_in_explorer(path: str) -> None:
+    """在服务器所在机器打开文件管理器并定位到目录（Windows 资源管理器优先）。"""
+    if sys.platform == "win32":
+        os.startfile(path)  # type: ignore[attr-defined] - Windows only
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
 @router.get("/tasks/{task_id}/files")
 def list_task_files(task_id: str):
     try:
@@ -158,3 +171,19 @@ def write_task_file(task_id: str, filename: str, payload: FileWritePayload):
         return JSONResponse(status_code=400, content=fail(str(e)))
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"写入 {filename} 失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/open-folder")
+def open_task_folder(task_id: str):
+    """在服务器本机打开任务本地目录（定位到 files/），便于直接查看/编辑文件。"""
+    try:
+        task_dir = _resolve_task_dir(task_id)
+        files_dir = task_dir / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        target = files_dir if files_dir.is_dir() else task_dir
+        _open_in_explorer(str(target))
+        return ok("已打开文件夹", {"path": str(target)})
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"打开文件夹失败：{e}"))

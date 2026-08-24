@@ -184,6 +184,11 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     detail = "；".join(dict.fromkeys(detail_parts)) or "无异常信息"
 
     task_type = task.get("task_type", "")
+    current_output = task.get("current_output") or entry.get("current_output") or {}
+    latest_dir = current_output.get("latest_dir") if isinstance(current_output, dict) else None
+    output_status = (
+        current_output.get("status") if isinstance(current_output, dict) else None
+    )
     return {
         "id": str(entry.get("task_id", "")),
         "check_time": str(entry.get("checked_at", "")),
@@ -197,4 +202,6 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         "analysis_needed": bool(entry.get("analysis_needed", False)),
         "has_force_history": isinstance(entry.get("force_history"), list)
         and bool(entry.get("force_history")),
+        "latest_dir": latest_dir,
+        "output_status": output_status,
     }

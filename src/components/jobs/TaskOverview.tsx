@@ -1,4 +1,4 @@
-import { Button, Card, Descriptions, Empty, Space, Tag, Tooltip } from 'antd';
+import { App, Button, Card, Descriptions, Empty, Space, Tag, Tooltip } from 'antd';
 import {
   CheckCircleFilled,
   CodeOutlined,
@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { JobWorkspace, Task, TaskType } from '../../types';
 import { TASK_TYPE_LABELS } from '../../types';
+import { openTaskFolder } from '../../api/jobs';
 import StatusTag from '../common/StatusTag';
 
 interface Props {
@@ -28,6 +29,17 @@ export default function TaskOverview({
   onContinuation,
   onSubmitScript,
 }: Props) {
+  const { message } = App.useApp();
+
+  const handleOpenFolder = async () => {
+    try {
+      const r = await openTaskFolder(task.task_id);
+      message.success(`已打开文件夹：${r.path}`);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '打开文件夹失败');
+    }
+  };
+
   return (
     <div className="job-overview">
       <Card size="small" title="快捷操作" className="job-card">
@@ -40,6 +52,9 @@ export default function TaskOverview({
           </Button>
           <Button icon={<CodeOutlined />} onClick={onSubmitScript}>
             生成提交脚本
+          </Button>
+          <Button icon={<FolderOpenOutlined />} onClick={() => void handleOpenFolder()}>
+            打开文件夹
           </Button>
           {task.continuation_ready && (
             <Tag color="processing">

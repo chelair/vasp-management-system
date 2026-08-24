@@ -651,6 +651,13 @@ p {
   font-weight: 500;
 }
 
+.cell-output {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 /* ---------- 作业管理 ---------- */
 
 .jobs-grid {
@@ -936,12 +943,6 @@ p {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.select-option-hint {
-  font-size: 11.5px;
-  color: var(--color-text-muted);
-  margin-top: 2px;
 }
 
 .job-import-row {

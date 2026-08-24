@@ -36,12 +36,19 @@
       POSCAR/CONTCAR（analysis_needed 判定与巡检回填同步收紧）
 - [x] 结果保留策略：同一子项按 task_id 保留最新一条结果；本次未检查时沿用上次的
       检查标记 / 力历史 / 力统计（只更新、不删除）
+- [x] 最新输出定位（续算 conN 优先）：batch_check 远程解析 `con1/con2/...`（按编号降序，
+      取第一个 OUTCAR 正常结束的目录，全部异常回退主目录）；结构对比/能量/力历史读取
+      最新目录的 CONTCAR/OUTCAR/OSZICAR，POSCAR 仍取主目录；`current_output`
+      落库并在巡检列表「输出位置」与详情中展示（报告模块可直接读取该字段）
 - [x] 结果本地持久化：归档 `data/checks/check_results_*.json`，重开网站显示上次巡检结果
 - [x] 本地模拟模式（VASP_SSH_MOCK + 夹具脚本）用于离线验证巡检流程
 - [x] 清理演示项目：删除种子数据与前端 Mock 回退
 - [x] 数据迁移：旧项目真实数据（项目库/配置/项目目录/备份/巡检结果）已迁入本项目 `data/`，
       运行不再依赖旧项目路径（旧项目仅作功能迁移参考，封装打包不漏文件）
 - [x] 真实巡检验证：对 Ag_20260830（/data/gpfs03/mdye/projects/test/Ag_20260830）完成一轮真实巡检
+- [x] 续算监测真实数据验证：Co_0830/Co_2_op（con1-con3，con3 运行中）——最新输出定位为 con2，
+      能量/力历史/结构对比均取自 con2（-1173.163 eV、71 离子步），状态经状态机 running→completed
+      写入（0 拒绝），输入文件与最新输出已同步本地 files/
 
 **尚未开始（其余模块）**
 
@@ -127,6 +134,7 @@
 - [ ] 组装 Prompt：项目进度 + 巡检结果 + 作业信息
 - [ ] 固定格式报告生成（标题 / 摘要 / 风险列表 / 建议列表），历史记录落盘到 `data/reports/`
 - [ ] 数据收集可参考/复用 `generate_summary_html.py` 的已有逻辑（含结构分析、优先级四象限等）
+      （`current_output` 字段已就绪：contcar/outcar/oszicar 路径与 finished/running/failed/waiting 状态）
 
 ### 7. 部署与访问
 

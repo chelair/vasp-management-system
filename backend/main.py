@@ -11,7 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from config import PROJECT_ROOT, ensure_data_dirs, load_servers
 from dependencies import INSTALL_HINT, check_dependencies
 from envelope import fail
-from routers import inspections, jobs, meta, projects, ssh
+from routers import auxiliary as aux
+from routers import groups, inspections, jobs, meta, paths, projects, reports, settings, ssh
 from ssh import warmup_connection
 
 
@@ -101,6 +102,11 @@ async def validation_handler(_, exc: RequestValidationError):
 app.include_router(meta.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(groups.router, prefix="/api")
+app.include_router(aux.router, prefix="/api")
+app.include_router(paths.router, prefix="/api")
+app.include_router(settings.router, prefix="/api")
+app.include_router(reports.router, prefix="/api")
 app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
 

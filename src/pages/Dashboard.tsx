@@ -1,13 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  App,
   Button,
   Card,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Select,
+  App,
+  Popconfirm,
   Skeleton,
   Table,
 } from 'antd';
@@ -21,13 +17,12 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import {
-  createProject,
+  deleteProject,
   fetchDashboardMeta,
   fetchProjects,
-  fetchServers,
-  fetchTaskTypes,
   fetchWeeklyTrend,
 } from '../api/projects';
+import AddProjectModal from '../components/projects/AddProjectModal';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import ProgressBar from '../components/common/ProgressBar';
@@ -35,14 +30,10 @@ import StatCard from '../components/common/StatCard';
 import StatusTag from '../components/common/StatusTag';
 import TrendChart from '../components/common/TrendChart';
 import type {
-  CreateProjectPayload,
   DashboardMeta,
   Project,
-  ServerOption,
   Task,
   TaskStatus,
-  TaskType,
-  TaskTypeOption,
   TrendPoint,
 } from '../types';
 import { TASK_TYPE_LABELS } from '../types';
@@ -59,25 +50,17 @@ export default function Dashboard() {
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [serverOptions, setServerOptions] = useState<ServerOption[]>([]);
-  const [taskTypeOptions, setTaskTypeOptions] = useState<TaskTypeOption[]>([]);
-  const [form] = Form.useForm();
 
   useEffect(() => {
     Promise.all([
       fetchProjects(),
       fetchDashboardMeta(),
       fetchWeeklyTrend(),
-      fetchServers(),
-      fetchTaskTypes(),
     ])
-      .then(([p, m, t, servers, taskTypes]) => {
+      .then(([p, m, t]) => {
         setProjects(p);
         setMeta(m);
         setTrend(t);
-        setServerOptions(servers);
-        setTaskTypeOptions(taskTypes);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -154,43 +137,24 @@ export default function Dashboard() {
     },
   ];
 
-  const openAdd = () => {
-    form.resetFields();
-    form.setFieldsValue({
-      server: serverOptions[0]?.name ?? 'server1',
-      tasks: [{ task_type: 'structure_opt', model_name: '' }],
-    });
-    setAddOpen(true);
+  const openAdd = () => setAddOpen(true);
+
+  const handleProjectCreated = async () => {
+    const fresh = await fetchProjects();
+    setProjects(fresh);
   };
 
-  const handleAddProject = async () => {
+  const handleProjectDeleted = async (p: Project) => {
     try {
-      const values = await form.validateFields();
-      setSubmitting(true);
-      const payload: CreateProjectPayload = {
-        name: values.name,
-        deadline: values.deadline,
-        server: values.server,
-        tasks: values.tasks.map((t: { task_type: TaskType; model_name: string }) => ({
-          task_type: t.task_type,
-          model_name: t.model_name,
-        })),
-        description: values.description || '',
-        estimated_hours: values.estimated_hours ?? null,
-      };
-      const result = await createProject(payload);
-      setAddOpen(false);
-      form.resetFields();
+      const result = await deleteProject(p.id);
       message.success(
-        `项目「${values.name}」创建成功：${result.project_id}（${result.priority_quadrant}）`,
+        `项目 ${result.project_name} 已删除` +
+          (result.local_trash ? `（本地目录已移入回收站）` : ''),
       );
-      // 刷新项目列表（后端已就绪，将返回真实数据）
       const fresh = await fetchProjects();
       setProjects(fresh);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '创建项目失败');
-    } finally {
-      setSubmitting(false);
+      message.error(err instanceof Error ? err.message : '删除项目失败');
     }
   };
 
@@ -264,6 +228,22 @@ export default function Dashboard() {
                     <div className="project-progress-row__time">
                       {p.remainingHours > 0 ? `剩余约 ${p.remainingHours}h` : '已完成'}
                     </div>
+                    <Popconfirm
+                      title={`删除项目 ${p.name}？`}
+                      description="本地目录将移入回收站，远端文件不受影响"
+                      okText="删除"
+                      okButtonProps={{ danger: true }}
+                      cancelText="取消"
+                      onConfirm={() => handleProjectDeleted(p)}
+                    >
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        aria-label={`删除项目 ${p.name}`}
+                      />
+                    </Popconfirm>
                   </div>
                 ))}
               </div>
@@ -286,130 +266,11 @@ export default function Dashboard() {
         </>
       )}
 
-      <Modal
-        title="新增项目"
+      <AddProjectModal
         open={addOpen}
-        onOk={handleAddProject}
-        onCancel={() => {
-          setAddOpen(false);
-          form.resetFields();
-        }}
-        confirmLoading={submitting}
-        okText="创建"
-        cancelText="取消"
-        forceRender
-      >
-        <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
-          <Form.Item
-            label="项目名称"
-            name="name"
-            rules={[
-              { required: true, message: '请输入项目名称' },
-              {
-                pattern: /^[A-Za-z0-9][A-Za-z0-9_]*$/,
-                message: '与后端一致：以字母/数字开头，仅含字母、数字、下划线',
-              },
-            ]}
-          >
-            <Input placeholder="如 Ag_20260830" />
-          </Form.Item>
-          <Form.Item
-            label="截止日期"
-            name="deadline"
-            rules={[
-              { required: true, message: '请输入截止日期' },
-              {
-                pattern: /^\d{4}-\d{2}-\d{2}$/,
-                message: '格式须为 YYYY-MM-DD，如 2026-09-30',
-              },
-            ]}
-          >
-            <Input placeholder="2026-09-30" />
-          </Form.Item>
-          <Form.Item
-            label="计算服务器"
-            name="server"
-            rules={[{ required: true, message: '请选择计算服务器' }]}
-          >
-            <Select
-              placeholder="选择服务器"
-              options={serverOptions.map((s) => ({
-                value: s.name,
-                label: `${s.name} (${s.user}@${s.host})`,
-              }))}
-            />
-          </Form.Item>
-
-          <Form.Item label="子任务（至少 1 个）" required style={{ marginBottom: 8 }}>
-            <Form.List name="tasks">
-              {(fields, { add, remove }) => (
-                <>
-                  {fields.map(({ key, name, ...restField }) => (
-                    <div key={key} className="task-form-row">
-                      <Form.Item
-                        {...restField}
-                        name={[name, 'task_type']}
-                        rules={[{ required: true, message: '请选择任务类型' }]}
-                        style={{ width: 190, marginBottom: 8 }}
-                      >
-                        <Select
-                          placeholder="任务类型"
-                          options={taskTypeOptions
-                            .filter((t) => t.type !== 'frequency')
-                            .map((t) => ({
-                              value: t.type,
-                              label: `${t.description}（权重 ${t.workload_weight}）`,
-                            }))}
-                        />
-                      </Form.Item>
-                      <Form.Item
-                        {...restField}
-                        name={[name, 'model_name']}
-                        rules={[
-                          { required: true, message: '请输入模型名称' },
-                          {
-                            pattern: /^[A-Za-z0-9][A-Za-z0-9_]*$/,
-                            message: '以字母/数字开头，仅含字母、数字、下划线',
-                          },
-                        ]}
-                        style={{ flex: 1, marginBottom: 8 }}
-                      >
-                        <Input placeholder="模型名称，如 Al2O3_Ag" />
-                      </Form.Item>
-                      {fields.length > 1 && (
-                        <Button
-                          type="text"
-                          danger
-                          icon={<DeleteOutlined />}
-                          onClick={() => remove(name)}
-                          style={{ marginBottom: 8 }}
-                          aria-label="删除该子任务"
-                        />
-                      )}
-                    </div>
-                  ))}
-                  <Button
-                    type="dashed"
-                    block
-                    icon={<PlusOutlined />}
-                    onClick={() => add({ task_type: 'structure_opt', model_name: '' })}
-                    style={{ marginBottom: 12 }}
-                  >
-                    添加子任务
-                  </Button>
-                </>
-              )}
-            </Form.List>
-          </Form.Item>
-
-          <Form.Item label="预计耗时（小时，可选）" name="estimated_hours">
-            <InputNumber min={1} max={2000} style={{ width: '100%' }} placeholder="可选" />
-          </Form.Item>
-          <Form.Item label="项目描述（可选）" name="description">
-            <Input.TextArea rows={2} placeholder="研究内容简述" />
-          </Form.Item>
-        </Form>
-      </Modal>
+        onCancel={() => setAddOpen(false)}
+        onCreated={handleProjectCreated}
+      />
     </PageTransition>
   );
 }

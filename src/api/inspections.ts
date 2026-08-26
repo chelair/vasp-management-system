@@ -75,6 +75,14 @@ export async function runInspection(
   });
 }
 
+/** 单任务巡检（任意状态任务均可触发；完成后归档新增/更新该任务记录） */
+export async function runSingleInspection(taskId: string): Promise<InspectionRunSummary> {
+  return request<InspectionRunSummary>(
+    `/inspections/run-single/${encodeURIComponent(taskId)}`,
+    { method: 'POST' },
+  );
+}
+
 /** 单任务巡检详情（能量/力曲线 + 结构分析） */
 export async function fetchInspectionDetail(
   taskId: string,

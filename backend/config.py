@@ -15,7 +15,12 @@ PROJECTS_DIR = DATA_DIR / "projects"
 BACKUPS_DIR = DATA_DIR / "backups"
 DEFAULTS_DIR = SERVER_DIR / "defaults"
 
-DEFAULT_CONFIG_FILES = ("servers.json", "settings.json", "task_registry.json")
+DEFAULT_CONFIG_FILES = (
+    "servers.json",
+    "settings.json",
+    "task_registry.json",
+    "path_mapping.json",
+)
 
 
 def ensure_data_dirs() -> None:
@@ -43,3 +48,26 @@ def load_settings() -> dict:
 
 def load_task_registry() -> dict:
     return load_json(CONFIG_DIR / "task_registry.json")
+
+
+def load_path_mapping() -> dict:
+    """本地/远端路径一一对应关系（固化在 data/config/path_mapping.json）。"""
+    path = CONFIG_DIR / "path_mapping.json"
+    if path.is_file():
+        try:
+            data = load_json(path)
+            if (
+                isinstance(data, dict)
+                and data.get("local_root")
+                and isinstance(data.get("remote_roots"), dict)
+            ):
+                return data
+        except Exception:
+            pass
+    return {
+        "local_root": str(PROJECTS_DIR),
+        "remote_roots": {
+            name: cfg.get("remote_base", "")
+            for name, cfg in load_servers().items()
+        },
+    }

@@ -2,36 +2,33 @@
 
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from config import PROJECTS_DIR, load_servers, load_settings, load_task_registry
+from config import DATA_DIR, PROJECTS_DIR, load_servers, load_settings, load_task_registry
 from dates import now_iso
 from envelope import fail, ok
 from mappers import map_project
 from models import AddProjectPayload
+from paths import resolve_remote_path, to_local_rel, to_remote_rel
 from priority import compute_priority
 from ssh import mkdir_remote
 from storage import add_project, load_db, save_db
+from task_paths import CATEGORY_DIRS
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 TASK_SUBDIRS = ("files", "images", "reports", "continuation")
 
-# 与后续任务绑定的类型：不能在新项目中直接创建
-DISALLOWED_NEW_TASK_TYPES = {
-    "frequency": (
-        "任务类型 'frequency'（频率计算）与 free_energy（自由能计算）绑定，"
-        "不能在新项目中直接创建；free_energy 完成后会自动衔接频率计算。"
-    )
-}
-
 
 def _create_local_dirs(project_dir: Path, tasks) -> None:
     for task in tasks:
-        task_dir = project_dir / task["task_type"] / task["model_name"]
+        # v0.4.0：独立任务目录 <项目>/<类型分类>/<模型名>
+        category = CATEGORY_DIRS.get(task.get("task_type", ""), "结构优化")
+        task_dir = project_dir / category / task["model_name"]
         for sub in TASK_SUBDIRS:
             (task_dir / sub).mkdir(parents=True, exist_ok=True)
 
@@ -82,13 +79,6 @@ def create_project(payload: AddProjectPayload):
                     {"errors": [f"project.tasks: 可用任务类型 {list(registry.keys())}"]},
                 ),
             )
-        for task in p.tasks:
-            if task.task_type in DISALLOWED_NEW_TASK_TYPES:
-                return JSONResponse(
-                    status_code=400,
-                    content=fail(DISALLOWED_NEW_TASK_TYPES[task.task_type]),
-                )
-
         priority = compute_priority(
             p.deadline,
             [t.model_dump() for t in p.tasks],
@@ -115,7 +105,22 @@ def create_project(payload: AddProjectPayload):
                     "notes": "",
                     "continuation_ready": False,
                     "continuation_dir": None,
-                    "remote_dir": f"{project_remote_base}/{t.task_type}/{t.model_name}",
+                    "dir_path": to_local_rel(
+                        str(
+                            PROJECTS_DIR
+                            / p.name
+                            / CATEGORY_DIRS.get(t.task_type, "结构优化")
+                            / t.model_name
+                        )
+                    ),
+                    "remote_dir": to_remote_rel(
+                        p.server,
+                        f"{project_remote_base}/"
+                        f"{CATEGORY_DIRS.get(t.task_type, '结构优化')}/{t.model_name}",
+                    ),
+                    "group": None,
+                    "parent_task_id": None,
+                    "input_source": None,
                 }
                 for t in p.tasks
             ],
@@ -136,7 +141,8 @@ def create_project(payload: AddProjectPayload):
         if _sync_enabled(settings):
             try:
                 for task in project["tasks"]:
-                    mkdir_remote(p.server, task["remote_dir"])
+                    # remote_dir 为相对路径，必须拼接远程根目录后再创建，否则会建到服务器 home 下
+                    mkdir_remote(p.server, resolve_remote_path(p.server, task["remote_dir"]))
             except Exception as e:
                 _rollback_local_dirs(project_dir, dir_existed_before)
                 return JSONResponse(
@@ -163,3 +169,36 @@ def create_project(payload: AddProjectPayload):
             return JSONResponse(status_code=400, content=fail(str(e)))
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"服务器内部错误：{e}"))
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: str):
+    """删除项目：本地项目目录移入回收站 data/trash/，数据库移除（远端目录不自动删除）。"""
+    try:
+        db = load_db()
+        project = next(
+            (p for p in db.get("projects", []) if p.get("project_id") == project_id),
+            None,
+        )
+        if project is None:
+            return JSONResponse(status_code=404, content=fail("项目不存在"))
+        name = str(project.get("name", ""))
+        trash_path = None
+        project_dir = PROJECTS_DIR / name
+        if project_dir.is_dir():
+            trash_dir = DATA_DIR / "trash"
+            trash_dir.mkdir(parents=True, exist_ok=True)
+            trash_path = trash_dir / f"{name}_{int(datetime.now().timestamp())}"
+            shutil.move(str(project_dir), str(trash_path))
+        db["projects"] = [p for p in db.get("projects", []) if p.get("project_id") != project_id]
+        save_db(db)
+        return ok(
+            "项目已删除",
+            {
+                "project_id": project_id,
+                "project_name": name,
+                "local_trash": str(trash_path) if trash_path else None,
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"删除项目失败：{e}"))

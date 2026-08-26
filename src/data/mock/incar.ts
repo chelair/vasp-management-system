@@ -247,11 +247,10 @@ export const PRECISION_PRESETS: Record<
 
 /** 任务类型默认 INCAR（对齐 task_registry.json 的 default_incar） */
 export const TASK_TYPE_INCAR: Partial<Record<TaskType, Record<string, string>>> = {
-  structure_opt: { IBRION: '2', NSW: '100', EDIFFG: '-0.02', ISIF: '2' },
-  electronic_structure: { ICHARG: '0', NSW: '0', IBRION: '-1', LORBIT: '11' },
-  free_energy: { IBRION: '0', NSW: '1000', MDALGO: '2', ISIF: '2' },
-  frequency: { IBRION: '5', NFREE: '2', POTIM: '0.015', NSW: '1' },
-  neb: { IBRION: '1', NSW: '100', EDIFF: '1E-5', ISIF: '0' },
+  opt: { IBRION: '2', NSW: '100', EDIFFG: '-0.02', ISIF: '2' },
+  frac: { IBRION: '5', NFREE: '2', POTIM: '0.015', NSW: '1', ISIF: '2' },
+  neb: { IBRION: '1', NSW: '100', EDIFF: '1E-5', ISIF: '0', SPRING: '-5' },
+  ele: { ICHARG: '11', NSW: '0', IBRION: '-1', LORBIT: '11' },
 };
 
 /** 从参数定义生成完整默认参数表 */
@@ -320,21 +319,21 @@ export function parseIncarContent(content: string): Record<string, string> {
 export const BUILTIN_PRESETS: IncarPreset[] = [
   {
     id: 'tpl:structure_opt',
-    name: '默认 · 结构优化',
+    name: '默认 · 结构优化 (opt)',
     builtin: true,
-    params: buildDefaultParams('structure_opt'),
+    params: buildDefaultParams('opt'),
   },
   {
-    id: 'tpl:electronic_structure',
-    name: '默认 · 电子结构',
+    id: 'tpl:ele',
+    name: '默认 · 电子结构 (ele)',
     builtin: true,
-    params: buildDefaultParams('electronic_structure'),
+    params: buildDefaultParams('ele'),
   },
   {
-    id: 'tpl:free_energy',
-    name: '默认 · 自由能',
+    id: 'tpl:frac',
+    name: '默认 · 频率矫正 (frac)',
     builtin: true,
-    params: buildDefaultParams('free_energy'),
+    params: buildDefaultParams('frac'),
   },
   {
     id: 'tpl:neb',

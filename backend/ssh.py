@@ -30,6 +30,8 @@ _pruner_started = False
 IDLE_TIMEOUT_SECONDS = 300
 KEEPALIVE_SECONDS = 30
 PRUNE_INTERVAL_SECONDS = 60
+CONNECT_RETRIES = 3
+CONNECT_RETRY_DELAY = 2.0  # 秒，按尝试次数递增（2s / 4s）
 
 
 def _mock_enabled() -> bool:
@@ -63,8 +65,6 @@ def _get_client(server_name: str):
     except ImportError:
         raise RuntimeError("缺少依赖 paramiko，请运行：pip install -r requirements.txt")
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     connect_kwargs = dict(
         hostname=cfg["host"],
         port=int(cfg.get("port", 22)),
@@ -78,8 +78,23 @@ def _get_client(server_name: str):
         connect_kwargs["key_filename"] = os.path.expanduser(
             cfg.get("key_path", "~/.ssh/id_rsa")
         )
-    client.connect(**connect_kwargs)
-    return client
+    # 瞬时网络故障（DNS 解析失败 / 连接超时）自动重试，避免巡检一次抖动就失败
+    last_err: Exception = RuntimeError("SSH 连接失败")
+    for attempt in range(1, CONNECT_RETRIES + 1):
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(**connect_kwargs)
+            return client
+        except Exception as e:  # noqa: BLE001 - 所有连接类错误都可重试
+            last_err = e
+            try:
+                client.close()
+            except Exception:
+                pass
+            if attempt < CONNECT_RETRIES:
+                time.sleep(CONNECT_RETRY_DELAY * attempt)
+    raise last_err
 
 
 def _exec_lock(server_name: str) -> threading.Lock:
@@ -248,7 +263,10 @@ def run_remote(server_name: str, command: str, timeout: int = 30) -> Dict[str, o
     with lock:
         client = _acquire_client(server_name)
         try:
-            _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+            # 显式 UTF-8 编码，避免中文路径/命令在传输时被按本地编码破坏
+            _stdin, stdout, stderr = client.exec_command(
+                command.encode("utf-8"), timeout=timeout
+            )
             exit_code = stdout.channel.recv_exit_status()
             out = stdout.read().decode("utf-8", errors="replace")
             err = stderr.read().decode("utf-8", errors="replace")
@@ -327,7 +345,7 @@ def mkdir_remote(server_name: str, remote_path: str, timeout: int = 30) -> None:
     client = _get_client(server_name)
     try:
         _stdin, stdout, stderr = client.exec_command(
-            f"mkdir -p '{remote_path}'", timeout=timeout
+            f"mkdir -p '{remote_path}'".encode("utf-8"), timeout=timeout
         )
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:

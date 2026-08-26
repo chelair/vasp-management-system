@@ -15,7 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from config import PROJECTS_DIR, load_settings
+from config import load_settings
+from task_paths import task_files_dir
 
 #: 各晶轴视图向量：(水平向量 v1, 垂直向量 v2)
 AXIS_VECTORS: Dict[str, tuple] = {
@@ -143,13 +144,7 @@ def render_task(
 ) -> Dict[str, Any]:
     """渲染单个结构优化任务的 a/b/c 轴 POSCAR/CONTCAR 对比图（带缓存）。"""
     task_id = task["task_id"]
-    files_dir = (
-        PROJECTS_DIR
-        / project["name"]
-        / task["task_type"]
-        / task["model_name"]
-        / "files"
-    )
+    files_dir = task_files_dir(project["name"], task)
     warnings: list = []
     poscar = files_dir / "POSCAR"
     contcar = files_dir / "CONTCAR"

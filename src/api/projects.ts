@@ -72,11 +72,33 @@ export async function fetchTaskTypes(): Promise<TaskTypeOption[]> {
   } catch {
     await wait(250);
     return [
-      { type: 'structure_opt', description: '结构优化', workload_weight: 1 },
-      { type: 'electronic_structure', description: '电子结构计算', workload_weight: 0.4 },
-      { type: 'free_energy', description: '自由能计算', workload_weight: 1.2 },
-      { type: 'frequency', description: '频率计算', workload_weight: 1 },
-      { type: 'neb', description: '反应路径/过渡态搜索 (NEB)', workload_weight: 5 },
+      { type: 'opt', description: '结构优化', workload_weight: 1, subtypes: [], subtype_labels: {} },
+      {
+        type: 'frac',
+        description: '频率矫正（自由能）',
+        workload_weight: 1,
+        subtypes: [],
+        subtype_labels: {},
+      },
+      {
+        type: 'neb',
+        description: 'NEB 过渡态',
+        workload_weight: 5,
+        subtypes: [],
+        subtype_labels: {},
+      },
+      {
+        type: 'ele',
+        description: '电子结构/后处理',
+        workload_weight: 0.4,
+        subtypes: ['pdos', 'bader', 'diff_charge', 'work_function'],
+        subtype_labels: {
+          pdos: 'PDOS',
+          bader: 'Bader 分析',
+          diff_charge: '差分电荷',
+          work_function: '功函数',
+        },
+      },
     ];
   }
 }
@@ -90,6 +112,15 @@ export async function createProject(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'add_project', project: payload }),
   });
+}
+
+/** 删除项目（本地目录移入回收站，远端目录不删除） */
+export async function deleteProject(projectId: string): Promise<{
+  project_id: string;
+  project_name: string;
+  local_trash: string | null;
+}> {
+  return request(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
 }
 
 /** 获取仪表盘汇总信息（Mock） */

@@ -1,29 +1,38 @@
 """作业管理接口：本地任务目录的统一文件读写。
 
-本地目录约定（与前端一致）：
-    data/projects/<项目名>/<任务类型>/<子项名>/
-        files/          VASP 输入/输出文件（INCAR、POSCAR、KPOINTS、POTCAR、CONTCAR…）
-        images/         VESTA 结构渲染图
-        reports/        生成报告
-        continuation/   续算目录
+本地目录约定（v0.3.0，dir_path 为权威字段）：
+    独立任务：data/projects/<项目名>/<模型名>/
+    自由能组：data/projects/<项目名>/<组根>/<结构标签>/<opt|frac>/
+    NEB 组：  data/projects/<项目名>/<组根>/<initial_opt|final_opt|neb_calc>/
+每个任务目录下：files/（VASP 文件）、images/、reports/、continuation/
 """
 
 from datetime import datetime
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from config import PROJECTS_DIR, load_servers
+from config import DATA_DIR, load_servers
 from cluster_status import build_snapshot
+from continuation import create_continuation, local_continuation_dir
+from dates import now_iso
 from envelope import fail, ok
-from storage import load_db
+from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
+import ssh
+from storage import load_db, save_db, update_task_status
+from task_paths import task_dir
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+AUDIT_LOG = DATA_DIR / "audit_submit.log"
 
 #: 允许读取/写入的文本文件白名单（防目录穿越；WAVECAR/CHGCAR 等二进制后续单独处理）
 TEXT_FILE_WHITELIST = {
@@ -44,6 +53,13 @@ TEXT_FILE_WHITELIST = {
 
 class FileWritePayload(BaseModel):
     content: str
+
+
+class RenameTaskPayload(BaseModel):
+    model_name: str
+
+
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_@]*$")
 
 
 @router.get("/nodes")
@@ -70,13 +86,29 @@ def _resolve_task_dir(task_id: str) -> Path:
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
             if task.get("task_id") == task_id:
-                return (
-                    PROJECTS_DIR
-                    / str(project.get("name", ""))
-                    / str(task.get("task_type", ""))
-                    / str(task.get("model_name", ""))
-                )
+                return task_dir(str(project.get("name", "")), task)
     raise LookupError(f"任务 {task_id} 不存在")
+
+
+def _resolve_task(task_id: str):
+    """返回 (project, task)，任务不存在时抛 LookupError。"""
+    db = load_db()
+    for project in db.get("projects", []):
+        for task in project.get("tasks", []):
+            if task.get("task_id") == task_id:
+                return project, task
+    raise LookupError(f"任务 {task_id} 不存在")
+
+
+def _new_task_id(project: Dict) -> str:
+    import time
+
+    ts = int(time.time() * 1000)
+    used = {t.get("task_id") for t in project.get("tasks", [])}
+    seq = 1
+    while f"task_{ts}_{seq}" in used:
+        seq += 1
+    return f"task_{ts}_{seq}"
 
 
 def _validate_name(filename: str) -> str:
@@ -99,6 +131,19 @@ def _open_in_explorer(path: str) -> None:
         subprocess.Popen(["open", path])
     else:
         subprocess.Popen(["xdg-open", path])
+
+
+def _audit_log(project: str, task_id: str, remote_dir: str, command: str, result: str) -> None:
+    """提交操作审计日志（操作者、时间、任务、命令、结果）。"""
+    try:
+        AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"[{datetime.now().isoformat(timespec='seconds')}] project={project} "
+                f"task={task_id} dir={remote_dir} cmd={command} result={result}\n"
+            )
+    except Exception:  # noqa: BLE001 - 审计日志失败不影响提交
+        pass
 
 
 @router.get("/tasks/{task_id}/files")
@@ -187,3 +232,303 @@ def open_task_folder(task_id: str):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"打开文件夹失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/continuation")
+def create_same_type_continuation(task_id: str):
+    """同类型续算：全部在远程服务器完成，创建 conN 目录并登记续算子任务。"""
+    try:
+        project, task = _resolve_task(task_id)
+        if task.get("status") == "pending":
+            return JSONResponse(
+                status_code=400,
+                content=fail("任务尚未运行（pending），没有可续算的输出"),
+            )
+        result = create_continuation(project.get("server"), project, task)
+        # 非 NEB 续算必须得到 POSCAR（来自最新 CONTCAR）
+        if task.get("task_type") != "neb" and "POSCAR" not in result.get("copied_files", []):
+            return JSONResponse(
+                status_code=400,
+                content=fail(
+                    f"源目录缺少 CONTCAR，无法生成续算 POSCAR（源：{result.get('source_dir')}）"
+                ),
+            )
+
+        # 登记续算子任务（本地镜像目录仅建空结构，文件不经过本地）
+        con = result["con"]
+        local_dir = local_continuation_dir(str(task.get("dir_path", "")), con)
+        for sub in ("files", "images", "reports", "continuation"):
+            (resolve_local_path(local_dir) / sub).mkdir(parents=True, exist_ok=True)
+        now = now_iso()
+        rel_remote = to_remote_rel(project.get("server"), result["remote_dir"])
+        sub_task = {
+            "task_id": _new_task_id(project),
+            "task_type": task.get("task_type"),
+            "subtype": task.get("subtype"),
+            "model_name": f"{task.get('model_name', 'task')}_{con}",
+            "status": "pending",
+            "last_energy": None,
+            "last_check_time": None,
+            "job_id": None,
+            "notes": f"由 {task.get('model_name')} 同类型续算创建（{con}）",
+            "continuation_ready": False,
+            "continuation_dir": None,
+            "dir_path": local_dir,
+            "remote_dir": rel_remote,
+            "group": None,
+            "parent_task_id": task_id,
+            "input_source": {
+                "poscar_from": to_remote_rel(
+                    project.get("server"), f"{result['source_dir']}/CONTCAR"
+                ),
+                "potcar_from": None,
+                "kpoints_from": None,
+            },
+            "created_at": now,
+            "updated_at": now,
+        }
+        from storage import save_db
+
+        db = load_db()
+        proj = next(p for p in db["projects"] if p["name"] == project["name"])
+        proj["tasks"].append(sub_task)
+        save_db(db)
+
+        return ok(
+            "续算目录已创建",
+            {
+                **result,
+                "task_id": sub_task["task_id"],
+                "local_dir": local_dir,
+                "remote_dir": rel_remote,
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"创建续算失败：{e}"))
+
+
+@router.patch("/tasks/{task_id}")
+def rename_task(task_id: str, payload: RenameTaskPayload):
+    """重命名独立任务：同步更新本地/远端目录与数据库。"""
+    try:
+        project, task = _resolve_task(task_id)
+        if task.get("group"):
+            return JSONResponse(
+                status_code=400,
+                content=fail("组内任务请通过结构管理调整，不支持直接重命名"),
+            )
+        new_name = payload.model_name.strip()
+        if not NAME_PATTERN.fullmatch(new_name):
+            return JSONResponse(
+                status_code=400,
+                content=fail("名称仅支持字母、数字、下划线、@，且不能以数字开头"),
+            )
+        if any(t.get("model_name") == new_name for t in project["tasks"]):
+            return JSONResponse(status_code=400, content=fail("项目中已存在同名任务"))
+        old_name = task.get("model_name", "")
+        old_local = resolve_local_path(task.get("dir_path", ""))
+        new_local = old_local.parent / new_name
+        if old_local.is_dir() and old_local != new_local and not new_local.exists():
+            shutil.move(str(old_local), str(new_local))
+        old_remote = resolve_remote_path(project.get("server"), task.get("remote_dir", ""))
+        new_remote = ""
+        if old_remote and old_name:
+            new_remote = old_remote.rsplit("/", 1)[0] + f"/{new_name}"
+            from ssh import run_remote
+
+            r = run_remote(
+                project.get("server"),
+                f'bash -c \'[ -d "{old_remote}" ] && [ ! -e "{new_remote}" ] '
+                f'&& mv "{old_remote}" "{new_remote}" || true\'',
+                timeout=60,
+            )
+            if r["exit_code"] != 0:
+                return JSONResponse(
+                    status_code=500,
+                    content=fail(f"远程目录重命名失败：{(r['stderr'] or r['stdout']).strip()}"),
+                )
+        task["model_name"] = new_name
+        from paths import to_local_rel
+
+        task["dir_path"] = to_local_rel(str(new_local))
+        if new_remote:
+            task["remote_dir"] = to_remote_rel(project.get("server"), new_remote)
+        from storage import save_db
+
+        db = load_db()
+        proj = next(p for p in db["projects"] if p["name"] == project["name"])
+        for t in proj["tasks"]:
+            if t.get("task_id") == task_id:
+                t.update(task)
+        save_db(db)
+        return ok(
+            "任务已重命名",
+            {
+                "task_id": task_id,
+                "model_name": new_name,
+                "dir_path": task["dir_path"],
+                "remote_dir": task["remote_dir"],
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"重命名失败：{e}"))
+
+
+@router.delete("/tasks/{task_id}")
+def delete_task(task_id: str):
+    """删除最末端子项：本地目录移入回收站，记录从数据库移除（远端目录不自动删除）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        children = [
+            t for t in project["tasks"]
+            if t.get("parent_task_id") == task_id
+        ]
+        if children:
+            return JSONResponse(
+                status_code=400,
+                content=fail("该任务存在续算子任务，请先删除子任务"),
+            )
+        trash_path = None
+        old_local = resolve_local_path(task.get("dir_path", ""))
+        if old_local.is_dir():
+            trash_dir = DATA_DIR / "trash"
+            trash_dir.mkdir(parents=True, exist_ok=True)
+            trash_path = trash_dir / f"{task_id}_{int(datetime.now().timestamp())}"
+            shutil.move(str(old_local), str(trash_path))
+        from storage import save_db
+
+        db = load_db()
+        proj = next(p for p in db["projects"] if p["name"] == project["name"])
+        proj["tasks"] = [t for t in proj["tasks"] if t.get("task_id") != task_id]
+        save_db(db)
+        return ok(
+            "任务已删除",
+            {
+                "task_id": task_id,
+                "model_name": task.get("model_name"),
+                "local_trash": str(trash_path) if trash_path else None,
+                "remote_dir": task.get("remote_dir"),
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"删除任务失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/submit")
+def submit_task(task_id: str):
+    """提交作业：远程目录内执行 bsub < vasp.lsf，登记 job_id 并将状态更新为 queued。"""
+    try:
+        project, task = _resolve_task(task_id)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+
+    status = task.get("status")
+    job_id = task.get("job_id")
+    if job_id and status in ("queued", "running"):
+        return JSONResponse(status_code=409, content=fail("作业已提交/运行中，请勿重复操作"))
+
+    server = project.get("server")
+    remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+    if not remote_dir:
+        return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+
+    submit_script = "vasp.lsf"
+    command = (
+        f"bash -lc 'cd \"{remote_dir}\" && "
+        f"[ -f \"{submit_script}\" ] && bsub < \"{submit_script}\"'"
+    )
+    try:
+        # 先确认远程目录与提交脚本存在
+        check = ssh.run_remote(
+            server,
+            f'bash -c \'[ -d "{remote_dir}" ] && [ -f "{remote_dir}/vasp.lsf" ] && echo YES || echo NO\'',
+            timeout=30,
+        )
+        if "YES" not in check["stdout"]:
+            detail = ssh.run_remote(
+                server,
+                f'bash -c \'[ -d "{remote_dir}" ] && echo DIR_OK || echo NO_DIR\'',
+                timeout=30,
+            )["stdout"].strip()
+            if detail == "NO_DIR":
+                return JSONResponse(
+                    status_code=404,
+                    content=fail(f"远程目录不存在：{remote_dir}"),
+                )
+            return JSONResponse(
+                status_code=404,
+                content=fail("提交脚本 vasp.lsf 不存在，请先创建提交脚本"),
+            )
+
+        # 加载 LSF profile 后提交（复用节点查询的 profile 路径）
+        servers = load_servers()
+        profile = str(
+            servers.get(server, {}).get(
+                "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
+            )
+        )
+        result = ssh.run_remote(
+            server,
+            f'bash -lc "source {profile} >/dev/null 2>&1; cd \"{remote_dir}\" && bsub < vasp.lsf"',
+            timeout=60,
+        )
+    except Exception as e:  # noqa: BLE001 - SSH 连接类错误统一返回 502
+        return JSONResponse(
+            status_code=502,
+            content=fail(f"无法连接远程服务器，请检查 SSH 配置：{e}"),
+        )
+
+    raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+    # 以 bsub 明确输出 "Job <id> is submitted" 作为成功标志；
+    # stderr 中的 bashrc/conda 等环境噪音（含 Error 字样）不判定为提交失败
+    submit_match = re.search(r"Job <(\d+)> is submitted", raw)
+    if not submit_match and result.get("exit_code") != 0:
+        _audit_log(project["name"], task_id, remote_dir, command, f"FAILED: {raw}")
+        return JSONResponse(
+            status_code=500,
+            content=fail(f"bsub 提交失败：{raw or '未知错误'}"),
+        )
+
+    if not submit_match:
+        match = re.search(r"Job <(\d+)>", raw)
+    else:
+        match = submit_match
+    if not match:
+        _audit_log(project["name"], task_id, remote_dir, command, f"UNPARSED: {raw}")
+        return JSONResponse(
+            status_code=500,
+            content=fail(f"未能从 bsub 输出解析作业 ID：{raw}"),
+        )
+    new_job_id = match.group(1)
+
+    # 登记 job_id 并将状态更新为 queued（状态机已放开流转限制）
+    try:
+        db = load_db()
+        update_task_status(
+            db,
+            project["name"],
+            task_id,
+            "queued",
+            {"job_id": new_job_id},
+        )
+        save_db(db)
+    except Exception as e:  # noqa: BLE001 - 状态落库失败不影响已提交事实
+        _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")
+
+    _audit_log(project["name"], task_id, remote_dir, command, f"OK job={new_job_id}")
+    return ok(
+        f"作业 {new_job_id} 已提交到队列",
+        {
+            "job_id": new_job_id,
+            "new_status": "queued",
+            "raw_output": raw,
+        },
+    )

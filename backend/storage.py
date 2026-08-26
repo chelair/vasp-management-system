@@ -28,17 +28,15 @@ def _resolve_db_path() -> Path:
 DB_PATH = _resolve_db_path()
 
 #: 任务状态枚举（对齐参考实现 project_db.STATUS_ENUM）
-STATUS_ENUM = ("pending", "queued", "running", "completed", "zombied", "archived")
-
-#: 状态流转规则（自环 S→S 始终允许；任意状态 → archived 始终允许）
-ALLOWED_TRANSITIONS: Dict[str, set] = {
-    "pending": {"queued"},
-    "queued": {"running", "zombied", "pending"},
-    "running": {"completed", "zombied"},
-    "completed": {"queued"},
-    "zombied": {"queued"},
-    "archived": set(),
-}
+STATUS_ENUM = (
+    "pending",
+    "queued",
+    "running",
+    "completed",
+    "unconverged",
+    "zombied",
+    "archived",
+)
 
 _backup_seq = 0
 
@@ -188,13 +186,9 @@ def update_task_status(
     current_status = task.get("status")
     if current_status not in STATUS_ENUM:
         raise ValueError(
-            f"任务 '{task_id}' 当前状态 '{current_status}' 不在状态枚举中，无法校验状态流转。"
+            f"任务 '{task_id}' 当前状态 '{current_status}' 不在状态枚举中，无法更新状态。"
         )
-    # 自环始终允许；任意状态 → archived 始终允许；其余必须命中流转规则
-    if new_status != current_status and new_status != "archived":
-        allowed = ALLOWED_TRANSITIONS.get(current_status, set())
-        if new_status not in allowed:
-            raise ValueError(f"非法状态流转：{current_status} → {new_status}。")
+    # 状态流转不设白名单限制：以巡检/服务器观测状态为准，合法枚举状态间可自由流转
 
     if extra_fields:
         task.update(extra_fields)

@@ -10,13 +10,26 @@ TaskStatus = Literal[
     "pending", "queued", "running", "completed", "zombied", "archived"
 ]
 
+#: v0.3.0：任务类型固定四种，流程通过 group 元数据组织
+TaskType = Literal["opt", "frac", "neb", "ele"]
+EleSubtype = Literal["pdos", "bader", "diff_charge", "work_function"]
+
 
 class TaskIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    task_type: str = Field(min_length=1)
-    model_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_]*$")
+    task_type: TaskType
+    model_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_@]*$")
+    subtype: Optional[EleSubtype] = None
     status: Optional[TaskStatus] = None
+
+    @field_validator("subtype")
+    @classmethod
+    def _subtype_requires_ele(cls, value, info):
+        task_type = info.data.get("task_type")
+        if value is not None and task_type != "ele":
+            raise ValueError("subtype 仅在任务类型为 ele 时允许填写")
+        return value
 
 
 class ProjectIn(BaseModel):

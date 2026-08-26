@@ -11,7 +11,7 @@
     "bqueues_cmd": "bash -c \"source /opt/ibm/lsfsuite/lsf/conf/profile.lsf >/dev/null 2>&1; bqueues\"",
     "nodes_query_cmd": "bash -c \"source /opt/ibm/lsfsuite/lsf/conf/profile.lsf >/dev/null 2>&1; echo ===BHOST===; bhosts; echo ===BQUEUES===; bqueues\"",
     "submit_cmd": "bsub < submit.sh",
-    "remote_base": "/data/gpfs03/mdye/projects/test",
+    "remote_base": "/data/gpfs03/mdye/projects/HS",
     "batch_check_path": "/data/gpfs03/mdye/tools/vasp_skill/batch_check.py",
     "node_groups": [
       {

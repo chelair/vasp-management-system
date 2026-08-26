@@ -134,7 +134,11 @@ def resolve_latest_output(remote_dir: str):
 # ---------------------------------------------------------------------------
 
 def run_bjobs(job_id: str) -> str:
-    """执行 bjobs -l，返回归一化的队列状态标记。"""
+    """执行 bjobs -l，返回归一化的队列状态标记。
+
+    标记取值：PEND / RUN / SSUSP（含 PSUSP、USUSP，统一按挂起处理）/
+    DONE / EXIT / COMPLETED / FAILED / CANCELLED / NOT_FOUND / UNKNOWN。
+    """
     if os.environ.get("VASP_BATCH_NO_BJOBS"):
         return "UNKNOWN"
     try:
@@ -151,6 +155,14 @@ def run_bjobs(job_id: str) -> str:
         return "PEND"
     if "Status <RUN>" in output or re.search(r"\bRUN\b", output):
         return "RUN"
+    # 挂起：SSUSP（系统挂起）/ PSUSP（排队挂起）/ USUSP（用户挂起）
+    if (
+        "Status <SSUSP>" in output
+        or "Status <PSUSP>" in output
+        or "Status <USUSP>" in output
+        or re.search(r"\b(SSUSP|PSUSP|USUSP)\b", output)
+    ):
+        return "SSUSP"
     for token in ENDED_STATUS_TOKENS:
         if token in output:
             return token
@@ -356,8 +368,18 @@ def _analyze_outcar(
         result["status"] = "zombied"
         result["error_messages"].append("Job ended without normal termination")
 
-    if task_type == "structure_opt":
+    if task_type == "opt":
         _parse_forces(result, poscar_dir or remote_dir, text, thresholds)
+    # 已完成但力未收敛 -> 未收敛
+    if (
+        task_type == "opt"
+        and result.get("status") == "completed"
+        and result.get("force_converged") is False
+    ):
+        result["status"] = "unconverged"
+        result["error_messages"].append(
+            "calculation finished but forces not converged"
+        )
 
 
 def _parse_forces(
@@ -432,7 +454,9 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         if not job_id:
             if outcar_path.is_file():
                 _analyze_outcar(
-                    result, work_dir, task_type, thresholds, poscar_dir=remote_dir
+                    # 固定原子标志必须取自最新输出目录（conN）自身的 POSCAR：
+                    # 主目录 POSCAR 可能缺少 Selective dynamics，会把固定原子算进活动原子
+                    result, work_dir, task_type, thresholds, poscar_dir=work_dir
                 )
             else:
                 result["status"] = "pending"
@@ -443,9 +467,12 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                 result["status"] = "queued"
             elif queue_status == "RUN":
                 result["status"] = "running"
+            elif queue_status == "SSUSP":
+                # 作业被挂起：仍在 LSF 中存活，按运行中处理（队列状态显示“挂起”）
+                result["status"] = "running"
             else:
                 _analyze_outcar(
-                    result, work_dir, task_type, thresholds, poscar_dir=remote_dir
+                    result, work_dir, task_type, thresholds, poscar_dir=work_dir
                 )
     except Exception as e:  # noqa: BLE001 - 单任务容错
         result["error_messages"].append(f"unexpected error: {e}")

@@ -28,6 +28,7 @@ import {
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import StatCard from '../components/common/StatCard';
+import RootPathsCard from '../components/ssh/RootPathsCard';
 import { useSSH } from '../context/SSHContext';
 import type { AuthType, ConnectionTestResult, ServerConfig } from '../types';
 
@@ -318,6 +319,10 @@ export default function SSH() {
             <Empty description="请选择或新建服务器" />
           )}
         </Card>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <RootPathsCard />
       </div>
 
       <Modal

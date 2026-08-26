@@ -11,11 +11,10 @@ RUNS_FILE = DATA_DIR / "checks" / "runs.json"
 MAX_RUNS = 50
 
 TASK_TYPE_LABELS = {
-    "structure_opt": "结构优化",
-    "electronic_structure": "电子结构",
-    "free_energy": "自由能",
-    "frequency": "频率计算",
+    "opt": "结构优化",
+    "frac": "频率矫正",
     "neb": "NEB 过渡态",
+    "ele": "电子结构",
 }
 
 
@@ -108,19 +107,61 @@ def _task_lookup(db: Dict[str, Any]):
     return index
 
 
+def _is_group_frac(task: Dict[str, Any]) -> bool:
+    """自由能组内的频率矫正任务：不单独展示，合并到对应结构优化任务的详情。"""
+    return (
+        task.get("task_type") == "frac"
+        and (task.get("group") or {}).get("group_type") == "free_energy"
+    )
+
+
 def to_frontend_rows(db: Dict[str, Any], merged: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """把合并后的检查结果映射为前端巡检列表行（状态/类别/信息）。"""
+    """把合并后的检查结果映射为前端巡检列表行；未巡检的任务也一并展示。"""
     lookup = _task_lookup(db)
     rows: List[Dict[str, Any]] = []
+    seen: set = set()
     for task_id, entry in merged.items():
         pair = lookup.get(task_id)
-        project = pair[0] if pair else {"name": entry.get("project_name", "")}
-        task = pair[1] if pair else {}
+        if pair is None:
+            # 任务已从数据库删除（删除任务/项目后），归档中的历史记录不再展示
+            continue
+        project, task = pair
+        if task and _is_group_frac(task):
+            continue
         rows.append(_to_row(project, task, entry))
+        seen.add(task_id)
+    # 全部项目/任务都展示：没有巡检记录的任务标记为“未巡检”
+    for project in db.get("projects", []):
+        for task in project.get("tasks", []):
+            if _is_group_frac(task):
+                continue
+            if task.get("task_id") in seen:
+                continue
+            rows.append(_to_row(project, task, None))
     return rows
 
 
 def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
+    task_category = _task_category(task)
+    if entry is None:
+        task_type = task.get("task_type", "")
+        return {
+            "id": str(task.get("task_id", "")),
+            "check_time": "",
+            "project_name": str(project.get("name", "")),
+            "task_id": str(task.get("task_id", "")),
+            "task_name": f"{task.get('model_name', '')} · {TASK_TYPE_LABELS.get(task_type, task_type)}",
+            "category": "queue",
+            "task_category": task_category,
+            "status": "pending",
+            "message": "尚未巡检",
+            "detail": "该任务还没有巡检记录，等待首次巡检",
+            "analysis_needed": False,
+            "has_force_history": False,
+            "has_inspection": False,
+            "latest_dir": None,
+            "output_status": None,
+        }
     errors = [str(m) for m in entry.get("error_messages", []) or []]
     markers = [str(m) for m in entry.get("markers", []) or []]
     notes = str(entry.get("notes", "") or "")
@@ -130,11 +171,24 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     all_msgs = errors + markers
 
     # 巡检状态：错误 > 力未收敛 > 标记/排队异常 > 正常
+    # 标记仅限真正的异常（下载失败/文件缺失等）；信息性标记（如“结构对比使用续算输出”）不告警
+    warning_markers = [
+        m
+        for m in markers
+        if any(
+            k in m
+            for k in ("缺失", "为空", "未生成", "失败", "异常", "error", "not found", "unreadable")
+        )
+    ]
     if status == "zombied" or errors:
         check_status = "error"
+    elif status == "unconverged":
+        check_status = "warning"
     elif status == "completed" and entry.get("force_converged") is False:
         check_status = "warning"
-    elif markers:
+    elif queue == "SSUSP":
+        check_status = "warning"
+    elif warning_markers:
         check_status = "warning"
     elif queue in ("PEND", "UNKNOWN") and status not in ("completed", "running"):
         check_status = "warning"
@@ -145,9 +199,9 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     text = " ".join(all_msgs)
     if any(k in text for k in ("OUTCAR", "POSCAR", "CONTCAR")):
         category = "file"
-    elif queue == "PEND":
+    elif queue in ("PEND", "SSUSP"):
         category = "queue"
-    elif task.get("task_type") == "structure_opt":
+    elif task.get("task_type") == "opt":
         category = "convergence"
     else:
         category = "file"
@@ -159,10 +213,17 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         message = f"计算完成 · 能量 {energy_text}"
         if entry.get("force_converged") is False:
             message += " · 力未收敛"
-    elif status == "running":
-        message = f"运行中 · 能量 {energy_text}"
+    elif status == "unconverged":
+        message = f"计算完成但力未收敛 · 能量 {energy_text}"
         if entry.get("force_max") is not None:
             message += f" · 最大力 {entry['force_max']} eV/A"
+    elif status == "running":
+        if queue == "SSUSP":
+            message = "挂起（SSUSP）"
+        else:
+            message = f"运行中 · 能量 {energy_text}"
+            if entry.get("force_max") is not None:
+                message += f" · 最大力 {entry['force_max']} eV/A"
     elif status == "queued":
         message = "排队中"
     else:
@@ -199,9 +260,24 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         "status": check_status,
         "message": message,
         "detail": detail,
+        "task_category": task_category,
         "analysis_needed": bool(entry.get("analysis_needed", False)),
         "has_force_history": isinstance(entry.get("force_history"), list)
         and bool(entry.get("force_history")),
+        "has_inspection": True,
         "latest_dir": latest_dir,
         "output_status": output_status,
     }
+
+
+def _task_category(task: Dict[str, Any]) -> str:
+    """任务类型分类（结构优化 / 自由能 / NEB / 电子结构），与前端树分类一致。"""
+    gtype = (task.get("group") or {}).get("group_type")
+    task_type = task.get("task_type", "")
+    if gtype == "free_energy" or (task_type == "frac" and not gtype):
+        return "自由能"
+    if gtype == "neb" or task_type == "neb":
+        return "NEB"
+    if task_type == "ele":
+        return "电子结构"
+    return "结构优化"

@@ -97,7 +97,7 @@ export default function Report() {
                 <div className="history-item__title">{r.title}</div>
                 <div className="history-item__meta">
                   <span>{r.generated_at}</span>
-                  <StatusTag status={r.status} />
+                  <StatusTag status={r.status} kind="report" />
                 </div>
               </div>
             ))}

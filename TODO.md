@@ -6,6 +6,68 @@
 
 ## 当前进度概览
 
+**已完成（v0.3.0 计算流程组重构，2026-08-25）**
+
+- [x] 任务类型收敛为四种：opt / frac / neb / ele（ele 带 subtype：pdos/bader/diff_charge/work_function）
+- [x] 组元数据：任务 `group{group_id, group_type, group_role, structure_label}`、
+      `parent_task_id`（frac 父任务=同结构 opt）、`input_source`（poscar_from 等）
+- [x] 目录结构规范：独立任务 `<项目>/<模型名>`；自由能组 `<项目>/<组根>/<结构标签>/opt|frac`；
+      NEB 组 `<项目>/<组根>/initial_opt|final_opt|neb_calc`（neb_calc 下 00..n+1 映像目录）
+- [x] `dir_path` 落库为权威路径，mappers/巡检/结构分析/渲染/文件接口统一走 task_paths
+- [x] 组创建 API：`POST /api/groups`（自由能组含辅助分子、NEB 组含映像数）、
+      `POST /api/groups/{id}/aux`、`POST /api/groups/tasks`（独立任务），自动生成
+      目录、默认 INCAR/KPOINTS 与 group 元数据
+- [x] 报告数据接口：`GET /api/reports/groups`、`GET /api/reports/groups/{id}/data`
+      （自由能台阶图结构：opt 能量已提取 + frac 矫正占位；NEB 能垒图：映像能量 + 能垒）
+- [x] 全量迁移：Ag_20260830 / Co_0830 的 DB、本地目录（15）、远程目录（30）迁移到新类型与扁平目录
+- [x] 前端：任务树组层级（自由能组/NEB 组可折叠）、组创建向导、任务卡组信息、类型/标签更新
+- [x] 巡检回归：Co_2_op（opt + 扁平路径 + con2 续算监测）正常
+- [x] Ag 三条路径组织成组：每条路径 = 自由能_PATHn（I1-I7 主结构 opt+frac）+ NEB_PATHn
+      （初态/末态优化 + 现有 NEB 任务），本地/远程目录同步迁移（含 SSH 中文路径 UTF-8 编码修复）
+- [x] 辅助分子全局化：统一存放 data/aux_molecules/<标签>/opt|frac + 全局注册表，
+      `GET/POST /api/aux-molecules`，自由能组仅引用标签不建项目任务
+- [x] 默认组名：自由能_PATH1 / NEB_PATH1（支持中文组名）；项目 + 号菜单支持新建子项/自由能组/NEB 组
+- [x] 布局与交互：左侧项目树固定高度内部滚动、右侧面板保持可见；点击子项自动定位所属项目
+- [x] v0.4.0 目录规范：本地/远端/前端同构 —— 项目 → 类型分类（结构优化/自由能/NEB/电子结构）→
+      自由能组 <组名>/<结构X>/opt|frac、NEB 组 opt/IS|FS + neb/00..n+1；SSH 中文路径 UTF-8 已修复
+- [x] v0.4.1 目录名改为 ASCII：opt / free_energy / neb / ele、free_energy_PATHn / neb_PATHn、
+      struct_NN；界面仍显示中文（结构优化/自由能/NEB/电子结构、结构N）；本地/远端/DB 全量迁移
+- [x] 组目录再简化：free_energy/PATH1、neb/PATH1（去掉类型前缀），组名存入 group.name 元数据
+- [x] 交互重构：项目 + 号菜单四类型（结构优化/自由能组/NEB 组/电子结构），点选后弹对应新建窗口；
+      四个分类节点自带 + 号直达新建；自由能/NEB 组节点显示组名（PATH1）
+- [x] 顶层「新建项目」与总览共用新增项目弹窗：截止日期改为日期点选，子任务按四种类型树状分组
+- [x] 自由能结构目录：struct_01/opt → 1/（opt 直接位于结构目录），frac 移到 1/frac 与续算 conN 同级；
+      已全量迁移并核查：dir_path 权威路径使巡检/结构分析/报告/文件接口自动适配，续算 1/con1 可识别
+- [x] 同类型续算（服务器端完成）：`POST /api/jobs/tasks/{id}/continuation` 定位最新输出（复用巡检 conN
+      逻辑）→ 创建 conN → 复制 CONTCAR→POSCAR/POTCAR/KPOINTS/提交脚本、移动 WAVECAR → 修改 INCAR
+      （ISTART=1, ICHARG=0）→ 登记续算子任务（parent_task_id/dir_path/input_source）；NEB 特殊处理
+      映像 00..NN；前端续算窗口保留同类型/跨类型选择，同类型直接调后端创建并自动选中
+- [x] 路径映射固化：data/config/path_mapping.json（local_root ↔ 各服务器 remote_root），
+      `GET/PUT /api/path-mapping` + `POST /api/path-mapping/rebase` 批量重算任务路径
+- [x] 子项基础操作：`PATCH /api/jobs/tasks/{id}` 重命名（同步本地/远端目录与数据库）、
+      `DELETE /api/jobs/tasks/{id}` 删除（本地目录移入 data/trash，远端不自动删）；前端重命名弹窗 + 删除确认
+- [x] 自由能组添加结构：`POST /api/groups/{id}/structures`（自动生成 结构N+1 的 opt+frac），
+      前端组节点 + 号触发数量弹窗；所有改动落盘 projects.json / 配置文件，重启后保留
+- [x] v0.5.0 路径规范化：任务元数据路径全部改为相对项目根目录（dir_path/remote_dir/input_source/
+      current_output），统一 `paths.resolve_local_path / resolve_remote_path` 解析；
+      文件接口/巡检/续算/报告/结构分析/VESTA 全部适配
+- [x] 根目录可配置：data/config/path_mapping.json + `GET/PUT /api/settings/root-paths`
+      （SSH 页新增「项目根目录」配置卡片），修改根目录自动重定位，任务路径无需改动
+- [x] 旧数据迁移：绝对路径 → 相对（dir 80 / remote 80 / input 36，0 异常），已备份可回滚
+- [x] 结构优化“未收敛”状态：OUTCAR 正常结束但力未收敛（max>0.02 或 rms>0.01）→ 任务状态改为
+      unconverged（未收敛）而非 completed；状态机新增 unconverged（running/completed→unconverged、
+      unconverged→completed/queued 等）；巡检/结构同步/分析范围同步纳入；前端新增状态标签与排序；
+      同时修复 batch_check 力解析仍用旧类型名 structure_opt 的遗漏
+- [x] 前端树：项目 → 四种类型分类 → 组/结构/独立任务；自由能组结构节点为「结构优化+频率矫正」合并页面，
+      NEB 组节点为「初态 IS / 末态 FS / NEB 映像」合并页面，ele 任务显示 subtype
+- [x] 全量迁移：Ag_20260830 / Co_0830 本地与远程目录、DB dir_path/remote_dir/structure_label 全部更新
+
+**待开发（报告解析与前端图表）**
+
+- [ ] frac 频率输出解析（ZPE / 自由能矫正），回填组数据 `frac.zpe / correction`
+- [ ] NEB 映像 POSCAR 线性插值（初末态 CONTCAR 生成 00..n+1）
+- [ ] 报告页接入组数据：自由能台阶图、NEB 能垒图（前端图表组件）
+
 **已完成（前端框架）**
 
 - [x] Vite + React 18 + TypeScript 项目基础结构
@@ -91,6 +153,34 @@
 - [x] 「立即巡检」调真实 API：筛选任务 → 上传 `batch_check.py` → 服务器批量解析 → 状态机回填 → 归档 `data/checks/`
 - [x] 巡检结果从 `data/checks/` 读取并按任务合并展示（前端筛选/搜索保留）
 - [x] 异常项与任务状态联动（zombied / 力未收敛 / 文件缺失等自动标记）
+- [x] 巡检中心单表风格：任务类别 chips（结构优化/自由能/NEB/电子结构）+ 表格类别列与分组排序，
+      下滑翻页加载更多（不点击分页），保持原有布局
+- [x] 巡检筛选改为表格列头勾选（项目 / 任务类别 / 状态），去掉顶部筛选按钮只留搜索；
+      删除冗余的检查类别列
+- [x] 修复巡检部署路径反斜杠 bug：`inspection_runner` 用 `str(Path(...).parent)` 在 Windows 上
+      生成 `\data\...` 反斜杠路径，导致服务器 home 下误建名为 `\data\gpfs03\mdye\tools\vasp_skill`
+      的空目录（内含多余 check_registry.json）；已统一 `.replace("\\", "/")` 并清理误建目录
+- [x] 单任务巡检：列表接口返回 `has_inspection`，未巡检任务操作列显示「单独巡检」、已巡检显示「详情」；
+      `POST /api/inspections/run-single/{task_id}` 跳过全局状态筛选直接定位任务（任意状态可巡检），
+      详情弹窗 footer 提供「单独巡检」按钮，完成后刷新列表与详情
+- [x] 远程根目录迁移 test → HS：备份配置与数据库到 `data/backups/pre_migration_20260825_HS/`，
+      修改 path_mapping/servers 的 remote_base 为 `/data/gpfs03/mdye/projects/HS` 并重启验证；
+      系统仅按备案项目名拼接路径，HS 下其他项目目录不触碰；修复 /rebase 绝对路径写入 bug
+- [x] 巡检详情路径修复：`task.current_output` 存量绝对路径（test/structure_opt 旧结构）清空，
+      详情接口统一按当前远程根把相对路径解析为完整路径展示（改根后自动重定位，不再显示旧 test）
+- [x] 状态机放开 `zombied → unconverged` 流转（zombied 现可转 queued / unconverged）
+- [x] 修复收敛误判：力统计的固定原子标志改用最新输出目录（conN）自身 POSCAR（主目录 POSCAR
+      缺少 Selective dynamics 会把固定原子恒定大力算入活动原子，导致力曲线一条直线、误判未收敛）；
+      实测 Ag@Al2O3/con2 force_max 0.0169 → completed；信息性 markers 不再误报 warning
+- [x] 放开状态流转白名单：合法枚举状态间任意流转（以巡检/服务器观测为准），不再拦截
+- [x] 修复创建项目/组远程目录缺失：创建项目 mkdir 前拼接远程根（避免建到 home 下）；
+      NEB 组创建时为 opt/IS、opt/FS、neb 及映像目录逐一创建远端目录（与 free_energy 一致）；
+      Co_260902 现有 NC / Co4N@NC 远端目录已补建
+- [x] NEB 组创建不再自动生成映像子目录（00..n+1），映像由后续自行提供；已清理 NC/Co4N@NC
+      本地与远端的空映像目录
+- [x] 作业提交：`POST /api/jobs/tasks/{task_id}/submit`（远程 bsub < vasp.lsf，登记 job_id、
+      状态更新 queued、审计日志 data/audit_submit.log）；前端快捷操作区「提交作业」按钮（loading、
+      已提交禁用、任务信息显示作业号）；提交成功以 bsub 的 Job <id> is submitted 为准
 - [ ] 后端定时任务：APScheduler 每 2 小时自动触发（当前自动指示为配置信息，未真正调度）
 
 ### 5. 作业管理模块（Jobs）

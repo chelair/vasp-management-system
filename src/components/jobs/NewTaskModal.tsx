@@ -1,50 +1,57 @@
 import { useMemo, useState } from 'react';
 import { Alert, App, Form, Input, Modal, Select } from 'antd';
-import type { Project, TaskType, TaskTypeOption } from '../../types';
-import { JOB_DIRS } from '../../data/mock/cluster';
+import type { EleSubtype, Project, TaskType, TaskTypeOption } from '../../types';
 
 interface Props {
   open: boolean;
   project: Project | null;
   taskTypes: TaskTypeOption[];
+  initialType?: TaskType;
   onCancel: () => void;
   onCreate: (payload: {
     modelName: string;
     taskType: TaskType;
-    localDir: string;
-    remoteDir: string;
+    subtype?: EleSubtype | null;
   }) => void;
 }
 
-const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_]*$/;
+const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_@]*$/;
+const CATEGORY_DIR: Record<TaskType, string> = {
+  opt: 'opt',
+  frac: 'free_energy',
+  neb: 'neb',
+  ele: 'ele',
+};
 
-export default function NewTaskModal({ open, project, taskTypes, onCancel, onCreate }: Props) {
+export default function NewTaskModal({
+  open,
+  project,
+  taskTypes,
+  initialType = 'opt',
+  onCancel,
+  onCreate,
+}: Props) {
   const { message } = App.useApp();
   const [form] = Form.useForm();
-  const [taskType, setTaskType] = useState<TaskType>('structure_opt');
+  const [taskType, setTaskType] = useState<TaskType>(initialType);
   const name = Form.useWatch('modelName', form) ?? '';
 
   const availableTypes = useMemo(
-    () =>
-      taskTypes.filter(
-        (t) =>
-          t.type !== 'frequency' &&
-          // 自由能自动衔接频率，不允许直接新建；仅放开结构优化/电子结构/自由能/NEB
-          ['structure_opt', 'electronic_structure', 'free_energy', 'neb'].includes(t.type),
-      ),
+    () => taskTypes.filter((t) => ['opt', 'frac', 'neb', 'ele'].includes(t.type)),
     [taskTypes],
   );
 
+  const selectedOption = availableTypes.find((t) => t.type === taskType);
   const exists = useMemo(() => {
     if (!project || !name) return false;
     return project.tasks.some((t) => t.model_name === name);
   }, [project, name]);
 
   const localDir = project
-    ? `${JOB_DIRS.localRoot}/${project.name}/${taskType}/${name || '<名称>'}`
+    ? `${project.name}/${CATEGORY_DIR[taskType]}/${name || '<名称>'}`
     : '';
   const remoteDir = project
-    ? `${JOB_DIRS.remoteBase}/${project.name}/${taskType}/${name || '<名称>'}`
+    ? `${project.name}/${CATEGORY_DIR[taskType]}/${name || '<名称>'}`
     : '';
 
   const submit = async () => {
@@ -53,13 +60,11 @@ export default function NewTaskModal({ open, project, taskTypes, onCancel, onCre
       onCreate({
         modelName: values.modelName as string,
         taskType: values.taskType as TaskType,
-        localDir: localDir.replace('/<名称>', `/${values.modelName}`),
-        remoteDir: remoteDir.replace('/<名称>', `/${values.modelName}`),
+        subtype: (values.subtype as EleSubtype | undefined) ?? null,
       });
       form.resetFields();
-      setTaskType('structure_opt');
+      setTaskType(initialType);
     } catch {
-      // 校验失败时由表单展示错误
       message.warning('请检查子项名称与类型');
     }
   };
@@ -70,7 +75,7 @@ export default function NewTaskModal({ open, project, taskTypes, onCancel, onCre
       open={open}
       onCancel={() => {
         form.resetFields();
-        setTaskType('structure_opt');
+        setTaskType(initialType);
         onCancel();
       }}
       onOk={submit}
@@ -78,7 +83,12 @@ export default function NewTaskModal({ open, project, taskTypes, onCancel, onCre
       cancelText="取消"
       destroyOnClose
     >
-      <Form form={form} layout="vertical" style={{ marginTop: 8 }} initialValues={{ taskType: 'structure_opt' }}>
+      <Form
+        form={form}
+        layout="vertical"
+        style={{ marginTop: 8 }}
+        initialValues={{ taskType: initialType }}
+      >
         <Form.Item
           name="modelName"
           label="子项名称"
@@ -86,7 +96,7 @@ export default function NewTaskModal({ open, project, taskTypes, onCancel, onCre
             { required: true, message: '请输入子项名称' },
             {
               pattern: NAME_PATTERN,
-              message: '仅支持字母、数字、下划线，且不能以数字开头',
+              message: '仅支持字母、数字、下划线、@，且不能以数字开头',
             },
             {
               validator: () =>
@@ -94,30 +104,42 @@ export default function NewTaskModal({ open, project, taskTypes, onCancel, onCre
             },
           ]}
         >
-          <Input placeholder="如 Ag111 / Ag111_con1" allowClear />
+          <Input placeholder="如 Ag111 / Ag@Al2O3_opt" allowClear />
         </Form.Item>
         <Form.Item
           name="taskType"
-          label="作业类型"
-          rules={[{ required: true, message: '请选择作业类型' }]}
+          label="任务类型"
+          rules={[{ required: true, message: '请选择任务类型' }]}
         >
           <Select
-            onChange={(v: TaskType) => setTaskType(v)}
-            options={availableTypes.map((t) => ({
-              value: t.type,
-              label: t.description,
-            }))}
+            onChange={(v: TaskType) => {
+              setTaskType(v);
+              if (v !== 'ele') form.setFieldValue('subtype', undefined);
+            }}
+            options={availableTypes.map((t) => ({ value: t.type, label: t.description }))}
           />
         </Form.Item>
+        {taskType === 'ele' && (
+          <Form.Item name="subtype" label="后处理子类型">
+            <Select
+              allowClear
+              placeholder="选择后处理类型（PDOS / Bader / 差分电荷 / 功函数）"
+              options={(selectedOption?.subtypes ?? []).map((s) => ({
+                value: s,
+                label: selectedOption?.subtype_labels?.[s] ?? s,
+              }))}
+            />
+          </Form.Item>
+        )}
       </Form>
 
       <div className="job-path-preview">
         <div>
-          <span>本地目录</span>
+          <span>本地目录（相对根）</span>
           <code>{localDir}</code>
         </div>
         <div>
-          <span>远程目录</span>
+          <span>远程目录（相对根）</span>
           <code>{remoteDir}</code>
         </div>
       </div>
@@ -126,8 +148,8 @@ export default function NewTaskModal({ open, project, taskTypes, onCancel, onCre
         type="info"
         showIcon
         style={{ marginTop: 14 }}
-        message="框架阶段"
-        description="创建后仅在当前会话生成子项并进入编辑区；正式版将调用后端在本地与远程服务器建立目录。频率计算与自由能绑定，需从自由能任务续算生成。"
+        message="独立任务"
+        description="创建后由后端在本地与远程建立目录并生成默认 INCAR/KPOINTS；复杂流程请使用「新建自由能组 / NEB 组」。"
       />
     </Modal>
   );

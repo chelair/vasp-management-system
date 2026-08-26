@@ -1,14 +1,14 @@
 {
-  "structure_opt": {
+  "opt": {
     "description": "结构优化",
     "workload_weight": 1,
     "default_incar": {
       "IBRION": 2,
       "NSW": 100,
-      "EDIFFG": -0.02
+      "EDIFFG": -0.02,
+      "ISIF": 2
     },
     "check_items": ["force_convergence", "structure_reasonable"],
-    "next_task": "electronic_structure",
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
     "continuation_rules": {
       "walltime_killed": {
@@ -19,85 +19,64 @@
         "incar_changes": {}
       },
       "completed": {
-        "task_switch": "electronic_structure",
         "file_operations": [
           {"action": "keep", "files": ["POSCAR", "POTCAR", "KPOINTS"]},
           {"action": "copy_from_previous", "src": "CONTCAR", "dst": "POSCAR"}
         ],
         "incar_changes": {
           "ICHARG": 0,
-          "ISTART": 0,
-          "NSW": 0,
-          "IBRION": -1
-        },
-        "kpoints_changes": {}
+          "ISTART": 1
+        }
       }
     }
   },
-  "electronic_structure": {
-    "description": "电子结构计算",
-    "workload_weight": 0.4,
+  "frac": {
+    "description": "频率矫正（自由能）",
+    "workload_weight": 1,
     "default_incar": {
-      "ICHARG": 0,
-      "NSW": 0,
-      "LORBIT": 11
+      "IBRION": 5,
+      "NFREE": 2,
+      "POTIM": 0.015,
+      "NSW": 1,
+      "ISIF": 2
     },
     "check_items": [],
-    "next_task": "frequency",
-    "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
-    "continuation_rules": {
-      "completed": {
-        "task_switch": "frequency",
-        "file_operations": [
-          {"action": "keep", "files": ["POSCAR", "POTCAR", "KPOINTS"]}
-        ],
-        "incar_changes": {
-          "IBRION": 5,
-          "NFREE": 2,
-          "POTIM": 0.015,
-          "NSW": 1
-        }
-      }
-    }
-  },
-  "free_energy": {
-    "description": "自由能计算",
-    "workload_weight": 1.2,
-    "default_incar": {},
-    "check_items": [],
-    "next_task": "frequency",
-    "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
-    "continuation_rules": {
-      "completed": {
-        "task_switch": "frequency",
-        "file_operations": [],
-        "incar_changes": {
-          "IBRION": 5,
-          "NFREE": 2,
-          "POTIM": 0.015
-        }
-      }
-    }
-  },
-  "frequency": {
-    "description": "频率计算",
-    "workload_weight": 1,
-    "default_incar": {},
-    "check_items": [],
-    "next_task": null,
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
     "continuation_rules": {}
   },
   "neb": {
-    "description": "反应路径/过渡态搜索 (NEB)",
+    "description": "NEB 过渡态",
     "workload_weight": 5,
     "default_incar": {
       "IBRION": 1,
       "NSW": 100,
-      "EDIFF": 1e-5
+      "EDIFF": 1e-5,
+      "ISIF": 0,
+      "SPRING": -5,
+      "IMAGES": 0
     },
     "check_items": [],
-    "next_task": null,
+    "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
+    "continuation_rules": {}
+  },
+  "ele": {
+    "description": "电子结构/后处理",
+    "workload_weight": 0.4,
+    "subtypes": ["pdos", "bader", "diff_charge", "work_function"],
+    "subtype_labels": {
+      "pdos": "PDOS",
+      "bader": "Bader 分析",
+      "diff_charge": "差分电荷",
+      "work_function": "功函数"
+    },
+    "default_incar": {
+      "ICHARG": 11,
+      "NSW": 0,
+      "LORBIT": 11,
+      "IBRION": -1,
+      "ISIF": 2
+    },
+    "check_items": [],
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
     "continuation_rules": {}
   }

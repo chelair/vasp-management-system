@@ -122,3 +122,54 @@ export async function openTaskFolder(
     method: 'POST',
   });
 }
+
+/** 同类型续算（全部在远程服务器端完成）：创建 conN 并登记续算子任务 */
+export async function createContinuation(
+  taskId: string,
+): Promise<{
+  task_id: string;
+  con: string;
+  remote_dir: string;
+  source_dir: string;
+  incar_changes: Record<string, string>;
+  copied_files: string[];
+  images?: string[];
+  warnings: string[];
+  local_dir: string;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/continuation`, {
+    method: 'POST',
+  });
+}
+
+/** 提交作业：远程目录执行 bsub < vasp.lsf，返回作业 ID 并更新任务状态为 queued */
+export async function submitTask(taskId: string): Promise<{
+  job_id: string;
+  new_status: string;
+  raw_output: string;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/submit`, {
+    method: 'POST',
+  });
+}
+
+/** 重命名独立任务（同步本地/远端目录与数据库） */
+export async function renameTask(
+  taskId: string,
+  modelName: string,
+): Promise<{ task_id: string; model_name: string; dir_path: string; remote_dir: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_name: modelName }),
+  });
+}
+
+/** 删除最末端子项（本地目录移入回收站，远端目录不自动删除） */
+export async function deleteTask(
+  taskId: string,
+): Promise<{ task_id: string; model_name: string; local_trash: string | null; remote_dir: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+  });
+}

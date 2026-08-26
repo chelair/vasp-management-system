@@ -1,14 +1,17 @@
-import { App, Button, Card, Descriptions, Empty, Space, Tag, Tooltip } from 'antd';
+import { App, Button, Card, Descriptions, Empty, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import {
   CheckCircleFilled,
   CodeOutlined,
+  DeleteOutlined,
+  EditOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   MinusCircleFilled,
   RedoOutlined,
+  RocketOutlined,
 } from '@ant-design/icons';
 import type { JobWorkspace, Task, TaskType } from '../../types';
-import { TASK_TYPE_LABELS } from '../../types';
+import { GROUP_ROLE_LABELS, TASK_TYPE_LABELS } from '../../types';
 import { openTaskFolder } from '../../api/jobs';
 import StatusTag from '../common/StatusTag';
 
@@ -18,6 +21,10 @@ interface Props {
   onGenerateInputs: () => void;
   onContinuation: () => void;
   onSubmitScript: () => void;
+  onSubmit: (task: Task) => void;
+  submitting: boolean;
+  onRename: (task: Task) => void;
+  onDelete: (task: Task) => void;
 }
 
 const FILE_ORDER = ['INCAR', 'POSCAR', 'KPOINTS', 'POTCAR', 'submit.sh', 'CONTCAR', 'WAVECAR'];
@@ -28,6 +35,10 @@ export default function TaskOverview({
   onGenerateInputs,
   onContinuation,
   onSubmitScript,
+  onSubmit,
+  submitting,
+  onRename,
+  onDelete,
 }: Props) {
   const { message } = App.useApp();
 
@@ -53,9 +64,40 @@ export default function TaskOverview({
           <Button icon={<CodeOutlined />} onClick={onSubmitScript}>
             生成提交脚本
           </Button>
+          <Tooltip
+            title={
+              task.job_id && ['queued', 'running'].includes(task.status)
+                ? '作业已提交/运行中'
+                : undefined
+            }
+          >
+            <Button
+              type="primary"
+              icon={<RocketOutlined />}
+              loading={submitting}
+              disabled={Boolean(task.job_id) && ['queued', 'running'].includes(task.status)}
+              onClick={() => onSubmit(task)}
+            >
+              提交作业
+            </Button>
+          </Tooltip>
           <Button icon={<FolderOpenOutlined />} onClick={() => void handleOpenFolder()}>
             打开文件夹
           </Button>
+          <Button icon={<EditOutlined />} onClick={() => onRename(task)}>
+            重命名
+          </Button>
+          <Popconfirm
+            title="确认删除该子项？"
+            description="本地目录将移入回收站，远端目录不自动删除。"
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => onDelete(task)}
+          >
+            <Button danger icon={<DeleteOutlined />}>
+              删除
+            </Button>
+          </Popconfirm>
           {task.continuation_ready && (
             <Tag color="processing">
               <FolderOpenOutlined /> 续算目录：{task.continuation_dir}
@@ -69,7 +111,21 @@ export default function TaskOverview({
           <Descriptions.Item label="任务 ID">{task.task_id}</Descriptions.Item>
           <Descriptions.Item label="作业类型">
             {TASK_TYPE_LABELS[task.task_type as TaskType] ?? task.task_type}
+            {task.subtype ? `（${task.subtype}）` : ''}
           </Descriptions.Item>
+          {task.group && (
+            <Descriptions.Item label="流程组" span={2}>
+              <Tag
+                color={task.group.group_type === 'free_energy' ? 'cyan' : 'purple'}
+              >
+                {task.group.group_type === 'free_energy' ? '自由能组' : 'NEB 组'}
+              </Tag>
+              <span className="preview-note" style={{ marginLeft: 6 }}>
+                {GROUP_ROLE_LABELS[task.group.group_role]} · {task.group.structure_label} ·{' '}
+                {task.group.group_id}
+              </span>
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label="状态">
             <StatusTag status={task.status} />
           </Descriptions.Item>
@@ -78,6 +134,13 @@ export default function TaskOverview({
           </Descriptions.Item>
           <Descriptions.Item label="最近能量 (eV)" span={2}>
             {task.last_energy != null ? task.last_energy.toFixed(6) : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="最近巡检" span={2}>
+            {task.last_check_time ? (
+              <span className="path-cell">{task.last_check_time}</span>
+            ) : (
+              <span className="preview-note">尚未巡检</span>
+            )}
           </Descriptions.Item>
           <Descriptions.Item label="本地路径" span={2}>
             <Tooltip title={task.local_dir}>

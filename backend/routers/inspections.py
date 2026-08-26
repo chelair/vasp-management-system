@@ -12,6 +12,7 @@ from checks_store import collect_results, list_runs, to_frontend_rows
 from config import load_settings
 from envelope import fail, ok
 from inspection_runner import run_inspection
+from paths import resolve_remote_path
 from storage import load_db
 from structure_analysis import analyze as analyze_structure
 import vesta_render
@@ -77,9 +78,33 @@ def trigger_inspection(
         return JSONResponse(status_code=500, content=fail(f"巡检失败：{e}"))
 
 
+@router.post("/run-single/{task_id}")
+def run_single_inspection(task_id: str):
+    """单任务巡检：对该任务执行完整检查、回填、归档。"""
+    try:
+        summary = run_inspection(task_id=task_id)
+        return ok("巡检完成", summary)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"巡检失败：{e}"))
+
+
 def _data_uri(image_path: str) -> str:
     data = Path(image_path).read_bytes()
     return f"data:image/png;base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _display_current_output(project: dict, current_output):
+    """巡检详情展示用：归档/元数据中为相对路径，按当前远程根解析为完整路径。"""
+    if not isinstance(current_output, dict):
+        return current_output
+    out = dict(current_output)
+    server = project.get("server")
+    for key in ("dir", "contcar_path", "outcar_path", "oszicar_path"):
+        if out.get(key):
+            out[key] = resolve_remote_path(server, str(out[key]))
+    return out
 
 
 @router.get("/{task_id}")
@@ -104,9 +129,39 @@ def inspection_detail(task_id: str):
             return JSONResponse(status_code=404, content=fail("未找到任务"))
         project, task = pair
 
+        # 自由能组结构优化详情：附带其频率矫正子任务的巡检数据（列表不单独展示 frac）
+        frac = None
+        group = task.get("group") or {}
+        if task.get("task_type") == "opt" and group.get("group_type") == "free_energy":
+            frac_task = None
+            for t in project.get("tasks", []):
+                if (
+                    t.get("task_type") == "frac"
+                    and t.get("dir_path") == f"{task.get('dir_path', '')}/frac"
+                ):
+                    frac_task = t
+                    break
+            if frac_task is not None:
+                frac_entry = merged.get(frac_task.get("task_id"))
+                frac_co = frac_task.get("current_output") or (
+                    frac_entry.get("current_output") if frac_entry else None
+                ) or None
+                frac = {
+                    "task_id": frac_task.get("task_id"),
+                    "task_name": frac_task.get("model_name"),
+                    "status": frac_task.get("status"),
+                    "has_inspection": frac_entry is not None,
+                    "check_time": frac_entry.get("checked_at") if frac_entry else None,
+                    "last_energy": frac_entry.get("last_energy") if frac_entry else None,
+                    "errors": (frac_entry.get("error_messages") or []) if frac_entry else [],
+                    "notes": (frac_entry.get("notes") or "") if frac_entry else "",
+                    "queue_status": frac_entry.get("queue_status") if frac_entry else None,
+                    "current_output": _display_current_output(project, frac_co),
+                }
+
         history = entry.get("force_history") or []
         analysis = None
-        if task.get("task_type") == "structure_opt":
+        if task.get("task_type") == "opt":
             in_scope = bool(entry.get("analysis_needed", False))
             steps = len(history) if history else None
             struct = analyze_structure(project, task)
@@ -153,7 +208,13 @@ def inspection_detail(task_id: str):
                 "force_history": history,
                 "errors": entry.get("error_messages", []) or [],
                 "notes": entry.get("notes", "") or "",
-                "current_output": task.get("current_output") or entry.get("current_output") or None,
+                "current_output": (
+                    _display_current_output(
+                        project,
+                        task.get("current_output") or entry.get("current_output") or None,
+                    )
+                ),
+                "frac": frac,
                 "analysis": analysis,
             },
         )

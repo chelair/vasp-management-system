@@ -13,11 +13,28 @@ const LABELS: Record<Status, string> = {
   ...REPORT_STATUS_LABELS,
 };
 
-export default function StatusTag({ status }: { status: Status }) {
+type Kind = 'task' | 'check' | 'report';
+
+/** 按上下文取标签：任务状态（待提交）与巡检状态（未巡检）的 pending 语义不同 */
+function labelsFor(kind: Kind): Record<Status, string> {
+  if (kind === 'task') return TASK_STATUS_LABELS as Record<Status, string>;
+  if (kind === 'check') return CHECK_STATUS_LABELS as Record<Status, string>;
+  if (kind === 'report') return REPORT_STATUS_LABELS as Record<Status, string>;
+  return LABELS;
+}
+
+export default function StatusTag({
+  status,
+  kind = 'task',
+}: {
+  status: Status;
+  kind?: Kind;
+}) {
+  const labels = labelsFor(kind);
   return (
     <span className={`status-tag status-tag--${status}`}>
       <span className="status-tag__dot" />
-      {LABELS[status] ?? status}
+      {labels[status] ?? status}
     </span>
   );
 }

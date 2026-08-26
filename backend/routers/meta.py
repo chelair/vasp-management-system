@@ -47,6 +47,8 @@ def task_types():
                 "type": name,
                 "description": cfg.get("description", name),
                 "workload_weight": cfg.get("workload_weight", 1),
+                "subtypes": cfg.get("subtypes", []),
+                "subtype_labels": cfg.get("subtype_labels", {}),
             }
             for name, cfg in load_task_registry().items()
         ]

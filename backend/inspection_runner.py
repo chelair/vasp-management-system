@@ -17,10 +17,12 @@ import ssh
 from checks_store import archive_results, record_run
 from config import PROJECTS_DIR, load_servers
 from dates import now_iso
+from paths import to_remote_rel
 from storage import load_db, save_db, update_task_status
+from task_paths import task_dir, task_remote_dir
 
 SKIPPED_STATUSES = ("pending", "archived")
-STRUCTURE_OPT_TYPE = "structure_opt"
+STRUCTURE_OPT_TYPE = "opt"
 
 
 def _timestamp() -> str:
@@ -30,9 +32,8 @@ def _timestamp() -> str:
 def _filter_tasks(
     db: Dict[str, Any],
     project_name: Optional[str],
-    task_id: Optional[str],
 ) -> Tuple[Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]], List[str]]:
-    """筛选待巡检任务并按服务器分组；返回 (by_server, skipped_projects)。"""
+    """全局巡检：按状态筛选待巡检任务并按服务器分组；返回 (by_server, skipped_projects)。"""
     by_server: Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]] = {}
     skipped: List[str] = []
     for project in db.get("projects", []):
@@ -41,8 +42,6 @@ def _filter_tasks(
         targets = [
             t for t in project.get("tasks", []) if t.get("status") not in SKIPPED_STATUSES
         ]
-        if task_id is not None:
-            targets = [t for t in targets if t.get("task_id") == task_id]
         if not targets:
             skipped.append(project.get("name"))
             continue
@@ -50,6 +49,21 @@ def _filter_tasks(
             (project, task) for task in targets
         )
     return by_server, skipped
+
+
+def _find_task(
+    db: Dict[str, Any],
+    project_name: Optional[str],
+    task_id: str,
+) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """直接定位任务（单任务巡检用，不做任何状态筛选）。"""
+    for project in db.get("projects", []):
+        if project_name is not None and project.get("name") != project_name:
+            continue
+        for task in project.get("tasks", []):
+            if task.get("task_id") == task_id:
+                return project, task
+    return None
 
 
 def _run_server_batch(
@@ -68,7 +82,8 @@ def _run_server_batch(
 
     script_local = Path(__file__).resolve().parent / "batch_check.py"
     registry_local = Path(__file__).resolve().parent / "check_registry.json"
-    script_dir = str(Path(batch_path).parent)
+    # Windows 上 Path.__str__ 会把正斜杠转成反斜杠，远程路径必须统一为正斜杠
+    script_dir = str(Path(batch_path).parent).replace("\\", "/")
     remote_input = f"/tmp/vasp_tasks_{timestamp}.json"
     remote_output = f"/tmp/vasp_results_{timestamp}.json"
 
@@ -80,7 +95,7 @@ def _run_server_batch(
     manifest = [
         {
             "task_id": task["task_id"],
-            "remote_dir": task.get("remote_dir", ""),
+            "remote_dir": task_remote_dir(project["server"], task),
             "job_id": task.get("job_id") or "",
             "task_type": task.get("task_type", ""),
             "project_name": project["name"],
@@ -115,15 +130,9 @@ def _sync_and_validate_structure(
 ) -> List[str]:
     """下载 POSCAR（主目录）与最新 CONTCAR（续算目录优先）到本地 files/。"""
     markers: List[str] = []
-    local_files = (
-        PROJECTS_DIR
-        / project["name"]
-        / task["task_type"]
-        / task["model_name"]
-        / "files"
-    )
+    local_files = task_dir(project["name"], task) / "files"
     local_files.mkdir(parents=True, exist_ok=True)
-    remote_dir = str(task.get("remote_dir", "")).rstrip("/")
+    remote_dir = task_remote_dir(project["server"], task).rstrip("/")
     pairs = [("POSCAR", f"{remote_dir}/POSCAR")]
     contcar_remote = (
         f"{remote_dir}/{latest_dir}/CONTCAR" if latest_dir else f"{remote_dir}/CONTCAR"
@@ -173,6 +182,10 @@ def _apply_result(
     latest_dir = ""
     if isinstance(current_output, dict):
         latest_dir = str(current_output.get("latest_dir") or "")
+        server = project.get("server")
+        for key in ("dir", "contcar_path", "outcar_path", "oszicar_path"):
+            if current_output.get(key):
+                current_output[key] = to_remote_rel(server, str(current_output[key]))
     notes_markers: List[str] = [str(m) for m in result.get("error_messages", []) or []]
     if not task.get("job_id") and new_status != "completed":
         notes_markers.append("未见有效完成日志")
@@ -183,7 +196,7 @@ def _apply_result(
     if (
         task.get("task_type") == STRUCTURE_OPT_TYPE
         and observed_changed
-        and new_status in ("completed", "zombied")
+        and new_status in ("completed", "zombied", "unconverged")
     ):
         try:
             markers = _sync_and_validate_structure(project, task, latest_dir)
@@ -239,18 +252,18 @@ def run_inspection(
     """执行一轮巡检并返回摘要（前端「立即巡检」调用）。"""
     db = load_db()
 
-    # 预检：指定任务必须存在且处于待巡检状态
     if task_id is not None:
-        found = any(
-            t.get("task_id") == task_id and t.get("status") not in SKIPPED_STATUSES
-            for p in db.get("projects", [])
-            if project_name is None or p.get("name") == project_name
-            for t in p.get("tasks", [])
-        )
-        if not found:
-            raise ValueError(f"任务 '{task_id}' 不存在或无需巡检")
-
-    by_server, skipped_projects = _filter_tasks(db, project_name, task_id)
+        # 单任务巡检：跳过状态筛选，直接定位任务（任意状态均可巡检）
+        pair = _find_task(db, project_name, task_id)
+        if pair is None:
+            raise ValueError(f"任务 '{task_id}' 不存在")
+        server = pair[0].get("server") or ""
+        if not server:
+            raise ValueError(f"任务 '{task_id}' 未配置服务器，无法巡检")
+        by_server = {server: [pair]}
+        skipped_projects: List[str] = []
+    else:
+        by_server, skipped_projects = _filter_tasks(db, project_name)
     rows: List[Dict[str, Any]] = []
     inspected = updated = unchanged = warnings_count = 0
     rejected: List[Dict[str, str]] = []
@@ -287,7 +300,7 @@ def run_inspection(
                 enriched_entry["analysis_needed"] = (
                     row["task_type"] == STRUCTURE_OPT_TYPE
                     and row["observed_changed"]
-                    and row["new_status"] in ("completed", "zombied")
+                    and row["new_status"] in ("completed", "zombied", "unconverged")
                 )
                 enriched_entry["checked_at"] = now_iso()
                 enriched_entry["project_name"] = row["project"]

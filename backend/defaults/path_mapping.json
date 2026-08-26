@@ -1,0 +1,6 @@
+{
+  "local_root": "data/projects",
+  "remote_roots": {
+    "server1": "/data/gpfs03/mdye/projects/test"
+  }
+}

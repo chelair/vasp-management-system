@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, App, Button, Card, Empty, Modal, Tabs } from 'antd';
-import { FileTextOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Card, Empty, Input, InputNumber, Modal, Tabs } from 'antd';
+import { Space } from 'antd';
+import {
+  ApartmentOutlined,
+  FileTextOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import { fetchProjects, fetchTaskTypes } from '../api/projects';
+import { addGroupStructures, createIndependentTask } from '../api/groups';
 import {
   deleteIncarPreset,
   fetchClusterSnapshot,
@@ -11,6 +18,9 @@ import {
   loadIncarPresets,
   saveIncarPreset,
   saveTaskFile,
+  renameTask,
+  deleteTask,
+  submitTask,
 } from '../api/jobs';
 import type { TaskFileEntry } from '../api/jobs';
 import PageHeader from '../components/common/PageHeader';
@@ -22,8 +32,12 @@ import PoscarPanel from '../components/jobs/PoscarPanel';
 import IncarEditor from '../components/jobs/IncarEditor';
 import KpointsPanel from '../components/jobs/KpointsPanel';
 import SubmitScriptPanel from '../components/jobs/SubmitScriptPanel';
-import ContinuationModal from '../components/jobs/ContinuationModal';
 import CopyParamsModal from '../components/jobs/CopyParamsModal';
+import ContinuationModal from '../components/jobs/ContinuationModal';
+import GroupWizardModal from '../components/jobs/GroupWizardModal';
+import StructureDetail from '../components/jobs/StructureDetail';
+import NebGroupDetail from '../components/jobs/NebGroupDetail';
+import AddProjectModal from '../components/projects/AddProjectModal';
 import {
   buildDefaultParams,
   buildIncarText,
@@ -44,13 +58,14 @@ import type {
   TaskTypeOption,
 } from '../types';
 import { parsePoscar, buildKpoints, recommendKgrid } from '../utils/poscar';
+import { formatStructureLabel } from '../utils/project';
 
 const INPUT_FILES = ['INCAR', 'POSCAR', 'KPOINTS', 'POTCAR'];
 
 function defaultTaskFor(taskId: string): Task {
   return {
     task_id: taskId,
-    task_type: 'structure_opt',
+    task_type: 'opt',
     model_name: taskId,
     status: 'pending',
     last_energy: null,
@@ -95,12 +110,23 @@ export default function Jobs() {
   const [loadedDisk, setLoadedDisk] = useState<Record<string, boolean>>({});
   const [clusterSnapshot, setClusterSnapshot] = useState<ClusterSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [submittingTaskId, setSubmittingTaskId] = useState<string | null>(null);
   const [presets, setPresets] = useState<IncarPreset[]>(() => loadIncarPresets());
   const [loading, setLoading] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedStructureKey, setSelectedStructureKey] = useState<string | null>(null);
+  const [selectedNebGroupKey, setSelectedNebGroupKey] = useState<string | null>(null);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [newTaskType, setNewTaskType] = useState<TaskType>('opt');
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
+  const [groupWizardOpen, setGroupWizardOpen] = useState(false);
+  const [groupWizardKind, setGroupWizardKind] = useState<'free_energy' | 'neb'>('free_energy');
   const [continuationTask, setContinuationTask] = useState<Task | null>(null);
+  const [renameTaskState, setRenameTaskState] = useState<Task | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [addStructGroup, setAddStructGroup] = useState<string | null>(null);
+  const [addStructCount, setAddStructCount] = useState(1);
   const [copyParamsOpen, setCopyParamsOpen] = useState(false);
   const [genTask, setGenTask] = useState<Task | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -157,6 +183,21 @@ export default function Jobs() {
     }
   }, []);
 
+  /** 从后端重新加载项目与文件清单（创建任务/组后调用） */
+  const refreshProjects = useCallback(async () => {
+    const ps = await fetchProjects();
+    setProjects(ps);
+    const ws: Record<string, JobWorkspace> = {};
+    for (const p of ps) {
+      for (const t of p.tasks) {
+        ws[t.task_id] = makeWorkspace(t);
+      }
+    }
+    setWorkspaces(ws);
+    await scanAllLocalDirs(ps);
+    return ps;
+  }, [scanAllLocalDirs]);
+
   useEffect(() => {
     Promise.all([fetchProjects(), fetchTaskTypes()])
       .then(([ps, tts]) => {
@@ -201,51 +242,104 @@ export default function Jobs() {
     return workspaces[selectedTask.task_id] ?? makeWorkspace(selectedTask);
   }, [selectedTask, workspaces]);
 
-  /** 选中子项时，自动读取本地目录中已有的 POSCAR / INCAR / KPOINTS */
+  /** 自由能组内结构（opt+frac 合并页） */
+  const selectedStructure = useMemo(() => {
+    if (!selectedStructureKey) return null;
+    const rest = selectedStructureKey.slice(2);
+    const [gid, label] = rest.split(':');
+    const proj = projects.find((p) => p.tasks.some((t) => t.group?.group_id === gid));
+    if (!proj) return null;
+    const members = proj.tasks.filter(
+      (t) => t.group?.group_id === gid && t.group?.structure_label === label,
+    );
+    return {
+      gid,
+      label,
+      projectName: proj.name,
+      opt: members.find((t) => t.task_type === 'opt') ?? null,
+      frac: members.find((t) => t.task_type === 'frac') ?? null,
+    };
+  }, [selectedStructureKey, projects]);
+
+  /** NEB 组（初态/末态/NEB 合并页） */
+  const selectedNebGroup = useMemo(() => {
+    if (!selectedNebGroupKey) return null;
+    const rest = selectedNebGroupKey.slice(2);
+    const [pid, gid] = rest.split(':');
+    const proj = projects.find((p) => p.id === pid);
+    if (!proj) return null;
+    const members = proj.tasks.filter((t) => t.group?.group_id === gid);
+    return {
+      gid,
+      projectName: proj.name,
+      initial: members.find((t) => t.group?.group_role === 'initial_opt') ?? null,
+      final: members.find((t) => t.group?.group_role === 'final_opt') ?? null,
+      neb: members.find((t) => t.group?.group_role === 'neb_images') ?? null,
+    };
+  }, [selectedNebGroupKey, projects]);
+
+  /** 需要自动读取文件内容的聚焦任务（选中任务 + 结构/组内任务） */
+  const focusTasks = useMemo(() => {
+    const list: Task[] = [];
+    if (selectedTask) list.push(selectedTask);
+    if (selectedStructure) {
+      if (selectedStructure.opt) list.push(selectedStructure.opt);
+      if (selectedStructure.frac) list.push(selectedStructure.frac);
+    }
+    if (selectedNebGroup) {
+      for (const t of [selectedNebGroup.initial, selectedNebGroup.final, selectedNebGroup.neb]) {
+        if (t) list.push(t);
+      }
+    }
+    return list;
+  }, [selectedTask, selectedStructure, selectedNebGroup]);
+
+  /** 选中任务/结构/组时，自动读取本地目录中已有的 POSCAR / INCAR / KPOINTS */
   useEffect(() => {
-    if (!selectedTask) return;
-    const taskId = selectedTask.task_id;
-    if (loadedDisk[taskId]) return;
-    const names = new Set((taskFileList[taskId] ?? []).map((f) => f.name));
-    if (!names.has('POSCAR') && !names.has('INCAR') && !names.has('KPOINTS')) return;
-    setLoadedDisk((prev) => ({ ...prev, [taskId]: true }));
-    void (async () => {
-      const patch: Partial<JobWorkspace> = {};
-      if (names.has('POSCAR')) {
-        try {
-          const { content } = await fetchTaskFile(taskId, 'POSCAR');
-          patch.poscarContent = content;
-          patch.poscarPath = `${selectedTask.local_dir}/files/POSCAR`;
-        } catch {
-          // 读取失败时保持空状态，用户可手动导入
+    for (const task of focusTasks) {
+      const taskId = task.task_id;
+      if (loadedDisk[taskId]) continue;
+      const names = new Set((taskFileList[taskId] ?? []).map((f) => f.name));
+      if (!names.has('POSCAR') && !names.has('INCAR') && !names.has('KPOINTS')) continue;
+      setLoadedDisk((prev) => ({ ...prev, [taskId]: true }));
+      void (async () => {
+        const patch: Partial<JobWorkspace> = {};
+        if (names.has('POSCAR')) {
+          try {
+            const { content } = await fetchTaskFile(taskId, 'POSCAR');
+            patch.poscarContent = content;
+            patch.poscarPath = `${task.local_dir}/files/POSCAR`;
+          } catch {
+            // 读取失败时保持空状态，用户可手动导入
+          }
         }
-      }
-      if (names.has('KPOINTS')) {
-        try {
-          const { content } = await fetchTaskFile(taskId, 'KPOINTS');
-          patch.kpointsContent = content;
-        } catch {
-          // 忽略
+        if (names.has('KPOINTS')) {
+          try {
+            const { content } = await fetchTaskFile(taskId, 'KPOINTS');
+            patch.kpointsContent = content;
+          } catch {
+            // 忽略
+          }
         }
-      }
-      if (names.has('INCAR')) {
-        try {
-          const { content } = await fetchTaskFile(taskId, 'INCAR');
-          const parsed = parseIncarContent(content);
-          const base = workspaces[taskId] ?? makeWorkspace(selectedTask);
-          patch.incarParams = { ...base.incarParams, ...parsed };
-          patch.precision = 'custom';
-        } catch {
-          // 忽略
+        if (names.has('INCAR')) {
+          try {
+            const { content } = await fetchTaskFile(taskId, 'INCAR');
+            const parsed = parseIncarContent(content);
+            const base = workspaces[taskId] ?? makeWorkspace(task);
+            patch.incarParams = { ...base.incarParams, ...parsed };
+            patch.precision = 'custom';
+          } catch {
+            // 忽略
+          }
         }
-      }
-      setWorkspaces((prev) => ({
-        ...prev,
-        [taskId]: { ...(prev[taskId] ?? makeWorkspace(selectedTask)), ...patch },
-      }));
-    })();
+        setWorkspaces((prev) => ({
+          ...prev,
+          [taskId]: { ...(prev[taskId] ?? makeWorkspace(task)), ...patch },
+        }));
+      })();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTask?.task_id, taskFileList]);
+  }, [focusTasks, taskFileList]);
 
   const patchWorkspace = (taskId: string, patch: Partial<JobWorkspace>) => {
     setWorkspaces((prev) => ({
@@ -294,14 +388,55 @@ export default function Jobs() {
     const p = projects.find((x) => x.id === projectId);
     setSelectedProjectId(projectId);
     setSelectedTaskId(p?.tasks[0]?.task_id ?? null);
+    setSelectedStructureKey(null);
+    setSelectedNebGroupKey(null);
   };
 
-  const openNewTask = (projectId: string | null) => {
+  const handleSelectTask = (taskId: string) => {
+    const owner = projects.find((p) => p.tasks.some((t) => t.task_id === taskId));
+    if (owner) setSelectedProjectId(owner.id);
+    setSelectedTaskId(taskId);
+    setSelectedStructureKey(null);
+    setSelectedNebGroupKey(null);
+  };
+
+  /** 选择自由能组内结构（结构优化 + 频率矫正合并页面） */
+  const handleSelectStructure = (key: string) => {
+    const [gid] = key.split(':');
+    const owner = projects.find((p) => p.tasks.some((t) => t.group?.group_id === gid));
+    if (owner) setSelectedProjectId(owner.id);
+    setSelectedTaskId(null);
+    setSelectedNebGroupKey(null);
+    setSelectedStructureKey(`s:${key}`);
+  };
+
+  /** 选择组节点：NEB 组打开合并页面，自由能组仅展开 */
+  const handleSelectGroup = (key: string) => {
+    const rest = key.split(':');
+    const pid = rest[0];
+    const gid = rest[1];
+    const proj = projects.find((p) => p.id === pid);
+    const member = proj?.tasks.find((t) => t.group?.group_id === gid);
+    if (member?.group?.group_type !== 'neb') return;
+    setSelectedProjectId(pid);
+    setSelectedTaskId(null);
+    setSelectedStructureKey(null);
+    setSelectedNebGroupKey(`g:${key}`);
+  };
+
+  const openNewGroup = (projectId: string, kind: 'free_energy' | 'neb') => {
+    setSelectedProjectId(projectId);
+    setGroupWizardKind(kind);
+    setGroupWizardOpen(true);
+  };
+
+  const openNewTask = (projectId: string | null, type: TaskType = 'opt') => {
     if (!projectId) {
       message.warning('请先选择项目');
       return;
     }
     setSelectedProjectId(projectId);
+    setNewTaskType(type);
     setSelectedTaskId(null);
     setNewTaskOpen(true);
   };
@@ -315,15 +450,47 @@ export default function Jobs() {
 
   const handleCreateTask = (payload: NewTaskPayload) => {
     if (!selectedProject) return;
+    void (async () => {
+      try {
+        const created = await createIndependentTask({
+          project: selectedProject.name,
+          model_name: payload.modelName,
+          task_type: payload.taskType,
+          subtype: payload.subtype ?? null,
+        });
+        const ps = await refreshProjects();
+        const target = ps
+          .flatMap((p) => p.tasks)
+          .find((t) => t.task_id === created.task_id);
+        if (target) {
+          setSelectedProjectId(selectedProject.id);
+          setSelectedTaskId(target.task_id);
+        }
+        setNewTaskOpen(false);
+        message.success(`子项已创建：${payload.modelName}`);
+      } catch (err) {
+        message.error(err instanceof Error ? err.message : '创建子项失败');
+      }
+    })();
+  };
+
+  const handleGroupCreated = async () => {
+    setGroupWizardOpen(false);
+    await refreshProjects();
+  };
+
+  /** 跨类型续算（会话级创建，原逻辑） */
+  const handleCreateContinuation = (payload: ContinuationPayload) => {
+    if (!selectedProject || !continuationTask) return;
     const task: Task = {
-      task_id: `${selectedProject.id}_${payload.modelName}_${Date.now().toString(36)}`,
+      task_id: `${selectedProject.id}_${payload.name}_${Date.now().toString(36)}`,
       task_type: payload.taskType,
-      model_name: payload.modelName,
+      model_name: payload.name,
       status: 'pending',
       last_energy: null,
       last_check_time: null,
       job_id: null,
-      notes: '本会话新建（演示）',
+      notes: `由 ${continuationTask.model_name} 跨类型续算创建`,
       continuation_ready: false,
       continuation_dir: null,
       remote_dir: payload.remoteDir,
@@ -337,79 +504,111 @@ export default function Jobs() {
     setWorkspaces((prev) => ({ ...prev, [task.task_id]: makeWorkspace(task) }));
     setTaskFileList((prev) => ({ ...prev, [task.task_id]: [] }));
     setSelectedTaskId(task.task_id);
-    setNewTaskOpen(false);
-    message.success(`子项已创建：${payload.modelName}`);
-  };
-
-  const handleCreateContinuation = (payload: ContinuationPayload) => {
-    if (!selectedProject || !continuationTask) return;
-    const task: Task = {
-      task_id: `${selectedProject.id}_${payload.name}_${Date.now().toString(36)}`,
-      task_type: payload.taskType,
-      model_name: payload.name,
-      status: 'pending',
-      last_energy: null,
-      last_check_time: null,
-      job_id: null,
-      notes: `由 ${continuationTask.model_name} 续算创建`,
-      continuation_ready: false,
-      continuation_dir: null,
-      remote_dir: payload.remoteDir,
-      local_dir: payload.localDir,
-    };
-    const sourceWs = workspaces[continuationTask.task_id] ?? makeWorkspace(continuationTask);
-    const poscar = sourceWs.poscarContent ?? buildInputFiles(continuationTask.model_name).POSCAR;
-    const info = parsePoscar(poscar);
-    const ws: JobWorkspace = {
-      incarParams: buildDefaultParams(payload.taskType),
-      precision: 'custom',
-      poscarContent: poscar,
-      poscarPath: `${payload.localDir}/files/POSCAR`,
-      kpointsContent:
-        info && sourceWs.kpointsContent
-          ? sourceWs.kpointsContent
-          : info
-            ? buildKpoints(payload.name, 'Gamma', recommendKgrid(info.lengths, 20), 20)
-            : null,
-      files: {
-        INCAR: true,
-        POSCAR: true,
-        KPOINTS: true,
-        POTCAR: false,
-        'submit.sh': false,
-        CONTCAR: false,
-        WAVECAR: false,
-      },
-      scriptFormat: 'lsf',
-    };
-    setProjects((prev) =>
-      prev.map((p) =>
-        p.id === selectedProject.id ? { ...p, tasks: [...p.tasks, task] } : p,
-      ),
-    );
-    setWorkspaces((prev) => ({ ...prev, [task.task_id]: ws }));
-    setTaskFileList((prev) => ({ ...prev, [task.task_id]: [] }));
-    setSelectedTaskId(task.task_id);
     setContinuationTask(null);
-    message.success(`续算子项已创建：${payload.name}`);
+    message.success(`跨类型续算子项已创建：${payload.name}`);
   };
 
-  const handleParamsChange = (params: Record<string, string>, precision: PrecisionMode) => {
-    if (!selectedTask) return;
-    patchWorkspace(selectedTask.task_id, { incarParams: params, precision });
+  /** 同类型续算创建成功后：刷新并选中续算子任务 */
+  const handleSameTypeCreated = async (result: {
+    task_id: string;
+    con: string;
+    remote_dir: string;
+    warnings: string[];
+  }) => {
+    const ps = await refreshProjects();
+    const created = ps.flatMap((p) => p.tasks).find((t) => t.task_id === result.task_id);
+    if (created) {
+      const owner = ps.find((p) => p.tasks.some((t) => t.task_id === created.task_id));
+      if (owner) setSelectedProjectId(owner.id);
+      setSelectedTaskId(created.task_id);
+    }
   };
 
-  const handleApplyPreset = (preset: IncarPreset) => {
-    if (!selectedTask) return;
-    patchWorkspace(selectedTask.task_id, {
+  /** 重命名独立任务 */
+  const handleRenameTask = async () => {
+    if (!renameTaskState) return;
+    try {
+      const r = await renameTask(renameTaskState.task_id, renameName.trim());
+      message.success(`已重命名为：${r.model_name}`);
+      setRenameTaskState(null);
+      setRenameName('');
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '重命名失败');
+    }
+  };
+
+  /** 删除最末端子项 */
+  const handleDeleteTask = async (task: Task) => {
+    try {
+      const r = await deleteTask(task.task_id);
+      message.success(
+        `已删除：${r.model_name}${r.local_trash ? '（本地目录已移入回收站）' : ''}`,
+      );
+      if (selectedTaskId === task.task_id) {
+        setSelectedTaskId(null);
+        setSelectedStructureKey(null);
+        setSelectedNebGroupKey(null);
+      }
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '删除失败');
+    }
+  };
+
+  /** 提交作业：远程 bsub < vasp.lsf，成功后刷新任务状态 */
+  const handleSubmitTask = async (task: Task) => {
+    if (submittingTaskId) return;
+    setSubmittingTaskId(task.task_id);
+    try {
+      const r = await submitTask(task.task_id);
+      message.success(`作业 ${r.job_id} 已提交到队列`);
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '提交作业失败');
+    } finally {
+      setSubmittingTaskId(null);
+    }
+  };
+
+  /** 自由能组添加结构 */
+  const handleAddStructure = async () => {
+    if (!addStructGroup) return;
+    try {
+      const r = await addGroupStructures(addStructGroup, addStructCount);
+      message.success(`已添加结构：${r.labels.join('、')}`);
+      setAddStructGroup(null);
+      setAddStructCount(1);
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '添加结构失败');
+    }
+  };
+
+  const handleParamsChange = (
+    params: Record<string, string>,
+    precision: PrecisionMode,
+    task?: Task | null,
+  ) => {
+    const t = task ?? selectedTask;
+    if (!t) return;
+    patchWorkspace(t.task_id, { incarParams: params, precision });
+  };
+
+  const handleApplyPreset = (preset: IncarPreset, task?: Task | null) => {
+    const t = task ?? selectedTask;
+    if (!t) return;
+    patchWorkspace(t.task_id, {
       incarParams: { ...preset.params },
       precision: 'custom',
     });
   };
 
-  const handleSavePreset = (name: string) => {
-    if (!selectedTask || !selectedWorkspace) return;
-    saveIncarPreset(name, selectedWorkspace.incarParams);
+  const handleSavePreset = (name: string, task?: Task | null) => {
+    const t = task ?? selectedTask;
+    const ws = t ? workspaces[t.task_id] ?? makeWorkspace(t) : null;
+    if (!ws) return;
+    saveIncarPreset(name, ws.incarParams);
     setPresets(loadIncarPresets());
     message.success(`预设已保存：${name}`);
   };
@@ -419,9 +618,11 @@ export default function Jobs() {
     message.success('预设已删除');
   };
 
-  const handleCopyParams = (targets: TaskRef[]) => {
-    if (!selectedTask || !selectedWorkspace) return;
-    const params = { ...selectedWorkspace.incarParams };
+  const handleCopyParams = (targets: TaskRef[], task?: Task | null) => {
+    const t = task ?? selectedTask;
+    const ws = t ? workspaces[t.task_id] ?? makeWorkspace(t) : null;
+    if (!ws) return;
+    const params = { ...ws.incarParams };
     setWorkspaces((prev) => {
       const next = { ...prev };
       for (const t of targets) {
@@ -438,14 +639,15 @@ export default function Jobs() {
   };
 
   /** 导入 POSCAR：写入本地任务目录 files/POSCAR，并同步会话状态 */
-  const handleImportPoscar = async (content: string) => {
-    if (!selectedTask) return;
+  const handleImportPoscar = async (content: string, task?: Task | null) => {
+    const t = task ?? selectedTask;
+    if (!t) return;
     const info = parsePoscar(content);
-    let path = `${selectedTask.local_dir}/files/POSCAR`;
+    let path = `${t.local_dir}/files/POSCAR`;
     try {
-      const r = await saveTaskFile(selectedTask.task_id, 'POSCAR', content);
+      const r = await saveTaskFile(t.task_id, 'POSCAR', content);
       path = r.path;
-      upsertLocalFile(selectedTask.task_id, 'POSCAR', r.size);
+      upsertLocalFile(t.task_id, 'POSCAR', r.size);
       message.success(`POSCAR 已保存：${r.path}`);
     } catch (err) {
       message.warning(
@@ -454,32 +656,34 @@ export default function Jobs() {
           : '后端写入失败，仅更新当前会话',
       );
     }
-    patchWorkspace(selectedTask.task_id, {
+    patchWorkspace(t.task_id, {
       poscarContent: content,
       poscarPath: path,
       kpointsContent: info
-        ? buildKpoints(selectedTask.model_name, 'Gamma', recommendKgrid(info.lengths, 20), 20)
+        ? buildKpoints(t.model_name, 'Gamma', recommendKgrid(info.lengths, 20), 20)
         : null,
     });
   };
 
-  const handleCopyPoscar = (sourceTaskId: string) => {
-    if (!selectedTask) return;
+  const handleCopyPoscar = (sourceTaskId: string, task?: Task | null) => {
+    const t = task ?? selectedTask;
+    if (!t) return;
     const source = projects
       .flatMap((p) => p.tasks)
       .find((t) => t.task_id === sourceTaskId);
     if (!source) return;
     const content =
       workspaces[sourceTaskId]?.poscarContent ?? buildInputFiles(source.model_name).POSCAR;
-    void handleImportPoscar(content);
+    void handleImportPoscar(content, t);
   };
 
-  const handleGenerateKpoints = async (content: string) => {
-    if (!selectedTask) return;
-    patchWorkspace(selectedTask.task_id, { kpointsContent: content });
+  const handleGenerateKpoints = async (content: string, task?: Task | null) => {
+    const t = task ?? selectedTask;
+    if (!t) return;
+    patchWorkspace(t.task_id, { kpointsContent: content });
     try {
-      const r = await saveTaskFile(selectedTask.task_id, 'KPOINTS', content);
-      upsertLocalFile(selectedTask.task_id, 'KPOINTS', r.size);
+      const r = await saveTaskFile(t.task_id, 'KPOINTS', content);
+      upsertLocalFile(t.task_id, 'KPOINTS', r.size);
       message.success(`KPOINTS 已保存：${r.path}`);
     } catch (err) {
       message.warning(
@@ -534,94 +738,111 @@ export default function Jobs() {
   };
 
   /** 保存提交脚本到本地任务目录 files/submit.sh */
-  const handleScriptSaved = async (script: string) => {
-    if (!selectedTask) return;
+  const handleScriptSaved = async (script: string, task?: Task | null) => {
+    const t = task ?? selectedTask;
+    if (!t) return;
     try {
-      const r = await saveTaskFile(selectedTask.task_id, 'submit.sh', script);
-      upsertLocalFile(selectedTask.task_id, 'submit.sh', r.size);
+      const r = await saveTaskFile(t.task_id, 'submit.sh', script);
+      upsertLocalFile(t.task_id, 'submit.sh', r.size);
     } catch (err) {
       message.warning(
         err instanceof Error ? `提交脚本写入后端失败：${err.message}` : '提交脚本写入后端失败',
       );
     }
-    const base = workspaces[selectedTask.task_id] ?? makeWorkspace(selectedTask);
-    patchWorkspace(selectedTask.task_id, {
+    const base = workspaces[t.task_id] ?? makeWorkspace(t);
+    patchWorkspace(t.task_id, {
       files: { ...base.files, 'submit.sh': true },
     });
   };
 
-  const tabItems = selectedTask && selectedWorkspace
-    ? [
-        {
-          key: 'overview',
-          label: '概览',
-          children: (
-            <TaskOverview
-              task={selectedTask}
-              workspace={selectedWorkspace}
-              onGenerateInputs={() => setGenTask(selectedTask)}
-              onContinuation={() => setContinuationTask(selectedTask)}
-              onSubmitScript={() => setActiveTab('submit')}
-            />
-          ),
-        },
-        {
-          key: 'poscar',
-          label: 'POSCAR',
-          children: (
-            <PoscarPanel
-              poscarContent={selectedWorkspace.poscarContent}
-              poscarPath={selectedWorkspace.poscarPath}
-              copyTargets={copyTargets}
-              onImport={handleImportPoscar}
-              onCopyFromTask={handleCopyPoscar}
-            />
-          ),
-        },
-        {
-          key: 'incar',
-          label: 'INCAR',
-          children: (
-            <IncarEditor
-              task={selectedTask}
-              workspace={selectedWorkspace}
-              presets={presets}
-              onParamsChange={handleParamsChange}
-              onApplyPreset={handleApplyPreset}
-              onSavePreset={handleSavePreset}
-              onDeletePreset={handleDeletePreset}
-              onCopyToOthers={() => setCopyParamsOpen(true)}
-            />
-          ),
-        },
-        {
-          key: 'kpoints',
-          label: 'KPOINTS',
-          children: (
-            <KpointsPanel
-              taskName={selectedTask.model_name}
-              poscarContent={selectedWorkspace.poscarContent}
-              kpointsContent={selectedWorkspace.kpointsContent}
-              onGenerate={handleGenerateKpoints}
-            />
-          ),
-        },
-        {
-          key: 'submit',
-          label: '提交脚本',
-          children: (
-            <SubmitScriptPanel
-              task={selectedTask}
-              workspace={selectedWorkspace}
-              snapshot={clusterSnapshot}
-              loading={snapshotLoading}
-              onRefresh={() => void loadClusterSnapshot(true)}
-              onSaved={handleScriptSaved}
-            />
-          ),
-        },
-      ]
-    : [];
+  /** 单个任务的详情标签页（概览/POSCAR/INCAR/KPOINTS/提交脚本） */
+  const renderTaskDetail = (task: Task) => {
+    const ws = workspaces[task.task_id] ?? makeWorkspace(task);
+    return (
+      <Tabs
+        key={task.task_id}
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: 'overview',
+            label: '概览',
+            children: (
+              <TaskOverview
+                task={task}
+                workspace={ws}
+                onGenerateInputs={() => setGenTask(task)}
+                onContinuation={() => setContinuationTask(task)}
+                onSubmitScript={() => setActiveTab('submit')}
+                onSubmit={handleSubmitTask}
+                submitting={submittingTaskId === task.task_id}
+                onRename={(t) => {
+                  setRenameTaskState(t);
+                  setRenameName(t.model_name);
+                }}
+                onDelete={(t) => void handleDeleteTask(t)}
+              />
+            ),
+          },
+          {
+            key: 'poscar',
+            label: 'POSCAR',
+            children: (
+              <PoscarPanel
+                poscarContent={ws.poscarContent}
+                poscarPath={ws.poscarPath}
+                copyTargets={copyTargets}
+                onImport={(c) => handleImportPoscar(c, task)}
+                onCopyFromTask={(sid) => handleCopyPoscar(sid, task)}
+              />
+            ),
+          },
+          {
+            key: 'incar',
+            label: 'INCAR',
+            children: (
+              <IncarEditor
+                task={task}
+                workspace={ws}
+                presets={presets}
+                onParamsChange={(p, prec) => handleParamsChange(p, prec, task)}
+                onApplyPreset={(pr) => handleApplyPreset(pr, task)}
+                onSavePreset={(n) => handleSavePreset(n, task)}
+                onDeletePreset={handleDeletePreset}
+                onCopyToOthers={() => setCopyParamsOpen(true)}
+              />
+            ),
+          },
+          {
+            key: 'kpoints',
+            label: 'KPOINTS',
+            children: (
+              <KpointsPanel
+                taskName={task.model_name}
+                poscarContent={ws.poscarContent}
+                kpointsContent={ws.kpointsContent}
+                onGenerate={(c) => handleGenerateKpoints(c, task)}
+              />
+            ),
+          },
+          {
+            key: 'submit',
+            label: '提交脚本',
+            children: (
+              <SubmitScriptPanel
+                task={task}
+                workspace={ws}
+                snapshot={clusterSnapshot}
+                loading={snapshotLoading}
+                onRefresh={() => void loadClusterSnapshot(true)}
+                onSaved={(s) => handleScriptSaved(s, task)}
+              />
+            ),
+          },
+        ]}
+      />
+    );
+  };
 
   return (
     <PageTransition>
@@ -629,14 +850,23 @@ export default function Jobs() {
         title="作业管理"
         subtitle="管理项目子项、VASP 输入文件、续算流程与提交脚本生成"
         extra={
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            disabled={!selectedProject}
-            onClick={() => openNewTask(selectedProjectId)}
-          >
-            新建子项
-          </Button>
+          <Space wrap>
+            <Button
+              icon={<ApartmentOutlined />}
+              disabled={!selectedProject}
+              onClick={() => setGroupWizardOpen(true)}
+            >
+              新建自由能组 / NEB 组
+            </Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              disabled={!selectedProject}
+              onClick={() => openNewTask(selectedProjectId)}
+            >
+              新建子项
+            </Button>
+          </Space>
         }
       />
 
@@ -649,10 +879,9 @@ export default function Jobs() {
               type="text"
               size="small"
               icon={<PlusOutlined />}
-              disabled={!selectedProject}
-              onClick={() => openNewTask(selectedProjectId)}
+              onClick={() => setAddProjectOpen(true)}
             >
-              新建
+              新建项目
             </Button>
           }
         >
@@ -674,15 +903,73 @@ export default function Jobs() {
               projects={projects}
               selectedProjectId={selectedProjectId}
               selectedTaskId={selectedTaskId}
+              selectedStructureKey={selectedStructureKey}
+              selectedNebGroupKey={selectedNebGroupKey}
               onSelectProject={selectProject}
-              onSelectTask={setSelectedTaskId}
-              onNewTask={(projectId) => openNewTask(projectId)}
+              onSelectTask={handleSelectTask}
+              onSelectStructure={handleSelectStructure}
+              onSelectGroup={handleSelectGroup}
+              onNewTask={(projectId, type) => openNewTask(projectId, type)}
+              onNewGroup={(projectId, kind) => openNewGroup(projectId, kind)}
+              onAddStructure={(projectId, groupId) => {
+                setSelectedProjectId(projectId);
+                setAddStructGroup(groupId);
+              }}
             />
           )}
         </Card>
 
         <div>
-          {selectedTask && selectedWorkspace ? (
+          {selectedStructure ? (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 14 }}
+                message={
+                  <span>
+                    自由能路径 · <strong>{formatStructureLabel(selectedStructure.label)}</strong>
+                    <span className="preview-note" style={{ marginLeft: 12 }}>
+                      {selectedStructure.projectName} · 结构优化 + 频率矫正合并页面
+                    </span>
+                  </span>
+                }
+              />
+              <Card className="job-detail-card">
+                <StructureDetail
+                  structureLabel={formatStructureLabel(selectedStructure.label)}
+                  optTask={selectedStructure.opt!}
+                  fracTask={selectedStructure.frac}
+                  renderTask={renderTaskDetail}
+                />
+              </Card>
+            </>
+          ) : selectedNebGroup ? (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 14 }}
+                message={
+                  <span>
+                    NEB 流程组 · <strong>{selectedNebGroup.gid}</strong>
+                    <span className="preview-note" style={{ marginLeft: 12 }}>
+                      {selectedNebGroup.projectName} · 初态 / 末态 / NEB 映像合并页面
+                    </span>
+                  </span>
+                }
+              />
+              <Card className="job-detail-card">
+                <NebGroupDetail
+                  groupName={selectedNebGroup.gid}
+                  initialTask={selectedNebGroup.initial}
+                  finalTask={selectedNebGroup.final}
+                  nebTask={selectedNebGroup.neb}
+                  renderTask={renderTaskDetail}
+                />
+              </Card>
+            </>
+          ) : selectedTask && selectedWorkspace ? (
             <>
               <Alert
                 type="info"
@@ -698,12 +985,7 @@ export default function Jobs() {
                 }
               />
               <Card className="job-detail-card">
-                <Tabs
-                  key={selectedTask.task_id}
-                  activeKey={activeTab}
-                  onChange={setActiveTab}
-                  items={tabItems}
-                />
+                {renderTaskDetail(selectedTask)}
               </Card>
             </>
           ) : (
@@ -721,11 +1003,79 @@ export default function Jobs() {
       </div>
 
       <NewTaskModal
+        key={newTaskType}
         open={newTaskOpen}
         project={selectedProject}
         taskTypes={taskTypes}
+        initialType={newTaskType}
         onCancel={closeNewTask}
         onCreate={handleCreateTask}
+      />
+
+      <AddProjectModal
+        open={addProjectOpen}
+        onCancel={() => setAddProjectOpen(false)}
+        onCreated={() => void refreshProjects()}
+      />
+
+      <Modal
+        title={`重命名子项 · ${renameTaskState?.model_name ?? ''}`}
+        open={!!renameTaskState}
+        onCancel={() => {
+          setRenameTaskState(null);
+          setRenameName('');
+        }}
+        onOk={() => void handleRenameTask()}
+        okText="重命名"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <div style={{ marginTop: 8 }}>
+          <Input
+            value={renameName}
+            onChange={(e) => setRenameName(e.target.value)}
+            placeholder="新的子项名称"
+            onPressEnter={() => void handleRenameTask()}
+          />
+          <div className="preview-note" style={{ marginTop: 8 }}>
+            重命名将同步更新本地目录、远程目录与数据库（仅独立任务支持）。
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="添加结构（自由能路径）"
+        open={!!addStructGroup}
+        onCancel={() => {
+          setAddStructGroup(null);
+          setAddStructCount(1);
+        }}
+        onOk={() => void handleAddStructure()}
+        okText="添加"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <div style={{ marginTop: 8 }}>
+          <div className="preview-note" style={{ marginBottom: 8 }}>
+            自动生成 结构N+1 的 结构优化(opt) + 频率矫正(frac) 任务与目录
+          </div>
+          <InputNumber
+            min={1}
+            max={20}
+            value={addStructCount}
+            onChange={(v) => setAddStructCount(v ?? 1)}
+            addonAfter="个结构"
+          />
+        </div>
+      </Modal>
+
+      <GroupWizardModal
+        key={groupWizardKind}
+        open={groupWizardOpen}
+        project={selectedProject}
+        initialKind={groupWizardKind}
+        onCancel={() => setGroupWizardOpen(false)}
+        onCreated={() => void handleGroupCreated()}
       />
 
       <ContinuationModal
@@ -735,6 +1085,7 @@ export default function Jobs() {
         taskTypes={taskTypes}
         onCancel={() => setContinuationTask(null)}
         onConfirm={handleCreateContinuation}
+        onSameTypeCreated={(r) => void handleSameTypeCreated(r)}
       />
 
       <CopyParamsModal

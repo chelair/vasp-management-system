@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from config import PROJECTS_DIR
+from task_paths import task_files_dir
 
 
 # ---------------------------------------------------------------------------
@@ -160,14 +160,7 @@ def compute_displacements(
 
 def read_isif(project: Dict[str, Any], task: Dict[str, Any]) -> Tuple[int, str]:
     """读取本地 files/INCAR 的 ISIF；本地未同步时按 VASP 默认 2。"""
-    incar = (
-        PROJECTS_DIR
-        / project["name"]
-        / task["task_type"]
-        / task["model_name"]
-        / "files"
-        / "INCAR"
-    )
+    incar = task_files_dir(project["name"], task) / "INCAR"
     if incar.is_file():
         match = re.search(
             r"^\s*ISIF\s*=\s*(\d+)",
@@ -187,13 +180,7 @@ def _pct(new_value: Optional[float], old_value: Optional[float]) -> Optional[flo
 
 def analyze(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     """结构分析：ISIF=2 时原子位移，其余情况晶格参数对比。"""
-    files_dir = (
-        PROJECTS_DIR
-        / project["name"]
-        / task["task_type"]
-        / task["model_name"]
-        / "files"
-    )
+    files_dir = task_files_dir(project["name"], task)
     poscar_path = files_dir / "POSCAR"
     contcar_path = files_dir / "CONTCAR"
     warnings: List[str] = []

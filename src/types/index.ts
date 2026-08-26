@@ -10,22 +10,44 @@ export type TaskStatus =
   | 'queued'
   | 'running'
   | 'completed'
+  | 'unconverged'
   | 'zombied'
   | 'archived';
 
-/** 任务类型：与 config/task_registry.json 一致 */
-export type TaskType =
-  | 'structure_opt'
-  | 'electronic_structure'
-  | 'free_energy'
-  | 'frequency'
-  | 'neb';
+/** 任务类型：固定四种（v0.3.0），流程通过 group 元数据组织 */
+export type TaskType = 'opt' | 'frac' | 'neb' | 'ele';
+
+/** ele 类型的后处理子类型 */
+export type EleSubtype = 'pdos' | 'bader' | 'diff_charge' | 'work_function';
+
+/** 计算流程组元数据（任务字段 group） */
+export interface GroupMeta {
+  /** 组名（组根目录名，如 PATH1） */
+  name?: string;
+  group_id: string;
+  group_type: 'free_energy' | 'neb';
+  group_role:
+    | 'main_structure'
+    | 'aux_molecule'
+    | 'initial_opt'
+    | 'final_opt'
+    | 'neb_images';
+  structure_label: string;
+}
+
+/** 输入来源追踪 */
+export interface InputSource {
+  poscar_from?: string | null;
+  potcar_from?: string | null;
+  kpoints_from?: string | null;
+}
 
 export type Workload = 'small' | 'medium' | 'large';
 
 export interface Task {
   task_id: string;
   task_type: TaskType;
+  subtype?: EleSubtype | null;
   model_name: string;
   status: TaskStatus;
   last_energy: number | null;
@@ -39,6 +61,14 @@ export interface Task {
   local_dir: string;
   /** 最新输出定位（续算 conN 优先，巡检后回填） */
   current_output?: CurrentOutput | null;
+  /** 任务本地目录绝对路径（dir_path 权威字段） */
+  dir_path?: string;
+  /** 所属计算流程组（独立任务为 null） */
+  group?: GroupMeta | null;
+  parent_task_id?: string | null;
+  input_source?: InputSource | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Project {
@@ -48,6 +78,7 @@ export interface Project {
   deadline: string;
   workload: Workload;
   server: string;
+  remote_base?: string;
   progress: number;
   remainingHours: number;
   createdAt: string;
@@ -55,7 +86,7 @@ export interface Project {
   tasks: Task[];
 }
 
-export type CheckStatus = 'normal' | 'warning' | 'error';
+export type CheckStatus = 'normal' | 'warning' | 'error' | 'pending';
 
 export type CheckCategory = 'convergence' | 'resource' | 'file' | 'ssh' | 'queue';
 
@@ -72,10 +103,14 @@ export interface InspectionResult {
   /** 是否在结构分析范围内（巡检前后状态有变化或运行中） */
   analysis_needed?: boolean;
   has_force_history?: boolean;
+  /** 是否已有过至少一次巡检记录（false 时操作列显示“单独巡检”） */
+  has_inspection?: boolean;
   /** 最新输出目录（续算 conN 优先，无则为 null=主目录） */
   latest_dir?: string | null;
   /** 最新输出状态：finished / running / failed / waiting */
   output_status?: 'finished' | 'running' | 'failed' | 'waiting' | null;
+  /** 任务类型分类（结构优化 / 自由能 / NEB / 电子结构） */
+  task_category?: string;
 }
 
 /** 任务最新输出定位（续算 conN 优先） */
@@ -95,6 +130,20 @@ export interface ForceHistoryPoint {
   step: number;
   energy: number | null;
   max_force: number | null;
+}
+
+/** 自由能组结构优化详情中合并展示的频率矫正子任务数据 */
+export interface InspectionFracDetail {
+  task_id: string;
+  task_name: string;
+  status: string;
+  has_inspection: boolean;
+  check_time: string | null;
+  last_energy: number | null;
+  errors: string[];
+  notes: string;
+  queue_status: string | null;
+  current_output: CurrentOutput | null;
 }
 
 export interface LatticeParams {
@@ -155,6 +204,8 @@ export interface InspectionDetail {
   errors: string[];
   notes: string;
   current_output: CurrentOutput | null;
+  /** 自由能组 opt 任务关联的频率矫正子任务数据（无则为 null） */
+  frac?: InspectionFracDetail | null;
   analysis: StructureAnalysis | null;
 }
 
@@ -411,8 +462,7 @@ export interface JobWorkspace {
 export interface NewTaskPayload {
   modelName: string;
   taskType: TaskType;
-  localDir: string;
-  remoteDir: string;
+  subtype?: EleSubtype | null;
 }
 
 /** 续算创建结果 */
@@ -451,6 +501,8 @@ export interface TaskTypeOption {
   type: TaskType;
   description: string;
   workload_weight: number;
+  subtypes?: string[];
+  subtype_labels?: Record<string, string>;
 }
 
 /** 新增项目请求体（字段与后端 add_project 规则对齐） */
@@ -477,22 +529,38 @@ export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   queued: '排队中',
   running: '运行中',
   completed: '已完成',
+  unconverged: '未收敛',
   zombied: '异常',
   archived: '已归档',
 };
 
 export const TASK_TYPE_LABELS: Record<TaskType, string> = {
-  structure_opt: '结构优化',
-  electronic_structure: '电子结构',
-  free_energy: '自由能',
-  frequency: '频率计算',
+  opt: '结构优化',
+  frac: '频率矫正',
   neb: 'NEB 过渡态',
+  ele: '电子结构',
+};
+
+export const ELE_SUBTYPE_LABELS: Record<EleSubtype, string> = {
+  pdos: 'PDOS',
+  bader: 'Bader 分析',
+  diff_charge: '差分电荷',
+  work_function: '功函数',
+};
+
+export const GROUP_ROLE_LABELS: Record<GroupMeta['group_role'], string> = {
+  main_structure: '主结构',
+  aux_molecule: '辅助分子',
+  initial_opt: '初态优化',
+  final_opt: '末态优化',
+  neb_images: 'NEB 映像',
 };
 
 export const CHECK_STATUS_LABELS: Record<CheckStatus, string> = {
   normal: '正常',
   warning: '警告',
   error: '错误',
+  pending: '未巡检',
 };
 
 export const CHECK_CATEGORY_LABELS: Record<CheckCategory, string> = {

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Alert, App, Modal, Segmented, Select, Tag } from 'antd';
 import { FileDoneOutlined, SwapOutlined } from '@ant-design/icons';
+import { createContinuation } from '../../api/jobs';
 import type {
   ContinuationPayload,
   Project,
@@ -17,14 +18,22 @@ interface Props {
   project: Project | null;
   taskTypes: TaskTypeOption[];
   onCancel: () => void;
+  /** 跨类型续算（原逻辑，会话级创建） */
   onConfirm: (payload: ContinuationPayload) => void;
+  /** 同类型续算创建成功后（后端返回续算信息） */
+  onSameTypeCreated: (result: {
+    task_id: string;
+    con: string;
+    remote_dir: string;
+    warnings: string[];
+  }) => void;
 }
 
 const CROSS_PREFIX: Record<string, string> = {
-  structure_opt: 'so',
-  electronic_structure: 'es',
-  free_energy: 'fe',
+  opt: 'opt',
+  frac: 'frac',
   neb: 'neb',
+  ele: 'ele',
 };
 
 export default function ContinuationModal({
@@ -34,24 +43,17 @@ export default function ContinuationModal({
   taskTypes,
   onCancel,
   onConfirm,
+  onSameTypeCreated,
 }: Props) {
   const { message } = App.useApp();
   const [mode, setMode] = useState<'same' | 'cross'>('same');
-  const [targetType, setTargetType] = useState<TaskType>('electronic_structure');
+  const [targetType, setTargetType] = useState<TaskType>('ele');
+  const [creating, setCreating] = useState(false);
 
   const crossTypes = useMemo(
-    () =>
-      taskTypes.filter(
-        (t) => t.type !== 'frequency' && t.type !== 'structure_opt',
-      ),
+    () => taskTypes.filter((t) => ['opt', 'frac', 'neb', 'ele'].includes(t.type)),
     [taskTypes],
   );
-
-  const sameIndex = useMemo(() => {
-    if (!project || !task) return 1;
-    const prefix = `${task.model_name}_con`;
-    return project.tasks.filter((t) => t.model_name.startsWith(prefix)).length + 1;
-  }, [project, task]);
 
   const crossIndex = useMemo(() => {
     if (!project || !task) return 1;
@@ -59,22 +61,22 @@ export default function ContinuationModal({
     return project.tasks.filter((t) => t.model_name.startsWith(prefix)).length + 1;
   }, [project, task, targetType]);
 
-  const name = task
-    ? mode === 'same'
-      ? `${task.model_name}_con${sameIndex}`
-      : `${task.model_name}_${CROSS_PREFIX[targetType] ?? 'x'}${crossIndex}`
+  const crossName = task
+    ? `${task.model_name}_${CROSS_PREFIX[targetType] ?? 'x'}${crossIndex}`
     : '';
-
   const type = mode === 'same' ? (task?.task_type as TaskType) : targetType;
-  const localDir = project ? `${JOB_DIRS.localRoot}/${project.name}/${type}/${name}` : '';
-  const remoteDir = project ? `${JOB_DIRS.remoteBase}/${project.name}/${type}/${name}` : '';
+  const localDir = project ? `${JOB_DIRS.localRoot}/${project.name}/${type}/${crossName}` : '';
+  const remoteDir = project
+    ? `${JOB_DIRS.remoteBase}/${project.name}/${type}/${crossName}`
+    : '';
 
   const ops =
     mode === 'same'
       ? [
-          '复制 CONTCAR → POSCAR（从上次中断处继续）',
-          '复制 INCAR / KPOINTS / POTCAR 到新目录',
+          '在远程服务器定位最新有效输出目录（conN / 主目录）',
+          '创建续算目录 conN+1，复制 CONTCAR→POSCAR、POTCAR、KPOINTS、提交脚本；WAVECAR 采用移动（省磁盘）',
           'INCAR 修改：ISTART=1（读 WAVECAR）、ICHARG=0',
+          '登记续算子任务（parent_task_id 指向原任务）',
         ]
       : [
           '复制源任务 CONTCAR → 新任务 POSCAR',
@@ -83,19 +85,38 @@ export default function ContinuationModal({
           'INCAR 修改：ICHARG=0、NSW=0（单点/电子结构）',
         ];
 
-  const confirm = () => {
+  const confirmSame = async () => {
+    if (!task) return;
+    setCreating(true);
+    try {
+      const r = await createContinuation(task.task_id);
+      message.success(`续算目录已创建：${r.con}（${r.remote_dir}）`);
+      if (r.warnings.length > 0) {
+        message.warning(r.warnings.join('；'));
+      }
+      setMode('same');
+      onCancel();
+      onSameTypeCreated(r);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '同类型续算失败');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const confirmCross = () => {
     if (!task || !project) return;
     onConfirm({
-      name,
+      name: crossName,
       taskType: type,
       localDir,
       remoteDir,
       ops,
-      crossType: mode === 'cross',
+      crossType: true,
     });
-    message.success(`续算子项已创建：${name}`);
+    message.success(`跨类型续算子项已创建：${crossName}`);
     setMode('same');
-    setTargetType('electronic_structure');
+    setTargetType('ele');
   };
 
   return (
@@ -106,8 +127,9 @@ export default function ContinuationModal({
         setMode('same');
         onCancel();
       }}
-      onOk={confirm}
-      okText="创建续算"
+      onOk={mode === 'same' ? confirmSame : confirmCross}
+      okText={creating ? '创建中…' : '创建续算'}
+      confirmLoading={creating}
       cancelText="取消"
       destroyOnClose
     >
@@ -155,17 +177,23 @@ export default function ContinuationModal({
 
       <div className="job-path-preview">
         <div>
-          <span>新子项名称</span>
-          <code>{name}</code>
+          <span>{mode === 'same' ? '续算目录' : '新子项名称'}</span>
+          <code>
+            {mode === 'same' ? `${task?.remote_dir ?? ''}/con…（服务器端编号）` : crossName}
+          </code>
         </div>
-        <div>
-          <span>本地目录</span>
-          <code>{localDir}</code>
-        </div>
-        <div>
-          <span>远程目录</span>
-          <code>{remoteDir}</code>
-        </div>
+        {mode === 'cross' && (
+          <>
+            <div>
+              <span>本地目录</span>
+              <code>{localDir}</code>
+            </div>
+            <div>
+              <span>远程目录</span>
+              <code>{remoteDir}</code>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="job-ops-list">
@@ -179,10 +207,16 @@ export default function ContinuationModal({
       </div>
 
       <Alert
-        type="info"
+        type={mode === 'same' ? 'success' : 'info'}
         showIcon
-        message="框架阶段"
-        description="创建后在当前会话生成新子项并自动选中；正式版将由后端在本地与远程目录执行实际文件复制。"
+        message={
+          mode === 'same' ? '同类型续算（服务器端完成）' : '跨类型续算（框架阶段）'
+        }
+        description={
+          mode === 'same'
+            ? '点击创建后由后端通过 SSH 在远程服务器生成 conN 目录并复制/修改文件，不经过本地；完成后自动登记续算子任务并选中。'
+            : '跨类型续算在会话内生成子项；真实文件生成后续接入。'
+        }
       />
     </Modal>
   );

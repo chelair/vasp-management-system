@@ -278,6 +278,23 @@ def _run_inspection_locked(
         if not server:
             raise ValueError(f"任务 '{task_id}' 未配置服务器，无法巡检")
         by_server = {server: [pair]}
+        # 自由能 opt 单任务巡检：顺带检查其 frac 频率矫正子任务
+        # （frac 目录有输出才产生数据，未收敛/未生成时结果为空，不影响主任务）
+        opt_task = pair[1]
+        if (
+            opt_task.get("task_type") == STRUCTURE_OPT_TYPE
+            and (opt_task.get("group") or {}).get("group_type") == "free_energy"
+        ):
+            frac_task = next(
+                (
+                    t
+                    for t in pair[0].get("tasks", [])
+                    if t.get("dir_path") == f"{opt_task.get('dir_path', '')}/frac"
+                ),
+                None,
+            )
+            if frac_task is not None:
+                by_server[server].append((pair[0], frac_task))
         skipped_projects: List[str] = []
     else:
         by_server, skipped_projects = _filter_tasks(db, project_name)

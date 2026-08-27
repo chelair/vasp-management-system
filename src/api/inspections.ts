@@ -89,3 +89,20 @@ export async function fetchInspectionDetail(
 ): Promise<InspectionDetail> {
   return request<InspectionDetail>(`/inspections/${encodeURIComponent(taskId)}`);
 }
+
+/** 自由能路径汇总（各中间体 DFT 能量、矫正项、自由能） */
+export interface FreeEnergyStructure {
+  task_id: string;
+  structure_label: string;
+  dft_energy: number | null;
+  correction: number | null;
+  free_energy: number | null;
+  converged: boolean;
+  corrected: boolean;
+}
+
+export async function fetchFreeEnergySummary(
+  groupId: string,
+): Promise<{ group_id: string; name: string; structures: FreeEnergyStructure[] }> {
+  return request(`/free-energy/${encodeURIComponent(groupId)}/summary`);
+}

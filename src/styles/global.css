@@ -1538,10 +1538,64 @@ p {
 }
 
 .analysis-chart {
+  position: relative;
   border: 1px solid var(--color-border-soft);
   border-radius: 12px;
   padding: 12px;
   background: #fbfcfe;
+}
+
+.analysis-chart__hint {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-muted);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  padding: 3px 8px;
+  pointer-events: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.free-energy-equation {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.fe-box {
+  flex: 1;
+  min-width: 140px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: #fbfcfe;
+  text-align: center;
+}
+
+.fe-box__label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.fe-box__value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-primary-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.fe-op {
+  align-self: center;
+  font-size: 18px;
+  color: var(--color-text-muted);
 }
 
 .analysis-chart__svg {

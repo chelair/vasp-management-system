@@ -33,7 +33,11 @@ import {
   runSingleInspection,
 } from '../api/inspections';
 import type { InspectionMeta } from '../api/inspections';
+import { calculateCorrection } from '../api/jobs';
 import LineChart from '../components/inspection/LineChart';
+import ForceHistoryCharts from '../components/inspection/ForceHistoryCharts';
+import EleAnalysisPanel from '../components/inspection/EleAnalysisPanel';
+import PathSummaryModal from '../components/inspection/PathSummaryModal';
 import StructurePanel from '../components/inspection/StructurePanel';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
@@ -210,6 +214,9 @@ export default function Inspection() {
   const [detailData, setDetailData] = useState<InspectionDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [meta, setMeta] = useState<InspectionMeta | null>(null);
+  const [correcting, setCorrecting] = useState(false);
+  const [pathSummaryOpen, setPathSummaryOpen] = useState(false);
+  const [pathGroup, setPathGroup] = useState<{ id: string; name: string } | null>(null);
   // 已读的状态变化提醒（localStorage 持久化，点开详情后红点消失）
   const [readChanges, setReadChanges] = useState<Set<string>>(() => {
     try {
@@ -230,6 +237,36 @@ export default function Inspection() {
       }
       return next;
     });
+  };
+
+  const handleCalculateCorrection = async () => {
+    if (!detailData?.frac) return;
+    setCorrecting(true);
+    try {
+      // 联动：frac 本地尚无已完成记录时先单独巡检，再计算矫正项
+      if (detailData.frac.status !== 'completed') {
+        await runSingleInspection(detailData.frac.task_id);
+      }
+      await calculateCorrection(detailData.frac.task_id);
+      message.success('矫正项计算完成');
+      const data = await fetchInspectionDetail(detailData.task_id);
+      setDetailData(data);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '计算矫正项失败');
+    } finally {
+      setCorrecting(false);
+    }
+  };
+
+  const openDetailById = (taskId: string) => {
+    const row = results.find((r) => r.task_id === taskId);
+    if (row) void openDetail(row);
+  };
+
+  const openPathSummary = (row: InspectionResult) => {
+    if (!row.group_id) return;
+    setPathGroup({ id: row.group_id, name: row.group_name || row.group_id });
+    setPathSummaryOpen(true);
   };
 
   const unreadCount = useMemo(
@@ -509,9 +546,22 @@ export default function Inspection() {
           : { colSpan: 2 },
       render: (_, row) =>
         isGroupedRow(row) ? (
-          <div style={{ textAlign: 'center' }}>
-            <span className="path-cell">{row.group_name || '—'}</span>
-          </div>
+          row.task_category === '自由能' && row.group_id ? (
+            <div style={{ textAlign: 'center' }}>
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0 }}
+                onClick={() => openPathSummary(row)}
+              >
+                {row.group_name || '—'}
+              </Button>
+            </div>
+          ) : (
+            <div style={{ textAlign: 'center' }}>
+              <span className="path-cell">{row.group_name || '—'}</span>
+            </div>
+          )
         ) : (
           <Tooltip title={row.task_name}>
             <span>{row.task_name}</span>
@@ -708,6 +758,55 @@ export default function Inspection() {
           <Skeleton active paragraph={{ rows: 12 }} />
         ) : detailData ? (
           <div className="inspection-detail">
+            {detailData.frac && detailData.task_type === 'opt' && (
+              <div className="free-energy-equation">
+                <div className="fe-box">
+                  <div className="fe-box__label">自由能</div>
+                  <div
+                    className="fe-box__value"
+                    style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 4 }}
+                  >
+                    {detailData.last_energy != null && detailData.frac.correction != null
+                      ? (detailData.last_energy + detailData.frac.correction).toFixed(4)
+                      : '—'}
+                    <span className="preview-note">eV</span>
+                  </div>
+                </div>
+                <span className="fe-op">=</span>
+                <div className="fe-box">
+                  <div className="fe-box__label">DFT 能量</div>
+                  <div
+                    className="fe-box__value"
+                    style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 4 }}
+                  >
+                    {detailData.last_energy != null ? detailData.last_energy.toFixed(4) : '—'}
+                    <span className="preview-note">eV</span>
+                  </div>
+                </div>
+                <span className="fe-op">+</span>
+                <div className="fe-box">
+                  <div className="fe-box__label">矫正项 (ZPE − T·S)</div>
+                  {detailData.frac.correction != null ? (
+                    <div
+                      className="fe-box__value"
+                      style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 4 }}
+                    >
+                      {detailData.frac.correction.toFixed(4)}
+                      <span className="preview-note">eV</span>
+                    </div>
+                  ) : (
+                    <Button
+                      size="small"
+                      type="link"
+                      loading={correcting}
+                      onClick={() => void handleCalculateCorrection()}
+                    >
+                      未矫正 · 计算
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
             <Descriptions column={1} size="small" bordered>
               <Descriptions.Item label="项目">{detailData.project_name}</Descriptions.Item>
               <Descriptions.Item label="任务 ID">{detailData.task_id}</Descriptions.Item>
@@ -771,23 +870,49 @@ export default function Inspection() {
             {detailData.force_history.length > 0 && (
               <div className="inspection-detail__section">
                 <h3>能量与力 · 离子步</h3>
-                <div className="analysis-charts">
-                  <LineChart
-                    title="能量 随离子步"
-                    series={detailData.force_history.map((p) => p.energy)}
-                    color="#2C6FBB"
-                    unit="能量 (eV)"
-                  />
-                  <LineChart
-                    title="最大力 随离子步"
-                    series={detailData.force_history.map((p) => p.max_force)}
-                    color="#C0392B"
-                    unit="最大力 (eV/Å)"
-                    threshold={0.02}
-                  />
-                </div>
+                <ForceHistoryCharts history={detailData.force_history} />
               </div>
             )}
+
+            {detailData.task_type === 'neb' &&
+              detailData.neb_profile &&
+              detailData.neb_profile.images.length > 0 && (
+                <div className="inspection-detail__section">
+                  <h3>NEB 能垒</h3>
+                  <LineChart
+                    title="相对初态能量"
+                    series={detailData.neb_profile.images.map((x) => x.relative)}
+                    color="#7B61D6"
+                    unit="相对能量 (eV)"
+                    points={detailData.neb_profile.images.map((x) => ({
+                      step: Number(x.label),
+                      energy: x.relative,
+                      max_force: null,
+                    }))}
+                  />
+                </div>
+              )}
+
+            <div className="inspection-detail__section">
+              <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
+              {detailData.task_type === 'ele' ? (
+                <EleAnalysisPanel detail={detailData} />
+              ) : detailData.analysis ? (
+                <StructurePanel
+                  analysis={detailData.analysis}
+                  taskType={detailData.task_type}
+                  forceHistory={detailData.force_history}
+                  forceMax={detailData.force_max}
+                  forceRms={detailData.force_rms}
+                  forceConverged={detailData.force_converged}
+                />
+              ) : (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description="该任务类型的专属分析尚未接入，当前仅展示基础数据"
+                />
+              )}
+            </div>
 
             {detailData.frac && (
               <div className="inspection-detail__section">
@@ -837,30 +962,19 @@ export default function Inspection() {
                 </Descriptions>
               </div>
             )}
-
-            <div className="inspection-detail__section">
-              <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
-              {detailData.analysis ? (
-                <StructurePanel
-                  analysis={detailData.analysis}
-                  taskType={detailData.task_type}
-                  forceHistory={detailData.force_history}
-                  forceMax={detailData.force_max}
-                  forceRms={detailData.force_rms}
-                  forceConverged={detailData.force_converged}
-                />
-              ) : (
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="该任务类型的专属分析尚未接入，当前仅展示基础数据"
-                />
-              )}
-            </div>
           </div>
         ) : (
           <Empty description="暂无详情数据" />
         )}
       </Modal>
+
+      <PathSummaryModal
+        open={pathSummaryOpen}
+        groupId={pathGroup?.id ?? null}
+        groupName={pathGroup?.name}
+        onCancel={() => setPathSummaryOpen(false)}
+        onOpenDetail={openDetailById}
+      />
     </PageTransition>
   );
 }

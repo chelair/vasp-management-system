@@ -1,6 +1,7 @@
 """巡检接口：结果列表 / 触发巡检 / 调度信息。"""
 
 import base64
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -13,8 +14,10 @@ from config import load_settings
 from envelope import fail, ok
 from inspection_runner import run_inspection
 from paths import resolve_remote_path
+import ssh
 from storage import load_db
 from structure_analysis import analyze as analyze_structure
+from task_paths import task_remote_dir
 import vesta_render
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
@@ -150,6 +153,24 @@ def _build_analysis(project: dict, task: dict, entry: dict, history: list):
     return None
 
 
+def _check_remote_files(server: str, remote_dir: str, filenames) -> dict:
+    """检查远端任务目录中指定文件是否存在且非空。"""
+    result = {}
+    conds = " ".join(
+        f'[ -s "{remote_dir}/{name}" ] && echo OK_{i} || echo MISS_{i};'
+        for i, name in enumerate(filenames)
+    )
+    try:
+        r = ssh.run_remote(server, f"bash -c '{conds}'", timeout=30)
+        out = r.get("stdout", "")
+        for i, name in enumerate(filenames):
+            result[name] = f"OK_{i}" in out
+    except Exception:  # noqa: BLE001 - 检查失败视为不可用
+        for name in filenames:
+            result[name] = False
+    return result
+
+
 @router.get("/{task_id}")
 def inspection_detail(task_id: str):
     """单任务巡检详情：能量/力曲线数据 + 结构分析（晶格对比 + VESTA 渲染图）。"""
@@ -200,10 +221,78 @@ def inspection_detail(task_id: str):
                     "notes": (frac_entry.get("notes") or "") if frac_entry else "",
                     "queue_status": frac_entry.get("queue_status") if frac_entry else None,
                     "current_output": _display_current_output(project, frac_co),
+                    "correction": frac_task.get("correction"),
                 }
 
         history = entry.get("force_history") or []
         analysis = _build_analysis(project, task, entry, history)
+
+        # 电子结构：自动识别可分析内容（对应输出文件存在且非空）
+        available_analyses = None
+        if task.get("task_type") == "ele":
+            ele_dir = task_remote_dir(project.get("server"), task).rstrip("/")
+            files = _check_remote_files(
+                project.get("server"),
+                ele_dir,
+                ["DOSCAR", "AECCAR0", "AECCAR1", "AECCAR2", "COHPCAR", "LOCPOT"],
+            )
+            available_analyses = {
+                "pdos": bool(files.get("DOSCAR")),
+                "bader": bool(
+                    files.get("AECCAR0")
+                    and files.get("AECCAR1")
+                    and files.get("AECCAR2")
+                ),
+                "cohp": bool(files.get("COHPCAR")),
+                "work_function": bool(files.get("LOCPOT")),
+                "diff_charge": False,
+            }
+
+        # NEB 过渡态：各映像能量（能垒图数据，相对初态 IS）
+        neb_profile = None
+        if task.get("task_type") == "neb":
+            neb_dir = task_remote_dir(project.get("server"), task).rstrip("/")
+            try:
+                r = ssh.run_remote(
+                    project.get("server"),
+                    f'bash -c \'ls -d "{neb_dir}"/[0-9]* 2>/dev/null | xargs -n1 basename | sort -n\'',
+                    timeout=30,
+                )
+                labels = [
+                    line.strip()
+                    for line in (r.get("stdout", "") or "").splitlines()
+                    if line.strip().isdigit()
+                ]
+                images = []
+                for label in labels:
+                    r2 = ssh.run_remote(
+                        project.get("server"),
+                        f'bash -c \'grep " F=" "{neb_dir}/{label}/OSZICAR" 2>/dev/null | tail -1\'',
+                        timeout=30,
+                    )
+                    m = re.search(r"F=\s*([-\d.E+]+)", r2.get("stdout", "") or "")
+                    images.append(
+                        {
+                            "label": label,
+                            "energy": float(m.group(1)) if m else None,
+                        }
+                    )
+                base = next((x["energy"] for x in images if x["energy"] is not None), None)
+                neb_profile = {
+                    "images": [
+                        {
+                            **x,
+                            "relative": (
+                                round(x["energy"] - base, 6)
+                                if x["energy"] is not None and base is not None
+                                else None
+                            ),
+                        }
+                        for x in images
+                    ]
+                }
+            except Exception:  # noqa: BLE001 - 能垒解析失败不影响详情
+                neb_profile = None
 
         return ok(
             "查询成功",
@@ -230,6 +319,8 @@ def inspection_detail(task_id: str):
                 ),
                 "frac": frac,
                 "analysis": analysis,
+                "available_analyses": available_analyses,
+                "neb_profile": neb_profile,
             },
         )
     except Exception as e:

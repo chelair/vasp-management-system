@@ -12,6 +12,7 @@ from config import PROJECT_ROOT, ensure_data_dirs, load_servers
 from dependencies import INSTALL_HINT, check_dependencies
 from envelope import fail
 from routers import auxiliary as aux
+from routers import free_energy
 from routers import groups, inspections, jobs, meta, paths, projects, reports, settings, ssh
 from ssh import warmup_connection
 
@@ -104,6 +105,7 @@ app.include_router(projects.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(groups.router, prefix="/api")
 app.include_router(aux.router, prefix="/api")
+app.include_router(free_energy.router, prefix="/api")
 app.include_router(paths.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")

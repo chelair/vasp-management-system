@@ -203,6 +203,33 @@ export async function uploadKpoints(
   });
 }
 
+/** PDOS 分析：远端 vaspkit 111/113/115 生成文件并回传本地 */
+export async function analyzePdos(
+  taskId: string,
+  payload: {
+    mode: number;
+    groups?: { elements: string; orbitals: string }[];
+  },
+): Promise<{ mode: number; files: string[]; raw: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/analysis/pdos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 自由能矫正项：远端 vaspkit 501 计算 Thermal correction to G(T) */
+export async function calculateCorrection(
+  taskId: string,
+  temperature = 298.15,
+): Promise<{ correction: number; temperature: number }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/calculate-correction`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ temperature }),
+  });
+}
+
 /** 为结构优化任务构建频率矫正（frac）输入文件（自由能流程） */
 export async function createFracFiles(
   taskId: string,

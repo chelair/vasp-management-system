@@ -122,6 +122,37 @@ def _bjobs_status(server: str, job_id: str) -> str:
     return "NOT_FOUND"
 
 
+def compute_g_correction(
+    server: str,
+    remote_dir: str,
+    temperature: float = 298.15,
+) -> float:
+    """远端 vaspkit 501 计算 G(T) 热力学矫正（eV）。
+
+    vaspkit 输出：Thermal correction to G(T): 31.277 kcal/mol  1.356307 eV
+    取 kcal/mol 之后的 eV 值。
+    """
+    servers = load_servers()
+    profile = str(
+        servers.get(server, {}).get(
+            "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
+        )
+    )
+    result = ssh.run_remote(
+        server,
+        f'bash -c \'cd "{remote_dir}" && printf "501\\n{temperature}\\n" | vaspkit\'',
+        timeout=180,
+    )
+    raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+    m = re.search(
+        r"Thermal correction to G\(T\):\s*[-\d.Ee+]+\s+kcal/mol\s+([-\d.Ee+]+)",
+        raw,
+    )
+    if not m or result.get("exit_code") != 0:
+        raise RuntimeError(f"vaspkit 501 未能解析矫正项：{raw[-400:] or '未知错误'}")
+    return float(m.group(1))
+
+
 def _running_job(
     server: str,
     remote_dir: str,

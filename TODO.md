@@ -209,6 +209,9 @@
       Bader LCHARG/LAECHG、COHP ISYM/NBANDS/LWAVE/LORBIT、功函数 LVHAR/LDIPOL+DIPOL 矫正中心，
       关闭 LDIPOL 弹警告）；frac ISYM/SIGMA/NSW/IBRION/POTIM 可配置；NEB 初末态数据库收敛校验 +
       IBRION/POTIM/IOPT/LCLIMB/IMAGES/ICHAIN/SPRING/MAXMOVE 参数化；前端 NEB/ele 弹窗参数界面
+- [x] 详情页分析模块：折线图悬停竖线+交点放大+提示区；电子结构 available_analyses 识别 +
+      PDOS（vaspkit 111/113/115 文件回传）+ 占位；自由能等式看板（vaspkit 501 矫正）+
+      路径台阶图（汇总接口 + 看板弹窗，路径名可点击）；NEB 能垒图（映像能量解析）
 - [ ] 后端定时任务：APScheduler 每 2 小时自动触发（当前自动指示为配置信息，未真正调度）
 
 ### 5. 作业管理模块（Jobs）

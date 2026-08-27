@@ -152,6 +152,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     group = task.get("group") or {}
     group_name = group.get("name") or ""
     structure_label = group.get("structure_label") or ""
+    group_id = group.get("group_id") or ""
     if entry is None:
         task_type = task.get("task_type", "")
         return {
@@ -161,6 +162,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
             "task_id": str(task.get("task_id", "")),
             "task_name": f"{task.get('model_name', '')} · {TASK_TYPE_LABELS.get(task_type, task_type)}",
             "group_name": group_name,
+            "group_id": group_id,
             "structure_label": structure_label,
             "category": "queue",
             "task_category": task_category,
@@ -273,6 +275,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         "task_id": str(entry.get("task_id", "")),
         "task_name": f"{task.get('model_name', '')} · {TASK_TYPE_LABELS.get(task_type, task_type)}",
         "group_name": group_name,
+        "group_id": group_id,
         "structure_label": structure_label,
         "category": category,
         "status": check_status,

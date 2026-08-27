@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import ssh
 from checks_store import archive_results, record_run
 from config import PROJECTS_DIR, load_servers
+from continuation import compute_g_correction
 from dates import now_iso
 from paths import to_remote_rel
 from storage import db_transaction, update_task_status
@@ -312,6 +313,20 @@ def _run_inspection_locked(
             row = _apply_result(db, project, task, results_by_id.get(task["task_id"], {}))
             server_rows.append(row)
             rows.append(row)
+            # 自由能 frac 巡检完成（completed）且尚无矫正项：自动尝试计算矫正项
+            if (
+                task.get("task_type") == "frac"
+                and row["new_status"] == "completed"
+                and task.get("correction") is None
+            ):
+                try:
+                    remote_dir = task_remote_dir(project.get("server"), task).rstrip("/")
+                    task["correction"] = compute_g_correction(
+                        project.get("server"), remote_dir
+                    )
+                    task["correction_at"] = now_iso()
+                except Exception as e:  # noqa: BLE001 - 自动计算失败不阻塞巡检
+                    row["warnings"].append(f"自动计算矫正项失败：{e}")
             inspected += 1
             if row["status_changed"]:
                 updated += 1

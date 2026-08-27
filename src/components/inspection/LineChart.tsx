@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { motion } from 'framer-motion';
 
 interface Props {
@@ -6,13 +7,26 @@ interface Props {
   color: string;
   unit?: string;
   threshold?: number;
+  /** 悬停提示数据点（与 series 索引对齐） */
+  points?: { step: number; energy: number | null; max_force: number | null }[];
+  hovered?: number | null;
+  onHover?: (index: number | null) => void;
 }
 
 /**
  * SVG 折线图（对齐参考实现 generate_summary_html._svg_line_chart 的格式）：
  * 4 档 y 轴刻度、首/中/末步号、轴单位、可选收敛基准线（虚线 + 标注）。
  */
-export default function LineChart({ title, series, color, unit, threshold }: Props) {
+export default function LineChart({
+  title,
+  series,
+  color,
+  unit,
+  threshold,
+  points,
+  hovered,
+  onHover,
+}: Props) {
   const values = series.filter((v): v is number => v != null);
   if (values.length === 0) {
     return (
@@ -31,11 +45,12 @@ export default function LineChart({ title, series, color, unit, threshold }: Pro
   const yMin = Math.min(...all);
   const yMax = Math.max(...all);
   const span = yMax - yMin || 1;
-  const n = values.length;
+  const n = series.length;
 
   const px = (index: number) =>
     n > 1 ? M.left + (index * plotW) / (n - 1) : M.left + plotW / 2;
-  const py = (value: number) => M.top + plotH * (1 - (value - yMin) / span);
+  const py = (value: number | null) =>
+    value == null ? M.top : M.top + plotH * (1 - (value - yMin) / span);
 
   const yTicks = [0, 1, 2, 3].map((k) => {
     const value = yMin + (yMax - yMin) * (k / 3);
@@ -43,16 +58,35 @@ export default function LineChart({ title, series, color, unit, threshold }: Pro
   });
   const xTicks = [
     { step: 1, x: px(0) },
-    { step: Math.ceil(n / 2), x: px(Math.floor((n - 1) / 2)) },
-    { step: n, x: px(n - 1) },
+    { step: Math.ceil(series.length / 2), x: px(Math.floor((series.length - 1) / 2)) },
+    { step: series.length, x: px(series.length - 1) },
   ];
 
-  const linePath = values
-    .map((v, i) => `${i === 0 ? 'M' : 'L'}${px(i).toFixed(1)},${py(v).toFixed(1)}`)
+  let penDown = false;
+  const linePath = series
+    .map((v, i) => {
+      if (v == null) {
+        penDown = false;
+        return '';
+      }
+      const cmd = penDown ? 'L' : 'M';
+      penDown = true;
+      return `${cmd}${px(i).toFixed(1)},${py(v).toFixed(1)}`;
+    })
+    .filter(Boolean)
     .join(' ');
+  const hoverPoint = hovered != null ? points?.[hovered] : null;
+  const hoverValue = hovered != null ? series[hovered] : null;
+  const lastHoverRef = useRef<number | null>(null);
 
   return (
     <div className="analysis-chart">
+      {hoverPoint && (
+        <div className="analysis-chart__hint">
+          步 {hoverPoint.step} · 能量 {hoverPoint.energy != null ? hoverPoint.energy.toFixed(4) : '—'} eV · 力{' '}
+          {hoverPoint.max_force != null ? hoverPoint.max_force.toFixed(4) : '—'} eV/Å
+        </div>
+      )}
       <svg viewBox={`0 0 ${W} ${H}`} className="analysis-chart__svg" role="img" aria-label={title}>
         <text x={M.left} y="16" fontSize="13" fill="#374151">
           {title}
@@ -115,6 +149,28 @@ export default function LineChart({ title, series, color, unit, threshold }: Pro
             </text>
           </>
         )}
+        {/* 悬停：竖线 + 交点放大 */}
+        {hovered != null && hoverValue != null && (
+          <>
+            <line
+              x1={px(hovered)}
+              y1={M.top}
+              x2={px(hovered)}
+              y2={M.top + plotH}
+              stroke="#9CA3AF"
+              strokeWidth="1"
+              strokeDasharray="4,3"
+            />
+            <circle
+              cx={px(hovered)}
+              cy={py(hoverValue)}
+              r="5"
+              fill={color}
+              stroke="#FFFFFF"
+              strokeWidth="2.5"
+            />
+          </>
+        )}
         {unit && (
           <text
             x="14"
@@ -130,6 +186,33 @@ export default function LineChart({ title, series, color, unit, threshold }: Pro
         <text x={M.left + plotW / 2} y={H - 2} fontSize="11" fill="#6B7A90" textAnchor="middle">
           离子步
         </text>
+        {onHover && (
+          <rect
+            x={M.left}
+            y={M.top}
+            width={plotW}
+            height={plotH}
+            fill="transparent"
+            onMouseMove={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              // rect 覆盖层在 viewBox 中的宽度是 plotW；用实际渲染宽度换算，
+              // 自动适配不同设备/缩放（CSS 像素 -> viewBox 坐标）
+              const scaleX = rect.width / plotW;
+              const x = (e.clientX - rect.left) / scaleX; // 相对绘图区左缘的 viewBox 坐标
+              const idx = n > 1 ? Math.round((x / plotW) * (n - 1)) : 0;
+              const clamped = Math.max(0, Math.min(n - 1, idx));
+              // 仅当索引变化才回调，减少无效重渲染
+              if (lastHoverRef.current !== clamped) {
+                lastHoverRef.current = clamped;
+                onHover(clamped);
+              }
+            }}
+            onMouseLeave={() => {
+              lastHoverRef.current = null;
+              onHover(null);
+            }}
+          />
+        )}
       </svg>
     </div>
   );

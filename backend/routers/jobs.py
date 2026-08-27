@@ -27,6 +27,7 @@ from continuation import (
     _remote_latest_con,
     _write_remote_file,
     build_ele_inputs,
+    compute_g_correction,
     create_continuation,
     create_frac_files,
     create_neb_files,
@@ -909,3 +910,124 @@ def upload_kpoints(task_id: str, payload: dict = Body(default={})):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"上传 KPOINTS 失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/analysis/pdos")
+def analyze_pdos(task_id: str, payload: dict = Body(default={})):
+    """PDOS 分析：远端执行 vaspkit 111/113/115，生成文件下载回本地 files/analysis/。"""
+    try:
+        project, task = _resolve_task(task_id)
+        if task.get("task_type") != "ele":
+            return JSONResponse(status_code=400, content=fail("仅电子结构任务支持 PDOS 分析"))
+        server = project.get("server")
+        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+        if not remote_dir:
+            return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+        mode = int(payload.get("mode", 111))
+        if mode not in (111, 113, 115):
+            return JSONResponse(status_code=400, content=fail("mode 仅支持 111 / 113 / 115"))
+        groups = payload.get("groups") or []
+        if mode == 115 and not groups:
+            return JSONResponse(status_code=400, content=fail("自定义分析需提供至少一组元素与轨道"))
+
+        lines = [str(mode)]
+        if mode == 115:
+            for g in groups:
+                elem = str(g.get("elements", "")).strip()
+                orb = str(g.get("orbitals", "")).strip()
+                if elem:
+                    lines.append(f"{elem} {orb}".strip())
+            lines.append("")
+        else:
+            lines.append("")
+        input_text = "\n".join(lines) + "\n"
+        escaped = input_text.replace("\\", "\\\\").replace('"', '\\"')
+        result = ssh.run_remote(
+            server,
+            f'bash -c \'cd "{remote_dir}" && printf "{escaped}" | vaspkit\'',
+            timeout=180,
+        )
+        raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+        if result.get("exit_code") != 0:
+            return JSONResponse(
+                status_code=500,
+                content=fail(f"vaspkit 执行失败：{raw or '未知错误'}"),
+            )
+
+        # 收集远端 *.dat 文件下载到本地 files/analysis/
+        from task_paths import task_dir
+
+        local_analysis = task_dir(project.get("name", ""), task) / "files" / "analysis"
+        local_analysis.mkdir(parents=True, exist_ok=True)
+        ls = ssh.run_remote(
+            server,
+            f'bash -c \'ls -1 "{remote_dir}"/*.dat 2>/dev/null\'',
+            timeout=30,
+        )
+        downloaded = []
+        for name in (ls.get("stdout") or "").splitlines():
+            name = name.strip()
+            if not name:
+                continue
+            local = local_analysis / Path(name).split("/")[-1]
+            if ssh.download_file(server, f"{remote_dir}/{name}", str(local)):
+                downloaded.append(str(local))
+        _audit_log(
+            project["name"],
+            task_id,
+            remote_dir,
+            f"pdos mode={mode}",
+            f"OK files={len(downloaded)}",
+        )
+        return ok(
+            "PDOS 分析完成",
+            {
+                "mode": mode,
+                "files": downloaded,
+                "raw": raw[:800],
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"PDOS 分析失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/calculate-correction")
+def calculate_correction(task_id: str, payload: dict = Body(default={"temperature": 298.15})):
+    """自由能矫正项：远端 frac 目录执行 vaspkit 501，解析 Thermal correction to G(T)。"""
+    try:
+        project, task = _resolve_task(task_id)
+        if task.get("task_type") != "frac":
+            return JSONResponse(status_code=400, content=fail("仅频率矫正任务可计算矫正项"))
+        server = project.get("server")
+        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+        if not remote_dir:
+            return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+        temperature = float(payload.get("temperature", 298.15))
+        try:
+            correction = compute_g_correction(server, remote_dir, temperature)
+        except Exception as e:  # noqa: BLE001 - 计算失败返回明确错误
+            return JSONResponse(status_code=500, content=fail(str(e)))
+        with db_transaction() as db:
+            proj = next(p for p in db["projects"] if p["name"] == project["name"])
+            for t in proj["tasks"]:
+                if t.get("task_id") == task_id:
+                    t["correction"] = correction
+                    t["correction_temp"] = temperature
+                    t["correction_at"] = now_iso()
+        _audit_log(
+            project["name"],
+            task_id,
+            remote_dir,
+            f"vaspkit501 T={temperature}",
+            f"OK correction={correction}",
+        )
+        return ok(
+            "矫正项计算完成",
+            {"correction": correction, "temperature": temperature},
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"计算矫正项失败：{e}"))

@@ -98,6 +98,8 @@ export interface InspectionResult {
   task_name: string;
   /** 自由能路径组名称（如 PATH1），非自由能任务为空 */
   group_name?: string;
+  /** 组 ID（自由能/NEB），用于路径看板等聚合 */
+  group_id?: string;
   /** 组内结构标签（如 1、2），自由能行用于排序 */
   structure_label?: string;
   category: CheckCategory;
@@ -150,6 +152,8 @@ export interface InspectionFracDetail {
   notes: string;
   queue_status: string | null;
   current_output: CurrentOutput | null;
+  /** 自由能矫正项（vaspkit 501 计算，eV） */
+  correction?: number | null;
 }
 
 export interface LatticeParams {
@@ -212,6 +216,18 @@ export interface InspectionDetail {
   current_output: CurrentOutput | null;
   /** 自由能组 opt 任务关联的频率矫正子任务数据（无则为 null） */
   frac?: InspectionFracDetail | null;
+  /** 电子结构任务可分析内容识别（对应输出文件存在且非空） */
+  available_analyses?: {
+    pdos: boolean;
+    bader: boolean;
+    cohp: boolean;
+    work_function: boolean;
+    diff_charge: boolean;
+  } | null;
+  /** NEB 过渡态：各映像能量（能垒图数据） */
+  neb_profile?: {
+    images: { label: string; energy: number | null; relative: number | null }[];
+  } | null;
   analysis: StructureAnalysis | null;
 }
 

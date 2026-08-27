@@ -202,6 +202,13 @@
 - [x] 续算分流：最新目录（最大编号 conN）OUTCAR+CONTCAR 均非空 -> 创建 con(N+1)（created）；
       否则不创建不提交，输入完整返回 input_complete_but_not_finished、缺失返回 input_incomplete
       并列出缺失文件；移除 pending 前置拦截；审计日志记录分流结果
+- [x] INCAR 重构：统一 modify_incar 核心函数（大小写/空格/布尔兼容、注释保留、重复合并+警告、
+      缺失追加），续算/frac/ele/neb 的 INCAR 修改统一走该函数（本地生成后上传）；
+      新增 upload-incar 接口（远端最新目录备份 old_INCAR 后上传），IncarEditor 加「上传到远端」
+- [x] 续算 INCAR 参数规格：ele 基础 NSW=-1/IBRION=-1 + 类型参数（PDOS LORBIT/EMIN/EMAX/NEDOS、
+      Bader LCHARG/LAECHG、COHP ISYM/NBANDS/LWAVE/LORBIT、功函数 LVHAR/LDIPOL+DIPOL 矫正中心，
+      关闭 LDIPOL 弹警告）；frac ISYM/SIGMA/NSW/IBRION/POTIM 可配置；NEB 初末态数据库收敛校验 +
+      IBRION/POTIM/IOPT/LCLIMB/IMAGES/ICHAIN/SPRING/MAXMOVE 参数化；前端 NEB/ele 弹窗参数界面
 - [ ] 后端定时任务：APScheduler 每 2 小时自动触发（当前自动指示为配置信息，未真正调度）
 
 ### 5. 作业管理模块（Jobs）

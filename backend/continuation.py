@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import ssh
 from config import PROJECTS_DIR, load_servers
+from incar import modify_incar
 from paths import resolve_local_path, to_local_rel, to_remote_rel
 from task_paths import task_remote_dir
 
@@ -27,10 +28,11 @@ NEBMAKE_PL = "/data/gpfs03/mdye/VTST/vtstscripts/nebmake.pl"
 
 ELEC_TYPE_PARAMS: Dict[str, Dict[str, Any]] = {
     "pdos": {
-        "LWAVE": ".TRUE.",
-        "LORBIT": 11,
-        "NEDOS": 2000,
-        "hint": "PDOS 需要波函数（LWAVE）与轨道投影（LORBIT）",
+        "LORBIT": 11,  # 可 10/11/12，默认 11
+        "EMIN": -10,  # 可改，留空则不包含
+        "EMAX": 10,
+        "NEDOS": 1000,
+        "hint": "PDOS 需要轨道投影（LORBIT），可设置能量范围 EMIN/EMAX 与 NEDOS",
     },
     "bader": {
         "LCHARG": ".TRUE.",
@@ -38,20 +40,26 @@ ELEC_TYPE_PARAMS: Dict[str, Dict[str, Any]] = {
         "hint": "Bader 分析需要全电子电荷密度（LAECHG）",
     },
     "cohp": {
-        "LWAVE": ".TRUE.",
         "ISYM": -1,
-        "LORBIT": 11,
-        "NBANDS": 400,
-        "hint": "COHP 需要波函数与轨道投影，且需较高能带数（NBANDS）",
+        "NBANDS": 400,  # 可改，留空则不包含
+        "LWAVE": ".TRUE.",
+        "LORBIT": 11,  # 可 10/11/12，默认 11
+        "hint": "COHP 需要波函数与轨道投影（LWAVE/LORBIT），且需较高能带数（NBANDS）",
     },
     "work_function": {
         "LVHAR": ".TRUE.",
-        "IDIPOL": 3,
-        "hint": "功函数需要局域势输出（LVHAR）与偶极校正（IDIPOL）",
+        "LDIPOL": ".TRUE.",  # 默认开启偶极校正；关闭需用户确认
+        "hint": "功函数需要局域势输出（LVHAR）与偶极校正（LDIPOL + DIPOL 矫正中心）",
     },
     "diff_charge": {
         "hint": "差分电荷计算后续实现",
     },
+}
+
+#: 电子结构基础设置（所有类型共用，用户可覆盖/留空则不包含）
+ELEC_BASE_PARAMS: Dict[str, Any] = {
+    "NSW": -1,
+    "IBRION": -1,
 }
 
 
@@ -280,12 +288,12 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
         "set -e",
         f'mkdir "{new_dir}"',
         *_source_files_cmds(src, new_dir),
-        f'if [ ! -f "{new_dir}/INCAR" ]; then printf "ISTART = 1\\nICHARG = 0\\n" > "{new_dir}/INCAR"; fi',
-        _sed_incar(new_dir),
     ]
-    r = ssh.run_remote(server, "bash -c '" + "; ".join(cmds) + "'", timeout=120)
-    if r["exit_code"] != 0:
-        raise RuntimeError((r["stderr"] or r["stdout"]).strip() or "续算文件复制失败")
+    _run_remote_bash(server, cmds, timeout=120)
+    # 统一 INCAR 修改：本地生成后上传（大小写/布尔兼容、重复合并）
+    incar = _download_remote_text(server, f"{new_dir}/INCAR") or ""
+    updated, incar_warnings = modify_incar(incar, {"ISTART": 1, "ICHARG": 0})
+    _write_remote_file(server, f"{new_dir}/INCAR", updated)
     copied = _list_remote_dir(server, new_dir)
     return {
         "task_type": task_type,
@@ -295,7 +303,7 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
         "latest_dir": latest or None,
         "incar_changes": {"ISTART": "1", "ICHARG": "0"},
         "copied_files": copied,
-        "warnings": [],
+        "warnings": incar_warnings,
         "action": "created",
         "current_dir": current_dir,
         "message": f"已创建续算目录 {con}",
@@ -332,14 +340,11 @@ def _create_neb_continuation(
                     f'elif [ -f "{remote_dir}/{img}/POSCAR" ]; then '
                     f'cp "{remote_dir}/{img}/POSCAR" "{new_dir}/{img}/POSCAR"; fi'
                 )
-    # INCAR 修改（默认 ISTART=1, ICHARG=0）
-    cmds.append(
-        f'if [ ! -f "{new_dir}/INCAR" ]; then printf "ISTART = 1\\nICHARG = 0\\n" > "{new_dir}/INCAR"; fi'
-    )
-    cmds.append(_sed_incar(new_dir))
-    r = ssh.run_remote(server, "bash -c '" + "; ".join(cmds) + "'", timeout=180)
-    if r["exit_code"] != 0:
-        raise RuntimeError((r["stderr"] or r["stdout"]).strip() or "NEB 续算文件复制失败")
+    _run_remote_bash(server, cmds, timeout=180)
+    # 统一 INCAR 修改（ISTART=1, ICHARG=0）
+    incar = _download_remote_text(server, f"{new_dir}/INCAR") or ""
+    updated, incar_warnings = modify_incar(incar, {"ISTART": 1, "ICHARG": 0})
+    _write_remote_file(server, f"{new_dir}/INCAR", updated)
     return {
         "task_type": "neb",
         "con": con,
@@ -349,18 +354,8 @@ def _create_neb_continuation(
         "incar_changes": {"ISTART": "1", "ICHARG": "0"},
         "copied_files": _list_remote_dir(server, new_dir),
         "images": images,
-        "warnings": warnings,
+        "warnings": warnings + incar_warnings,
     }
-
-
-def _sed_incar(path: str) -> str:
-    return (
-        f'if [ -f "{path}/INCAR" ]; then '
-        f'if grep -q "ISTART" "{path}/INCAR"; then sed -i "s/^[[:space:]]*ISTART.*/ISTART = 1/" "{path}/INCAR"; '
-        f'else echo "ISTART = 1" >> "{path}/INCAR"; fi; '
-        f'if grep -q "ICHARG" "{path}/INCAR"; then sed -i "s/^[[:space:]]*ICHARG.*/ICHARG = 0/" "{path}/INCAR"; '
-        f'else echo "ICHARG = 0" >> "{path}/INCAR"; fi; fi'
-    )
 
 
 def _source_files_cmds(src: str, dst: str) -> List[str]:
@@ -380,29 +375,29 @@ def _source_files_cmds(src: str, dst: str) -> List[str]:
     ]
 
 
-def _merge_incar(incar_text: str, params: Dict[str, Any]) -> str:
-    """在 INCAR 文本中替换/追加参数（已有行替换，缺失行追加）。"""
-    params = {str(k): str(v) for k, v in params.items() if v is not None}
-    if not params:
-        return incar_text
-    lines = incar_text.splitlines()
-    seen = set()
-    out: List[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            out.append(line)
-            continue
-        key = stripped.split("=", 1)[0].strip()
-        if key in params:
-            out.append(f"{key} = {params[key]}")
-            seen.add(key)
-        else:
-            out.append(line)
-    for key, value in params.items():
-        if key not in seen:
-            out.append(f"{key} = {value}")
-    return "\n".join(out) + "\n"
+def _merge_incar(incar_text: str, params: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """统一 INCAR 修改（大小写/空格/布尔兼容、重复合并、缺失追加）。"""
+    return modify_incar(incar_text, params)
+
+
+def _merge_ele_params(ele_types: List[str]) -> Tuple[Dict[str, Any], List[str]]:
+    """合并多个电子结构计算类型的参数。
+
+    同一参数值一致 -> 正常合并（重复参数）；
+    同一参数值不一致 -> 返回冲突列表（调用方抛出警告/错误）。
+    """
+    merged: Dict[str, Any] = {}
+    conflicts: List[str] = []
+    for t in ele_types:
+        cfg = ELEC_TYPE_PARAMS.get(t, {})
+        for key, value in cfg.items():
+            if key == "hint":
+                continue
+            if key in merged and str(merged[key]) != str(value):
+                conflicts.append(f"{key}：{merged[key]}（已选类型）与 {value}（{t}）冲突")
+            elif key not in merged:
+                merged[key] = value
+    return merged, conflicts
 
 
 def _write_remote_file(server: str, remote_path: str, content: str) -> None:
@@ -448,7 +443,7 @@ def create_frac_files(
     project: Dict[str, Any],
     opt_task: Dict[str, Any],
     frac_task: Dict[str, Any],
-    ibration: int = 5,
+    params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """从结构优化最新输出构建频率矫正（frac）输入文件（全部在远端）。"""
     servers = load_servers()
@@ -471,10 +466,14 @@ def create_frac_files(
     ]
     _run_remote_bash(server, cmds, timeout=180)
 
-    # INCAR 频率计算参数（ISYM=-1 / NSW=0 / IBRION=5，其余保持不变）
+    # INCAR 频率计算参数（默认值可覆盖，留空则不包含）
     incar = _download_remote_text(server, f"{frac_dir}/INCAR") or ""
-    changes = {"ISYM": -1, "NSW": 0, "IBRION": ibration}
-    updated = _merge_incar(incar, changes)
+    defaults = {"ISYM": -1, "SIGMA": 0.05, "NSW": 1, "IBRION": 5, "POTIM": 0.015}
+    changes = {
+        **defaults,
+        **{str(k): v for k, v in (params or {}).items() if v is not None},
+    }
+    updated, incar_warnings = _merge_incar(incar, changes)
     _write_remote_file(server, f"{frac_dir}/INCAR", updated)
     return {
         "frac_dir": frac_dir,
@@ -482,6 +481,7 @@ def create_frac_files(
         "latest_dir": latest or None,
         "incar_changes": {k: str(v) for k, v in changes.items()},
         "copied_files": _list_remote_dir(server, frac_dir),
+        "warnings": incar_warnings,
     }
 
 
@@ -491,7 +491,7 @@ def build_ele_inputs(
     task: Dict[str, Any],
     source_type: str,
     source_task_id: Optional[str],
-    ele_type: str,
+    ele_types: List[str],
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """为电子结构任务构建输入文件（从 opt 导入或外部结构）。"""
@@ -499,8 +499,13 @@ def build_ele_inputs(
     if not ele_dir:
         raise ValueError("任务缺少 remote_dir")
 
-    extra = dict(ELEC_TYPE_PARAMS.get(ele_type, {}))
-    extra.pop("hint", None)
+    if not ele_types:
+        raise ValueError("请至少选择一种电子结构计算类型")
+    extra, conflicts = _merge_ele_params(ele_types)
+    if conflicts:
+        raise ValueError(f"所选计算类型存在参数冲突，请调整选择：{'；'.join(conflicts)}")
+    # 电子结构基础设置（NSW=-1 / IBRION=-1），用户 params 可覆盖
+    extra = {**ELEC_BASE_PARAMS, **extra}
     extra.update({str(k): v for k, v in (params or {}).items() if v is not None})
 
     src = ""
@@ -546,14 +551,15 @@ def build_ele_inputs(
         registry = load_task_registry()
         defaults = (registry.get("ele") or {}).get("default_incar", {})
         incar = "\n".join(f"{k} = {v}" for k, v in defaults.items()) + "\n"
-    updated = _merge_incar(incar, extra)
+    updated, incar_warnings = _merge_incar(incar, extra)
     _write_remote_file(server, f"{ele_dir}/INCAR", updated)
+    warnings.extend(incar_warnings)
 
     return {
         "ele_dir": ele_dir,
         "source_type": source_type,
         "source_dir": src or None,
-        "ele_type": ele_type,
+        "ele_types": ele_types,
         "incar_changes": {k: str(v) for k, v in extra.items()},
         "copied_files": _list_remote_dir(server, ele_dir),
         "warnings": warnings,
@@ -568,6 +574,7 @@ def create_neb_files(
     final_task: Dict[str, Any],
     num_images: int,
     nebmake: str = NEBMAKE_PL,
+    params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """从初末态 opt 构建 NEB 计算文件：00..NN 映像 + nebmake.pl 插值。"""
     if num_images < 1:
@@ -609,15 +616,26 @@ def create_neb_files(
     ]
     _run_remote_bash(server, cmds, timeout=300)
 
-    # NEB INCAR：默认模板 + IMAGES / SPRING=-5
+    # NEB INCAR：默认模板 + NEB 参数（默认值可覆盖，留空则不包含）
     from config import load_task_registry
 
     registry = load_task_registry()
     defaults = (registry.get("neb") or {}).get("default_incar", {})
     incar = "\n".join(f"{k} = {v}" for k, v in defaults.items()) + "\n"
-    updated = _merge_incar(
+    neb_changes = {
+        "IBRION": 3,
+        "POTIM": 0,
+        "IOPT": 3,
+        "LCLIMB": ".TRUE.",
+        "IMAGES": num_images,
+        "ICHAIN": 0,
+        "SPRING": -5,
+        "MAXMOVE": 0.2,
+        **{str(k): v for k, v in (params or {}).items() if v is not None},
+    }
+    updated, incar_warnings = _merge_incar(
         incar,
-        {"IMAGES": num_images, "SPRING": -5, "IBRION": 3},
+        neb_changes,
     )
     _write_remote_file(server, f"{neb_dir}/INCAR", updated)
     return {
@@ -626,8 +644,9 @@ def create_neb_files(
         "source_fs": src_fs,
         "num_images": num_images,
         "images": [f"{i:02d}" for i in range(0, last + 1)],
-        "incar_changes": {"IMAGES": num_images, "SPRING": -5, "IBRION": 3},
+        "incar_changes": {k: str(v) for k, v in neb_changes.items()},
         "copied_files": _list_remote_dir(server, neb_dir),
+        "warnings": incar_warnings,
     }
 
 

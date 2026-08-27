@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Alert, App, Form, InputNumber, Modal, Radio, Select, Tooltip } from 'antd';
+import { Alert, App, Checkbox, Form, Input, InputNumber, Modal, Radio, Select, Switch, Tooltip } from 'antd';
 import { QuestionCircleOutlined } from '@ant-design/icons';
 import { buildEleInputs } from '../../api/jobs';
 import type { Project, Task } from '../../types';
@@ -13,22 +13,28 @@ interface Props {
 }
 
 const ELEC_TYPES: { value: string; label: string; hint: string; disabled?: boolean }[] = [
-  { value: 'pdos', label: 'PDOS', hint: '需要 LWAVE（波函数）与 LORBIT=11（轨道投影），NEDOS 默认 2000' },
+  { value: 'pdos', label: 'PDOS', hint: '需要轨道投影 LORBIT（10/11/12），可设置能量范围 EMIN/EMAX 与 NEDOS' },
   { value: 'bader', label: 'Bader', hint: '需要 LCHARG 与 LAECHG（全电子电荷密度）' },
-  { value: 'cohp', label: 'COHP', hint: '需要 LWAVE、ISYM=-1、LORBIT 与较高 NBANDS' },
-  { value: 'work_function', label: '功函数', hint: '需要 LVHAR（局域势输出）与 IDIPOL' },
+  { value: 'cohp', label: 'COHP', hint: '需要 ISYM=-1、LWAVE、LORBIT 与较高 NBANDS' },
+  { value: 'work_function', label: '功函数', hint: '需要 LVHAR（局域势输出）与偶极校正 LDIPOL + DIPOL 矫正中心' },
   { value: 'diff_charge', label: '差分电荷', hint: '差分电荷计算后续实现', disabled: true },
 ];
 
 /** 电子结构任务：构建输入文件（从 opt 导入或外部结构 + 类型参数调整） */
 export default function EleInputModal({ open, project, task, onCancel, onCreated }: Props) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [sourceType, setSourceType] = useState<'opt' | 'external'>('opt');
   const [sourceTaskId, setSourceTaskId] = useState<string | undefined>();
-  const [eleType, setEleType] = useState<string>('pdos');
-  const [nedos, setNedos] = useState<number | null>(null);
-  const [nbands, setNbands] = useState<number | null>(null);
-  const [sigma, setSigma] = useState<string | null>(null);
+  const [eleTypes, setEleTypes] = useState<string[]>(['pdos']);
+  const [lorbit, setLorbit] = useState<number | null>(11);
+  const [emin, setEmin] = useState<number | null>(-10);
+  const [emax, setEmax] = useState<number | null>(10);
+  const [nedos, setNedos] = useState<number | null>(1000);
+  const [nbands, setNbands] = useState<number | null>(400);
+  const [ldipol, setLdipol] = useState(true);
+  const [dipolX, setDipolX] = useState('');
+  const [dipolY, setDipolY] = useState('');
+  const [dipolZ, setDipolZ] = useState('');
   const [building, setBuilding] = useState(false);
 
   const optCandidates = useMemo(
@@ -39,20 +45,29 @@ export default function EleInputModal({ open, project, task, onCancel, onCreated
     [project, task],
   );
 
-  const selectedHint = ELEC_TYPES.find((t) => t.value === eleType)?.hint;
+  const selectedHints = ELEC_TYPES.filter((t) => eleTypes.includes(t.value)).map(
+    (t) => t.hint,
+  );
 
   const build = async () => {
     if (!task) return;
     setBuilding(true);
     try {
       const params: Record<string, string | number> = {};
+      if (lorbit != null) params.LORBIT = lorbit;
+      if (emin != null) params.EMIN = emin;
+      if (emax != null) params.EMAX = emax;
       if (nedos != null) params.NEDOS = nedos;
       if (nbands != null) params.NBANDS = nbands;
-      if (sigma != null && sigma.trim()) params.SIGMA = sigma.trim();
+      if (!ldipol) {
+        params.LDIPOL = '.FALSE.';
+      } else if (dipolX.trim() || dipolY.trim() || dipolZ.trim()) {
+        params.DIPOL = `${dipolX.trim() || '0'} ${dipolY.trim() || '0'} ${dipolZ.trim() || '0'}`;
+      }
       const r = await buildEleInputs(task.task_id, {
         source_type: sourceType,
         source_task_id: sourceType === 'opt' ? sourceTaskId : undefined,
-        ele_type: eleType,
+        ele_types: eleTypes,
         params,
       });
       message.success(`电子结构输入文件已生成：${r.ele_dir}`);
@@ -103,22 +118,24 @@ export default function EleInputModal({ open, project, task, onCancel, onCreated
           </Form.Item>
         )}
         <Form.Item label="电子结构类型">
-          <Radio.Group value={eleType} onChange={(e) => setEleType(e.target.value)}>
-            {ELEC_TYPES.map((t) => (
-              <Radio key={t.value} value={t.value} disabled={t.disabled}>
-                {t.label}
-              </Radio>
-            ))}
-          </Radio.Group>
+          <Checkbox.Group
+            value={eleTypes}
+            onChange={(vals) => setEleTypes(vals as string[])}
+            options={ELEC_TYPES.map((t) => ({
+              label: t.label,
+              value: t.value,
+              disabled: t.disabled,
+            }))}
+          />
         </Form.Item>
-        {selectedHint && (
+        {selectedHints.length > 0 && (
           <Alert
             type="info"
             showIcon
             style={{ marginBottom: 14 }}
             message={
               <span>
-                {selectedHint}
+                {selectedHints.join('；')}
                 <Tooltip title="系统会自动设置对应参数，可在下方覆盖或后续在 INCAR 编辑器中修改">
                   <QuestionCircleOutlined style={{ marginLeft: 8, color: '#5B8DEF' }} />
                 </Tooltip>
@@ -126,22 +143,66 @@ export default function EleInputModal({ open, project, task, onCancel, onCreated
             }
           />
         )}
-        <div className="filter-bar" style={{ gap: 12 }}>
-          <Form.Item label="NEDOS（可留空用默认）" style={{ marginBottom: 0 }}>
-            <InputNumber min={100} max={20000} value={nedos} onChange={setNedos} />
-          </Form.Item>
-          <Form.Item label="NBANDS（可留空用默认）" style={{ marginBottom: 0 }}>
-            <InputNumber min={10} max={5000} value={nbands} onChange={setNbands} />
-          </Form.Item>
-          <Form.Item label="SIGMA（可留空）" style={{ marginBottom: 0 }}>
-            <InputNumber
-              min={0.001}
-              step={0.01}
-              value={sigma != null ? Number(sigma) : undefined}
-              onChange={(v) => setSigma(v != null ? String(v) : null)}
+        {(eleTypes.includes('pdos') || eleTypes.includes('cohp')) && (
+          <Form.Item label="LORBIT（轨道投影，10 / 11 / 12）">
+            <Select
+              style={{ width: 140 }}
+              value={lorbit}
+              onChange={setLorbit}
+              options={[10, 11, 12].map((v) => ({ value: v, label: String(v) }))}
             />
           </Form.Item>
-        </div>
+        )}
+        {eleTypes.includes('pdos') && (
+          <div className="filter-bar" style={{ gap: 12 }}>
+            <Form.Item label="EMIN" style={{ marginBottom: 0 }}>
+              <InputNumber value={emin} onChange={setEmin} />
+            </Form.Item>
+            <Form.Item label="EMAX" style={{ marginBottom: 0 }}>
+              <InputNumber value={emax} onChange={setEmax} />
+            </Form.Item>
+            <Form.Item label="NEDOS" style={{ marginBottom: 0 }}>
+              <InputNumber min={100} max={20000} value={nedos} onChange={setNedos} />
+            </Form.Item>
+          </div>
+        )}
+        {eleTypes.includes('cohp') && (
+          <Form.Item label="NBANDS">
+            <InputNumber min={10} max={5000} value={nbands} onChange={setNbands} />
+          </Form.Item>
+        )}
+        {eleTypes.includes('work_function') && (
+          <>
+            <Form.Item label="偶极校正 LDIPOL（默认开启）">
+              <Switch
+                checked={ldipol}
+                onChange={(v) => {
+                  if (!v) {
+                    modal.warning({
+                      title: '关闭偶极校正',
+                      content:
+                        '关闭后可能导致上下表面不对称结构的真空能级倾斜，建议保持开启并设置矫正中心。',
+                    });
+                  }
+                  setLdipol(v);
+                }}
+              />
+            </Form.Item>
+            {ldipol && (
+              <div className="filter-bar" style={{ gap: 12 }}>
+                <Form.Item label="矫正中心 x" style={{ marginBottom: 0 }}>
+                  <Input style={{ width: 100 }} value={dipolX} onChange={(e) => setDipolX(e.target.value)} />
+                </Form.Item>
+                <Form.Item label="矫正中心 y" style={{ marginBottom: 0 }}>
+                  <Input style={{ width: 100 }} value={dipolY} onChange={(e) => setDipolY(e.target.value)} />
+                </Form.Item>
+                <Form.Item label="矫正中心 z" style={{ marginBottom: 0 }}>
+                  <Input style={{ width: 100 }} value={dipolZ} onChange={(e) => setDipolZ(e.target.value)} />
+                </Form.Item>
+              </div>
+            )}
+          </>
+        )}
       </Form>
     </Modal>
   );

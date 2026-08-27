@@ -175,6 +175,34 @@ export async function stopTask(taskId: string): Promise<{
   });
 }
 
+/** 上传 INCAR 到远端最新目录（旧文件备份为 old_INCAR） */
+export async function uploadIncar(
+  taskId: string,
+  payload: { content?: string; params?: Record<string, string | number | boolean> },
+): Promise<{
+  dir: string;
+  backup_file: string | null;
+  warnings: string[];
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/upload-incar`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 上传 KPOINTS 到远端最新目录（旧文件备份为 old_KPOINTS） */
+export async function uploadKpoints(
+  taskId: string,
+  payload: { content: string },
+): Promise<{ dir: string; backup_file: string | null }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/upload-kpoints`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 /** 为结构优化任务构建频率矫正（frac）输入文件（自由能流程） */
 export async function createFracFiles(
   taskId: string,
@@ -199,14 +227,14 @@ export async function buildEleInputs(
   payload: {
     source_type: 'opt' | 'external';
     source_task_id?: string;
-    ele_type: string;
+    ele_types: string[];
     params?: Record<string, string | number | boolean>;
   },
 ): Promise<{
   ele_dir: string;
   source_type: string;
   source_dir: string | null;
-  ele_type: string;
+  ele_types: string[];
   incar_changes: Record<string, string>;
   copied_files: string[];
   warnings: string[];
@@ -225,6 +253,7 @@ export async function createNebFiles(
     initial_opt_task_id: string;
     final_opt_task_id: string;
     num_images: number;
+    params?: Record<string, string | number | boolean>;
   },
 ): Promise<{
   neb_dir: string;

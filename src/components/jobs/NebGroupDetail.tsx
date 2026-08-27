@@ -11,6 +11,8 @@ interface Props {
   nebTask: Task | null;
   renderTask: (task: Task) => ReactNode;
   onCreateNebFiles: (nebTask: Task) => void;
+  activeKey?: string;
+  onActiveKeyChange?: (key: string) => void;
 }
 
 /** NEB 组详情：初态优化(IS) / 末态优化(FS) / NEB 映像 合并页面 */
@@ -21,6 +23,8 @@ export default function NebGroupDetail({
   nebTask,
   renderTask,
   onCreateNebFiles,
+  activeKey,
+  onActiveKeyChange,
 }: Props) {
   const items = [
     ...(initialTask
@@ -82,7 +86,11 @@ export default function NebGroupDetail({
           </Tooltip>
         )}
       </div>
-      <Tabs items={items} />
+      <Tabs
+        activeKey={activeKey}
+        onChange={onActiveKeyChange}
+        items={items}
+      />
     </div>
   );
 }

@@ -124,6 +124,7 @@ export default function Jobs() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedStructureKey, setSelectedStructureKey] = useState<string | null>(null);
   const [selectedNebGroupKey, setSelectedNebGroupKey] = useState<string | null>(null);
+  const [nebActiveTab, setNebActiveTab] = useState('is');
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newTaskType, setNewTaskType] = useState<TaskType>('opt');
   const [addProjectOpen, setAddProjectOpen] = useState(false);
@@ -402,6 +403,17 @@ export default function Jobs() {
   const handleSelectTask = (taskId: string) => {
     const owner = projects.find((p) => p.tasks.some((t) => t.task_id === taskId));
     if (owner) setSelectedProjectId(owner.id);
+    const task = owner?.tasks.find((t) => t.task_id === taskId);
+    if (task?.group?.group_type === 'neb') {
+      // NEB 组内任一子任务：显示 NEB 流程组页面并定位到对应 tab
+      const gid = task.group.group_id;
+      const role = task.group.group_role;
+      setNebActiveTab(role === 'final_opt' ? 'fs' : role === 'neb_images' ? 'neb' : 'is');
+      setSelectedTaskId(null);
+      setSelectedStructureKey(null);
+      setSelectedNebGroupKey(`g:${owner!.id}:${gid}`);
+      return;
+    }
     setSelectedTaskId(taskId);
     setSelectedStructureKey(null);
     setSelectedNebGroupKey(null);
@@ -428,6 +440,7 @@ export default function Jobs() {
     setSelectedProjectId(pid);
     setSelectedTaskId(null);
     setSelectedStructureKey(null);
+    setNebActiveTab('is');
     setSelectedNebGroupKey(`g:${key}`);
   };
 
@@ -824,6 +837,7 @@ export default function Jobs() {
             label: 'KPOINTS',
             children: (
               <KpointsPanel
+                taskId={task.task_id}
                 taskName={task.model_name}
                 poscarContent={ws.poscarContent}
                 kpointsContent={ws.kpointsContent}
@@ -975,6 +989,8 @@ export default function Jobs() {
                   nebTask={selectedNebGroup.neb}
                   renderTask={renderTaskDetail}
                   onCreateNebFiles={setNebBuildTask}
+                  activeKey={nebActiveTab}
+                  onActiveKeyChange={setNebActiveTab}
                 />
               </Card>
             </>

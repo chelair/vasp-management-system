@@ -23,7 +23,9 @@ from pydantic import BaseModel
 from config import DATA_DIR, load_servers
 from cluster_status import build_snapshot
 from continuation import (
+    _download_remote_text,
     _remote_latest_con,
+    _write_remote_file,
     build_ele_inputs,
     create_continuation,
     create_frac_files,
@@ -32,6 +34,7 @@ from continuation import (
 )
 from dates import now_iso
 from envelope import fail, ok
+from incar import modify_incar
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
 import ssh
 from storage import db_transaction, load_db, save_db, update_task_status
@@ -359,9 +362,12 @@ def create_frac(task_id: str, payload: dict = Body(default={})):
                 status_code=404,
                 content=fail("未找到对应的频率矫正子任务（frac），请先在自由能组中创建"),
             )
-        ibration = int(payload.get("ibration", 5))
         result = create_frac_files(
-            project["server"], project, task, frac_task, ibration=ibration
+            project["server"],
+            project,
+            task,
+            frac_task,
+            params=payload.get("params") or {},
         )
         frac_task["input_source"] = {
             "poscar_from": f"{result['source_dir']}/CONTCAR",
@@ -397,7 +403,10 @@ def build_ele(task_id: str, payload: dict = Body(default={})):
             return JSONResponse(status_code=400, content=fail("仅电子结构任务可构建输入文件"))
         source_type = str(payload.get("source_type", "opt"))
         source_task_id = payload.get("source_task_id")
-        ele_type = str(payload.get("ele_type", "pdos"))
+        ele_types = payload.get("ele_types") or payload.get("ele_type") or []
+        if isinstance(ele_types, str):
+            ele_types = [ele_types]
+        ele_types = [str(t) for t in ele_types if t]
         params = payload.get("params") or {}
         result = build_ele_inputs(
             project["server"],
@@ -405,7 +414,7 @@ def build_ele(task_id: str, payload: dict = Body(default={})):
             task,
             source_type,
             source_task_id,
-            ele_type,
+            ele_types,
             params,
         )
         task["input_source"] = {
@@ -419,7 +428,7 @@ def build_ele(task_id: str, payload: dict = Body(default={})):
                 f"{result['source_dir']}/KPOINTS" if result.get("source_dir") else None
             ),
         }
-        task["subtype"] = ele_type
+        task["subtype"] = ",".join(ele_types) if ele_types else None
         db = load_db()
         proj = next(p for p in db["projects"] if p["name"] == project["name"])
         for t in proj["tasks"]:
@@ -461,6 +470,21 @@ def create_neb(task_id: str, payload: dict = Body(default={})):
             return JSONResponse(status_code=404, content=fail("初态/末态优化任务不存在"))
         if initial_task.get("task_type") != "opt" or final_task.get("task_type") != "opt":
             return JSONResponse(status_code=400, content=fail("初态/末态必须是结构优化任务"))
+        # 通过项目数据库校验初末态是否收敛
+        if initial_task.get("status") != "completed":
+            return JSONResponse(
+                status_code=400,
+                content=fail(
+                    f"初态优化未收敛（当前状态：{initial_task.get('status')}），请先完成结构优化"
+                ),
+            )
+        if final_task.get("status") != "completed":
+            return JSONResponse(
+                status_code=400,
+                content=fail(
+                    f"末态优化未收敛（当前状态：{final_task.get('status')}），请先完成结构优化"
+                ),
+            )
         result = create_neb_files(
             project["server"],
             project,
@@ -468,6 +492,7 @@ def create_neb(task_id: str, payload: dict = Body(default={})):
             initial_task,
             final_task,
             num_images,
+            params=payload.get("params") or {},
         )
         task["input_source"] = {
             "poscar_from": f"{result['source_is']}/CONTCAR",
@@ -776,3 +801,111 @@ def stop_task(task_id: str):
         "作业已停止",
         {"job_id": job_id, "new_status": "pending"},
     )
+
+
+@router.post("/tasks/{task_id}/upload-incar")
+def upload_incar(task_id: str, payload: dict = Body(default={})):
+    """本地生成 INCAR 并上传到远端最新目录；旧文件备份为 old_INCAR。"""
+    try:
+        project, task = _resolve_task(task_id)
+        server = project.get("server")
+        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+        if not remote_dir:
+            return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+        # 最新目录：最大编号 conN（存在即算），无则主目录；不创建新目录
+        servers = load_servers()
+        batch_path = servers.get(server, {}).get("batch_check_path")
+        latest = ""
+        if batch_path:
+            try:
+                latest = _remote_latest_con(server, remote_dir, batch_path)
+            except Exception:  # noqa: BLE001 - 定位失败回退主目录
+                latest = ""
+        work_dir = f"{remote_dir}/{latest}" if latest else remote_dir
+
+        content = payload.get("content")
+        params = payload.get("params")
+        old = _download_remote_text(server, f"{work_dir}/INCAR") or ""
+        if content:
+            new_text = str(content)
+            warnings = []
+        elif params:
+            new_text, warnings = modify_incar(old, params)
+        else:
+            return JSONResponse(
+                status_code=400,
+                content=fail("请提供 content（完整文本）或 params（参数字典）"),
+            )
+
+        # 备份旧文件（存在则 mv 为 old_INCAR，old_INCAR 已存在则覆盖）
+        ssh.run_remote(
+            server,
+            f'bash -c \'[ -f "{work_dir}/INCAR" ] && mv -f "{work_dir}/INCAR" "{work_dir}/old_INCAR" || true\'',
+            timeout=30,
+        )
+        _write_remote_file(server, f"{work_dir}/INCAR", new_text)
+        _audit_log(
+            project["name"],
+            task_id,
+            work_dir,
+            "upload-incar",
+            f"OK backup={'old_INCAR' if old else 'none'}",
+        )
+        return ok(
+            "INCAR 已上传到远端",
+            {
+                "dir": work_dir,
+                "backup_file": "old_INCAR" if old else None,
+                "warnings": warnings,
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"上传 INCAR 失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/upload-kpoints")
+def upload_kpoints(task_id: str, payload: dict = Body(default={})):
+    """上传 KPOINTS 到远端最新目录；旧文件备份为 old_KPOINTS（逻辑同 INCAR）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        server = project.get("server")
+        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+        if not remote_dir:
+            return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+        servers = load_servers()
+        batch_path = servers.get(server, {}).get("batch_check_path")
+        latest = ""
+        if batch_path:
+            try:
+                latest = _remote_latest_con(server, remote_dir, batch_path)
+            except Exception:  # noqa: BLE001 - 定位失败回退主目录
+                latest = ""
+        work_dir = f"{remote_dir}/{latest}" if latest else remote_dir
+
+        content = payload.get("content")
+        if not content:
+            return JSONResponse(status_code=400, content=fail("请提供 KPOINTS 内容（content）"))
+        old = _download_remote_text(server, f"{work_dir}/KPOINTS") or ""
+        ssh.run_remote(
+            server,
+            f'bash -c \'[ -f "{work_dir}/KPOINTS" ] && mv -f "{work_dir}/KPOINTS" "{work_dir}/old_KPOINTS" || true\'',
+            timeout=30,
+        )
+        _write_remote_file(server, f"{work_dir}/KPOINTS", str(content))
+        _audit_log(
+            project["name"],
+            task_id,
+            work_dir,
+            "upload-kpoints",
+            f"OK backup={'old_KPOINTS' if old else 'none'}",
+        )
+        return ok(
+            "KPOINTS 已上传到远端",
+            {"dir": work_dir, "backup_file": "old_KPOINTS" if old else None},
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"上传 KPOINTS 失败：{e}"))

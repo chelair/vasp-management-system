@@ -20,6 +20,7 @@ import {
   EyeOutlined,
   SaveOutlined,
   SendOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import type {
   IncarPreset,
@@ -35,6 +36,7 @@ import {
   PRECISION_PRESETS,
   buildIncarText,
 } from '../../data/mock/incar';
+import { uploadIncar } from '../../api/jobs';
 import SciInput from './SciInput';
 
 interface Props {
@@ -94,6 +96,21 @@ export default function IncarEditor({
       message.success('INCAR 内容已复制到剪贴板');
     } catch {
       message.warning('复制失败，请手动选择文本复制');
+    }
+  };
+
+  const handleUploadRemote = async () => {
+    try {
+      // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改（存在替换/缺失追加）
+      const r = await uploadIncar(task.task_id, { params: workspace.incarParams });
+      message.success(
+        `INCAR 已上传到远端${r.backup_file ? `，旧文件已备份为 ${r.backup_file}` : ''}`,
+      );
+      if (r.warnings.length > 0) {
+        message.warning(r.warnings.join('；'));
+      }
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '上传 INCAR 失败');
     }
   };
 
@@ -222,6 +239,9 @@ export default function IncarEditor({
           </Button>
           <Button icon={<EyeOutlined />} onClick={() => setPreviewOpen(true)}>
             预览 INCAR
+          </Button>
+          <Button icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
+            上传到远端
           </Button>
         </div>
       </Card>

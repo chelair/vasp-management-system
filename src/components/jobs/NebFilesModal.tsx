@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Alert, App, Form, InputNumber, Modal, Select } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, App, Form, InputNumber, Modal, Select, Switch } from 'antd';
 import { createNebFiles } from '../../api/jobs';
 import type { Project, Task } from '../../types';
 
@@ -23,7 +23,24 @@ export default function NebFilesModal({
   const [initialId, setInitialId] = useState<string | undefined>();
   const [finalId, setFinalId] = useState<string | undefined>();
   const [numImages, setNumImages] = useState(3);
+  const [iopt, setIopt] = useState<number | null>(3);
+  const [lclimb, setLclimb] = useState(true);
+  const [ichain, setIchain] = useState<number | null>(0);
+  const [spring, setSpring] = useState<number | null>(-5);
+  const [maxmove, setMaxmove] = useState<number | null>(0.2);
+  const [potim, setPotim] = useState<number | null>(0);
   const [building, setBuilding] = useState(false);
+
+  // 打开弹窗时自动带出该 NEB 组对应的 IS / FS 优化任务
+  useEffect(() => {
+    if (!open || !nebTask || !project) return;
+    const gid = nebTask.group?.group_id;
+    const members = project.tasks.filter((t) => t.group?.group_id === gid);
+    const isTask = members.find((t) => t.group?.group_role === 'initial_opt');
+    const fsTask = members.find((t) => t.group?.group_role === 'final_opt');
+    if (isTask) setInitialId(isTask.task_id);
+    if (fsTask) setFinalId(fsTask.task_id);
+  }, [open, nebTask, project]);
 
   const optCandidates = useMemo(
     () => (project?.tasks ?? []).filter((t) => t.task_type === 'opt'),
@@ -42,6 +59,14 @@ export default function NebFilesModal({
         initial_opt_task_id: initialId,
         final_opt_task_id: finalId,
         num_images: numImages,
+        params: {
+          ...(iopt != null ? { IOPT: iopt } : {}),
+          ...(lclimb ? { LCLIMB: '.TRUE.' } : { LCLIMB: '.FALSE.' }),
+          ...(ichain != null ? { ICHAIN: ichain } : {}),
+          ...(spring != null ? { SPRING: spring } : {}),
+          ...(maxmove != null ? { MAXMOVE: maxmove } : {}),
+          ...(potim != null ? { POTIM: potim } : {}),
+        },
       });
       message.success(`NEB 计算文件已生成：${r.neb_dir}（${r.images.length} 个映像）`);
       onCancel();
@@ -96,6 +121,26 @@ export default function NebFilesModal({
             value={numImages}
             onChange={(v) => setNumImages(v ?? 3)}
           />
+        </Form.Item>
+        <div className="filter-bar" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <Form.Item label="IOPT" style={{ marginBottom: 0 }}>
+            <InputNumber value={iopt} onChange={setIopt} />
+          </Form.Item>
+          <Form.Item label="ICHAIN" style={{ marginBottom: 0 }}>
+            <InputNumber value={ichain} onChange={setIchain} />
+          </Form.Item>
+          <Form.Item label="SPRING" style={{ marginBottom: 0 }}>
+            <InputNumber value={spring} onChange={setSpring} />
+          </Form.Item>
+          <Form.Item label="MAXMOVE" style={{ marginBottom: 0 }}>
+            <InputNumber step={0.05} value={maxmove} onChange={setMaxmove} />
+          </Form.Item>
+          <Form.Item label="POTIM" style={{ marginBottom: 0 }}>
+            <InputNumber step={0.05} value={potim} onChange={setPotim} />
+          </Form.Item>
+        </div>
+        <Form.Item label="LCLIMB（爬坡模式，默认开启）">
+          <Switch checked={lclimb} onChange={setLclimb} />
         </Form.Item>
       </Form>
       <Alert

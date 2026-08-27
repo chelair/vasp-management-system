@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import { App, Button, Card, InputNumber, Radio, Tag } from 'antd';
-import { ThunderboltOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined, UploadOutlined } from '@ant-design/icons';
 import { buildKpoints, parsePoscar, recommendKgrid } from '../../utils/poscar';
+import { uploadKpoints } from '../../api/jobs';
 
 interface Props {
+  taskId: string;
   taskName: string;
   poscarContent: string | null;
   kpointsContent: string | null;
@@ -11,6 +13,7 @@ interface Props {
 }
 
 export default function KpointsPanel({
+  taskId,
   taskName,
   poscarContent,
   kpointsContent,
@@ -36,6 +39,18 @@ export default function KpointsPanel({
     message.success(
       `KPOINTS 已生成：${grid.join(' × ')}（${meshType}，密度 ${density}）`,
     );
+  };
+
+  const handleUploadRemote = async () => {
+    if (!kpointsContent) return;
+    try {
+      const r = await uploadKpoints(taskId, { content: kpointsContent });
+      message.success(
+        `KPOINTS 已上传到远端${r.backup_file ? `，旧文件已备份为 ${r.backup_file}` : ''}`,
+      );
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '上传 KPOINTS 失败');
+    }
   };
 
   return (
@@ -120,7 +135,12 @@ export default function KpointsPanel({
         className="job-card mt-16"
         extra={
           kpointsContent && (
-            <span className="preview-note">已生成 · 保存至 {taskName}/KPOINTS</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span className="preview-note">已生成 · 保存至 {taskName}/KPOINTS</span>
+              <Button size="small" icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
+                上传到远端
+              </Button>
+            </div>
           )
         }
       >

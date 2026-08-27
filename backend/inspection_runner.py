@@ -18,7 +18,7 @@ from checks_store import archive_results, record_run
 from config import PROJECTS_DIR, load_servers
 from dates import now_iso
 from paths import to_remote_rel
-from storage import load_db, save_db, update_task_status
+from storage import db_transaction, update_task_status
 from task_paths import task_dir, task_remote_dir
 
 SKIPPED_STATUSES = ("pending", "archived")
@@ -186,17 +186,21 @@ def _apply_result(
         for key in ("dir", "contcar_path", "outcar_path", "oszicar_path"):
             if current_output.get(key):
                 current_output[key] = to_remote_rel(server, str(current_output[key]))
+    old_output = task.get("current_output")
+    old_latest = (
+        old_output.get("latest_dir") if isinstance(old_output, dict) else None
+    )
+    latest_changed = (old_latest or "") != (latest_dir or "")
     notes_markers: List[str] = [str(m) for m in result.get("error_messages", []) or []]
-    if not task.get("job_id") and new_status != "completed":
+    if not (task.get("job_id") or result.get("job_id")) and new_status != "completed":
         notes_markers.append("未见有效完成日志")
 
     markers: List[str] = []
-    # 仅当两次巡检之间状态发生变化（如 running→completed / running→zombied）
-    # 且任务为结构优化、到达终态时，才下载并校验 POSCAR/CONTCAR
+    # 结构优化任务：最新有效输出目录变化（续算推进到新 conN）或任务状态变化时，
+    # 下载并校验 POSCAR/CONTCAR；其余情况保留上一次结果
     if (
         task.get("task_type") == STRUCTURE_OPT_TYPE
-        and observed_changed
-        and new_status in ("completed", "zombied", "unconverged")
+        and (observed_changed or latest_changed)
     ):
         try:
             markers = _sync_and_validate_structure(project, task, latest_dir)
@@ -211,8 +215,10 @@ def _apply_result(
     extra_fields: Dict[str, Any] = {}
     if energy is not None:
         extra_fields["last_energy"] = round(float(energy), 8)
-    if task.get("job_id") is not None:
-        extra_fields["job_id"] = task["job_id"]
+    # job_id：本次巡检按最新输出目录匹配，匹配到则回填（用于 bjobs 判定）；
+    # 匹配不到时**保留**已有 job_id（提交过的作业号是历史记录，不被巡检清除）
+    if result.get("job_id"):
+        extra_fields["job_id"] = str(result["job_id"])
     if notes:
         extra_fields["notes"] = notes
     if current_output:
@@ -241,6 +247,7 @@ def _apply_result(
         "warnings": warnings,
         "status_changed": status_changed,
         "observed_changed": observed_changed,
+        "latest_changed": latest_changed,
         "server_status": server_status,
         "rejected": rejected,
     }
@@ -250,7 +257,17 @@ def run_inspection(
     project_name: Optional[str] = None, task_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """执行一轮巡检并返回摘要（前端「立即巡检」调用）。"""
-    db = load_db()
+    # 串行事务：并发巡检（多个单任务）不会互相覆盖数据库回填
+    with db_transaction() as db:
+        return _run_inspection_locked(db, project_name, task_id)
+
+
+def _run_inspection_locked(
+    db: Dict[str, Any],
+    project_name: Optional[str],
+    task_id: Optional[str],
+) -> Dict[str, Any]:
+    """数据库锁内的巡检主体（读取、SSH 检查、回填、归档、保存）。"""
 
     if task_id is not None:
         # 单任务巡检：跳过状态筛选，直接定位任务（任意状态均可巡检）
@@ -296,11 +313,10 @@ def run_inspection(
             if row is not None:
                 enriched_entry["prev_status"] = row["old_status"]
                 enriched_entry["observed_changed"] = row["observed_changed"]
-                # 结构分析范围：结构优化 + 两次巡检状态有变化 + 到达终态
+                # 结构分析范围：结构优化 + 最新输出目录变化 或 任务状态变化
                 enriched_entry["analysis_needed"] = (
                     row["task_type"] == STRUCTURE_OPT_TYPE
-                    and row["observed_changed"]
-                    and row["new_status"] in ("completed", "zombied", "unconverged")
+                    and (row["observed_changed"] or row["latest_changed"])
                 )
                 enriched_entry["checked_at"] = now_iso()
                 enriched_entry["project_name"] = row["project"]
@@ -309,8 +325,7 @@ def run_inspection(
             enriched.append(enriched_entry)
         archived_files.append(archive_results(enriched, server, ts))
 
-    # 状态/备注/巡检时间落库（含备份）
-    save_db(db)
+    # 状态/备注/巡检时间落库由 db_transaction 统一保存（含备份）
 
     run_id = f"run_{_timestamp()}"
     summary = {

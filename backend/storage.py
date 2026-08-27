@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,6 +41,17 @@ STATUS_ENUM = (
 )
 
 _backup_seq = 0
+#: 数据库读写锁：避免并发"读-改-写"互相覆盖（如多个单任务巡检同时回填）
+_db_lock = threading.RLock()
+
+
+@contextmanager
+def db_transaction():
+    """串行化的数据库读写事务：加锁 -> 读取 -> yield -> 保存。"""
+    with _db_lock:
+        db = load_db()
+        yield db
+        save_db(db)
 
 
 def load_db() -> Dict[str, Any]:

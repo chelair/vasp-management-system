@@ -9,6 +9,8 @@ import {
   MinusCircleFilled,
   RedoOutlined,
   RocketOutlined,
+  StopOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import type { JobWorkspace, Task, TaskType } from '../../types';
 import { GROUP_ROLE_LABELS, TASK_TYPE_LABELS } from '../../types';
@@ -23,6 +25,9 @@ interface Props {
   onSubmitScript: () => void;
   onSubmit: (task: Task) => void;
   submitting: boolean;
+  onStop: (task: Task) => void;
+  stopping: boolean;
+  onBuildEle: (task: Task) => void;
   onRename: (task: Task) => void;
   onDelete: (task: Task) => void;
 }
@@ -37,6 +42,9 @@ export default function TaskOverview({
   onSubmitScript,
   onSubmit,
   submitting,
+  onStop,
+  stopping,
+  onBuildEle,
   onRename,
   onDelete,
 }: Props) {
@@ -58,9 +66,11 @@ export default function TaskOverview({
           <Button type="primary" icon={<FileTextOutlined />} onClick={onGenerateInputs}>
             生成输入文件
           </Button>
-          <Button icon={<RedoOutlined />} onClick={onContinuation}>
-            创建续算
-          </Button>
+          {['opt', 'neb'].includes(task.task_type) && (
+            <Button icon={<RedoOutlined />} onClick={onContinuation}>
+              创建续算
+            </Button>
+          )}
           <Button icon={<CodeOutlined />} onClick={onSubmitScript}>
             生成提交脚本
           </Button>
@@ -71,9 +81,9 @@ export default function TaskOverview({
                 : undefined
             }
           >
-            <Button
-              type="primary"
-              icon={<RocketOutlined />}
+          <Button
+            type="primary"
+            icon={<RocketOutlined />}
               loading={submitting}
               disabled={Boolean(task.job_id) && ['queued', 'running'].includes(task.status)}
               onClick={() => onSubmit(task)}
@@ -81,6 +91,25 @@ export default function TaskOverview({
               提交作业
             </Button>
           </Tooltip>
+          {task.task_type === 'ele' && (
+            <Button icon={<ToolOutlined />} onClick={() => onBuildEle(task)}>
+              构建输入文件
+            </Button>
+          )}
+          {task.job_id && ['queued', 'running'].includes(task.status) && (
+            <Popconfirm
+              title="确认停止该作业？"
+              description={`作业 ${task.job_id} 将被 bkill 终止，状态回到待提交`}
+              okText="停止"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => onStop(task)}
+            >
+              <Button danger icon={<StopOutlined />} loading={stopping}>
+                停止作业
+              </Button>
+            </Popconfirm>
+          )}
           <Button icon={<FolderOpenOutlined />} onClick={() => void handleOpenFolder()}>
             打开文件夹
           </Button>

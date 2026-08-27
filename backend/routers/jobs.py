@@ -16,19 +16,26 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import DATA_DIR, load_servers
 from cluster_status import build_snapshot
-from continuation import create_continuation, local_continuation_dir
+from continuation import (
+    _remote_latest_con,
+    build_ele_inputs,
+    create_continuation,
+    create_frac_files,
+    create_neb_files,
+    local_continuation_dir,
+)
 from dates import now_iso
 from envelope import fail, ok
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
 import ssh
-from storage import load_db, save_db, update_task_status
-from task_paths import task_dir
+from storage import db_transaction, load_db, save_db, update_task_status
+from task_paths import is_continuation_task, task_dir
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -239,12 +246,28 @@ def create_same_type_continuation(task_id: str):
     """同类型续算：全部在远程服务器完成，创建 conN 目录并登记续算子任务。"""
     try:
         project, task = _resolve_task(task_id)
-        if task.get("status") == "pending":
+        if is_continuation_task(task):
             return JSONResponse(
                 status_code=400,
-                content=fail("任务尚未运行（pending），没有可续算的输出"),
+                content=fail("续算子任务不支持再续算，请对原始任务操作"),
             )
+        if task.get("task_type") not in ("opt", "neb"):
+            return JSONResponse(
+                status_code=400,
+                content=fail("仅结构优化（opt）与 NEB 任务支持同类型续算"),
+            )
+        # 状态不做前置拦截：由续算分流逻辑按最新目录 OUTCAR/CONTCAR 判断
+        # （未运行/异常任务将返回 input_incomplete / input_complete_but_not_finished）
         result = create_continuation(project.get("server"), project, task)
+        if result.get("action") != "created":
+            _audit_log(
+                project["name"],
+                task_id,
+                str(result.get("current_dir", "")),
+                "continuation",
+                f"action={result.get('action')} missing={result.get('missing_files') or []}",
+            )
+            return ok(result.get("message", "续算检查完成"), result)
         # 非 NEB 续算必须得到 POSCAR（来自最新 CONTCAR）
         if task.get("task_type") != "neb" and "POSCAR" not in result.get("copied_files", []):
             return JSONResponse(
@@ -291,6 +314,11 @@ def create_same_type_continuation(task_id: str):
 
         db = load_db()
         proj = next(p for p in db["projects"] if p["name"] == project["name"])
+        if any(t.get("dir_path") == local_dir for t in proj["tasks"]):
+            return JSONResponse(
+                status_code=409,
+                content=fail(f"续算目录 {con} 已登记，请勿重复创建"),
+            )
         proj["tasks"].append(sub_task)
         save_db(db)
 
@@ -309,6 +337,160 @@ def create_same_type_continuation(task_id: str):
         return JSONResponse(status_code=400, content=fail(str(e)))
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建续算失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/create-frac")
+def create_frac(task_id: str, payload: dict = Body(default={})):
+    """为结构优化任务构建频率矫正（frac）输入文件（自由能流程）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        if task.get("task_type") != "opt":
+            return JSONResponse(status_code=400, content=fail("仅结构优化任务可创建频率矫正"))
+        frac_task = next(
+            (
+                t
+                for t in project["tasks"]
+                if t.get("dir_path") == f"{task.get('dir_path', '')}/frac"
+            ),
+            None,
+        )
+        if frac_task is None:
+            return JSONResponse(
+                status_code=404,
+                content=fail("未找到对应的频率矫正子任务（frac），请先在自由能组中创建"),
+            )
+        ibration = int(payload.get("ibration", 5))
+        result = create_frac_files(
+            project["server"], project, task, frac_task, ibration=ibration
+        )
+        frac_task["input_source"] = {
+            "poscar_from": f"{result['source_dir']}/CONTCAR",
+            "potcar_from": f"{result['source_dir']}/POTCAR",
+            "kpoints_from": f"{result['source_dir']}/KPOINTS",
+        }
+        frac_task["notes"] = f"频率矫正输入由 {task.get('model_name')} 生成（{result['latest_dir'] or '主目录'}）"
+        db = load_db()
+        proj = next(p for p in db["projects"] if p["name"] == project["name"])
+        for t in proj["tasks"]:
+            if t.get("task_id") == frac_task["task_id"]:
+                t.update(frac_task)
+        save_db(db)
+        _audit_log(
+            project["name"], task_id, result["frac_dir"],
+            "create-frac", f"OK src={result['source_dir']}",
+        )
+        return ok("频率矫正输入文件已生成", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"创建频率矫正失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/build-ele-inputs")
+def build_ele(task_id: str, payload: dict = Body(default={})):
+    """为电子结构任务构建输入文件（从 opt 导入或外部结构）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        if task.get("task_type") != "ele":
+            return JSONResponse(status_code=400, content=fail("仅电子结构任务可构建输入文件"))
+        source_type = str(payload.get("source_type", "opt"))
+        source_task_id = payload.get("source_task_id")
+        ele_type = str(payload.get("ele_type", "pdos"))
+        params = payload.get("params") or {}
+        result = build_ele_inputs(
+            project["server"],
+            project,
+            task,
+            source_type,
+            source_task_id,
+            ele_type,
+            params,
+        )
+        task["input_source"] = {
+            "poscar_from": (
+                f"{result['source_dir']}/CONTCAR" if result.get("source_dir") else "external/POSCAR"
+            ),
+            "potcar_from": (
+                f"{result['source_dir']}/POTCAR" if result.get("source_dir") else None
+            ),
+            "kpoints_from": (
+                f"{result['source_dir']}/KPOINTS" if result.get("source_dir") else None
+            ),
+        }
+        task["subtype"] = ele_type
+        db = load_db()
+        proj = next(p for p in db["projects"] if p["name"] == project["name"])
+        for t in proj["tasks"]:
+            if t.get("task_id") == task_id:
+                t.update(task)
+        save_db(db)
+        _audit_log(
+            project["name"], task_id, result["ele_dir"],
+            f"build-ele-inputs type={ele_type}", "OK",
+        )
+        return ok("电子结构输入文件已生成", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"构建电子结构输入失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/create-neb-files")
+def create_neb(task_id: str, payload: dict = Body(default={})):
+    """根据初末态 opt 任务创建 NEB 计算文件（nebmake.pl 插值）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        if task.get("task_type") != "neb":
+            return JSONResponse(status_code=400, content=fail("仅 NEB 任务可创建计算文件"))
+        initial_id = payload.get("initial_opt_task_id")
+        final_id = payload.get("final_opt_task_id")
+        num_images = int(payload.get("num_images", 3))
+        if not initial_id or not final_id:
+            return JSONResponse(status_code=400, content=fail("缺少初态/末态优化任务 ID"))
+        initial_task = next(
+            (t for t in project["tasks"] if t.get("task_id") == initial_id), None
+        )
+        final_task = next(
+            (t for t in project["tasks"] if t.get("task_id") == final_id), None
+        )
+        if initial_task is None or final_task is None:
+            return JSONResponse(status_code=404, content=fail("初态/末态优化任务不存在"))
+        if initial_task.get("task_type") != "opt" or final_task.get("task_type") != "opt":
+            return JSONResponse(status_code=400, content=fail("初态/末态必须是结构优化任务"))
+        result = create_neb_files(
+            project["server"],
+            project,
+            task,
+            initial_task,
+            final_task,
+            num_images,
+        )
+        task["input_source"] = {
+            "poscar_from": f"{result['source_is']}/CONTCAR",
+            "potcar_from": f"{result['source_is']}/POTCAR",
+            "kpoints_from": f"{result['source_is']}/KPOINTS",
+        }
+        db = load_db()
+        proj = next(p for p in db["projects"] if p["name"] == project["name"])
+        for t in proj["tasks"]:
+            if t.get("task_id") == task_id:
+                t.update(task)
+        save_db(db)
+        _audit_log(
+            project["name"], task_id, result["neb_dir"],
+            f"create-neb images={num_images}", "OK",
+        )
+        return ok("NEB 计算文件已生成", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"创建 NEB 计算文件失败：{e}"))
 
 
 @router.patch("/tasks/{task_id}")
@@ -440,28 +622,40 @@ def submit_task(task_id: str):
     if not remote_dir:
         return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
 
+    # 定位最新续算目录（conN，即使尚无输出），在该目录内提交；
+    # 无续算目录则用任务主目录
+    servers = load_servers()
+    batch_path = servers.get(server, {}).get("batch_check_path")
+    latest = ""
+    if batch_path:
+        try:
+            latest = _remote_latest_con(server, remote_dir, batch_path)
+        except Exception:  # noqa: BLE001 - 定位失败回退主目录
+            latest = ""
+    work_dir = f"{remote_dir}/{latest}" if latest else remote_dir
+
     submit_script = "vasp.lsf"
     command = (
-        f"bash -lc 'cd \"{remote_dir}\" && "
+        f"bash -c 'cd \"{work_dir}\" && "
         f"[ -f \"{submit_script}\" ] && bsub < \"{submit_script}\"'"
     )
     try:
         # 先确认远程目录与提交脚本存在
         check = ssh.run_remote(
             server,
-            f'bash -c \'[ -d "{remote_dir}" ] && [ -f "{remote_dir}/vasp.lsf" ] && echo YES || echo NO\'',
+            f'bash -c \'[ -d "{work_dir}" ] && [ -f "{work_dir}/vasp.lsf" ] && echo YES || echo NO\'',
             timeout=30,
         )
         if "YES" not in check["stdout"]:
             detail = ssh.run_remote(
                 server,
-                f'bash -c \'[ -d "{remote_dir}" ] && echo DIR_OK || echo NO_DIR\'',
+                f'bash -c \'[ -d "{work_dir}" ] && echo DIR_OK || echo NO_DIR\'',
                 timeout=30,
             )["stdout"].strip()
             if detail == "NO_DIR":
                 return JSONResponse(
                     status_code=404,
-                    content=fail(f"远程目录不存在：{remote_dir}"),
+                    content=fail(f"远程目录不存在：{work_dir}"),
                 )
             return JSONResponse(
                 status_code=404,
@@ -469,7 +663,6 @@ def submit_task(task_id: str):
             )
 
         # 加载 LSF profile 后提交（复用节点查询的 profile 路径）
-        servers = load_servers()
         profile = str(
             servers.get(server, {}).get(
                 "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
@@ -477,7 +670,7 @@ def submit_task(task_id: str):
         )
         result = ssh.run_remote(
             server,
-            f'bash -lc "source {profile} >/dev/null 2>&1; cd \"{remote_dir}\" && bsub < vasp.lsf"',
+            f'bash -c "source {profile} >/dev/null 2>&1; cd \"{work_dir}\" && bsub < vasp.lsf"',
             timeout=60,
         )
     except Exception as e:  # noqa: BLE001 - SSH 连接类错误统一返回 502
@@ -531,4 +724,55 @@ def submit_task(task_id: str):
             "new_status": "queued",
             "raw_output": raw,
         },
+    )
+
+
+@router.post("/tasks/{task_id}/stop")
+def stop_task(task_id: str):
+    """停止作业：远程 bkill 终止运行中的作业，任务状态回退为待提交。"""
+    try:
+        project, task = _resolve_task(task_id)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+
+    job_id = task.get("job_id")
+    if not job_id or task.get("status") not in ("queued", "running"):
+        return JSONResponse(
+            status_code=409,
+            content=fail("作业未在排队/运行中，无法停止"),
+        )
+
+    server = project.get("server")
+    servers = load_servers()
+    profile = str(
+        servers.get(server, {}).get(
+            "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
+        )
+    )
+    try:
+        result = ssh.run_remote(
+            server,
+            f'bash -c "source {profile} >/dev/null 2>&1; bkill {job_id}"',
+            timeout=60,
+        )
+    except Exception as e:  # noqa: BLE001 - SSH 连接类错误
+        return JSONResponse(
+            status_code=502,
+            content=fail(f"无法连接远程服务器，请检查 SSH 配置：{e}"),
+        )
+    raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+    if result.get("exit_code") != 0:
+        _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
+        return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
+
+    # 作业已终止：状态回退为待提交（可重新提交或续算）
+    try:
+        with db_transaction() as db:
+            update_task_status(db, project["name"], task_id, "pending")
+    except Exception as e:  # noqa: BLE001 - 状态落库失败不影响停止事实
+        _audit_log(project["name"], task_id, str(job_id), "bkill", f"DB_WARN: {e}")
+    _audit_log(project["name"], task_id, str(job_id), "bkill", "OK")
+    return ok(
+        "作业已停止",
+        {"job_id": job_id, "new_status": "pending"},
     )

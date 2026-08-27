@@ -107,6 +107,49 @@ def _display_current_output(project: dict, current_output):
     return out
 
 
+def _build_analysis(project: dict, task: dict, entry: dict, history: list):
+    """按任务类型构建详情分析数据（后续按四种类型分别扩展）。
+
+    - opt（结构优化）：结构分析（晶格对比 + 原子位移 + VESTA 渲染）；
+    - frac（频率矫正）：预留——频率/热力学数据；
+    - neb（NEB 过渡态）：预留——各映像能量/能垒；
+    - ele（电子结构）：预留——PDOS/Bader/功函数等后处理结果。
+    未实现的分析返回 None，前端展示"该类型暂无分析"占位。
+    """
+    task_type = task.get("task_type")
+    if task_type == "opt":
+        in_scope = bool(entry.get("analysis_needed", False))
+        steps = len(history) if history else None
+        struct = analyze_structure(project, task)
+        # 详情为单任务按需查看：结构文件齐全且离子步足够时直接渲染对比图
+        render = vesta_render.render_task(project, task, steps=steps)
+        images = {
+            label: {
+                axis: _data_uri(path)
+                for axis, path in axes.items()
+                if path
+            }
+            for label, axes in render["images"].items()
+        }
+        return {
+            "in_scope": in_scope,
+            "steps": steps,
+            "files": struct["files"],
+            "isif": struct["isif"],
+            "isif_source": struct["isif_source"],
+            "cell_fixed": struct["cell_fixed"],
+            "poscar": struct["poscar"],
+            "contcar": struct["contcar"],
+            "deltas": struct["deltas"],
+            "displacements": struct["displacements"],
+            "images": images,
+            "skipped": render["skipped"],
+            "warnings": struct["warnings"] + render["warnings"],
+        }
+    # TODO(frac/neb/ele): 后续按任务类型补充专属分析数据
+    return None
+
+
 @router.get("/{task_id}")
 def inspection_detail(task_id: str):
     """单任务巡检详情：能量/力曲线数据 + 结构分析（晶格对比 + VESTA 渲染图）。"""
@@ -160,36 +203,7 @@ def inspection_detail(task_id: str):
                 }
 
         history = entry.get("force_history") or []
-        analysis = None
-        if task.get("task_type") == "opt":
-            in_scope = bool(entry.get("analysis_needed", False))
-            steps = len(history) if history else None
-            struct = analyze_structure(project, task)
-            # 详情为单任务按需查看：结构文件齐全且离子步足够时直接渲染对比图
-            render = vesta_render.render_task(project, task, steps=steps)
-            images = {
-                label: {
-                    axis: _data_uri(path)
-                    for axis, path in axes.items()
-                    if path
-                }
-                for label, axes in render["images"].items()
-            }
-            analysis = {
-                "in_scope": in_scope,
-                "steps": steps,
-                "files": struct["files"],
-                "isif": struct["isif"],
-                "isif_source": struct["isif_source"],
-                "cell_fixed": struct["cell_fixed"],
-                "poscar": struct["poscar"],
-                "contcar": struct["contcar"],
-                "deltas": struct["deltas"],
-                "displacements": struct["displacements"],
-                "images": images,
-                "skipped": render["skipped"],
-                "warnings": struct["warnings"] + render["warnings"],
-            }
+        analysis = _build_analysis(project, task, entry, history)
 
         return ok(
             "查询成功",

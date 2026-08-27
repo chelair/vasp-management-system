@@ -25,6 +25,32 @@
 | 存储 | 文件型 JSON：`data/projects.json` + 本地目录 + 自动备份（不用数据库） |
 | 数据 | 项目接口走真实后端；巡检/报告仍为 Mock（`src/data/mock/`） |
 
+## 开发约定
+
+### SSH：统一走连接池，禁止自行创建客户端
+
+所有远端命令 / 文件操作（执行命令、上传、下载、递归建目录）**必须**通过统一 SSH 模块
+`backend/ssh.py` 的连接池完成，禁止在业务代码里直接 `paramiko.SSHClient()`：
+
+- `run_remote(server, cmd, timeout)`：执行远端命令，返回 `{stdout, stderr, exit_code}`；
+- `upload_file` / `download_file` / `mkdir_remote`：文件传输与建目录；
+- 连接池行为：常驻连接 + 每 30s keepalive + 空闲 5 分钟自动回收 + 断线自动重连（3 次重试），
+  同一服务器命令串行化（避免并发抢占一条连接）。
+
+新增任何需要访问远端的功能（巡检、续算、提交、停止、文件构建等）都必须复用 `ssh.py`，
+不要在各自模块里另起连接逻辑。
+
+### 远端命令写法
+
+- **默认使用 `bash -c`（非登录 shell）**；不要用 `bash -lc`——登录 shell 会加载用户
+  `.bashrc` 等环境，实测慢 4 秒以上且带出 conda 等噪音输出。
+- 需要 LSF 环境（`bsub` / `bkill` / `bjobs`）时显式 `source <profile.lsf>`（路径取
+  `servers.json` 的 `lsf_profile`，缺省 `/opt/ibm/lsfsuite/lsf/conf/profile.lsf`）。
+- **远端路径必须统一正斜杠**：Windows 上 `str(Path(...))` 会输出反斜杠，远程命令会把它
+  当成文件名字符（曾导致服务器误建 `\data\...` 目录）；统一用
+  `resolve_remote_path(server, rel)` 解析，必要时 `.replace("\\", "/")`。
+- 命令通过 `exec_command` 按 UTF-8 编码发送，输出按 UTF-8 解码，中文路径/输出安全。
+
 ## 快速开始
 
 环境要求：**Node.js ≥ 20.19**（开发机当前为 Node 24）+ **Python ≥ 3.11**（开发机为 3.12）。

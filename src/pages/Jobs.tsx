@@ -21,6 +21,8 @@ import {
   renameTask,
   deleteTask,
   submitTask,
+  stopTask,
+  createFracFiles,
 } from '../api/jobs';
 import type { TaskFileEntry } from '../api/jobs';
 import PageHeader from '../components/common/PageHeader';
@@ -34,6 +36,8 @@ import KpointsPanel from '../components/jobs/KpointsPanel';
 import SubmitScriptPanel from '../components/jobs/SubmitScriptPanel';
 import CopyParamsModal from '../components/jobs/CopyParamsModal';
 import ContinuationModal from '../components/jobs/ContinuationModal';
+import EleInputModal from '../components/jobs/EleInputModal';
+import NebFilesModal from '../components/jobs/NebFilesModal';
 import GroupWizardModal from '../components/jobs/GroupWizardModal';
 import StructureDetail from '../components/jobs/StructureDetail';
 import NebGroupDetail from '../components/jobs/NebGroupDetail';
@@ -45,7 +49,6 @@ import {
 } from '../data/mock/incar';
 import { buildInputFiles } from '../data/mock/vaspFiles';
 import type {
-  ContinuationPayload,
   ClusterSnapshot,
   IncarPreset,
   JobWorkspace,
@@ -111,6 +114,10 @@ export default function Jobs() {
   const [clusterSnapshot, setClusterSnapshot] = useState<ClusterSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [submittingTaskId, setSubmittingTaskId] = useState<string | null>(null);
+  const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
+  const [fracCreatingId, setFracCreatingId] = useState<string | null>(null);
+  const [eleBuildTask, setEleBuildTask] = useState<Task | null>(null);
+  const [nebBuildTask, setNebBuildTask] = useState<Task | null>(null);
   const [presets, setPresets] = useState<IncarPreset[]>(() => loadIncarPresets());
   const [loading, setLoading] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -479,49 +486,15 @@ export default function Jobs() {
     await refreshProjects();
   };
 
-  /** 跨类型续算（会话级创建，原逻辑） */
-  const handleCreateContinuation = (payload: ContinuationPayload) => {
-    if (!selectedProject || !continuationTask) return;
-    const task: Task = {
-      task_id: `${selectedProject.id}_${payload.name}_${Date.now().toString(36)}`,
-      task_type: payload.taskType,
-      model_name: payload.name,
-      status: 'pending',
-      last_energy: null,
-      last_check_time: null,
-      job_id: null,
-      notes: `由 ${continuationTask.model_name} 跨类型续算创建`,
-      continuation_ready: false,
-      continuation_dir: null,
-      remote_dir: payload.remoteDir,
-      local_dir: payload.localDir,
-    };
-    setProjects((prev) =>
-      prev.map((p) =>
-        p.id === selectedProject.id ? { ...p, tasks: [...p.tasks, task] } : p,
-      ),
-    );
-    setWorkspaces((prev) => ({ ...prev, [task.task_id]: makeWorkspace(task) }));
-    setTaskFileList((prev) => ({ ...prev, [task.task_id]: [] }));
-    setSelectedTaskId(task.task_id);
-    setContinuationTask(null);
-    message.success(`跨类型续算子项已创建：${payload.name}`);
-  };
-
-  /** 同类型续算创建成功后：刷新并选中续算子任务 */
+  /** 同类型续算创建成功后：续算子任务不单独展示，仅提示续算目录信息 */
   const handleSameTypeCreated = async (result: {
     task_id: string;
     con: string;
     remote_dir: string;
     warnings: string[];
   }) => {
-    const ps = await refreshProjects();
-    const created = ps.flatMap((p) => p.tasks).find((t) => t.task_id === result.task_id);
-    if (created) {
-      const owner = ps.find((p) => p.tasks.some((t) => t.task_id === created.task_id));
-      if (owner) setSelectedProjectId(owner.id);
-      setSelectedTaskId(created.task_id);
-    }
+    await refreshProjects();
+    message.success(`续算目录已创建：${result.con}（${result.remote_dir}）`);
   };
 
   /** 重命名独立任务 */
@@ -568,6 +541,36 @@ export default function Jobs() {
       message.error(err instanceof Error ? err.message : '提交作业失败');
     } finally {
       setSubmittingTaskId(null);
+    }
+  };
+
+  /** 停止作业：远程 bkill 终止运行中的作业 */
+  const handleStopTask = async (task: Task) => {
+    if (stoppingTaskId) return;
+    setStoppingTaskId(task.task_id);
+    try {
+      const r = await stopTask(task.task_id);
+      message.success(`作业 ${r.job_id} 已停止`);
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '停止作业失败');
+    } finally {
+      setStoppingTaskId(null);
+    }
+  };
+
+  /** 频率计算：为自由能结构 opt 任务构建 frac 输入文件 */
+  const handleCreateFrac = async (optTask: Task) => {
+    if (fracCreatingId) return;
+    setFracCreatingId(optTask.task_id);
+    try {
+      const r = await createFracFiles(optTask.task_id);
+      message.success(`频率矫正输入已生成：${r.frac_dir}`);
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '创建频率矫正失败');
+    } finally {
+      setFracCreatingId(null);
     }
   };
 
@@ -776,6 +779,9 @@ export default function Jobs() {
                 onSubmitScript={() => setActiveTab('submit')}
                 onSubmit={handleSubmitTask}
                 submitting={submittingTaskId === task.task_id}
+                onStop={handleStopTask}
+                stopping={stoppingTaskId === task.task_id}
+                onBuildEle={setEleBuildTask}
                 onRename={(t) => {
                   setRenameTaskState(t);
                   setRenameName(t.model_name);
@@ -941,6 +947,8 @@ export default function Jobs() {
                   optTask={selectedStructure.opt!}
                   fracTask={selectedStructure.frac}
                   renderTask={renderTaskDetail}
+                  onCreateFrac={handleCreateFrac}
+                  fracCreating={fracCreatingId === selectedStructure.opt!.task_id}
                 />
               </Card>
             </>
@@ -966,6 +974,7 @@ export default function Jobs() {
                   finalTask={selectedNebGroup.final}
                   nebTask={selectedNebGroup.neb}
                   renderTask={renderTaskDetail}
+                  onCreateNebFiles={setNebBuildTask}
                 />
               </Card>
             </>
@@ -1081,11 +1090,24 @@ export default function Jobs() {
       <ContinuationModal
         open={!!continuationTask}
         task={continuationTask}
-        project={selectedProject}
-        taskTypes={taskTypes}
         onCancel={() => setContinuationTask(null)}
-        onConfirm={handleCreateContinuation}
         onSameTypeCreated={(r) => void handleSameTypeCreated(r)}
+      />
+
+      <EleInputModal
+        open={!!eleBuildTask}
+        project={selectedProject}
+        task={eleBuildTask}
+        onCancel={() => setEleBuildTask(null)}
+        onCreated={() => void refreshProjects()}
+      />
+
+      <NebFilesModal
+        open={!!nebBuildTask}
+        project={selectedProject}
+        nebTask={nebBuildTask}
+        onCancel={() => setNebBuildTask(null)}
+        onCreated={() => void refreshProjects()}
       />
 
       <CopyParamsModal

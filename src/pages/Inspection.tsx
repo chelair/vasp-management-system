@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   App,
+  Badge,
   Button,
   Card,
   Checkbox,
@@ -18,6 +19,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { FilterDropdownProps } from 'antd/es/table/interface';
 import type { Key } from 'react';
 import {
+  ClearOutlined,
   FileSearchOutlined,
   InfoCircleOutlined,
   ReloadOutlined,
@@ -45,6 +47,8 @@ import type {
 import { formatTime } from '../utils/format';
 
 const SCROLL_PAGE_SIZE = 20;
+const READ_CHANGES_KEY = 'vasp.inspection.read-changes.v1';
+const FILTERS_KEY = 'vasp.inspection.filters.v1';
 
 const TASK_CATEGORY_META: Record<string, { color: string; bg: string }> = {
   '结构优化': { color: '#2C6FBB', bg: '#EAF1FF' },
@@ -64,7 +68,7 @@ const STATUS_FILTER_OPTIONS = [
   { text: '正常', value: 'normal' },
   { text: '警告', value: 'warning' },
   { text: '错误', value: 'error' },
-  { text: '未巡检', value: 'pending' },
+  { text: '待提交', value: 'pending' },
 ];
 
 const TASK_CATEGORY_FILTER_OPTIONS = [
@@ -130,11 +134,41 @@ function parseFilter(searchParams: URLSearchParams, key: string): string[] | nul
   return v ? v.split(',').filter(Boolean) : null;
 }
 
+function loadSavedFilters(): {
+  q: string;
+  projects: string[] | null;
+  categories: string[] | null;
+  statuses: string[] | null;
+} {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTERS_KEY) || 'null');
+    if (saved && typeof saved === 'object') {
+      return {
+        q: typeof saved.q === 'string' ? saved.q : '',
+        projects: Array.isArray(saved.projects) ? saved.projects : null,
+        categories: Array.isArray(saved.categories) ? saved.categories : null,
+        statuses: Array.isArray(saved.statuses) ? saved.statuses : null,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { q: '', projects: null, categories: null, statuses: null };
+}
+
 const OUTPUT_STATUS_LABELS: Record<string, { label: string; color: string }> = {
   finished: { label: '已完成', color: 'success' },
   running: { label: '计算中', color: 'processing' },
   failed: { label: '失败', color: 'error' },
   waiting: { label: '等待', color: 'default' },
+};
+
+// 详情页分析区块标题（按任务类型区分，后续各类型专属分析接入后填充内容）
+const ANALYSIS_SECTION_TITLE: Record<string, string> = {
+  opt: '结构分析',
+  frac: '频率矫正分析',
+  neb: 'NEB 映像分析',
+  ele: '电子结构分析',
 };
 
 const QUEUE_STATUS_LABELS: Record<string, string> = {
@@ -155,19 +189,20 @@ const QUEUE_STATUS_LABELS: Record<string, string> = {
 export default function Inspection() {
   const { message } = App.useApp();
   const [searchParams, setSearchParams] = useSearchParams();
+  const savedFilters = useMemo(loadSavedFilters, []);
   const [results, setResults] = useState<InspectionResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
   const [singleRunningIds, setSingleRunningIds] = useState<Set<string>>(new Set());
-  const [keyword, setKeyword] = useState(() => searchParams.get('q') || '');
+  const [keyword, setKeyword] = useState(() => searchParams.get('q') || savedFilters.q);
   const [projectFilter, setProjectFilter] = useState<string[] | null>(() =>
-    parseFilter(searchParams, 'projects'),
+    parseFilter(searchParams, 'projects') ?? savedFilters.projects,
   );
   const [taskCategoryFilter, setTaskCategoryFilter] = useState<string[] | null>(() =>
-    parseFilter(searchParams, 'categories'),
+    parseFilter(searchParams, 'categories') ?? savedFilters.categories,
   );
   const [statusFilter, setStatusFilter] = useState<string[] | null>(() =>
-    parseFilter(searchParams, 'statuses'),
+    parseFilter(searchParams, 'statuses') ?? savedFilters.statuses,
   );
   const [visibleCount, setVisibleCount] = useState(SCROLL_PAGE_SIZE);
   const [detail, setDetail] = useState<InspectionResult | null>(null);
@@ -175,6 +210,43 @@ export default function Inspection() {
   const [detailData, setDetailData] = useState<InspectionDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [meta, setMeta] = useState<InspectionMeta | null>(null);
+  // 已读的状态变化提醒（localStorage 持久化，点开详情后红点消失）
+  const [readChanges, setReadChanges] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(READ_CHANGES_KEY) || '[]'));
+    } catch {
+      return new Set();
+    }
+  });
+
+  const markRead = (taskId: string) => {
+    setReadChanges((prev) => {
+      if (prev.has(taskId)) return prev;
+      const next = new Set(prev).add(taskId);
+      try {
+        localStorage.setItem(READ_CHANGES_KEY, JSON.stringify([...next]));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
+
+  const unreadCount = useMemo(
+    () =>
+      results.filter((r) => r.status_changed && !readChanges.has(r.task_id)).length,
+    [results, readChanges],
+  );
+
+  const clearAllRead = () => {
+    setReadChanges(new Set());
+    try {
+      localStorage.removeItem(READ_CHANGES_KEY);
+    } catch {
+      /* ignore */
+    }
+    message.success('已清除全部状态更新提醒');
+  };
 
   useEffect(() => {
     Promise.all([fetchInspectionResults(), fetchInspectionMeta()])
@@ -191,6 +263,19 @@ export default function Inspection() {
 
   // 筛选同步到 URL：切换页面 / 刷新后自动恢复
   useEffect(() => {
+    try {
+      localStorage.setItem(
+        FILTERS_KEY,
+        JSON.stringify({
+          q: keyword.trim(),
+          projects: projectFilter ?? [],
+          categories: taskCategoryFilter ?? [],
+          statuses: statusFilter ?? [],
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
     const next = new URLSearchParams();
     const kw = keyword.trim();
     if (kw) next.set('q', kw);
@@ -209,6 +294,23 @@ export default function Inspection() {
 
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
+    // 路径分组行：自由能组与 NEB 组（按组名跨行合并路径列）
+    const isGrouped = (r: InspectionResult) =>
+      r.task_category === '自由能' ||
+      (r.task_category === 'NEB' && Boolean(r.group_name));
+    const groupNum = (r: InspectionResult) => {
+      const m = /(\d+)/.exec(r.group_name || '');
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    // 组内排序：自由能按结构号（1..N），NEB 按 IS -> FS -> neb
+    const structOrder = (r: InspectionResult) => {
+      const label = r.structure_label || '';
+      if (label === 'IS') return 0;
+      if (label === 'FS') return 1;
+      if (label === 'neb') return 2;
+      const n = parseInt(label, 10);
+      return Number.isFinite(n) ? n : 9;
+    };
     return results
       .filter((r) => {
         if (projectFilter && projectFilter.length && !projectFilter.includes(r.project_name))
@@ -232,6 +334,12 @@ export default function Inspection() {
         const ca = TASK_CATEGORY_ORDER[a.task_category || '结构优化'] ?? 9;
         const cb = TASK_CATEGORY_ORDER[b.task_category || '结构优化'] ?? 9;
         if (ca !== cb) return ca - cb;
+        if (isGrouped(a) && isGrouped(b)) {
+          const g = groupNum(a) - groupNum(b);
+          if (g !== 0) return g;
+          const s = structOrder(a) - structOrder(b);
+          if (s !== 0) return s;
+        }
         return `${a.project_name} ${a.task_name}`.localeCompare(
           `${b.project_name} ${b.task_name}`,
           'zh-CN',
@@ -240,6 +348,39 @@ export default function Inspection() {
   }, [results, keyword, projectFilter, taskCategoryFilter, statusFilter]);
 
   const visibleRows = filtered.slice(0, visibleCount);
+
+  // 自由能路径跨行合并：同一项目 + 同一路径的任务连续行合并为一格
+  const rowSpanMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    let i = 0;
+    while (i < visibleRows.length) {
+      const row = visibleRows[i];
+      const grouped =
+        row.task_category === '自由能' ||
+        (row.task_category === 'NEB' && Boolean(row.group_name));
+      if (!grouped) {
+        i += 1;
+        continue;
+      }
+      const key = `${row.project_name}|${row.group_name}`;
+      let j = i + 1;
+      while (
+        j < visibleRows.length &&
+        (visibleRows[j].task_category === '自由能' ||
+          (visibleRows[j].task_category === 'NEB' &&
+            Boolean(visibleRows[j].group_name))) &&
+        `${visibleRows[j].project_name}|${visibleRows[j].group_name}` === key
+      ) {
+        j += 1;
+      }
+      map[row.task_id] = j - i;
+      for (let k = i + 1; k < j; k += 1) {
+        map[visibleRows[k].task_id] = 0;
+      }
+      i = j;
+    }
+    return map;
+  }, [visibleRows]);
 
   const handleScrollLoad = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -265,9 +406,6 @@ export default function Inspection() {
       ]);
       setResults(rows);
       setMeta(m);
-      setProjectFilter(null);
-      setTaskCategoryFilter(null);
-      setStatusFilter(null);
       message.success(
         `巡检完成：检查 ${summary.inspected} 项，更新 ${summary.updated} 项` +
           (summary.warnings ? `，警告 ${summary.warnings} 项` : ''),
@@ -317,9 +455,10 @@ export default function Inspection() {
 
   const openDetail = async (row: InspectionResult) => {
     if (row.status === 'pending') {
-      message.info('该任务尚未巡检，暂无详情数据');
+      message.info('该任务待提交，暂无详情数据');
       return;
     }
+    markRead(row.task_id);
     setDetail(row);
     setDetailOpen(true);
     setDetailLoading(true);
@@ -333,6 +472,10 @@ export default function Inspection() {
       setDetailLoading(false);
     }
   };
+
+  const isGroupedRow = (row: InspectionResult) =>
+    row.task_category === '自由能' ||
+    (row.task_category === 'NEB' && Boolean(row.group_name));
 
   const columns: ColumnsType<InspectionResult> = [
     {
@@ -355,7 +498,40 @@ export default function Inspection() {
       filteredValue: projectFilter ?? null,
       onFilter: () => true,
     },
-    { title: '任务', dataIndex: 'task_name', key: 'task_name', width: 190, ellipsis: true },
+    {
+      title: '',
+      key: 'task_group',
+      width: 130,
+      ellipsis: true,
+      onCell: (row) =>
+        isGroupedRow(row)
+          ? { rowSpan: rowSpanMap[row.task_id] ?? 1 }
+          : { colSpan: 2 },
+      render: (_, row) =>
+        isGroupedRow(row) ? (
+          <div style={{ textAlign: 'center' }}>
+            <span className="path-cell">{row.group_name || '—'}</span>
+          </div>
+        ) : (
+          <Tooltip title={row.task_name}>
+            <span>{row.task_name}</span>
+          </Tooltip>
+        ),
+    },
+    {
+      title: '任务',
+      dataIndex: 'task_name',
+      key: 'task_name',
+      width: 190,
+      ellipsis: true,
+      onCell: (row) => (isGroupedRow(row) ? {} : { colSpan: 0 }),
+      render: (v: string, row) =>
+        isGroupedRow(row) ? (
+          <Tooltip title={v}>
+            <span>{v}</span>
+          </Tooltip>
+        ) : null,
+    },
     {
       title: '任务类别',
       dataIndex: 'task_category',
@@ -388,24 +564,6 @@ export default function Inspection() {
       render: (s: CheckStatus) => <StatusTag status={s} kind="check" />,
     },
     {
-      title: '输出位置',
-      key: 'output',
-      width: 140,
-      render: (_, row) => {
-        const meta = row.output_status ? OUTPUT_STATUS_LABELS[row.output_status] : null;
-        return (
-          <div className="cell-output">
-            <Tooltip title={row.latest_dir ? `续算目录 ${row.latest_dir}/` : '任务主目录'}>
-              <span className="path-cell">
-                {row.latest_dir ? `${row.latest_dir}/` : '主目录/'}
-              </span>
-            </Tooltip>
-            {meta && <Tag color={meta.color}>{meta.label}</Tag>}
-          </div>
-        );
-      },
-    },
-    {
       title: '信息',
       dataIndex: 'message',
       key: 'message',
@@ -422,14 +580,19 @@ export default function Inspection() {
       width: 110,
       render: (_, row) =>
         row.has_inspection ? (
-          <Button
-            size="small"
-            type="link"
-            icon={<InfoCircleOutlined />}
-            onClick={() => openDetail(row)}
+          <Badge
+            dot={Boolean(row.status_changed) && !readChanges.has(row.task_id)}
+            offset={[-6, 6]}
           >
-            详情
-          </Button>
+            <Button
+              size="small"
+              type="link"
+              icon={<InfoCircleOutlined />}
+              onClick={() => openDetail(row)}
+            >
+              详情
+            </Button>
+          </Badge>
         ) : (
           <Button
             size="small"
@@ -472,6 +635,13 @@ export default function Inspection() {
               onClick={handleTrigger}
             >
               立即巡检
+            </Button>
+            <Button
+              icon={<ClearOutlined />}
+              disabled={unreadCount === 0}
+              onClick={clearAllRead}
+            >
+              一键清除
             </Button>
           </div>
         }
@@ -627,7 +797,7 @@ export default function Inspection() {
                     {detailData.frac.has_inspection ? (
                       <StatusTag status={detailData.frac.status as TaskStatus} />
                     ) : (
-                      <Tag>未巡检</Tag>
+                      <Tag>待提交</Tag>
                     )}
                   </Descriptions.Item>
                   <Descriptions.Item label="检查时间">
@@ -669,7 +839,7 @@ export default function Inspection() {
             )}
 
             <div className="inspection-detail__section">
-              <h3>结构分析</h3>
+              <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
               {detailData.analysis ? (
                 <StructurePanel
                   analysis={detailData.analysis}
@@ -682,7 +852,7 @@ export default function Inspection() {
               ) : (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="非结构优化任务，无结构分析"
+                  description="该任务类型的专属分析尚未接入，当前仅展示基础数据"
                 />
               )}
             </div>

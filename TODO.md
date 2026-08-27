@@ -181,6 +181,27 @@
 - [x] 作业提交：`POST /api/jobs/tasks/{task_id}/submit`（远程 bsub < vasp.lsf，登记 job_id、
       状态更新 queued、审计日志 data/audit_submit.log）；前端快捷操作区「提交作业」按钮（loading、
       已提交禁用、任务信息显示作业号）；提交成功以 bsub 的 Job <id> is submitted 为准
+- [x] 续算系统重构：按任务类型分发（opt/frac 通用 conN、neb 映像续算、ele 拒绝续算）；
+      新增 create-frac（频率矫正输入构建）、build-ele-inputs（opt 导入/外部 + 类型参数）、
+      create-neb-files（nebmake.pl 插值 + INCAR IMAGES/SPRING）；前端续算弹窗简化、
+      频率计算/创建计算文件/ele 构建输入按钮与弹窗
+- [x] 修复巡检与作业管理状态不同步：并发单任务巡检的读-改-写竞态会互相覆盖 projects.json
+      回填（归档独立文件不受影响）；新增 storage.db_transaction 串行事务，巡检回填走锁；
+      已按归档回填 15 个被覆盖任务（Ag111_I1 等 pending → completed/unconverged/zombied）
+- [x] 巡检详情未读红点：归档 observed_changed 转 status_changed，状态有更新的任务在「详情」
+      按钮右上角显示红点，点开详情或「一键清除」后消失（localStorage 持久化已读）
+- [x] 区分巡检与提交的目录定位：巡检显示最新**有运行结果**目录（OUTCAR 非空且离子步数>5，
+      batch_check.resolve_latest_output）；作业提交定位最新**续算目录**（最大编号 conN，
+      resolve_latest_con）；job_id 按最新输出目录 exec_cwd 匹配，匹配不到且 OUTCAR 空则待提交
+- [x] 停止作业：`POST /api/jobs/tasks/{task_id}/stop`（远程 bkill + 状态回退待提交 + 审计）；
+      前端「停止作业」按钮（有 job_id 且 queued/running 可点，Popconfirm 确认）
+- [x] 续算登记防重：创建续算时检查同目录是否已登记（409 拒绝），清理 Ag24@Al2O3_I7_con4
+      重复记录；续算子任务（_conN）为设计行为，指向服务器真实续算目录
+- [x] 续算子任务不再前端展示：作业管理/巡检列表过滤 _conN 子项（DB 保留供后台定位），
+      创建续算成功后直接打开续算文件夹；续算子任务不允许再续算
+- [x] 续算分流：最新目录（最大编号 conN）OUTCAR+CONTCAR 均非空 -> 创建 con(N+1)（created）；
+      否则不创建不提交，输入完整返回 input_complete_but_not_finished、缺失返回 input_incomplete
+      并列出缺失文件；移除 pending 前置拦截；审计日志记录分流结果
 - [ ] 后端定时任务：APScheduler 每 2 小时自动触发（当前自动指示为配置信息，未真正调度）
 
 ### 5. 作业管理模块（Jobs）

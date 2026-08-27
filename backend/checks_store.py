@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from config import DATA_DIR
+from task_paths import is_continuation_task
 
 CHECKS_DIR = DATA_DIR / "checks"
 RUNS_FILE = DATA_DIR / "checks" / "runs.json"
@@ -61,8 +62,9 @@ def collect_results() -> Dict[str, Dict[str, Any]]:
 def _merge_entry(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
     """合并同一任务的新旧结果：新值优先，旧值中"本次未产生"的内容保留。"""
     merged = dict(new)
-    # 本次未检查（无标记/无备注/无力历史）时沿用上一次的内容
-    for key in ("markers", "notes", "force_history"):
+    # 本次未检查（无力历史）时沿用上一次的内容；
+    # markers / notes：最新结果总是权威（空 = 本次检查无异常/无备注，覆盖旧的失败信息）
+    for key in ("force_history",):
         if not merged.get(key) and old.get(key):
             merged[key] = old[key]
     # 力统计字段：新结果缺失时沿用旧值（例如本次未下载检查）
@@ -126,6 +128,8 @@ def to_frontend_rows(db: Dict[str, Any], merged: Dict[str, Dict[str, Any]]) -> L
             # 任务已从数据库删除（删除任务/项目后），归档中的历史记录不再展示
             continue
         project, task = pair
+        if is_continuation_task(task):
+            continue
         if task and _is_group_frac(task):
             continue
         rows.append(_to_row(project, task, entry))
@@ -133,6 +137,8 @@ def to_frontend_rows(db: Dict[str, Any], merged: Dict[str, Dict[str, Any]]) -> L
     # 全部项目/任务都展示：没有巡检记录的任务标记为“未巡检”
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
+            if is_continuation_task(task):
+                continue
             if _is_group_frac(task):
                 continue
             if task.get("task_id") in seen:
@@ -143,6 +149,9 @@ def to_frontend_rows(db: Dict[str, Any], merged: Dict[str, Dict[str, Any]]) -> L
 
 def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
     task_category = _task_category(task)
+    group = task.get("group") or {}
+    group_name = group.get("name") or ""
+    structure_label = group.get("structure_label") or ""
     if entry is None:
         task_type = task.get("task_type", "")
         return {
@@ -151,14 +160,17 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
             "project_name": str(project.get("name", "")),
             "task_id": str(task.get("task_id", "")),
             "task_name": f"{task.get('model_name', '')} · {TASK_TYPE_LABELS.get(task_type, task_type)}",
+            "group_name": group_name,
+            "structure_label": structure_label,
             "category": "queue",
             "task_category": task_category,
             "status": "pending",
-            "message": "尚未巡检",
-            "detail": "该任务还没有巡检记录，等待首次巡检",
+            "message": "待提交",
+            "detail": "任务待提交，暂无运行输出",
             "analysis_needed": False,
             "has_force_history": False,
             "has_inspection": False,
+            "status_changed": False,
             "latest_dir": None,
             "output_status": None,
         }
@@ -180,10 +192,14 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
             for k in ("缺失", "为空", "未生成", "失败", "异常", "error", "not found", "unreadable")
         )
     ]
-    if status == "zombied" or errors:
+    # 僵尸/异常先判 error；未收敛（unconverged）优先于 error_messages
+    # （batch_check 会把"forces not converged"写入 error_messages，不能因此判为错误）
+    if status == "zombied":
         check_status = "error"
     elif status == "unconverged":
         check_status = "warning"
+    elif errors:
+        check_status = "error"
     elif status == "completed" and entry.get("force_converged") is False:
         check_status = "warning"
     elif queue == "SSUSP":
@@ -256,6 +272,8 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         "project_name": str(entry.get("project_name", project.get("name", ""))),
         "task_id": str(entry.get("task_id", "")),
         "task_name": f"{task.get('model_name', '')} · {TASK_TYPE_LABELS.get(task_type, task_type)}",
+        "group_name": group_name,
+        "structure_label": structure_label,
         "category": category,
         "status": check_status,
         "message": message,
@@ -265,6 +283,8 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         "has_force_history": isinstance(entry.get("force_history"), list)
         and bool(entry.get("force_history")),
         "has_inspection": True,
+        # 本次巡检相对上次状态有变化（如 running→completed），前端用于未读红点提醒
+        "status_changed": bool(entry.get("observed_changed", False)),
         "latest_dir": latest_dir,
         "output_status": output_status,
     }

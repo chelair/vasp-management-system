@@ -13,6 +13,7 @@ VASP 文件统一放在任务目录的 files/ 子目录（兼容直接放在任�
 """
 
 from pathlib import Path
+import re
 from typing import Any, Dict
 
 from config import PROJECTS_DIR
@@ -25,6 +26,14 @@ CATEGORY_DIRS = {
     "neb": "neb",
     "ele": "ele",
 }
+
+
+def is_continuation_task(task: Dict[str, Any]) -> bool:
+    """续算子任务：dir_path 指向续算目录（.../conN）。
+
+    续算在后台登记子任务记录（供巡检定位/文件重定向），但不在前端展示为独立子项。
+    """
+    return bool(re.search(r"/con\d+$", str(task.get("dir_path", "") or "")))
 
 
 def task_dir(project_name: str, task: Dict[str, Any]) -> Path:

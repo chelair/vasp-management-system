@@ -60,6 +60,7 @@ ERROR_KEYWORDS = ("EEEE", "Error", "Segmentation fault", "forrtl: severe")
 ENDED_STATUS_TOKENS = ("DONE", "EXIT", "COMPLETED", "FAILED", "CANCELLED")
 FORCE_HEADER = "TOTAL-FORCE (eV/Angst)"
 CON_DIR_RE = re.compile(r"^con(\d+)$")
+MIN_IONIC_STEPS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +101,11 @@ def load_thresholds() -> Dict[str, float]:
 
 
 def resolve_latest_output(remote_dir: str):
-    """在任务目录下定位最新有效输出目录（续算 conN）。
+    """定位最新**有运行结果**的输出目录（续算 conN）。
 
     返回 (latest_subdir, status)；latest_subdir 为空串表示主目录。
-    从最大编号 con* 开始，第一个 OUTCAR 末尾含正常结束标志的即为最新输出。
+    从最大编号 con* 开始，取第一个 OUTCAR 存在非空且离子步数大于
+    MIN_IONIC_STEPS 的目录；con* 均无结果时回退主目录。
     """
     base = Path(remote_dir)
     if not base.is_dir():
@@ -118,15 +120,39 @@ def resolve_latest_output(remote_dir: str):
     )
     for con in reversed(cons):
         outcar = con / "OUTCAR"
-        if not outcar.is_file():
+        if not outcar.is_file() or outcar.stat().st_size == 0:
             continue
         try:
-            tail = outcar.read_text(encoding="utf-8", errors="replace")[-8192:]
+            text = outcar.read_text(encoding="utf-8", errors="replace")
         except Exception:  # noqa: BLE001 - 单个目录读取失败继续检查
             continue
-        if any(marker in tail for marker in SUCCESS_MARKERS):
-            return con.name, "finished"
+        # 结构优化已收敛（正常结束标志）：直接采用该目录，无需等待离子步数超过阈值
+        if any(marker in text[-8192:] for marker in SUCCESS_MARKERS):
+            return con.name, ""
+        # 运行中但已有足够离子步（未收敛时要求步数超过 MIN_IONIC_STEPS）
+        if text.count(FORCE_HEADER) > MIN_IONIC_STEPS:
+            return con.name, ""
     return "", ""
+
+
+def resolve_latest_con(remote_dir: str) -> str:
+    """定位最新**续算目录**（最大编号 con*，存在即算，不要求输出）。
+
+    用于作业提交等需要"最新目录"的场景（即使尚未运行）。
+    无 con* 时返回空串（表示主目录）。
+    """
+    base = Path(remote_dir)
+    if not base.is_dir():
+        return ""
+    cons = sorted(
+        (
+            p
+            for p in base.iterdir()
+            if p.is_dir() and CON_DIR_RE.fullmatch(p.name)
+        ),
+        key=lambda p: int(CON_DIR_RE.fullmatch(p.name).group(1)),
+    )
+    return cons[-1].name if cons else ""
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +195,39 @@ def run_bjobs(job_id: str) -> str:
     if proc.returncode != 0 or "not found" in output.lower():
         return "NOT_FOUND"
     return "UNKNOWN"
+
+
+def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> str:
+    """无 job_id 时，从 bjobs 全量作业中按提交目录（exec_cwd）匹配。
+
+    作业名管理混乱不可靠，故仅按提交目录匹配：仅匹配任务**最新输出目录**
+    （conN 或主目录）；该目录无对应作业时不向前追溯（交由 OUTCAR 判定）。
+    """
+    if os.environ.get("VASP_BATCH_NO_BJOBS"):
+        return ""
+    candidates = {str(work_dir).rstrip("/")}
+    try:
+        proc = subprocess.run(
+            ["bjobs", "-o", "jobid exec_cwd"],
+            capture_output=True,
+            text=True,
+            timeout=BJOB_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    lines = (proc.stdout or "").splitlines()
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        cwd = parts[1].strip().rstrip("/")
+        if cwd in candidates:
+            return parts[0].strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +373,8 @@ def _new_result(task: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "task_id": str(task.get("task_id", "")),
         "remote_dir": str(task.get("remote_dir", "")),
-        "job_id": task.get("job_id") or "",
+        # job_id 由本任务检查按最新输出目录匹配得到，不沿用数据库旧值
+        "job_id": "",
         "task_type": str(task.get("task_type", "")),
         "model_name": str(task.get("model_name", "")),
         "project_name": str(task.get("project_name", "")),
@@ -344,6 +404,7 @@ def _analyze_outcar(
     task_type: str,
     thresholds: Dict[str, float],
     poscar_dir: str = "",
+    allow_running: bool = False,
 ) -> None:
     outcar_path = Path(remote_dir) / "OUTCAR"
     if not outcar_path.is_file() or not os.access(outcar_path, os.R_OK):
@@ -365,8 +426,13 @@ def _analyze_outcar(
         matched = [k for k in ERROR_KEYWORDS if k in text]
         result["error_messages"].append(f"matched error keyword(s): {', '.join(matched)}")
     else:
-        result["status"] = "zombied"
-        result["error_messages"].append("Job ended without normal termination")
+        # 仅无 job_id（无法查询 bjobs）时，OUTCAR 已有离子步视为运行中；
+        # 有 job_id 且 bjobs 已查不到作业（已结束）时，无正常结束标志即判定异常
+        if allow_running and parse_total_force_blocks(text):
+            result["status"] = "running"
+        else:
+            result["status"] = "zombied"
+            result["error_messages"].append("Job ended without normal termination")
 
     if task_type == "opt":
         _parse_forces(result, poscar_dir or remote_dir, text, thresholds)
@@ -436,11 +502,13 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
     """检查单个任务，任何异常只写入 error_messages，不影响其他任务。"""
     result = _new_result(task)
     try:
-        job_id = task.get("job_id") or ""
         remote_dir = _local_remote_dir(str(task.get("remote_dir", "")))
         task_type = str(task.get("task_type", ""))
         # 定位最新输出目录（续算 conN 优先），OUTCAR/OSZICAR/CONTCAR 从该目录读取
         latest_dir, _ = resolve_latest_output(remote_dir)
+        # 最新续算目录（最大编号 conN，存在即算）：作业匹配与状态判定以此为准
+        latest_con = resolve_latest_con(remote_dir)
+        con_dir = str(Path(remote_dir) / latest_con) if latest_con else remote_dir
         work_dir = str(Path(remote_dir) / latest_dir) if latest_dir else remote_dir
         result["current_output"] = {
             "latest_dir": latest_dir or None,
@@ -451,12 +519,32 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         }
         outcar_path = Path(work_dir) / "OUTCAR"
 
+        # 以最新续算目录为准匹配作业（续算推进到新 conN 后，作业在新目录提交）
+        job_id = match_job_id_by_cwd(remote_dir, con_dir)
+        if job_id:
+            result["job_id"] = job_id
+        elif task.get("job_id"):
+            # exec_cwd 匹配不到（如手动提交、LSF 无 cwd 信息）时，
+            # 回退检查数据库已有作业号是否仍活跃（PEND/RUN/SSUSP）
+            db_job = str(task.get("job_id") or "")
+            if db_job and run_bjobs(db_job) in ("PEND", "RUN", "SSUSP"):
+                job_id = db_job
+                result["job_id"] = db_job
+
         if not job_id:
-            if outcar_path.is_file():
+            # 最新续算目录无对应作业：OUTCAR 为空/不存在 -> 待提交；
+            # OUTCAR 非空 -> 不关联 job_id，按该目录 OUTCAR 分析
+            con_outcar = Path(con_dir) / "OUTCAR"
+            if con_outcar.is_file() and con_outcar.stat().st_size > 0:
                 _analyze_outcar(
                     # 固定原子标志必须取自最新输出目录（conN）自身的 POSCAR：
                     # 主目录 POSCAR 可能缺少 Selective dynamics，会把固定原子算进活动原子
-                    result, work_dir, task_type, thresholds, poscar_dir=work_dir
+                    result,
+                    con_dir,
+                    task_type,
+                    thresholds,
+                    poscar_dir=con_dir,
+                    allow_running=True,
                 )
             else:
                 result["status"] = "pending"
@@ -467,12 +555,30 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                 result["status"] = "queued"
             elif queue_status == "RUN":
                 result["status"] = "running"
+                # 运行中也解析 OUTCAR 力历史（供详情能量/力曲线）
+                if outcar_path.is_file() and outcar_path.stat().st_size > 0:
+                    try:
+                        text = outcar_path.read_text(encoding="utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001 - 解析失败不影响状态
+                        text = ""
+                    _parse_forces(result, work_dir, text, thresholds)
             elif queue_status == "SSUSP":
                 # 作业被挂起：仍在 LSF 中存活，按运行中处理（队列状态显示“挂起”）
                 result["status"] = "running"
+                if outcar_path.is_file() and outcar_path.stat().st_size > 0:
+                    try:
+                        text = outcar_path.read_text(encoding="utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        text = ""
+                    _parse_forces(result, work_dir, text, thresholds)
             else:
                 _analyze_outcar(
-                    result, work_dir, task_type, thresholds, poscar_dir=work_dir
+                    result,
+                    work_dir,
+                    task_type,
+                    thresholds,
+                    poscar_dir=work_dir,
+                    allow_running=False,
                 )
     except Exception as e:  # noqa: BLE001 - 单任务容错
         result["error_messages"].append(f"unexpected error: {e}")

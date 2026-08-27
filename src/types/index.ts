@@ -96,6 +96,10 @@ export interface InspectionResult {
   project_name: string;
   task_id: string;
   task_name: string;
+  /** 自由能路径组名称（如 PATH1），非自由能任务为空 */
+  group_name?: string;
+  /** 组内结构标签（如 1、2），自由能行用于排序 */
+  structure_label?: string;
   category: CheckCategory;
   status: CheckStatus;
   message: string;
@@ -105,6 +109,8 @@ export interface InspectionResult {
   has_force_history?: boolean;
   /** 是否已有过至少一次巡检记录（false 时操作列显示“单独巡检”） */
   has_inspection?: boolean;
+  /** 本次巡检相对上次状态有变化（前端用于详情红点提醒） */
+  status_changed?: boolean;
   /** 最新输出目录（续算 conN 优先，无则为 null=主目录） */
   latest_dir?: string | null;
   /** 最新输出状态：finished / running / failed / waiting */
@@ -560,7 +566,7 @@ export const CHECK_STATUS_LABELS: Record<CheckStatus, string> = {
   normal: '正常',
   warning: '警告',
   error: '错误',
-  pending: '未巡检',
+  pending: '待提交',
 };
 
 export const CHECK_CATEGORY_LABELS: Record<CheckCategory, string> = {

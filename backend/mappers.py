@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from config import PROJECTS_DIR
 from paths import to_local_rel
-from task_paths import task_dir
+from task_paths import is_continuation_task, task_dir
 
 
 def _str(value: Any, fallback: str) -> str:
@@ -37,7 +37,10 @@ def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
     remaining_hours = max(0, _days_until(_str(project.get("deadline"), "")) * 24)
 
     mapped_tasks = []
+    # 续算子任务（_conN）不在前端展示为独立子项，仅后台登记
     for task in tasks:
+        if is_continuation_task(task):
+            continue
         local_dir = to_local_rel(
             str(task_dir(_str(project.get("name"), ""), task))
         ).replace("\\", "/")

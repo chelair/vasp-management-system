@@ -126,7 +126,19 @@ export async function openTaskFolder(
 /** 同类型续算（全部在远程服务器端完成）：创建 conN 并登记续算子任务 */
 export async function createContinuation(
   taskId: string,
-): Promise<{
+): Promise<
+  {
+    action:
+      | 'created'
+      | 'running'
+      | 'input_complete_but_not_finished'
+      | 'input_incomplete';
+    message: string;
+    current_dir?: string;
+    job_id?: string;
+    missing_files?: string[];
+    warnings: string[];
+  } & Partial<{
   task_id: string;
   con: string;
   remote_dir: string;
@@ -134,9 +146,9 @@ export async function createContinuation(
   incar_changes: Record<string, string>;
   copied_files: string[];
   images?: string[];
-  warnings: string[];
   local_dir: string;
-}> {
+}>
+> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/continuation`, {
     method: 'POST',
   });
@@ -150,6 +162,83 @@ export async function submitTask(taskId: string): Promise<{
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/submit`, {
     method: 'POST',
+  });
+}
+
+/** 停止作业：远程 bkill 终止运行中的作业，任务状态回退为待提交 */
+export async function stopTask(taskId: string): Promise<{
+  job_id: string;
+  new_status: string;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/stop`, {
+    method: 'POST',
+  });
+}
+
+/** 为结构优化任务构建频率矫正（frac）输入文件（自由能流程） */
+export async function createFracFiles(
+  taskId: string,
+  ibration = 5,
+): Promise<{
+  frac_dir: string;
+  source_dir: string;
+  latest_dir: string | null;
+  incar_changes: Record<string, string>;
+  copied_files: string[];
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/create-frac`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ibration }),
+  });
+}
+
+/** 为电子结构任务构建输入文件（从 opt 导入或外部结构） */
+export async function buildEleInputs(
+  taskId: string,
+  payload: {
+    source_type: 'opt' | 'external';
+    source_task_id?: string;
+    ele_type: string;
+    params?: Record<string, string | number | boolean>;
+  },
+): Promise<{
+  ele_dir: string;
+  source_type: string;
+  source_dir: string | null;
+  ele_type: string;
+  incar_changes: Record<string, string>;
+  copied_files: string[];
+  warnings: string[];
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/build-ele-inputs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 根据初末态 opt 任务创建 NEB 计算文件（nebmake.pl 插值） */
+export async function createNebFiles(
+  taskId: string,
+  payload: {
+    initial_opt_task_id: string;
+    final_opt_task_id: string;
+    num_images: number;
+  },
+): Promise<{
+  neb_dir: string;
+  source_is: string;
+  source_fs: string;
+  num_images: number;
+  images: string[];
+  incar_changes: Record<string, string | number>;
+  copied_files: string[];
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/create-neb-files`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
 }
 

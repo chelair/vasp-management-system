@@ -13,6 +13,7 @@
 - create_neb_files：从初末态 opt 构建 NEB 计算文件（nebmake.pl 插值）。
 """
 
+import base64
 import re
 import tempfile
 from pathlib import Path
@@ -96,32 +97,6 @@ def _remote_latest_con(server: str, remote_dir: str, batch_check_path: str) -> s
     return r["stdout"].strip()
 
 
-def _bjobs_status(server: str, job_id: str) -> str:
-    """远程 bjobs -l 归一化状态（PEND/RUN/SSUSP/.../NOT_FOUND）。"""
-    servers = load_servers()
-    profile = str(
-        servers.get(server, {}).get(
-            "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
-        )
-    )
-    r = ssh.run_remote(
-        server,
-        f'bash -lc "source {profile} >/dev/null 2>&1; bjobs -l {job_id}"',
-        timeout=30,
-    )
-    out = f"{r.get('stdout', '')}\n{r.get('stderr', '')}"
-    if re.search(r"\bPEND\b", out):
-        return "PEND"
-    if re.search(r"\bRUN\b", out):
-        return "RUN"
-    if re.search(r"\b(SSUSP|PSUSP|USUSP)\b", out):
-        return "SSUSP"
-    for token in ("DONE", "EXIT", "COMPLETED", "FAILED", "CANCELLED"):
-        if token in out:
-            return token
-    return "NOT_FOUND"
-
-
 def compute_g_correction(
     server: str,
     remote_dir: str,
@@ -153,80 +128,149 @@ def compute_g_correction(
     return float(m.group(1))
 
 
-def _running_job(
-    server: str,
-    remote_dir: str,
-    con_dir: str,
-    task: Dict[str, Any],
-) -> Optional[str]:
-    """最新续算目录上是否有任务正在运行（RUN/SSUSP）；返回作业号或 None。"""
-    candidates = set()
-    db_job = str(task.get("job_id") or "")
-    if db_job:
-        candidates.add(db_job)
-    # 目录匹配：RUN 作业才有 exec_cwd（PEND 尚未分配节点）
+def _remote_script(server: str, script: str, timeout: int = 180) -> str:
+    """一次远程执行 bash 脚本（base64 传输，避免引号转义），返回 stdout。
+
+    远程每条 exec 通道都有约 1.3s 的 shell 启动开销，因此把续算的多步
+    文件操作合并进单次调用，可把 6-7 次往返压到 1 次。
+    """
+    b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    r = ssh.run_remote(server, f"echo {b64} | base64 -d | bash", timeout=timeout)
+    if r["exit_code"] != 0:
+        raise RuntimeError((r["stderr"] or r["stdout"]).strip() or "远程操作失败")
+    return r.get("stdout", "") or ""
+
+
+def _script_slice(out: str, start: str, end: str) -> str:
+    """取输出中 start 与 end 两个标记之间的文本。"""
+    s = out.find(start)
+    if s < 0:
+        return ""
+    s += len(start)
+    e = out.find(end, s)
+    return out[s:] if e < 0 else out[s:e]
+
+
+def _script_tail(out: str, marker: str) -> str:
+    e = out.find(marker)
+    return "" if e < 0 else out[e + len(marker):]
+
+
+def _state_value(state: str, key: str) -> str:
+    for line in state.splitlines():
+        if line.startswith(key + "="):
+            return line[len(key) + 1:].strip()
+    return ""
+
+
+def _opt_continuation_script(server: str, remote_dir: str, task: Dict[str, Any]) -> str:
+    """结构优化续算的单次远程脚本：
+    编号计算 -> 运行中检查 -> OUTCAR/CONTCAR 状态检查 -> 输入完整性检查
+    ->（条件满足时）复制/移动输入文件并回传 INCAR 与文件列表。
+    """
     servers = load_servers()
     profile = str(
         servers.get(server, {}).get(
             "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
         )
     )
-    try:
-        r = ssh.run_remote(
-            server,
-            f'bash -lc "source {profile} >/dev/null 2>&1; bjobs -o \'jobid exec_cwd\'"',
-            timeout=30,
-        )
-        for line in (r.get("stdout", "") or "").splitlines()[1:]:
-            parts = line.split(None, 1)
-            if len(parts) == 2 and parts[1].strip().rstrip("/") == str(con_dir).rstrip("/"):
-                candidates.add(parts[0].strip())
-    except Exception:  # noqa: BLE001 - 目录匹配失败不影响 DB job_id 检查
-        pass
-    for job in candidates:
-        if _bjobs_status(server, job) in ("RUN", "SSUSP"):
-            return job
-    return None
+    db_job = str(task.get("job_id") or "")
+    return f"""set -e
+RD="{remote_dir}"
+DBJOB="{db_job}"
+source {profile} >/dev/null 2>&1 || true
+MAX=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/con||' | sort -n | tail -1)
+N=$((${{MAX:-0}} + 1))
+while [ -d "$RD/con$N" ]; do N=$((N+1)); done
+CON="con$N"
+LATEST=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/||' | sort -V | tail -1)
+if [ -n "$LATEST" ]; then CUR="$RD/$LATEST"; else CUR="$RD"; fi
+RUNJOB=""
+if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then
+  RUNJOB="$DBJOB"
+else
+  for j in $(bjobs -o 'jobid exec_cwd' 2>/dev/null | awk -v d="$CUR" 'NR>1 && $2==d {{print $1}}'); do
+    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
+  done
+fi
+echo "===STATE==="
+echo "CON=$CON"
+echo "LATEST=$LATEST"
+echo "RUNJOB=$RUNJOB"
+[ -s "$CUR/OUTCAR" ] && echo O_OK
+[ -s "$CUR/CONTCAR" ] && echo C_OK
+for f in POSCAR INCAR KPOINTS POTCAR vasp.lsf submit.sh; do
+  [ -s "$CUR/$f" ] && echo "OK_$f" || echo "MISS_$f"
+done
+echo "===STATE_END==="
+if [ -n "$RUNJOB" ] || [ ! -s "$CUR/OUTCAR" ] || [ ! -s "$CUR/CONTCAR" ]; then
+  exit 0
+fi
+NEW="$RD/$CON"
+mkdir "$NEW"
+[ -f "$CUR/CONTCAR" ] && cp "$CUR/CONTCAR" "$NEW/POSCAR" || true
+[ -f "$CUR/POTCAR" ] && cp "$CUR/POTCAR" "$NEW/POTCAR" || true
+[ -f "$CUR/KPOINTS" ] && cp "$CUR/KPOINTS" "$NEW/KPOINTS" || true
+[ -f "$CUR/INCAR" ] && cp "$CUR/INCAR" "$NEW/INCAR" || true
+[ -f "$CUR/vasp.lsf" ] && cp "$CUR/vasp.lsf" "$NEW/vasp.lsf" || true
+[ -f "$CUR/submit.sh" ] && cp "$CUR/submit.sh" "$NEW/submit.sh" || true
+if [ -f "$CUR/WAVECAR" ] && [ ! -e "$NEW/WAVECAR" ]; then mv "$CUR/WAVECAR" "$NEW/WAVECAR"; fi
+[ -f "$NEW/INCAR" ] && cat "$NEW/INCAR" || true
+echo "===FILES==="
+ls -1 "$NEW"
+"""
 
 
-def _remote_max_con_index(server: str, remote_dir: str) -> int:
-    r = ssh.run_remote(
-        server,
-        f'bash -c \'ls -d "{remote_dir}"/con[0-9]* 2>/dev/null | sed "s|.*/con||" | sort -n | tail -1\'',
-        timeout=30,
-    )
-    out = r["stdout"].strip()
-    return int(out) if out.isdigit() else 0
-
-
-def _remote_con_exists(server: str, remote_dir: str, n: int) -> bool:
-    r = ssh.run_remote(
-        server,
-        f'bash -c \'[ -d "{remote_dir}/con{n}" ] && echo YES\'',
-        timeout=30,
-    )
-    return "YES" in r["stdout"]
-
-
-def _next_free_con(server: str, remote_dir: str) -> tuple:
-    """取下一个不存在的续算编号（跳过残留/并发产生的已存在 conN）。"""
-    n = _remote_max_con_index(server, remote_dir) + 1
-    while _remote_con_exists(server, remote_dir, n):
-        n += 1
-    return f"con{n}", n
-
-
-def _remote_image_dirs(server: str, remote_dir: str) -> List[str]:
-    r = ssh.run_remote(
-        server,
-        f'bash -c \'ls -d "{remote_dir}"/[0-9]* 2>/dev/null | xargs -n1 basename | sort -n\'',
-        timeout=30,
-    )
-    return [line.strip() for line in r["stdout"].splitlines() if line.strip().isdigit()]
+def _neb_continuation_script(server: str, remote_dir: str) -> str:
+    """NEB 续算单次远程脚本：源目录取最新续算目录（conN 优先，无则主目录），
+    共享文件复制、端点 POSCAR 固定并带上端点 OUTCAR（00/NN）、
+    中间映像 CONTCAR→POSCAR。
+    """
+    return f"""set -e
+RD="{remote_dir}"
+MAX=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/con||' | sort -n | tail -1)
+N=$((${{MAX:-0}} + 1))
+while [ -d "$RD/con$N" ]; do N=$((N+1)); done
+CON="con$N"
+LATEST=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/||' | sort -V | tail -1)
+if [ -n "$LATEST" ]; then SRC="$RD/$LATEST"; else SRC="$RD"; fi
+NEW="$RD/$CON"
+echo "===STATE==="
+echo "CON=$CON"
+echo "LATEST=$LATEST"
+echo "SRC=$SRC"
+echo "===STATE_END==="
+mkdir "$NEW"
+for f in INCAR KPOINTS POTCAR vasp.lsf submit.sh; do
+  [ -f "$SRC/$f" ] && cp "$SRC/$f" "$NEW/$f" || true
+done
+FIRST=$(ls -1d "$SRC"/[0-9]* 2>/dev/null | sed 's|.*/||' | sort -n | head -1)
+LAST=$(ls -1d "$SRC"/[0-9]* 2>/dev/null | sed 's|.*/||' | sort -n | tail -1)
+for d in "$SRC"/[0-9]*; do
+  [ -d "$d" ] || continue
+  img=$(basename "$d")
+  mkdir -p "$NEW/$img"
+  if [ "$img" = "$FIRST" ] || [ "$img" = "$LAST" ]; then
+    [ -f "$SRC/$img/POSCAR" ] && cp "$SRC/$img/POSCAR" "$NEW/$img/POSCAR" || true
+    [ -f "$SRC/$img/OUTCAR" ] && cp "$SRC/$img/OUTCAR" "$NEW/$img/OUTCAR" || true
+  else
+    if [ -f "$SRC/$img/CONTCAR" ]; then
+      cp "$SRC/$img/CONTCAR" "$NEW/$img/POSCAR"
+    elif [ -f "$SRC/$img/POSCAR" ]; then
+      cp "$SRC/$img/POSCAR" "$NEW/$img/POSCAR"
+    fi
+  fi
+done
+[ -f "$NEW/INCAR" ] && cat "$NEW/INCAR" || true
+echo "===FILES==="
+ls -1 "$NEW"
+echo "===IMAGES==="
+ls -1d "$NEW"/[0-9]* 2>/dev/null | xargs -n1 basename | sort -n
+"""
 
 
 def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
-    """续算分流入口：按最新目录状态决定创建续算或提示处理。
+    """续算分流入口：单次远程执行完成编号/运行中/状态/输入完整性检查与文件准备。
 
     - 最新目录（最大编号 conN，无则主目录）OUTCAR 与 CONTCAR 均非空
       -> 标准续算：创建 con(N+1)，返回 action="created"；
@@ -239,30 +283,61 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
     if task_type not in ("opt", "neb"):
         raise ValueError("仅结构优化（opt）与 NEB 任务支持同类型续算")
 
-    servers = load_servers()
-    cfg = servers.get(server, {})
-    batch_path = cfg.get("batch_check_path")
-    if not batch_path:
-        raise ValueError("服务器未配置 batch_check_path，无法定位最新输出")
-
     remote_dir = task_remote_dir(server, task).rstrip("/")
     if not remote_dir:
         raise ValueError("任务缺少 remote_dir")
-    con, n = _next_free_con(server, remote_dir)
-    new_dir = f"{remote_dir}/{con}"
 
     if task_type == "neb":
-        result = _create_neb_continuation(server, remote_dir, con, new_dir)
-        result["action"] = "created"
-        result["message"] = f"已创建续算目录 {con}"
-        return result
+        out = _remote_script(
+            server, _neb_continuation_script(server, remote_dir), timeout=180
+        )
+        state = _script_slice(out, "===STATE===", "===STATE_END===")
+        con = _state_value(state, "CON")
+        latest = _state_value(state, "LATEST")
+        source_dir = _state_value(state, "SRC") or remote_dir
+        new_dir = f"{remote_dir}/{con}"
+        incar_text = _script_slice(out, "===STATE_END===", "===FILES===")
+        copied = [
+            ln
+            for ln in _script_slice(out, "===FILES===", "===IMAGES===").splitlines()
+            if ln.strip()
+        ]
+        images = [
+            ln
+            for ln in _script_tail(out, "===IMAGES===").splitlines()
+            if ln.strip().isdigit()
+        ]
+        warnings = [] if images else ["未发现映像子目录（00..NN），仅复制共享文件"]
+        updated, incar_warnings = modify_incar(incar_text, {"ISTART": 1, "ICHARG": 0})
+        _write_remote_file(server, f"{new_dir}/INCAR", updated)
+        return {
+            "task_type": "neb",
+            "con": con,
+            "remote_dir": new_dir,
+            "source_dir": source_dir,
+            "latest_dir": latest or None,
+            "incar_changes": {"ISTART": "1", "ICHARG": "0"},
+            "copied_files": copied,
+            "images": images,
+            "warnings": warnings + incar_warnings,
+            "action": "created",
+            "current_dir": source_dir,
+            "message": f"已创建续算目录 {con}",
+        }
 
-    # 定位最新续算目录（最大编号 conN，存在即算；无则主目录）
-    latest = _remote_latest_con(server, remote_dir, batch_path)
+    out = _remote_script(
+        server, _opt_continuation_script(server, remote_dir, task), timeout=180
+    )
+    state = _script_slice(out, "===STATE===", "===STATE_END===")
+    con = _state_value(state, "CON")
+    latest = _state_value(state, "LATEST")
+    running_job = _state_value(state, "RUNJOB")
     current_dir = f"{remote_dir}/{latest}" if latest else remote_dir
+    outcar_ok = "O_OK" in state
+    contcar_ok = "C_OK" in state
+    required = ("POSCAR", "INCAR", "KPOINTS", "POTCAR", "vasp.lsf")
+    missing = [f for f in required if f"MISS_{f}" in state]
 
-    # 首先判断最新续算目录是否有任务正在运行（RUN/SSUSP），有则提示不续算
-    running_job = _running_job(server, remote_dir, current_dir, task)
     if running_job:
         return {
             "action": "running",
@@ -273,24 +348,7 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
             "warnings": [],
         }
 
-    # 状态判断：OUTCAR 与 CONTCAR 均存在且非空才视为正常完成
-    check = ssh.run_remote(
-        server,
-        f'bash -c \'[ -s "{current_dir}/OUTCAR" ] && echo O_OK; [ -s "{current_dir}/CONTCAR" ] && echo C_OK\'',
-        timeout=30,
-    )
-    out = check.get("stdout", "")
-    outcar_ok = "O_OK" in out
-    contcar_ok = "C_OK" in out
     if not (outcar_ok and contcar_ok):
-        # 异常流程：不创建目录、不提交，仅检查输入文件完整性
-        required = ("POSCAR", "INCAR", "KPOINTS", "POTCAR", "vasp.lsf")
-        conds = " ".join(
-            f'[ -s "{current_dir}/{f}" ] && echo OK_{i} || echo MISS_{i};'
-            for i, f in enumerate(required)
-        )
-        r = ssh.run_remote(server, f"bash -c '{conds}'", timeout=30)
-        missing = [f for i, f in enumerate(required) if f"MISS_{i}" in r.get("stdout", "")]
         base = {
             "current_dir": current_dir,
             "latest_dir": latest or None,
@@ -313,24 +371,16 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
         )
         return base
 
-    # 标准续算：从最新目录复制/移动输入文件
-    src = current_dir
-    cmds = [
-        "set -e",
-        f'mkdir "{new_dir}"',
-        *_source_files_cmds(src, new_dir),
-    ]
-    _run_remote_bash(server, cmds, timeout=120)
-    # 统一 INCAR 修改：本地生成后上传（大小写/布尔兼容、重复合并）
-    incar = _download_remote_text(server, f"{new_dir}/INCAR") or ""
-    updated, incar_warnings = modify_incar(incar, {"ISTART": 1, "ICHARG": 0})
+    new_dir = f"{remote_dir}/{con}"
+    incar_text = _script_slice(out, "===STATE_END===", "===FILES===")
+    copied = [ln for ln in _script_tail(out, "===FILES===").splitlines() if ln.strip()]
+    updated, incar_warnings = modify_incar(incar_text, {"ISTART": 1, "ICHARG": 0})
     _write_remote_file(server, f"{new_dir}/INCAR", updated)
-    copied = _list_remote_dir(server, new_dir)
     return {
         "task_type": task_type,
         "con": con,
         "remote_dir": new_dir,
-        "source_dir": src,
+        "source_dir": current_dir,
         "latest_dir": latest or None,
         "incar_changes": {"ISTART": "1", "ICHARG": "0"},
         "copied_files": copied,
@@ -338,54 +388,6 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
         "action": "created",
         "current_dir": current_dir,
         "message": f"已创建续算目录 {con}",
-    }
-
-
-def _create_neb_continuation(
-    server: str, remote_dir: str, con: str, new_dir: str
-) -> Dict[str, Any]:
-    """NEB 续算：共享文件从原目录复制，映像 00..NN 逐一处理。"""
-    images = _remote_image_dirs(server, remote_dir)
-    warnings: List[str] = []
-    cmds = [
-        "set -e",
-        f'mkdir "{new_dir}"',
-    ]
-    # 共享文件（原任务目录根）
-    for f in ("INCAR", "KPOINTS", "POTCAR", "vasp.lsf", "submit.sh"):
-        cmds.append(f'[ -f "{remote_dir}/{f}" ] && cp "{remote_dir}/{f}" "{new_dir}/{f}" || true')
-    if not images:
-        warnings.append("未发现映像子目录（00..NN），仅复制共享文件")
-    else:
-        first, last = images[0], images[-1]
-        for img in images:
-            cmds.append(f'mkdir -p "{new_dir}/{img}"')
-            if img in (first, last):
-                cmds.append(
-                    f'[ -f "{remote_dir}/{img}/POSCAR" ] && cp "{remote_dir}/{img}/POSCAR" "{new_dir}/{img}/POSCAR" || true'
-                )
-            else:
-                cmds.append(
-                    f'if [ -f "{remote_dir}/{img}/CONTCAR" ]; then '
-                    f'cp "{remote_dir}/{img}/CONTCAR" "{new_dir}/{img}/POSCAR"; '
-                    f'elif [ -f "{remote_dir}/{img}/POSCAR" ]; then '
-                    f'cp "{remote_dir}/{img}/POSCAR" "{new_dir}/{img}/POSCAR"; fi'
-                )
-    _run_remote_bash(server, cmds, timeout=180)
-    # 统一 INCAR 修改（ISTART=1, ICHARG=0）
-    incar = _download_remote_text(server, f"{new_dir}/INCAR") or ""
-    updated, incar_warnings = modify_incar(incar, {"ISTART": 1, "ICHARG": 0})
-    _write_remote_file(server, f"{new_dir}/INCAR", updated)
-    return {
-        "task_type": "neb",
-        "con": con,
-        "remote_dir": new_dir,
-        "source_dir": remote_dir,
-        "latest_dir": None,
-        "incar_changes": {"ISTART": "1", "ICHARG": "0"},
-        "copied_files": _list_remote_dir(server, new_dir),
-        "images": images,
-        "warnings": warnings + incar_warnings,
     }
 
 
@@ -499,7 +501,14 @@ def create_frac_files(
 
     # INCAR 频率计算参数（默认值可覆盖，留空则不包含）
     incar = _download_remote_text(server, f"{frac_dir}/INCAR") or ""
-    defaults = {"ISYM": -1, "SIGMA": 0.05, "NSW": 1, "IBRION": 5, "POTIM": 0.015}
+    defaults = {
+        "ISYM": 0,
+        "SIGMA": 0.05,
+        "NSW": 1,
+        "IBRION": 5,
+        "NFREE": 2,
+        "POTIM": 0.015,
+    }
     changes = {
         **defaults,
         **{str(k): v for k, v in (params or {}).items() if v is not None},
@@ -607,7 +616,12 @@ def create_neb_files(
     nebmake: str = NEBMAKE_PL,
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """从初末态 opt 构建 NEB 计算文件：00..NN 映像 + nebmake.pl 插值。"""
+    """从初末态 opt 构建 NEB 计算文件：00..NN 映像 + nebmake.pl 插值。
+
+    INCAR 从初态 opt 最新输出目录复制，只合并 NEB 专属参数
+    （IBRION/POTIM/IOPT/LCLIMB/IMAGES/ICHAIN/SPRING/MAXMOVE 及用户参数），
+    其余参数原样保留；初态 INCAR 缺失时才回退 NEB 默认模板。
+    """
     if num_images < 1:
         raise ValueError("中间态数量至少为 1")
     servers = load_servers()
@@ -639,6 +653,7 @@ def create_neb_files(
         f'[ -f "{src_is}/KPOINTS" ] && cp "{src_is}/KPOINTS" "{neb_dir}/KPOINTS" || true',
         f'[ -f "{src_is}/vasp.lsf" ] && cp "{src_is}/vasp.lsf" "{neb_dir}/vasp.lsf" || true',
         f'[ -f "{src_is}/submit.sh" ] && cp "{src_is}/submit.sh" "{neb_dir}/submit.sh" || true',
+        f'[ -f "{src_is}/INCAR" ] && cp "{src_is}/INCAR" "{neb_dir}/INCAR" || true',
         # OUTCAR 便于 NEB 端点使用波函数信息
         f'[ -f "{src_is}/OUTCAR" ] && cp "{src_is}/OUTCAR" "{neb_dir}/00/OUTCAR" || true',
         f'[ -f "{src_fs}/OUTCAR" ] && cp "{src_fs}/OUTCAR" "{neb_dir}/{last:02d}/OUTCAR" || true',
@@ -647,12 +662,15 @@ def create_neb_files(
     ]
     _run_remote_bash(server, cmds, timeout=300)
 
-    # NEB INCAR：默认模板 + NEB 参数（默认值可覆盖，留空则不包含）
-    from config import load_task_registry
+    # NEB INCAR：以初态 opt INCAR 为基底，只合并 NEB 参数（其余参数原样保留）
+    incar = _download_remote_text(server, f"{neb_dir}/INCAR") or ""
+    if not incar.strip():
+        # 初态 INCAR 缺失/为空时回退 NEB 默认模板
+        from config import load_task_registry
 
-    registry = load_task_registry()
-    defaults = (registry.get("neb") or {}).get("default_incar", {})
-    incar = "\n".join(f"{k} = {v}" for k, v in defaults.items()) + "\n"
+        registry = load_task_registry()
+        defaults = (registry.get("neb") or {}).get("default_incar", {})
+        incar = "\n".join(f"{k} = {v}" for k, v in defaults.items()) + "\n"
     neb_changes = {
         "IBRION": 3,
         "POTIM": 0,

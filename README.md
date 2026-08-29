@@ -35,10 +35,21 @@
 - `run_remote(server, cmd, timeout)`：执行远端命令，返回 `{stdout, stderr, exit_code}`；
 - `upload_file` / `download_file` / `mkdir_remote`：文件传输与建目录；
 - 连接池行为：常驻连接 + 每 30s keepalive + 空闲 5 分钟自动回收 + 断线自动重连（3 次重试），
-  同一服务器命令串行化（避免并发抢占一条连接）。
+  同一服务器命令串行化（避免并发抢占一条连接）；
+  `upload_file` / `download_file` / `mkdir_remote` 与命令执行共用同一条常驻连接，
+  **不要**自行新建/关闭连接（早期版本每次新建连接，单次上传就要 3s 左右）。
 
 新增任何需要访问远端的功能（巡检、续算、提交、停止、文件构建等）都必须复用 `ssh.py`，
 不要在各自模块里另起连接逻辑。
+
+### 批量远端操作：合并为一次 exec
+
+实测 HPC 登录节点每条 `exec_command` 通道都有约 1.3-2s 的 shell 启动开销（即使命令只是
+`true`）。因此**多步远端文件操作必须合并进单次调用**，不要把“查目录 → 检查文件 → 复制 →
+回传内容 → 列目录”拆成多次 SSH。参考实现：`continuation.py` 用
+`_remote_script(server, bash_script)` 把整段 bash 脚本 base64 后一次执行，脚本内用
+`===STATE===` / `===FILES===` 等标记输出分段，本地解析后再用池化 SFTP 上传修改后的文件
+（续算实测从 10-15s 降到约 3.5s）。
 
 ### 远端命令写法
 

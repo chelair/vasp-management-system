@@ -787,7 +787,10 @@ def stop_task(task_id: str):
             content=fail(f"无法连接远程服务器，请检查 SSH 配置：{e}"),
         )
     raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
-    if result.get("exit_code") != 0:
+    # LSF：对已结束/不存在的作业执行 bkill 会输出 "Job <id>: Job has already
+    # finished" 且退出码非 0 —— 作业实际上已停止，按停止成功处理（归档为待提交）
+    already_finished = bool(re.search(r"already finished", raw, re.IGNORECASE))
+    if result.get("exit_code") != 0 and not already_finished:
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
         return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
 
@@ -797,10 +800,20 @@ def stop_task(task_id: str):
             update_task_status(db, project["name"], task_id, "pending")
     except Exception as e:  # noqa: BLE001 - 状态落库失败不影响停止事实
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"DB_WARN: {e}")
-    _audit_log(project["name"], task_id, str(job_id), "bkill", "OK")
+    _audit_log(
+        project["name"],
+        task_id,
+        str(job_id),
+        "bkill",
+        "OK (already finished)" if already_finished else "OK",
+    )
     return ok(
-        "作业已停止",
-        {"job_id": job_id, "new_status": "pending"},
+        "作业已停止（作业此前已结束）" if already_finished else "作业已停止",
+        {
+            "job_id": job_id,
+            "new_status": "pending",
+            "already_finished": already_finished,
+        },
     )
 
 

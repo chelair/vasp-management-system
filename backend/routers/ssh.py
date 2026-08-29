@@ -10,12 +10,12 @@ import re
 import tempfile
 from typing import Any, Dict, List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from config import CONFIG_DIR, load_servers
 from envelope import fail, ok
-from ssh import get_pool_status
+from ssh import _acquire_client, _mock_enabled, get_pool_status, run_remote
 
 router = APIRouter(prefix="/ssh", tags=["ssh"])
 
@@ -41,6 +41,60 @@ def ssh_status():
         return ok("查询成功", get_pool_status())
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"查询 SSH 状态失败：{e}"))
+
+
+@router.post("/test")
+def ssh_test(payload: dict = Body(default={})):
+    """真实连接延迟测试：通过常驻连接池执行一条 echo 命令并计时（毫秒）。
+
+    该延迟反映「一条远程命令的完整往返」耗时（含远端 shell 启动与网络传输），
+    会随登录节点负载波动，而不是纯 TCP 握手延迟。
+    """
+    import time
+
+    try:
+        servers = load_servers()
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"读取 SSH 配置失败：{e}"))
+    name = str((payload or {}).get("server") or "").strip()
+    if not name:
+        name = next(iter(servers), "")
+    if not name or name not in servers:
+        return JSONResponse(status_code=404, content=fail(f"服务器 '{name}' 未配置"))
+    cfg = servers[name]
+    if _mock_enabled():
+        return ok(
+            "本地模拟模式（未连接真实服务器）",
+            {
+                "server": name,
+                "host": cfg.get("host"),
+                "user": cfg.get("user"),
+                "latency_ms": 0,
+                "command": "echo ok",
+            },
+        )
+    try:
+        # 先确保常驻连接建立（含断线重连），再实测一条命令往返耗时
+        _acquire_client(name)
+        start = time.perf_counter()
+        r = run_remote(name, "echo ok", timeout=30)
+        latency_ms = round((time.perf_counter() - start) * 1000)
+        if r.get("exit_code") != 0:
+            raise RuntimeError(
+                (r.get("stderr") or r.get("stdout") or "").strip() or "命令执行失败"
+            )
+    except Exception as e:
+        return JSONResponse(status_code=502, content=fail(f"SSH 测试失败：{e}"))
+    return ok(
+        "连接正常",
+        {
+            "server": name,
+            "host": cfg.get("host"),
+            "user": cfg.get("user"),
+            "latency_ms": latency_ms,
+            "command": "echo ok",
+        },
+    )
 
 
 def _atomic_write_servers(servers: Dict[str, Any]) -> None:

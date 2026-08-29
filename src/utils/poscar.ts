@@ -115,7 +115,9 @@ export function buildKpoints(
   grid: [number, number, number],
   density: number,
 ): string {
-  return `${comment} KPOINTS (密度 ${density})
+  // 首行注释必须是纯 ASCII：部分工具/编码会把中文注释读成乱码
+  const safe = comment.replace(/[^\x20-\x7E]/g, '').trim();
+  return `${safe} KPOINTS (density ${density})
 0
 ${meshType}
 ${grid.join(' ')}

@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 
 interface Props {
@@ -7,6 +7,8 @@ interface Props {
   color: string;
   unit?: string;
   threshold?: number;
+  /** 悬停提示区数值标签（默认“能量”） */
+  valueLabel?: string;
   /** 悬停提示数据点（与 series 索引对齐） */
   points?: { step: number; energy: number | null; max_force: number | null }[];
   hovered?: number | null;
@@ -23,6 +25,7 @@ export default function LineChart({
   color,
   unit,
   threshold,
+  valueLabel,
   points,
   hovered,
   onHover,
@@ -75,16 +78,30 @@ export default function LineChart({
     })
     .filter(Boolean)
     .join(' ');
-  const hoverPoint = hovered != null ? points?.[hovered] : null;
-  const hoverValue = hovered != null ? series[hovered] : null;
   const lastHoverRef = useRef<number | null>(null);
+  // 未传 hovered/onHover 时内部管理悬停（单图场景，如 NEB 能垒图）
+  const [internalHover, setInternalHover] = useState<number | null>(null);
+  const hoveredIdx = hovered ?? internalHover;
+  const activePoint = hoveredIdx != null ? points?.[hoveredIdx] : null;
+  const activeValue = hoveredIdx != null ? series[hoveredIdx] : null;
+
+  const handleHover = (idx: number | null) => {
+    if (onHover) {
+      onHover(idx);
+    } else {
+      setInternalHover(idx);
+    }
+  };
 
   return (
     <div className="analysis-chart">
-      {hoverPoint && (
+      {activePoint && (
         <div className="analysis-chart__hint">
-          步 {hoverPoint.step} · 能量 {hoverPoint.energy != null ? hoverPoint.energy.toFixed(4) : '—'} eV · 力{' '}
-          {hoverPoint.max_force != null ? hoverPoint.max_force.toFixed(4) : '—'} eV/Å
+          步 {activePoint.step} · {valueLabel ?? '能量'}{' '}
+          {activePoint.energy != null ? activePoint.energy.toFixed(4) : '—'} eV
+          {activePoint.max_force != null
+            ? ` · 力 ${activePoint.max_force.toFixed(4)} eV/Å`
+            : ''}
         </div>
       )}
       <svg viewBox={`0 0 ${W} ${H}`} className="analysis-chart__svg" role="img" aria-label={title}>
@@ -150,20 +167,20 @@ export default function LineChart({
           </>
         )}
         {/* 悬停：竖线 + 交点放大 */}
-        {hovered != null && hoverValue != null && (
+        {hoveredIdx != null && activeValue != null && (
           <>
             <line
-              x1={px(hovered)}
+              x1={px(hoveredIdx)}
               y1={M.top}
-              x2={px(hovered)}
+              x2={px(hoveredIdx)}
               y2={M.top + plotH}
               stroke="#9CA3AF"
               strokeWidth="1"
               strokeDasharray="4,3"
             />
             <circle
-              cx={px(hovered)}
-              cy={py(hoverValue)}
+              cx={px(hoveredIdx)}
+              cy={py(activeValue)}
               r="5"
               fill={color}
               stroke="#FFFFFF"
@@ -186,33 +203,31 @@ export default function LineChart({
         <text x={M.left + plotW / 2} y={H - 2} fontSize="11" fill="#6B7A90" textAnchor="middle">
           离子步
         </text>
-        {onHover && (
-          <rect
-            x={M.left}
-            y={M.top}
-            width={plotW}
-            height={plotH}
-            fill="transparent"
-            onMouseMove={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              // rect 覆盖层在 viewBox 中的宽度是 plotW；用实际渲染宽度换算，
-              // 自动适配不同设备/缩放（CSS 像素 -> viewBox 坐标）
-              const scaleX = rect.width / plotW;
-              const x = (e.clientX - rect.left) / scaleX; // 相对绘图区左缘的 viewBox 坐标
-              const idx = n > 1 ? Math.round((x / plotW) * (n - 1)) : 0;
-              const clamped = Math.max(0, Math.min(n - 1, idx));
-              // 仅当索引变化才回调，减少无效重渲染
-              if (lastHoverRef.current !== clamped) {
-                lastHoverRef.current = clamped;
-                onHover(clamped);
-              }
-            }}
-            onMouseLeave={() => {
-              lastHoverRef.current = null;
-              onHover(null);
-            }}
-          />
-        )}
+        <rect
+          x={M.left}
+          y={M.top}
+          width={plotW}
+          height={plotH}
+          fill="transparent"
+          onMouseMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            // rect 覆盖层在 viewBox 中的宽度是 plotW；用实际渲染宽度换算，
+            // 自动适配不同设备/缩放（CSS 像素 -> viewBox 坐标）
+            const scaleX = rect.width / plotW;
+            const x = (e.clientX - rect.left) / scaleX; // 相对绘图区左缘的 viewBox 坐标
+            const idx = n > 1 ? Math.round((x / plotW) * (n - 1)) : 0;
+            const clamped = Math.max(0, Math.min(n - 1, idx));
+            // 仅当索引变化才触发，减少无效重渲染
+            if (lastHoverRef.current !== clamped) {
+              lastHoverRef.current = clamped;
+              handleHover(clamped);
+            }
+          }}
+          onMouseLeave={() => {
+            lastHoverRef.current = null;
+            handleHover(null);
+          }}
+        />
       </svg>
     </div>
   );

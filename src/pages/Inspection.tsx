@@ -786,24 +786,30 @@ export default function Inspection() {
                 <span className="fe-op">+</span>
                 <div className="fe-box">
                   <div className="fe-box__label">矫正项 (ZPE − T·S)</div>
-                  {detailData.frac.correction != null ? (
-                    <div
-                      className="fe-box__value"
-                      style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 4 }}
-                    >
-                      {detailData.frac.correction.toFixed(4)}
-                      <span className="preview-note">eV</span>
-                    </div>
-                  ) : (
-                    <Button
-                      size="small"
-                      type="link"
-                      loading={correcting}
-                      onClick={() => void handleCalculateCorrection()}
-                    >
-                      未矫正 · 计算
-                    </Button>
-                  )}
+                  <Button
+                    size="small"
+                    type="link"
+                    loading={correcting}
+                    onClick={() => void handleCalculateCorrection()}
+                    title="点击重新计算矫正项"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'baseline',
+                      justifyContent: 'center',
+                      gap: 4,
+                      padding: 0,
+                      height: 'auto',
+                    }}
+                  >
+                    {detailData.frac.correction != null ? (
+                      <>
+                        {detailData.frac.correction.toFixed(4)}
+                        <span className="preview-note">eV</span>
+                      </>
+                    ) : (
+                      '未矫正 · 计算'
+                    )}
+                  </Button>
                 </div>
               </div>
             )}
@@ -875,21 +881,57 @@ export default function Inspection() {
             )}
 
             {detailData.task_type === 'neb' &&
-              detailData.neb_profile &&
-              detailData.neb_profile.images.length > 0 && (
+              detailData.neb_barrier &&
+              detailData.neb_barrier.images.length > 0 && (
                 <div className="inspection-detail__section">
-                  <h3>NEB 能垒</h3>
-                  <LineChart
-                    title="相对初态能量"
-                    series={detailData.neb_profile.images.map((x) => x.relative)}
-                    color="#7B61D6"
-                    unit="相对能量 (eV)"
-                    points={detailData.neb_profile.images.map((x) => ({
-                      step: Number(x.label),
-                      energy: x.relative,
-                      max_force: null,
-                    }))}
-                  />
+                  <h3>NEB 过渡态能垒</h3>
+                  <div className="neb-barrier-layout">
+                    <LineChart
+                      title="相对能垒（nebef.pl）"
+                      series={detailData.neb_barrier.images.map((x) => x.relative)}
+                      color="#7B61D6"
+                      unit="相对能量 (eV)"
+                      valueLabel="相对能垒"
+                      points={detailData.neb_barrier.images.map((x) => ({
+                        step: Number(x.label) + 1,
+                        energy: x.relative,
+                        max_force: null,
+                      }))}
+                    />
+                    <Table
+                      rowKey="label"
+                      size="small"
+                      pagination={false}
+                      dataSource={detailData.neb_barrier.images}
+                      style={{ minWidth: 300 }}
+                      columns={[
+                        {
+                          title: '映像',
+                          dataIndex: 'label',
+                          width: 60,
+                          render: (v) => Number(v) + 1,
+                        },
+                        {
+                          title: '能量 (eV)',
+                          dataIndex: 'energy',
+                          align: 'right',
+                          render: (v) => (v != null ? v.toFixed(4) : '—'),
+                        },
+                        {
+                          title: '受力 (eV/Å)',
+                          dataIndex: 'max_force',
+                          align: 'right',
+                          render: (v) => (v != null ? v.toFixed(4) : '—'),
+                        },
+                        {
+                          title: '相对能垒 (eV)',
+                          dataIndex: 'relative',
+                          align: 'right',
+                          render: (v) => (v != null ? v.toFixed(4) : '—'),
+                        },
+                      ]}
+                    />
+                  </div>
                 </div>
               )}
 

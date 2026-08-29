@@ -74,8 +74,15 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
         ],
       },
       { key: 'NSW', label: 'NSW', type: 'number', hint: '最大离子步数', defaultValue: '100' },
-      { key: 'POTIM', label: 'POTIM', type: 'number', unit: 'fs / Å', hint: '离子步长', defaultValue: '0.5' },
-      { key: 'NFREE', label: 'NFREE', type: 'number', hint: '频率计算位移数（1/2/3）', defaultValue: '2' },
+      { key: 'POTIM', label: 'POTIM', type: 'number', unit: 'fs / Å', hint: '离子步长', defaultValue: '0.2' },
+      {
+        key: 'NFREE',
+        label: 'NFREE',
+        type: 'number',
+        hint: '频率计算位移数（1/2/3）',
+        defaultValue: '2',
+        fracOnly: true,
+      },
     ],
   },
   {
@@ -151,7 +158,6 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
           { value: '.TRUE.', label: '.TRUE.', hint: '强制实空间' },
         ],
       },
-      { key: 'ADDGRID', label: 'ADDGRID', ...BOOL, hint: '增加网格精度（软赝势）', defaultValue: '.FALSE.' },
     ],
   },
   {
@@ -169,17 +175,15 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
           { value: '2', label: '2', hint: '自旋极化' },
         ],
       },
-      { key: 'MAGMOM', label: 'MAGMOM', type: 'string', hint: '初始磁矩（按原子数给出）', defaultValue: '1' },
-      { key: 'LNONCOLLINEAR', label: 'LNONCOLLINEAR', ...BOOL, hint: '非共线磁性', defaultValue: '.FALSE.' },
-      { key: 'LSORBIT', label: 'LSORBIT', ...BOOL, hint: '自旋轨道耦合', defaultValue: '.FALSE.' },
+      { key: 'MAGMOM', label: 'MAGMOM', type: 'string', hint: '初始磁矩（按原子数给出，留空则不写入）', defaultValue: '' },
     ],
   },
   {
     key: 'output',
     label: '输出与文件',
     params: [
-      { key: 'LWAVE', label: 'LWAVE', ...BOOL, hint: '是否写 WAVECAR', defaultValue: '.TRUE.' },
-      { key: 'LCHARG', label: 'LCHARG', ...BOOL, hint: '是否写 CHGCAR', defaultValue: '.TRUE.' },
+      { key: 'LWAVE', label: 'LWAVE', ...BOOL, hint: '是否写 WAVECAR', defaultValue: '.FALSE.' },
+      { key: 'LCHARG', label: 'LCHARG', ...BOOL, hint: '是否写 CHGCAR', defaultValue: '.FALSE.' },
       { key: 'LAECHG', label: 'LAECHG', ...BOOL, hint: '是否写 AECCAR（Bader 分析）', defaultValue: '.FALSE.' },
       { key: 'LVTOT', label: 'LVTOT', ...BOOL, hint: '是否写 LOCPOT（静电势）', defaultValue: '.FALSE.' },
       {
@@ -201,9 +205,8 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
     key: 'parallel',
     label: '并行与性能',
     params: [
-      { key: 'NCORE', label: 'NCORE', type: 'number', hint: '每核组核数（约 √节点核数）', defaultValue: '8' },
-      { key: 'NPAR', label: 'NPAR', type: 'number', hint: '并行分组（与 NCORE 二选一）', defaultValue: '' },
-      { key: 'KPAR', label: 'KPAR', type: 'number', hint: 'k 点并行数（≤ k 点数）', defaultValue: '1' },
+      { key: 'NCORE', label: 'NCORE', type: 'number', hint: '每核组核数（约 √节点核数）', defaultValue: '1' },
+      { key: 'KPAR', label: 'KPAR', type: 'number', hint: 'k 点并行数（≤ k 点数）', defaultValue: '' },
     ],
   },
 ];
@@ -216,7 +219,7 @@ export const PRECISION_PRESETS: Record<
   low: {
     PREC: 'Low',
     ENCUT: '400',
-    EDIFF: '1E-3',
+    EDIFF: '1E-4',
     EDIFFG: '-0.05',
     NSW: '80',
     ISMEAR: '0',
@@ -235,12 +238,12 @@ export const PRECISION_PRESETS: Record<
   },
   high: {
     PREC: 'Accurate',
-    ENCUT: '600',
+    ENCUT: '500',
     EDIFF: '1E-6',
-    EDIFFG: '-0.01',
-    NSW: '200',
+    EDIFFG: '-0.02',
+    NSW: '500',
     ISMEAR: '0',
-    SIGMA: '0.02',
+    SIGMA: '0.05',
     ALGO: 'Normal',
   },
 };
@@ -258,6 +261,7 @@ export function buildDefaultParams(taskType: TaskType): Record<string, string> {
   const params: Record<string, string> = {};
   for (const cat of INCAR_CATEGORIES) {
     for (const def of cat.params) {
+      if (def.fracOnly && taskType !== 'frac') continue;
       if (def.defaultValue !== '') params[def.key] = def.defaultValue;
     }
   }
@@ -266,22 +270,56 @@ export function buildDefaultParams(taskType: TaskType): Record<string, string> {
   return params;
 }
 
-/** 生成 INCAR 文本：按键宽对齐，布尔转 .TRUE./.FALSE.，数字规范科学计数法 */
+function formatRows(rows: { key: string; value: string }[]): string {
+  const width = Math.max(...rows.map((r) => r.key.length));
+  return rows.map((r) => `${r.key.padEnd(width + 2)}= ${r.value}`).join('\n');
+}
+
+/** 解析自定义输入框中的参数行（KEY = value，任意键均保留，忽略 #/! 注释） */
+export function parseCustomIncar(text: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('!')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1);
+    for (const marker of ['#', '!']) {
+      const pos = value.indexOf(marker);
+      if (pos !== -1) value = value.slice(0, pos);
+    }
+    value = value.trim();
+    if (key && value) params[key] = value;
+  }
+  return params;
+}
+
+/**
+ * 生成 INCAR 文本：按设置类型（分类）分组输出，分类之间空一行；
+ * 按键宽对齐，布尔转 .TRUE./.FALSE.，数字规范科学计数法；
+ * customText 为自定义参数行（KEY = value），作为最后一个分组追加。
+ */
 export function buildIncarText(
   params: Record<string, string>,
   categories: IncarCategory[] = INCAR_CATEGORIES,
+  customText = '',
 ): string {
-  const rows: { key: string; value: string }[] = [];
+  const blocks: string[] = [];
   for (const cat of categories) {
+    const rows: { key: string; value: string }[] = [];
     for (const def of cat.params) {
       const raw = params[def.key];
       if (raw == null || String(raw).trim() === '') continue;
       rows.push({ key: def.key, value: formatIncarValue(def, raw) });
     }
+    if (rows.length > 0) blocks.push(formatRows(rows));
   }
-  if (rows.length === 0) return '';
-  const width = Math.max(...rows.map((r) => r.key.length));
-  return rows.map((r) => `${r.key.padEnd(width + 2)}= ${r.value}`).join('\n');
+  const customRows = Object.entries(parseCustomIncar(customText)).map(
+    ([key, value]) => ({ key, value }),
+  );
+  if (customRows.length > 0) blocks.push(formatRows(customRows));
+  return blocks.join('\n\n');
 }
 
 export function formatIncarValue(def: IncarParamDef, raw: string): string {

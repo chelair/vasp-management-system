@@ -61,6 +61,7 @@ ENDED_STATUS_TOKENS = ("DONE", "EXIT", "COMPLETED", "FAILED", "CANCELLED")
 FORCE_HEADER = "TOTAL-FORCE (eV/Angst)"
 CON_DIR_RE = re.compile(r"^con(\d+)$")
 MIN_IONIC_STEPS = 5
+NEBEF_PL = "/data/gpfs03/mdye/VTST/vtstscripts/nebef.pl"
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,48 @@ def resolve_latest_con(remote_dir: str) -> str:
     return cons[-1].name if cons else ""
 
 
+def _neb_latest_output_dir(remote_dir: str) -> str:
+    """NEB 最新**有结果**目录（逐级回退）。
+
+    判定标准：目录内存在**中间映像**（编号 0 < img < max）的 OUTCAR——
+    端点 OUTCAR 可能是创建 NEB 文件时从 IS/FS 复制来的伪结果，不代表 NEB 运行过。
+    从最大编号 conN 向前回退，直到主目录；均无结果返回空串。
+    """
+    base = Path(remote_dir)
+    if not base.is_dir():
+        return ""
+
+    def _has_result(directory: Path) -> bool:
+        nums = sorted(
+            int(p.name)
+            for p in directory.iterdir()
+            if p.is_dir() and p.name.isdigit()
+        )
+        if len(nums) < 3:
+            return False
+        lo, hi = nums[0], nums[-1]
+        for p in directory.iterdir():
+            if p.is_dir() and p.name.isdigit() and lo < int(p.name) < hi:
+                if (p / "OUTCAR").is_file():
+                    return True
+        return False
+
+    cons = sorted(
+        (
+            p
+            for p in base.iterdir()
+            if p.is_dir() and CON_DIR_RE.fullmatch(p.name)
+        ),
+        key=lambda p: int(CON_DIR_RE.fullmatch(p.name).group(1)),
+    )
+    for con in reversed(cons):
+        if _has_result(con):
+            return str(con)
+    if _has_result(base):
+        return str(base)
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # 队列查询
 # ---------------------------------------------------------------------------
@@ -164,6 +207,10 @@ def run_bjobs(job_id: str) -> str:
 
     标记取值：PEND / RUN / SSUSP（含 PSUSP、USUSP，统一按挂起处理）/
     DONE / EXIT / COMPLETED / FAILED / CANCELLED / NOT_FOUND / UNKNOWN。
+
+    注意：作业名较长时 bjobs -l 会把 "Status <RUN>" 折行成
+    "Status <RU\\n                     N>"，因此解析前先把输出压缩为单行，
+    再提取 Status <> 字段（避免 \bRUN\b 因折行匹配不到）。
     """
     if os.environ.get("VASP_BATCH_NO_BJOBS"):
         return "UNKNOWN"
@@ -177,34 +224,44 @@ def run_bjobs(job_id: str) -> str:
     except subprocess.TimeoutExpired:
         return "UNKNOWN"
     output = proc.stdout + proc.stderr
-    if "Status <PEND>" in output or re.search(r"\bPEND\b", output):
+    compact = re.sub(r"\s+", " ", output)
+    m = re.search(r"Status\s*<\s*([^>]+?)\s*>", compact)
+    if m:
+        status = re.sub(r"\s+", "", m.group(1)).upper()
+        if status == "PEND":
+            return "PEND"
+        if status == "RUN":
+            return "RUN"
+        if status in ("SSUSP", "PSUSP", "USUSP"):
+            return "SSUSP"
+        if status in ENDED_STATUS_TOKENS:
+            return status
+    # 兜底：压缩文本中的关键字匹配（兼容无 Status<> 字段的输出）
+    if re.search(r"\bPEND\b", compact):
         return "PEND"
-    if "Status <RUN>" in output or re.search(r"\bRUN\b", output):
+    if re.search(r"\bRUN\b", compact):
         return "RUN"
-    # 挂起：SSUSP（系统挂起）/ PSUSP（排队挂起）/ USUSP（用户挂起）
-    if (
-        "Status <SSUSP>" in output
-        or "Status <PSUSP>" in output
-        or "Status <USUSP>" in output
-        or re.search(r"\b(SSUSP|PSUSP|USUSP)\b", output)
-    ):
+    if re.search(r"\b(SSUSP|PSUSP|USUSP)\b", compact):
         return "SSUSP"
     for token in ENDED_STATUS_TOKENS:
-        if token in output:
+        if token in compact:
             return token
     if proc.returncode != 0 or "not found" in output.lower():
         return "NOT_FOUND"
     return "UNKNOWN"
 
 
-def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> str:
+def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> Tuple[str, bool]:
     """无 job_id 时，从 bjobs 全量作业中按提交目录（exec_cwd）匹配。
 
     作业名管理混乱不可靠，故仅按提交目录匹配：仅匹配任务**最新输出目录**
     （conN 或主目录）；该目录无对应作业时不向前追溯（交由 OUTCAR 判定）。
+
+    返回 (job_id, bjobs_ok)：bjobs_ok=False 表示 bjobs 不可用/超时（离线模拟），
+    此时无法判断作业是否仍在运行，OUTCAR 已有离子步时维持 running。
     """
     if os.environ.get("VASP_BATCH_NO_BJOBS"):
-        return ""
+        return "", False
     candidates = {str(work_dir).rstrip("/")}
     try:
         proc = subprocess.run(
@@ -214,9 +271,9 @@ def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> str:
             timeout=BJOB_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
-        return ""
+        return "", False
     if proc.returncode != 0:
-        return ""
+        return "", False
     lines = (proc.stdout or "").splitlines()
     for line in lines[1:]:
         if not line.strip():
@@ -226,8 +283,8 @@ def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> str:
             continue
         cwd = parts[1].strip().rstrip("/")
         if cwd in candidates:
-            return parts[0].strip()
-    return ""
+            return parts[0].strip(), True
+    return "", True
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +555,65 @@ def _parse_forces(
     )
 
 
+def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
+    """NEB 任务结束后的状态判定：按映像 OUTCAR 判断，而不是主目录 OUTCAR。
+
+    规则（与结构优化一致的前提：bjobs 已无活跃作业）：
+    - 中间映像（非端点）没有任何 OUTCAR -> pending（待提交，任务还没开始运行）；
+    - 所有中间映像 OUTCAR 均正常结束（含成功标志）-> completed；
+    - 有结果但存在缺失/无结束标志的映像 -> zombied，并列出具体映像。
+    端点（00/NN）的 OUTCAR 是创建 NEB 文件时从 IS/FS 复制的伪结果，不参与判定。
+    """
+    neb_dir = _neb_latest_output_dir(remote_dir)
+    if not neb_dir:
+        result["status"] = "pending"
+        return
+    base = Path(neb_dir)
+    names = sorted(
+        (p.name for p in base.iterdir() if p.is_dir() and p.name.isdigit()),
+        key=int,
+    )
+    if len(names) < 3:
+        result["status"] = "zombied"
+        result["error_messages"].append("NEB 映像目录不足（少于 3 个），无法判定完成状态")
+        return
+    lo, hi = names[0], names[-1]
+    middle = [n for n in names if lo < n < hi]
+    missing: List[str] = []
+    unfinished: List[str] = []
+    for img in middle:
+        outcar = base / img / "OUTCAR"
+        if not outcar.is_file() or outcar.stat().st_size == 0:
+            missing.append(img)
+            continue
+        try:
+            text = outcar.read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - 单个映像读取失败按缺失处理
+            missing.append(img)
+            continue
+        if not any(marker in text for marker in SUCCESS_MARKERS):
+            unfinished.append(img)
+    if not missing and not unfinished:
+        result["status"] = "completed"
+        try:
+            text = (base / lo / "OUTCAR").read_text(
+                encoding="utf-8", errors="replace"
+            )
+            result["last_energy"] = extract_toten(text)
+        except Exception:  # noqa: BLE001 - 能量读取失败不影响状态
+            pass
+    else:
+        result["status"] = "zombied"
+        if missing:
+            result["error_messages"].append(
+                f"NEB 中间映像 OUTCAR 缺失或为空：{', '.join(missing)}"
+            )
+        if unfinished:
+            result["error_messages"].append(
+                f"NEB 中间映像无正常结束标志：{', '.join(unfinished)}"
+            )
+
+
 def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, Any]:
     """检查单个任务，任何异常只写入 error_messages，不影响其他任务。"""
     result = _new_result(task)
@@ -517,37 +633,67 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
             "outcar_path": f"{work_dir}/OUTCAR",
             "oszicar_path": f"{work_dir}/OSZICAR",
         }
+        # NEB 任务：最新输出目录用"含中间映像 OUTCAR"的有结果目录（逐级回退），
+        # 而不是主目录（端点 OUTCAR 可能来自 IS/FS 复制）
+        if task_type == "neb":
+            neb_out_dir = _neb_latest_output_dir(remote_dir)
+            if neb_out_dir:
+                neb_rel = (
+                    Path(neb_out_dir).name
+                    if Path(neb_out_dir) != Path(remote_dir)
+                    else None
+                )
+                result["current_output"] = {
+                    "latest_dir": neb_rel,
+                    "dir": neb_out_dir,
+                    "contcar_path": f"{neb_out_dir}/CONTCAR",
+                    "outcar_path": f"{neb_out_dir}/OUTCAR",
+                    "oszicar_path": f"{neb_out_dir}/OSZICAR",
+                }
         outcar_path = Path(work_dir) / "OUTCAR"
 
         # 以最新续算目录为准匹配作业（续算推进到新 conN 后，作业在新目录提交）
-        job_id = match_job_id_by_cwd(remote_dir, con_dir)
+        job_id, bjobs_ok = match_job_id_by_cwd(remote_dir, con_dir)
         if job_id:
             result["job_id"] = job_id
-        elif task.get("job_id"):
+        else:
             # exec_cwd 匹配不到（如手动提交、LSF 无 cwd 信息）时，
             # 回退检查数据库已有作业号是否仍活跃（PEND/RUN/SSUSP）
             db_job = str(task.get("job_id") or "")
-            if db_job and run_bjobs(db_job) in ("PEND", "RUN", "SSUSP"):
-                job_id = db_job
-                result["job_id"] = db_job
+            if db_job:
+                db_status = run_bjobs(db_job)
+                result["queue_status"] = db_status
+                if db_status in ("PEND", "RUN", "SSUSP"):
+                    job_id = db_job
+                    result["job_id"] = db_job
+                elif db_status != "UNKNOWN":
+                    # bjobs 可查询且该作业已结束（DONE/EXIT/...）：确认无活跃作业
+                    bjobs_ok = True
 
         if not job_id:
             # 最新续算目录无对应作业：OUTCAR 为空/不存在 -> 待提交；
-            # OUTCAR 非空 -> 不关联 job_id，按该目录 OUTCAR 分析
-            con_outcar = Path(con_dir) / "OUTCAR"
-            if con_outcar.is_file() and con_outcar.stat().st_size > 0:
-                _analyze_outcar(
-                    # 固定原子标志必须取自最新输出目录（conN）自身的 POSCAR：
-                    # 主目录 POSCAR 可能缺少 Selective dynamics，会把固定原子算进活动原子
-                    result,
-                    con_dir,
-                    task_type,
-                    thresholds,
-                    poscar_dir=con_dir,
-                    allow_running=True,
-                )
+            # OUTCAR 非空 -> 不关联 job_id，按该目录 OUTCAR 分析。
+            # allow_running 仅当 bjobs 不可用（离线/超时）时为 True：
+            # bjobs 可查询且查不到活跃作业说明作业已结束/停止，按结束态分析
+            # （无正常结束标志 -> zombied），不能再维持 running。
+            if task_type == "neb":
+                # NEB：OUTCAR 在映像子目录，按映像判定（无结果 -> 待提交）
+                _analyze_neb_status(result, remote_dir)
             else:
-                result["status"] = "pending"
+                con_outcar = Path(con_dir) / "OUTCAR"
+                if con_outcar.is_file() and con_outcar.stat().st_size > 0:
+                    _analyze_outcar(
+                        # 固定原子标志必须取自最新输出目录（conN）自身的 POSCAR：
+                        # 主目录 POSCAR 可能缺少 Selective dynamics，会把固定原子算进活动原子
+                        result,
+                        con_dir,
+                        task_type,
+                        thresholds,
+                        poscar_dir=con_dir,
+                        allow_running=not bjobs_ok,
+                    )
+                else:
+                    result["status"] = "pending"
         else:
             queue_status = run_bjobs(job_id)
             result["queue_status"] = queue_status
@@ -555,12 +701,13 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                 result["status"] = "queued"
             elif queue_status == "RUN":
                 result["status"] = "running"
-                # 运行中也解析 OUTCAR 力历史（供详情能量/力曲线）
+                # 运行中也解析 OUTCAR：回传最近能量 + 力历史（供详情能量/力曲线）
                 if outcar_path.is_file() and outcar_path.stat().st_size > 0:
                     try:
                         text = outcar_path.read_text(encoding="utf-8", errors="replace")
                     except Exception:  # noqa: BLE001 - 解析失败不影响状态
                         text = ""
+                    result["last_energy"] = extract_toten(text)
                     _parse_forces(result, work_dir, text, thresholds)
             elif queue_status == "SSUSP":
                 # 作业被挂起：仍在 LSF 中存活，按运行中处理（队列状态显示“挂起”）
@@ -570,16 +717,57 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                         text = outcar_path.read_text(encoding="utf-8", errors="replace")
                     except Exception:  # noqa: BLE001
                         text = ""
+                    result["last_energy"] = extract_toten(text)
                     _parse_forces(result, work_dir, text, thresholds)
             else:
-                _analyze_outcar(
-                    result,
-                    work_dir,
-                    task_type,
-                    thresholds,
-                    poscar_dir=work_dir,
-                    allow_running=False,
-                )
+                if task_type == "neb":
+                    # NEB：作业已结束，按映像 OUTCAR 判定完成状态
+                    _analyze_neb_status(result, remote_dir)
+                else:
+                    _analyze_outcar(
+                        result,
+                        work_dir,
+                        task_type,
+                        thresholds,
+                        poscar_dir=work_dir,
+                        allow_running=False,
+                    )
+
+        # NEB 过渡态：运行 nebef.pl 解析各映像受力/能量/相对能垒
+        if task_type == "neb":
+            nebef_dir = _neb_latest_output_dir(remote_dir)
+            if nebef_dir:
+                try:
+                    proc = subprocess.run(
+                        ["perl", NEBEF_PL],
+                        # 最新**有结果**目录（含中间映像 OUTCAR 的 conN 或主目录）
+                        cwd=nebef_dir,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=120,
+                    )
+                    images = []
+                    for line in (proc.stdout + proc.stderr).splitlines():
+                        m = re.match(
+                            r"^\s*(\d+)\s+([-\d.Ee+]+)\s+([-\d.Ee+]+)\s+([-\d.Ee+]+)",
+                            line,
+                        )
+                        if m:
+                            images.append(
+                                {
+                                    "label": m.group(1),
+                                    "max_force": float(m.group(2)),
+                                    "energy": float(m.group(3)),
+                                    "relative": float(m.group(4)),
+                                }
+                            )
+                    result["neb_barrier"] = {"images": images} if images else None
+                except Exception:  # noqa: BLE001 - nebef.pl 运行失败不影响状态
+                    result["neb_barrier"] = None
+            else:
+                result["neb_barrier"] = None
     except Exception as e:  # noqa: BLE001 - 单任务容错
         result["error_messages"].append(f"unexpected error: {e}")
         if result["status"] in ("pending",) and result["queue_status"] == "UNKNOWN":

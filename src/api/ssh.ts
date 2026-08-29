@@ -144,14 +144,11 @@ export async function syncServerConfigs(servers: ServerConfig[]): Promise<void> 
   }
 }
 
-/**
- * 测试 SSH 连接（演示：模拟握手）。
- * 正式版替换为后端 /api/ssh/test，由后端使用 Paramiko 发起真实连接。
- */
+/** 测试 SSH 连接：调用后端 /api/ssh/test，通过常驻连接池实测一条命令往返耗时。 */
 export async function testRemoteConnection(
   cfg: Pick<
     ServerConfig,
-    'host' | 'port' | 'user' | 'authType' | 'keyPath' | 'password'
+    'id' | 'host' | 'port' | 'user' | 'authType' | 'keyPath' | 'password'
   >,
 ): Promise<ConnectionTestResult> {
   if (cfg.authType === 'key' && !cfg.keyPath?.trim()) {
@@ -160,11 +157,28 @@ export async function testRemoteConnection(
   if (cfg.authType === 'password' && !cfg.password?.trim()) {
     return { ok: false, latencyMs: 0, message: '认证方式为密码，但密码为空' };
   }
-  await wait(1100);
-  const latencyMs = Math.round(60 + Math.random() * 180);
-  return {
-    ok: true,
-    latencyMs,
-    message: `SSH 握手成功：${cfg.user}@${cfg.host}:${cfg.port}（演示）`,
-  };
+  try {
+    const data = await request<{
+      server: string;
+      host: string;
+      user: string;
+      latency_ms: number;
+      command: string;
+    }>('/ssh/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server: cfg.id }),
+    });
+    return {
+      ok: true,
+      latencyMs: data.latency_ms,
+      message: `SSH 命令往返 ${data.latency_ms} ms（${data.user}@${data.host}）`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      message: err instanceof Error ? err.message : 'SSH 测试失败',
+    };
+  }
 }

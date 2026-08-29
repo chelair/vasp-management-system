@@ -294,16 +294,16 @@ def upload_file(
         shutil.copy2(local, target)
         return True
 
-    client = _get_client(server_name)
-    try:
+    ensure_pruner()
+    lock = _exec_lock(server_name)
+    with lock:
+        client = _acquire_client(server_name)
         sftp = client.open_sftp()
         try:
             sftp.put(str(local), remote_path)
+            return True
         finally:
             sftp.close()
-    finally:
-        client.close()
-    return True
 
 
 def download_file(
@@ -319,8 +319,10 @@ def download_file(
             return True
         return False
 
-    client = _get_client(server_name)
-    try:
+    ensure_pruner()
+    lock = _exec_lock(server_name)
+    with lock:
+        client = _acquire_client(server_name)
         sftp = client.open_sftp()
         try:
             stat = sftp.stat(remote_path)
@@ -332,8 +334,6 @@ def download_file(
             return False
         finally:
             sftp.close()
-    finally:
-        client.close()
 
 
 def mkdir_remote(server_name: str, remote_path: str, timeout: int = 30) -> None:
@@ -342,8 +342,10 @@ def mkdir_remote(server_name: str, remote_path: str, timeout: int = 30) -> None:
         _local_path(remote_path).mkdir(parents=True, exist_ok=True)
         return
 
-    client = _get_client(server_name)
-    try:
+    ensure_pruner()
+    lock = _exec_lock(server_name)
+    with lock:
+        client = _acquire_client(server_name)
         _stdin, stdout, stderr = client.exec_command(
             f"mkdir -p '{remote_path}'".encode("utf-8"), timeout=timeout
         )
@@ -356,5 +358,3 @@ def mkdir_remote(server_name: str, remote_path: str, timeout: int = 30) -> None:
             raise RuntimeError(
                 f"远程创建目录失败 {remote_path}：{detail or f'退出码 {exit_code}'}"
             )
-    finally:
-        client.close()

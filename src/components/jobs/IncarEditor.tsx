@@ -17,6 +17,7 @@ import {
   BookOutlined,
   CopyOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   EyeOutlined,
   SaveOutlined,
   SendOutlined,
@@ -35,8 +36,9 @@ import {
   INCAR_CATEGORIES,
   PRECISION_PRESETS,
   buildIncarText,
+  parseCustomIncar,
 } from '../../data/mock/incar';
-import { uploadIncar } from '../../api/jobs';
+import { saveTaskFile, uploadIncar } from '../../api/jobs';
 import SciInput from './SciInput';
 
 interface Props {
@@ -67,10 +69,14 @@ export default function IncarEditor({
   const [saveOpen, setSaveOpen] = useState(false);
   const [presetName, setPresetName] = useState('');
   const [loadValue, setLoadValue] = useState<string | undefined>(undefined);
+  const [customText, setCustomText] = useState('');
 
   const params = workspace.incarParams;
   const precision = workspace.precision;
-  const incarText = useMemo(() => buildIncarText(params), [params]);
+  const incarText = useMemo(
+    () => buildIncarText(params, undefined, customText),
+    [params, customText],
+  );
 
   const setParam = (key: string, value: string) => {
     // 手动修改任意参数后，自动切换为「自定义」
@@ -101,8 +107,12 @@ export default function IncarEditor({
 
   const handleUploadRemote = async () => {
     try {
-      // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改（存在替换/缺失追加）
-      const r = await uploadIncar(task.task_id, { params: workspace.incarParams });
+      // 以当前表单参数 + 自定义参数为基础，后端基于远端旧 INCAR 做统一修改
+      const merged = {
+        ...workspace.incarParams,
+        ...parseCustomIncar(customText),
+      };
+      const r = await uploadIncar(task.task_id, { params: merged });
       message.success(
         `INCAR 已上传到远端${r.backup_file ? `，旧文件已备份为 ${r.backup_file}` : ''}`,
       );
@@ -111,6 +121,15 @@ export default function IncarEditor({
       }
     } catch (err) {
       message.error(err instanceof Error ? err.message : '上传 INCAR 失败');
+    }
+  };
+
+  const handleSaveLocal = async () => {
+    try {
+      const r = await saveTaskFile(task.task_id, 'INCAR', incarText);
+      message.success(`INCAR 已保存到本地：${r.path}`);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '保存 INCAR 失败');
     }
   };
 
@@ -240,6 +259,9 @@ export default function IncarEditor({
           <Button icon={<EyeOutlined />} onClick={() => setPreviewOpen(true)}>
             预览 INCAR
           </Button>
+          <Button icon={<DownloadOutlined />} onClick={() => void handleSaveLocal()}>
+            生成到本地
+          </Button>
           <Button icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
             上传到远端
           </Button>
@@ -263,20 +285,40 @@ export default function IncarEditor({
             className="job-card job-incar-cat"
           >
             <div className="job-incar-fields">
-              {cat.params.map((def) => (
-                <div key={def.key} className="job-incar-field">
-                  <div className="job-incar-field__label">
-                    <Tooltip title={def.hint}>
-                      <span>{def.label}</span>
-                    </Tooltip>
+              {cat.params
+                .filter((def) => !def.fracOnly || task.task_type === 'frac')
+                .map((def) => (
+                  <div key={def.key} className="job-incar-field">
+                    <div className="job-incar-field__label">
+                      <Tooltip title={def.hint}>
+                        <span>{def.label}</span>
+                      </Tooltip>
+                    </div>
+                    <div className="job-incar-field__control">{renderField(def)}</div>
                   </div>
-                  <div className="job-incar-field__control">{renderField(def)}</div>
-                </div>
-              ))}
+                ))}
             </div>
           </Card>
         ))}
       </div>
+
+      <Card
+        size="small"
+        title="自定义参数"
+        className="job-card job-incar-cat"
+        style={{ marginTop: 14 }}
+      >
+        <div className="job-field-hint" style={{ marginBottom: 8 }}>
+          手动添加表单之外的参数，每行一个，格式：KEY = value（# / ! 后为注释，会被忽略）
+        </div>
+        <Input.TextArea
+          rows={4}
+          value={customText}
+          onChange={(e) => setCustomText(e.target.value)}
+          placeholder={'例如：\nLVDW = .TRUE.\nVDW_RADIUS = 1.2\nNBANDS = 400'}
+          style={{ fontFamily: 'monospace' }}
+        />
+      </Card>
 
       <Modal
         title="保存为预设"
@@ -333,7 +375,7 @@ export default function IncarEditor({
         }
       >
         <div className="preview-note" style={{ marginBottom: 10 }}>
-          随参数实时更新，保存后写入 {task.local_dir}/INCAR
+          随参数实时更新；「生成到本地」写入任务目录 files/INCAR
         </div>
         <pre className="file-preview" style={{ maxHeight: 'calc(100vh - 180px)' }}>
           {incarText || '（暂无参数）'}

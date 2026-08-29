@@ -1561,6 +1561,23 @@ p {
   font-variant-numeric: tabular-nums;
 }
 
+.neb-barrier-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-right: 10px;
+}
+
+.neb-barrier-layout .analysis-chart {
+  flex: 1 1 400px;
+}
+
+.neb-barrier-layout .ant-table-wrapper {
+  flex: 0 1 280px;
+  min-width: 280px;
+}
+
 .free-energy-equation {
   display: flex;
   align-items: stretch;

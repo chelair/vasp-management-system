@@ -224,9 +224,14 @@ export interface InspectionDetail {
     work_function: boolean;
     diff_charge: boolean;
   } | null;
-  /** NEB 过渡态：各映像能量（能垒图数据） */
-  neb_profile?: {
-    images: { label: string; energy: number | null; relative: number | null }[];
+  /** NEB 过渡态：nebef.pl 输出（受力/能量/相对能垒） */
+  neb_barrier?: {
+    images: {
+      label: string;
+      max_force: number | null;
+      energy: number | null;
+      relative: number | null;
+    }[];
   } | null;
   analysis: StructureAnalysis | null;
 }
@@ -321,6 +326,8 @@ export interface IncarParamDef {
   options?: IncarOption[];
   placeholder?: string;
   defaultValue: string;
+  /** 仅频率矫正（frac）任务显示与使用；其他任务类型不展示、不进默认参数 */
+  fracOnly?: boolean;
 }
 
 /** INCAR 参数分类 */

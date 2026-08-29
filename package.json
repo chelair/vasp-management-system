@@ -1,7 +1,7 @@
 {
   "name": "vasp-management-system",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.4.5",
   "type": "module",
   "description": "VASP 第一性原理计算项目管理系统 - 前端框架（Mock 数据演示）",
   "scripts": {

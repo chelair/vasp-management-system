@@ -10,7 +10,8 @@ from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from checks_store import collect_results, list_runs, to_frontend_rows
-from config import load_settings
+from config import load_settings, load_servers
+from continuation import _remote_latest_con
 from envelope import fail, ok
 from inspection_runner import run_inspection
 from paths import resolve_remote_path
@@ -171,6 +172,41 @@ def _check_remote_files(server: str, remote_dir: str, filenames) -> dict:
     return result
 
 
+def _run_nebef(server: str, remote_dir: str):
+    """在 NEB 最新**有结果**目录（含中间映像 OUTCAR，逐级回退到主目录）运行 nebef.pl。"""
+    cmd = (
+        "mid_outcar() { dir=$1; "
+        'nums=$(ls -d "$dir"/[0-9]* 2>/dev/null | xargs -n1 basename | sort -n); '
+        'first=$(echo "$nums" | head -1); last=$(echo "$nums" | tail -1); '
+        "for n in $nums; do "
+        '[ "$n" != "$first" ] && [ "$n" != "$last" ] && [ -f "$dir/$n/OUTCAR" ] && return 0; '
+        "done; return 1; }; "
+        f'D=""; for c in $(ls -d "{remote_dir}"/con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -r) MAIN; do '
+        f'dir="{remote_dir}/$c"; [ "$c" = MAIN ] && dir="{remote_dir}"; '
+        'if mid_outcar "$dir"; then D="$c"; break; fi; done; '
+        f'if [ -n "$D" ]; then cd "{remote_dir}/$D" && perl /data/gpfs03/mdye/VTST/vtstscripts/nebef.pl; '
+        "else echo NO_RESULT; fi"
+    )
+    r = ssh.run_remote(
+        server,
+        f"bash -c '{cmd}'",
+        timeout=120,
+    )
+    images = []
+    for line in (r.get("stdout", "") or "").splitlines():
+        m = re.match(r"^\s*(\d+)\s+([-\d.Ee+]+)\s+([-\d.Ee+]+)\s+([-\d.Ee+]+)", line)
+        if m:
+            images.append(
+                {
+                    "label": m.group(1),
+                    "max_force": float(m.group(2)),
+                    "energy": float(m.group(3)),
+                    "relative": float(m.group(4)),
+                }
+            )
+    return {"images": images} if images else None
+
+
 @router.get("/{task_id}")
 def inspection_detail(task_id: str):
     """单任务巡检详情：能量/力曲线数据 + 结构分析（晶格对比 + VESTA 渲染图）。"""
@@ -248,51 +284,15 @@ def inspection_detail(task_id: str):
                 "diff_charge": False,
             }
 
-        # NEB 过渡态：各映像能量（能垒图数据，相对初态 IS）
-        neb_profile = None
-        if task.get("task_type") == "neb":
+        # NEB 过渡态：nebef.pl 输出（受力/能量/相对能垒）
+        # 巡检已回传 neb_barrier 则直接用，否则实时运行 nebef.pl 兜底
+        neb_barrier = entry.get("neb_barrier")
+        if task.get("task_type") == "neb" and not neb_barrier:
             neb_dir = task_remote_dir(project.get("server"), task).rstrip("/")
             try:
-                r = ssh.run_remote(
-                    project.get("server"),
-                    f'bash -c \'ls -d "{neb_dir}"/[0-9]* 2>/dev/null | xargs -n1 basename | sort -n\'',
-                    timeout=30,
-                )
-                labels = [
-                    line.strip()
-                    for line in (r.get("stdout", "") or "").splitlines()
-                    if line.strip().isdigit()
-                ]
-                images = []
-                for label in labels:
-                    r2 = ssh.run_remote(
-                        project.get("server"),
-                        f'bash -c \'grep " F=" "{neb_dir}/{label}/OSZICAR" 2>/dev/null | tail -1\'',
-                        timeout=30,
-                    )
-                    m = re.search(r"F=\s*([-\d.E+]+)", r2.get("stdout", "") or "")
-                    images.append(
-                        {
-                            "label": label,
-                            "energy": float(m.group(1)) if m else None,
-                        }
-                    )
-                base = next((x["energy"] for x in images if x["energy"] is not None), None)
-                neb_profile = {
-                    "images": [
-                        {
-                            **x,
-                            "relative": (
-                                round(x["energy"] - base, 6)
-                                if x["energy"] is not None and base is not None
-                                else None
-                            ),
-                        }
-                        for x in images
-                    ]
-                }
-            except Exception:  # noqa: BLE001 - 能垒解析失败不影响详情
-                neb_profile = None
+                neb_barrier = _run_nebef(project.get("server"), neb_dir)
+            except Exception:  # noqa: BLE001 - 实时运行失败不影响详情
+                neb_barrier = None
 
         return ok(
             "查询成功",
@@ -320,7 +320,7 @@ def inspection_detail(task_id: str):
                 "frac": frac,
                 "analysis": analysis,
                 "available_analyses": available_analyses,
-                "neb_profile": neb_profile,
+                "neb_barrier": neb_barrier,
             },
         )
     except Exception as e:

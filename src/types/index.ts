@@ -194,6 +194,9 @@ export interface StructureAnalysis {
     poscar: Record<string, string>;
     contcar: Record<string, string>;
   };
+  /** vasp2cif 生成的结构 CIF 文本（3Dmol 结构视图用），未生成时为 null */
+  poscar_cif?: string | null;
+  contcar_cif?: string | null;
   skipped: string | null;
   warnings: string[];
 }

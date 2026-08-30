@@ -7,12 +7,7 @@ import type {
   StructureAnalysis,
 } from '../../types';
 import { TASK_TYPE_LABELS } from '../../types';
-
-const AXIS_LABELS: Record<string, string> = {
-  a: 'a 轴视图',
-  b: 'b 轴视图',
-  c: 'c 轴视图',
-};
+import Structure3DViewer from './Structure3DViewer';
 
 interface LatticeRow {
   key: string;
@@ -235,33 +230,14 @@ export default function StructurePanel({
         />
       )}
 
-      {analysis.images.poscar.a || analysis.images.contcar.a ? (
-        <div className="structure-compare">
-          {(['a', 'b', 'c'] as const).map((axis) => (
-            <div key={axis} className="structure-compare__axis">
-              <div className="structure-compare__label">{AXIS_LABELS[axis]}</div>
-              <div className="structure-compare__pair">
-                {(['poscar', 'contcar'] as const).map((label) => (
-                  <div
-                    key={label}
-                    className={`structure-compare__img${
-                      analysis.images[label][axis] ? '' : ' structure-compare__img--empty'
-                    }`}
-                  >
-                    <div className="structure-compare__cap">
-                      {label === 'poscar' ? 'POSCAR（优化前）' : 'CONTCAR（优化后）'}
-                    </div>
-                    {analysis.images[label][axis] ? (
-                      <img src={analysis.images[label][axis]} alt={`${label} ${axis}`} />
-                    ) : (
-                      <span>渲染失败/未生成</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+      {analysis.poscar_cif || analysis.contcar_cif ? (
+        <>
+          <div className="structure-panel__section-title">结构 3D 对比（3Dmol.js）</div>
+          <Structure3DViewer
+            poscarCif={analysis.poscar_cif ?? null}
+            contcarCif={analysis.contcar_cif ?? null}
+          />
+        </>
       ) : null}
 
       {forceHistory.length > 0 && (

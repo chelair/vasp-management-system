@@ -3,6 +3,7 @@ uvicorn[standard]>=0.32
 paramiko>=3.4
 
 # 可选依赖：运行时后台检查缺失并提示安装（后续功能将用到）
+# 安装说明/体积与风险见 DEPENDENCIES.md（pymatgen 需先升级 pip；vasp2cif 已不依赖它）
 pymatgen>=2024.10.1
 ase>=3.23
 apscheduler>=3.10

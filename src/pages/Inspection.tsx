@@ -335,10 +335,9 @@ export default function Inspection() {
     const isGrouped = (r: InspectionResult) =>
       r.task_category === '自由能' ||
       (r.task_category === 'NEB' && Boolean(r.group_name));
-    const groupNum = (r: InspectionResult) => {
-      const m = /(\d+)/.exec(r.group_name || '');
-      return m ? parseInt(m[1], 10) : 0;
-    };
+    // 组键：项目 + 完整组名（自然排序，PATH1 < PATH2 < PATH10；同名组必然相邻）
+    const groupKey = (r: InspectionResult) => `${r.project_name}|${r.group_name || ''}`;
+    const natCmp = (x: string, y: string) => x.localeCompare(y, 'zh-CN', { numeric: true });
     // 组内排序：自由能按结构号（1..N），NEB 按 IS -> FS -> neb
     const structOrder = (r: InspectionResult) => {
       const label = r.structure_label || '';
@@ -372,7 +371,7 @@ export default function Inspection() {
         const cb = TASK_CATEGORY_ORDER[b.task_category || '结构优化'] ?? 9;
         if (ca !== cb) return ca - cb;
         if (isGrouped(a) && isGrouped(b)) {
-          const g = groupNum(a) - groupNum(b);
+          const g = natCmp(groupKey(a), groupKey(b));
           if (g !== 0) return g;
           const s = structOrder(a) - structOrder(b);
           if (s !== 0) return s;

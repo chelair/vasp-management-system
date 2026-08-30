@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import ssh
 from checks_store import archive_results, record_run
+from cif_convert import convert_structure_to_cif
 from config import PROJECTS_DIR, load_servers
 from continuation import compute_g_correction
 from dates import now_iso
@@ -24,6 +25,17 @@ from task_paths import task_dir, task_remote_dir
 
 SKIPPED_STATUSES = ("pending", "archived")
 STRUCTURE_OPT_TYPE = "opt"
+
+
+def _ionic_steps(result: Dict[str, Any]) -> int:
+    """离子步数：巡检结果 force_history 的长度（与详情页展示口径一致）。"""
+    history = result.get("force_history")
+    return len(history) if isinstance(history, list) else 0
+
+
+def _analysis_bucket(steps: int) -> int:
+    """每 25 个离子步一个分析桶：0-24→0，25-49→1，50-74→2…"""
+    return steps // 25 if steps > 0 else 0
 
 
 def _timestamp() -> str:
@@ -124,12 +136,12 @@ def _run_server_batch(
         return json.loads(local_output.read_text(encoding="utf-8"))
 
 
-def _sync_and_validate_structure(
+def _sync_and_convert_structure(
     project: Dict[str, Any],
     task: Dict[str, Any],
     latest_dir: str = "",
 ) -> List[str]:
-    """下载 POSCAR（主目录）与最新 CONTCAR（续算目录优先）到本地 files/。"""
+    """下载 POSCAR（主目录）与最新 CONTCAR（续算目录优先），并用 vasp2cif 转为 CIF。"""
     markers: List[str] = []
     local_files = task_dir(project["name"], task) / "files"
     local_files.mkdir(parents=True, exist_ok=True)
@@ -152,6 +164,18 @@ def _sync_and_validate_structure(
             markers.append(
                 "POSCAR缺失或内容为空" if filename == "POSCAR" else "CONTCAR未生成或内容为空"
             )
+
+    # 用 vasp2cif 脚本把下载的结构转为 CIF（触发=新结果，覆盖旧 CIF；失败保留旧文件）
+    report_dir = local_files.parent / "reports" / "structure"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("POSCAR", "CONTCAR"):
+        src = local_files / name
+        out = report_dir / f"{name}.cif"
+        if not src.is_file() or src.stat().st_size == 0:
+            markers.append(f"{name} 缺失或为空，跳过 CIF 转换")
+            continue
+        if not convert_structure_to_cif(src, out, overwrite=True):
+            markers.append(f"{name}.cif 转换失败（保留上一次结果）")
     return markers
 
 
@@ -196,24 +220,41 @@ def _apply_result(
     if not (task.get("job_id") or result.get("job_id")) and new_status != "completed":
         notes_markers.append("未见有效完成日志")
 
-    markers: List[str] = []
-    # 结构优化任务：最新有效输出目录变化（续算推进到新 conN）或任务状态变化时，
-    # 下载并校验 POSCAR/CONTCAR；其余情况保留上一次结果
-    if (
+    # 结构分析触发条件（替换原“状态变化或最新输出目录变化”）：
+    # - 每 25 个离子步一个桶（0-24→0，25-49→1，50-74→2…），桶 ≥ 1 才可能触发；
+    # - 同一目录：仅当离子步桶比上次触发时更大才再次触发（25-49 触发后，
+    #   再次巡检仍在 25-49 不触发，直到 50-74 及以后）；
+    # - 目录变化：视为新目录重新计数（有效上桶重置为 -1），重复上述规则；
+    # - 其余筛选（opt 类型等）保持不变。
+    steps = _ionic_steps(result)
+    bucket = _analysis_bucket(steps)
+    prev_bucket = int(task.get("last_analysis_bucket") or -1)
+    prev_dir = str(task.get("last_analysis_dir") or "")
+    dir_changed = (latest_dir or "") != prev_dir
+    effective_prev_bucket = -1 if dir_changed else prev_bucket
+    should_analyze = (
         task.get("task_type") == STRUCTURE_OPT_TYPE
-        and (observed_changed or latest_changed)
-    ):
+        and bucket >= 1
+        and bucket > effective_prev_bucket
+    )
+
+    markers: List[str] = []
+    structure_synced = False
+    extra_fields: Dict[str, Any] = {}
+    if should_analyze:
+        structure_synced = True
         try:
-            markers = _sync_and_validate_structure(project, task, latest_dir)
-        except Exception as e:  # noqa: BLE001 - 结构校验异常不阻塞巡检
+            markers = _sync_and_convert_structure(project, task, latest_dir)
+        except Exception as e:  # noqa: BLE001 - 结构同步异常不阻塞巡检
             markers.append(f"结构文件同步异常：{e}")
+        extra_fields["last_analysis_bucket"] = bucket
+        extra_fields["last_analysis_dir"] = latest_dir or ""
     notes_markers.extend(markers)
 
     notes = _merge_notes(task.get("notes"), notes_markers)
     status_changed = False
     rejected: Optional[str] = None
     warnings: List[str] = []
-    extra_fields: Dict[str, Any] = {}
     if energy is not None:
         extra_fields["last_energy"] = round(float(energy), 8)
     # job_id：本次巡检按最新输出目录匹配，匹配到则回填（用于 bjobs 判定）；
@@ -249,6 +290,9 @@ def _apply_result(
         "status_changed": status_changed,
         "observed_changed": observed_changed,
         "latest_changed": latest_changed,
+        "structure_synced": structure_synced,
+        "steps": steps,
+        "bucket": bucket,
         "server_status": server_status,
         "rejected": rejected,
     }
@@ -345,10 +389,9 @@ def _run_inspection_locked(
             if row is not None:
                 enriched_entry["prev_status"] = row["old_status"]
                 enriched_entry["observed_changed"] = row["observed_changed"]
-                # 结构分析范围：结构优化 + 最新输出目录变化 或 任务状态变化
-                enriched_entry["analysis_needed"] = (
-                    row["task_type"] == STRUCTURE_OPT_TYPE
-                    and (row["observed_changed"] or row["latest_changed"])
+                # 结构分析范围：本轮是否触发了结构同步（离子步桶推进或目录变化）
+                enriched_entry["analysis_needed"] = bool(
+                    row.get("structure_synced", False)
                 )
                 enriched_entry["checked_at"] = now_iso()
                 enriched_entry["project_name"] = row["project"]

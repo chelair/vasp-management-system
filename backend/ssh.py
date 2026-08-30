@@ -5,7 +5,9 @@
 `python3 <script> <in> <out>` 命令改为本地 Python 执行，便于离线测试巡检流程。
 
 连接池：同一服务器复用一条常驻 SSH 连接（exec_command 串行化，避免并发冲突），
-每 30 秒发送保活包，空闲 5 分钟自动回收，连接断开后下次调用自动重连。
+每 30 秒发送 Paramiko 传输层保活包，后台每 60 秒再做一次应用层保活
+（echo ok 实测往返延迟，写入连接池状态供前端展示），空闲 5 分钟自动回收，
+连接断开后下次调用自动重连。
 """
 
 import os
@@ -29,6 +31,7 @@ _pruner_started = False
 
 IDLE_TIMEOUT_SECONDS = 300
 KEEPALIVE_SECONDS = 30
+KEEPALIVE_PING_SECONDS = 60  # 应用层保活间隔（echo ok 实测延迟）
 PRUNE_INTERVAL_SECONDS = 60
 CONNECT_RETRIES = 3
 CONNECT_RETRY_DELAY = 2.0  # 秒，按尝试次数递增（2s / 4s）
@@ -154,9 +157,40 @@ def _prune_idle_clients() -> None:
         _drop_client(name)
 
 
-def _pruner_loop() -> None:
+def _ping(server_name: str) -> float:
+    """应用层保活：实测一条 echo 命令往返延迟（毫秒）并写入连接池条目。
+
+    连接异常时抛出（run_remote 已负责丢弃失效连接），调用方按需再清理。
+    """
+    start = time.perf_counter()
+    r = run_remote(server_name, "echo ok", timeout=30)
+    latency_ms = round((time.perf_counter() - start) * 1000)
+    if r.get("exit_code") != 0:
+        raise RuntimeError(
+            (r.get("stderr") or r.get("stdout") or "").strip() or "保活命令执行失败"
+        )
+    with _ssh_lock:
+        entry = _ssh_clients.get(server_name)
+        if entry:
+            entry["latency_ms"] = latency_ms
+            entry["latency_at"] = time.time()
+    return latency_ms
+
+
+def _background_loop() -> None:
+    """后台维护循环：定时应用层保活（顺带实测延迟）+ 空闲连接回收。"""
     while True:
-        time.sleep(PRUNE_INTERVAL_SECONDS)
+        time.sleep(KEEPALIVE_PING_SECONDS)
+        try:
+            with _ssh_lock:
+                names = list(_ssh_clients.keys())
+            for name in names:
+                try:
+                    _ping(name)
+                except Exception:  # noqa: BLE001 - 单次保活失败不中断循环
+                    _drop_client(name)
+        except Exception:  # noqa: BLE001 - 保活轮次异常不中断循环
+            pass
         try:
             _prune_idle_clients()
         except Exception:
@@ -164,13 +198,13 @@ def _pruner_loop() -> None:
 
 
 def ensure_pruner() -> None:
-    """确保空闲回收后台线程只启动一次。"""
+    """确保后台维护线程只启动一次（定时保活 + 空闲回收）。"""
     global _pruner_started
     with _ssh_lock:
         if _pruner_started:
             return
         _pruner_started = True
-    threading.Thread(target=_pruner_loop, daemon=True).start()
+    threading.Thread(target=_background_loop, daemon=True).start()
 
 
 def warmup_connection(server_name: str) -> None:
@@ -179,6 +213,11 @@ def warmup_connection(server_name: str) -> None:
         return
     try:
         _acquire_client(server_name)
+        ensure_pruner()
+        try:
+            _ping(server_name)
+        except Exception:  # noqa: BLE001 - 首次保活失败不阻塞，后台循环会重试
+            pass
         print(f"[ssh] 常驻连接已建立：{server_name}")
     except Exception as e:  # noqa: BLE001 - 启动预热失败不阻塞系统
         print(f"[ssh] 预热连接失败 {server_name}：{e}")
@@ -198,6 +237,8 @@ def get_pool_status() -> Dict[str, Any]:
             "user": cfg.get("user"),
             "lastUsedAt": None,
             "idleSeconds": None,
+            "latencyMs": None,
+            "latencyAt": None,
         }
     with _ssh_lock:
         entries = list(_ssh_clients.items())
@@ -217,6 +258,14 @@ def get_pool_status() -> Dict[str, Any]:
                     else None
                 ),
                 "idleSeconds": round(time.time() - last_used, 1) if last_used else None,
+                "latencyMs": entry.get("latency_ms"),
+                "latencyAt": (
+                    datetime.fromtimestamp(entry["latency_at"]).isoformat(
+                        timespec="seconds"
+                    )
+                    if entry.get("latency_at")
+                    else None
+                ),
             }
     return {
         "connected": False,
@@ -226,6 +275,8 @@ def get_pool_status() -> Dict[str, Any]:
         "user": None,
         "lastUsedAt": None,
         "idleSeconds": None,
+        "latencyMs": None,
+        "latencyAt": None,
     }
 
 

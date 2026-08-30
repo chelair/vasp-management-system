@@ -50,7 +50,7 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const statusText = backendStatus?.mock
     ? 'SSH 模拟模式'
     : connected
-      ? 'SSH 已连接'
+      ? `SSH 已连接${backendStatus?.latencyMs != null ? ` · ${backendStatus.latencyMs}ms` : ''}`
       : 'SSH 未连接';
 
   return (
@@ -69,6 +69,14 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
           title={
             connected
               ? `SSH 常驻连接：${hostLabel ?? '—'}${
+                  backendStatus?.latencyMs != null
+                    ? `，保活延迟 ${backendStatus.latencyMs}ms${
+                        backendStatus.latencyAt
+                          ? `（${backendStatus.latencyAt.replace('T', ' ').slice(5, 19)}）`
+                          : ''
+                      }`
+                    : ''
+                }${
                   backendStatus?.lastUsedAt
                     ? `，最近使用 ${backendStatus.lastUsedAt.replace('T', ' ').slice(5, 19)}`
                     : ''

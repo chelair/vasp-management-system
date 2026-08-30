@@ -109,6 +109,10 @@ export interface SshStatus {
   user: string | null;
   lastUsedAt: string | null;
   idleSeconds: number | null;
+  /** 后台应用层保活实测的最近一次命令往返延迟（毫秒）；未测过为 null */
+  latencyMs: number | null;
+  /** 最近一次延迟测量时间（ISO 字符串） */
+  latencyAt: string | null;
 }
 
 /** 查询后端常驻 SSH 连接状态；后端不可用时返回 null（由前端回退 UI 状态） */

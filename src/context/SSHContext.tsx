@@ -10,6 +10,7 @@ import {
 import type { ReactNode } from 'react';
 import {
   fetchServerConfigs,
+  fetchSshStatus,
   persistUICache,
   readUICache,
   syncServerConfigs,
@@ -84,6 +85,28 @@ export function SSHProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (hydrated.current) persistUICache(servers);
   }, [servers]);
+
+  // 轮询后端常驻连接池状态：后台保活实测的延迟会实时回填到对应服务器
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      const status = await fetchSshStatus();
+      if (!alive || !status || !status.connected || !status.server) return;
+      if (status.latencyMs != null) {
+        setServers((prev) =>
+          prev.map((s) =>
+            s.id === status.server ? { ...s, latencyMs: status.latencyMs } : s,
+          ),
+        );
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 15000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const activeServer = useMemo(
     () => servers.find((s) => s.connected) ?? null,

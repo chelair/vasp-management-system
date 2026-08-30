@@ -21,7 +21,7 @@ from config import PROJECTS_DIR, load_settings, load_task_registry
 from aux_molecules import add_aux_molecule, get_aux
 from dates import now_iso
 from envelope import fail, ok
-from paths import to_local_rel, to_remote_rel
+from paths import remote_root, to_local_rel, to_remote_rel
 from storage import load_db, save_db
 from task_paths import CATEGORY_DIRS
 
@@ -45,6 +45,17 @@ class NebGroupPayload(BaseModel):
     group_type: str = "neb"
     name: Optional[str] = None
     images: int = Field(default=6, ge=1, le=50)
+
+
+def _project_remote_base(server: str, project_name: str) -> str:
+    """项目远程根：以服务器 remote_root（path_mapping / servers.json）为单一事实来源
+    拼接项目名，**不信任**项目记录里可能残留的旧 remote_base 字段
+    （曾因 Ag_20260830 残留 test 根导致新组建到 /projects/test 下）。
+    """
+    root = str(remote_root(server) or "").rstrip("/")
+    if not root:
+        raise ValueError(f"服务器 '{server}' 未配置远程根目录")
+    return f"{root}/{project_name}"
 
 
 class IndependentTaskPayload(BaseModel):
@@ -183,7 +194,7 @@ def create_group(payload: dict):
 
         category = "free_energy" if group_type == "free_energy" else "neb"
         project_root = PROJECTS_DIR / project["name"] / category / root_name
-        remote_base = project.get("remote_base", "")
+        remote_base = _project_remote_base(project["server"], project["name"])
         remote_category_base = f"{remote_base}/{category}"
         tasks: List[Dict[str, Any]] = []
         warnings: List[str] = []
@@ -348,7 +359,7 @@ def add_group_structures(group_id: str, payload: AddStructuresPayload):
         next_num = max(existing, default=0) + 1
         category = "free_energy"
         project_root = PROJECTS_DIR / project["name"] / category / root_name
-        remote_base = project.get("remote_base", "")
+        remote_base = _project_remote_base(project["server"], project["name"])
         remote_category_base = f"{remote_base}/{category}"
         new_tasks: List[Dict[str, Any]] = []
         for i in range(next_num, next_num + payload.count):
@@ -432,7 +443,8 @@ def create_independent_task(payload: IndependentTaskPayload):
         _make_task_dirs(task_path)
         _write_default_inputs(task_path, payload.task_type)
         remote_dir = (
-            f"{project.get('remote_base', '')}/{category}/{payload.model_name}"
+            f"{_project_remote_base(project['server'], project['name'])}/"
+            f"{category}/{payload.model_name}"
         )
         task = _base_record(
             project,

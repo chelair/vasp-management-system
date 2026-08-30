@@ -119,6 +119,10 @@ if (dist_dir / "index.html").exists():
     assets_dir = dist_dir / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    # 3Dmol 本地库（public/3dmol → dist/3dmol），不挂载会被 SPA 兜底当页面返回
+    dmol_dir = dist_dir / "3dmol"
+    if dmol_dir.exists():
+        app.mount("/3dmol", StaticFiles(directory=dmol_dir), name="3dmol")
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str):

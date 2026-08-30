@@ -1,8 +1,6 @@
 """巡检接口：结果列表 / 触发巡检 / 调度信息。"""
 
-import base64
 import re
-from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -10,6 +8,7 @@ from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from checks_store import collect_results, list_runs, to_frontend_rows
+from cif_convert import read_or_convert_cif
 from config import load_settings, load_servers
 from continuation import _remote_latest_con
 from envelope import fail, ok
@@ -19,7 +18,6 @@ import ssh
 from storage import load_db
 from structure_analysis import analyze as analyze_structure
 from task_paths import task_remote_dir
-import vesta_render
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 
@@ -94,11 +92,6 @@ def run_single_inspection(task_id: str):
         return JSONResponse(status_code=500, content=fail(f"巡检失败：{e}"))
 
 
-def _data_uri(image_path: str) -> str:
-    data = Path(image_path).read_bytes()
-    return f"data:image/png;base64,{base64.b64encode(data).decode('ascii')}"
-
-
 def _display_current_output(project: dict, current_output):
     """巡检详情展示用：归档/元数据中为相对路径，按当前远程根解析为完整路径。"""
     if not isinstance(current_output, dict):
@@ -114,7 +107,7 @@ def _display_current_output(project: dict, current_output):
 def _build_analysis(project: dict, task: dict, entry: dict, history: list):
     """按任务类型构建详情分析数据（后续按四种类型分别扩展）。
 
-    - opt（结构优化）：结构分析（晶格对比 + 原子位移 + VESTA 渲染）；
+    - opt（结构优化）：结构分析（晶格对比 + 原子位移 + 3Dmol 结构视图）；
     - frac（频率矫正）：预留——频率/热力学数据；
     - neb（NEB 过渡态）：预留——各映像能量/能垒；
     - ele（电子结构）：预留——PDOS/Bader/功函数等后处理结果。
@@ -125,16 +118,14 @@ def _build_analysis(project: dict, task: dict, entry: dict, history: list):
         in_scope = bool(entry.get("analysis_needed", False))
         steps = len(history) if history else None
         struct = analyze_structure(project, task)
-        # 详情为单任务按需查看：结构文件齐全且离子步足够时直接渲染对比图
-        render = vesta_render.render_task(project, task, steps=steps)
-        images = {
-            label: {
-                axis: _data_uri(path)
-                for axis, path in axes.items()
-                if path
-            }
-            for label, axes in render["images"].items()
-        }
+        # 3Dmol 结构视图：有 CIF 用 CIF；没有 CIF 但本地有 POSCAR/CONTCAR 时现场转换补缺
+        poscar_cif = read_or_convert_cif(project, task, "POSCAR")
+        contcar_cif = read_or_convert_cif(project, task, "CONTCAR")
+        skipped = (
+            None
+            if poscar_cif and contcar_cif
+            else "结构 CIF 未生成（本地无 CIF 且无 POSCAR/CONTCAR 源，或转换失败）"
+        )
         return {
             "in_scope": in_scope,
             "steps": steps,
@@ -146,9 +137,11 @@ def _build_analysis(project: dict, task: dict, entry: dict, history: list):
             "contcar": struct["contcar"],
             "deltas": struct["deltas"],
             "displacements": struct["displacements"],
-            "images": images,
-            "skipped": render["skipped"],
-            "warnings": struct["warnings"] + render["warnings"],
+            "images": {"poscar": {}, "contcar": {}},
+            "poscar_cif": poscar_cif,
+            "contcar_cif": contcar_cif,
+            "skipped": skipped,
+            "warnings": struct["warnings"],
         }
     # TODO(frac/neb/ele): 后续按任务类型补充专属分析数据
     return None

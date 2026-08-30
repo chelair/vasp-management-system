@@ -34,7 +34,9 @@
 
 - `run_remote(server, cmd, timeout)`：执行远端命令，返回 `{stdout, stderr, exit_code}`；
 - `upload_file` / `download_file` / `mkdir_remote`：文件传输与建目录；
-- 连接池行为：常驻连接 + 每 30s keepalive + 空闲 5 分钟自动回收 + 断线自动重连（3 次重试），
+- 连接池行为：常驻连接 + 每 30s 传输层 keepalive + 每 60s 应用层保活（echo ok 实测
+  往返延迟，经 `/api/ssh/status` 的 `latencyMs` 实时回传前端展示）+ 空闲 5 分钟自动回收
+  + 断线自动重连（3 次重试），
   同一服务器命令串行化（避免并发抢占一条连接）；
   `upload_file` / `download_file` / `mkdir_remote` 与命令执行共用同一条常驻连接，
   **不要**自行新建/关闭连接（早期版本每次新建连接，单次上传就要 3s 左右）。
@@ -240,7 +242,9 @@ vasp-project-manager-web/
 - 「立即巡检」按钮：真实调用后端（筛选任务 → 上传 batch_check → 服务器批量解析 → 状态机回填 → 归档）
 - 自动巡检状态指示（每 2 小时；调度执行器后续接入 APScheduler）
 - 结果表格 + **详情抽屉**：能量 / 最大力随离子步曲线（带收敛阈值基准线）、
-  结构分析（VESTA a/b/c 三轴对比图、力收敛历史表）、收敛判定徽标与分析范围标记；
+  结构分析（**3Dmol 交互结构视图**（并排/叠加/球棍/空间填充/视角/选中联动）、
+  力收敛历史表）、收敛判定徽标与分析范围标记；结构 CIF 由 `scripts/vasp2cif.py`
+  在巡检触发时生成（每 25 离子步一桶 + 目录变化重置）；
   结构分析按 **ISIF** 智能切换：ISIF=2（默认，晶格固定）显示 POSCAR→CONTCAR
   **原子位移分析**（最大 / RMS / 平均位移），ISIF 为其他值时显示晶格参数与体积对比
 - 结果持久化：每次巡检归档到 `data/checks/check_results_*.json`，**重新打开网站无需重新巡检即显示上次结果**
@@ -302,7 +306,7 @@ vasp-project-manager-web/
 | GET | `/api/inspections` | 巡检结果列表（按任务合并最近一次结果） |
 | POST | `/api/inspections/run` | 立即巡检（可选 project_name / task_id 限定范围） |
 | GET | `/api/inspections/meta` | 自动巡检调度信息（间隔 / 上次 / 下次执行） |
-| GET | `/api/inspections/{task_id}` | 单任务巡检详情（力历史 + 结构分析 + VESTA 对比图） |
+| GET | `/api/inspections/{task_id}` | 单任务巡检详情（力历史 + 结构分析 + 3Dmol 结构视图） |
 | GET | `/docs` | FastAPI 自动生成的 Swagger 接口文档 |
 
 ### 校验规则（Pydantic 模型，对齐参考实现 `schemas.py`）

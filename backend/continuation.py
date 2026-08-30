@@ -244,8 +244,8 @@ mkdir "$NEW"
 for f in INCAR KPOINTS POTCAR vasp.lsf submit.sh; do
   [ -f "$SRC/$f" ] && cp "$SRC/$f" "$NEW/$f" || true
 done
-FIRST=$(ls -1d "$SRC"/[0-9]* 2>/dev/null | sed 's|.*/||' | sort -n | head -1)
-LAST=$(ls -1d "$SRC"/[0-9]* 2>/dev/null | sed 's|.*/||' | sort -n | tail -1)
+FIRST=$(find "$SRC" -maxdepth 1 -type d -name '[0-9]*' -printf '%f\\n' 2>/dev/null | sort -n | head -1)
+LAST=$(find "$SRC" -maxdepth 1 -type d -name '[0-9]*' -printf '%f\\n' 2>/dev/null | sort -n | tail -1)
 for d in "$SRC"/[0-9]*; do
   [ -d "$d" ] || continue
   img=$(basename "$d")

@@ -1,0 +1,118 @@
+.s3d-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.s3d-label {
+  color: #666;
+  white-space: nowrap;
+}
+.s3d-stage {
+  position: relative;
+}
+.s3d-viewer-area {
+  display: flex;
+  gap: 24px;
+  padding: 8px 16px 16px;
+  min-height: 460px;
+}
+.s3d-viewer-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.s3d-viewer-cap {
+  font-size: 12px;
+  color: #666;
+  padding-bottom: 4px;
+}
+.s3d-viewer {
+  flex: none;
+  height: 460px;
+  background: #f7f9fc;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+.s3d-viewer-area.s3d-overlay {
+  display: block;
+}
+.s3d-viewer-area.s3d-overlay .s3d-viewer {
+  height: 500px;
+}
+.s3d-axis-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: 210px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.s3d-axis-holder {
+  width: 186px;
+  height: 186px;
+  margin: 0 auto;
+}
+.s3d-elem-legend {
+  position: absolute;
+  right: 80px;
+  bottom: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  pointer-events: none;
+  z-index: 5;
+  font-size: 14px;
+}
+.s3d-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #333;
+}
+.s3d-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+.s3d-info {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: #555;
+  min-height: 20px;
+}
+.s3d-error {
+  color: #d9535b;
+  white-space: pre-wrap;
+}
+.s3d-select-label {
+  position: absolute;
+  transform: translate(-50%, -130%);
+  z-index: 10;
+  background: #ffd700;
+  color: #111111;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  display: none;
+}

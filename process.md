@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.0（总览模块重构，commit 见 §7）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.1（总览重构 + 巡检列表文案修正）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -171,9 +171,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.0）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.1）
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
+
+- v0.6.1（commit 见 `git log --oneline -1`）：**巡检列表未巡检行文案修正**。① 未巡检（无归档记录）的合成行，信息列由「待提交」改为 **「未检」**，detail 由「任务待提交，暂无运行输出」改为「暂无巡检记录，可点击「单独巡检」获取该任务当前状态」——原文案把「没有巡检记录」误述成任务状态，容易和任务本身的「待提交」混淆（**状态列仍是待提交/灰色，本次不改**）。② 修掉同一行操作按钮的英文残留 `check` → **「单独巡检」**（与 TODO/本文档既有描述一致）。③ 前端点击未巡检行的提示语同步改为「该任务暂无巡检记录，请先用「单独巡检」获取当前状态」。
 
 - v0.6.0（commit `8b9d629`，已推送 origin/main）：**总览模块重构与扩展**。① 后端新增 `backend/dashboard.py` + `routers/dashboard.py`：单次 SSH 合并查询（bjobs/blimits/df/bhosts/bqueues，`@@@` 分段解析）、5 分钟缓存（可配）、集群采样历史 `data/dashboard/core_history.json`、作业↔任务映射（job_id 优先、作业名回退）、核数按项目聚合、风险预警（未收敛/Zombie/巡检异常）、项目进度与近 7 天趋势；新增接口 `/api/dashboard/overview|cores-usage|cluster-health|risk-alerts|trend`（`?refresh=1` 强制刷新）。② 前端重写总览页：顶部状态栏（可点击跳巡检/展开运行任务）+ 快捷操作（新建项目/触发全局巡检/刷新集群状态）+ 运行中任务表（点行跳 `/jobs?task=`）+ ECharts 核数圆环（按项目着色、90% 橙 / 100% 红闪烁）+ 集群健康（节点灯/队列拥堵/存储告警）+ 风险预警 + 项目四象限气泡 + 最近任务明细；引入 **echarts 6.1.0（按需注册，独立 vendor chunk）**、`useCountUp` 数字滚动、30 分钟自动刷新。③ 修掉 4 个原有总览问题：逾期项目显示「已完成」、进度分母含隐藏续算目录、删除按钮换行破版（网格 4 列 5 元素）、趋势图 MOCK 假数据。④ 清理死代码：`TrendChart.tsx`、`src/data/mock/projects.ts`、`fetchDashboardMeta/fetchWeeklyTrend`。⑤ 配置：`servers.json` 新增 5 个可覆盖查询命令，`settings.json` 新增 `dashboard_cache_seconds`。
 
@@ -227,7 +229,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.6.0；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
+1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.6.1；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。

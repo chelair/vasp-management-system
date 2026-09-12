@@ -491,7 +491,7 @@ export default function Inspection() {
 
   const openDetail = async (row: InspectionResult) => {
     if (row.status === 'pending') {
-      message.info('该任务待提交，暂无详情数据');
+      message.info('该任务暂无巡检记录，请先用「单独巡检」获取当前状态');
       return;
     }
     markRead(row.task_id);
@@ -651,7 +651,7 @@ export default function Inspection() {
             disabled={triggering}
             onClick={() => runSingle(row)}
           >
-            check
+            单独巡检
           </Button>
         ),
     },

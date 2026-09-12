@@ -167,8 +167,10 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
             "category": "queue",
             "task_category": task_category,
             "status": "pending",
-            "message": "待提交",
-            "detail": "任务待提交，暂无运行输出",
+            # 未巡检行：状态列仍是待提交（pending），信息列明确写“未检”，
+            # 避免与任务本身“待提交”的语义混淆
+            "message": "未检",
+            "detail": "暂无巡检记录，可点击「单独巡检」获取该任务当前状态",
             "analysis_needed": False,
             "has_force_history": False,
             "has_inspection": False,

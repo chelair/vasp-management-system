@@ -115,7 +115,12 @@ export default function CoresUsagePanel({ usage, loading }: Props) {
             ))}
           </div>
           <div className="dashboard-note">
-            上限来源：{usage.limitSource === 'blimits' ? 'blimits 配额' : '未取到，仅统计 bjobs 汇总'}
+            上限来源：
+            {usage.limitSource === 'blimits'
+              ? 'blimits 配额'
+              : usage.limitSource === 'manual'
+                ? '系统配置手动指定（dashboard_total_cores）'
+                : '未取到，仅统计 bjobs 汇总'}
             {usage.queues.length > 0 && `（队列 ${usage.queues.join(' / ')}）`}
           </div>
         </>

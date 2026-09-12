@@ -557,7 +557,17 @@ def build_cores_usage(db: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str,
     running = [j for j in snapshot.get("jobs", []) if j.get("status") == "RUN"]
     used_from_jobs = sum(int(j.get("cores") or 0) for j in running)
     core_limit = snapshot.get("coreLimit") or {}
+    # 总核数上限：settings.json 的 dashboard_total_cores 可手动覆盖 blimits（管理员自定义配额）
+    manual_total = load_settings().get("dashboard_total_cores")
+    limit_source = "blimits"
     limit = core_limit.get("limit")
+    try:
+        manual_total = int(manual_total) if manual_total else None
+    except (TypeError, ValueError):
+        manual_total = None
+    if manual_total and manual_total > 0:
+        limit = manual_total
+        limit_source = "manual"
     used = core_limit.get("used")
     if used is None:
         used = used_from_jobs
@@ -583,7 +593,7 @@ def build_cores_usage(db: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str,
         "remainingCores": remaining,
         "usedPercent": percent,
         "level": level,
-        "limitSource": "blimits" if core_limit.get("limit") else "unknown",
+        "limitSource": limit_source if limit else "unknown",
         "runningJobs": len(running),
         "summedJobCores": used_from_jobs,
         "queues": core_limit.get("queues") or [],

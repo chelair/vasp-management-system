@@ -44,7 +44,7 @@ data/
 ├── aux_molecules/             # 辅助分子全局目录（opt|frac）
 └── config/
     ├── servers.json           # 远程服务器配置（server1，见下）
-    ├── settings.json          # 力收敛阈值、同步开关、dashboard_cache_seconds 等
+    ├── settings.json          # 力收敛阈值、同步开关、dashboard_cache_seconds / dashboard_total_cores 等
     ├── task_registry.json     # 各任务类型 default_incar / 权重 / 续算规则（后端模板）
     ├── path_mapping.json      # local_root ↔ remote_root（根目录迁移核心）
     └── check_registry.json    # 巡检力收敛阈值（0.02 / 0.01）
@@ -71,6 +71,9 @@ data/
 | `node_status_cmd` | `bhosts` | 节点状态（正常/满载/关闭/宕机） |
 | `queue_status_cmd` | `bqueues` | 队列拥堵（PEND/RUN） |
 | `storage_check_cmd` | `df -h {storage_path}` | 存储容量（`{storage_path}` 自动替换为 remote_base） |
+
+核数上限优先取 `blimits`；若想由系统配置固定一个上限（例如管理员给了口头配额），
+在 `settings.json` 写 `dashboard_total_cores: 200` 即可覆盖，界面会标注「系统配置手动指定」。
 
 ### 项目盘点（2026-09-13，均 server1 / HS 根下，以 projects.json 为准）
 
@@ -163,7 +166,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 8. **总览数据流（v0.6.0）**：`GET /api/dashboard/overview` 一次返回整页（顶部统计 + 运行作业 + 核数 + 集群 + 风险 + 项目进度 + 趋势 + 最近任务）。
    - 集群部分来自**一次 exec** 的 `@@@` 分段输出（bjobs/blimits/df/bhosts/bqueues），服务端缓存 5 分钟（`settings.json: dashboard_cache_seconds`），前端每 30 分钟自动刷新一次；`?refresh=1` 强制查询（约 2-4s）。
    - 本地聚合（风险/趋势/项目进度/完成统计）缓存 60 秒：巡检归档有数百个结果文件，逐个读取约 1-2 秒。
-   - **口径**：①「运行中任务」取 LSF 实时 `RUN` 作业数（不是任务表状态，任务状态要等巡检回填）；②「核数占用」优先用 `blimits` 的 SLOTS 已用/上限（按队列组），取不到时退回 bjobs 汇总；③「项目进度」分母为**可见任务**（不含 conN 续算目录），与作业管理页口径一致；④「今日完成」= 当天巡检观察到 completed 且前一天未完成的任务；⑤「节点满载」按 RUN≥MAX 判定（LSF 常把跑满节点置为 closed）。
+   - **口径**：①「运行中任务」取 LSF 实时 `RUN` 作业数（不是任务表状态，任务状态要等巡检回填）；②「核数占用」优先用 `blimits` 的 SLOTS 已用/上限（按队列组），`settings.json: dashboard_total_cores` 可手动覆盖上限，两者都没有时退回 bjobs 汇总；③「项目进度」分母为**可见任务**（不含 conN 续算目录），与作业管理页口径一致；④「今日完成」= 当天巡检观察到 completed 且前一天未完成的任务；⑤「节点满载」按 RUN≥MAX 判定（LSF 常把跑满节点置为 closed）。
    - 每次成功查询把 `{ts, usedCores, runningTasks, pendingTasks} `追加到 `data/dashboard/core_history.json`（10 分钟内不重复采样，最多 4000 条），趋势图按天取峰值；**历史从 v0.6.0 上线那天开始累积**，之前不可回溯；「提交作业数」由 `data/audit_submit.log` 回溯统计，是完整历史。
 
 ---

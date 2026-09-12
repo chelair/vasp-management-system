@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.5.1（commit 见 §7，已推送 origin/main）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.5.5（commit 见 §7，已推送 origin/main）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -133,7 +133,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 2. **巡检**：全局 `POST /api/inspections/run`、单任务 `run-single/{task_id}`（任意状态可巡检，跳过筛选）；batch_check 自动上传远端；结果归档 data/checks 并按 task_id 合并；运行中任务也回传 last_energy + force_history。
 2b. **结构分析触发（analysis_needed，v0.4.6 起）**：仅 opt 任务；离子步每 25 步一桶（0-24→桶0、25-49→桶1、50-74→桶2…）。同一输出目录：桶 ≥1 且比上次触发桶更大才触发（25-49 触发后，再次巡检仍在 25-49 不触发，直到 50-74 及以后）；输出目录变化：视为新目录重置计数，重复按桶触发。触发时下载 POSCAR/CONTCAR → `scripts/vasp2cif.py` 生成 `reports/structure/{POSCAR,CONTCAR}.cif`（新结果覆盖旧 CIF），任务持久化 `last_analysis_bucket` / `last_analysis_dir`。**CIF 使用规则**：详情接口有本地 CIF 直接用；没有 CIF 但本地有 POSCAR/CONTCAR 时用脚本现场转换补缺（只补缺不覆盖）；转换先写临时文件成功后再原子替换，失败保留上一次结果。前端 Structure3DViewer 用 3Dmol 渲染（VESTA PNG 方案已移除）。
 3. **续算**：`POST /jobs/tasks/{id}/continuation`。opt：最新目录 OUTCAR/CONTCAR 均非空 → 创建 con(N+1)，复制 CONTCAR→POSCAR/POTCAR/KPOINTS/INCAR/提交脚本、**WAVECAR 用 mv**，INCAR 改 ISTART=1/ICHARG=0；未完成 → 分流提示（input_complete_but_not_finished / input_incomplete）；运行中 → 提示等待。NEB：从最新续算目录复制共享文件 + 端点 POSCAR 固定并**带上 00/NN OUTCAR**、中间映像 CONTCAR→POSCAR、**各映像（含端点/中间态）存在 WAVECAR 时随续算 mv 移动**（目标已有不覆盖）。续算在 DB 登记隐藏子任务（不展示，供后台定位）。
-   - **活跃作业保护（v0.5.1）**：opt/NEB 续算脚本都在创建目录**之前**用 `bjobs -l`（含 `bjobs -o 'jobid exec_cwd'` 按源目录/映像子目录二次匹配）判定是否有 RUN/SSUSP/PSUSP/USUSP 作业，命中则只回传状态、返回 `action="running"`，**不建目录、不移动文件**。opt 自 v0.4.5 起如此，NEB 在 v0.5.1 补齐（此前 NEB 续算对运行中作业没有拦截）。
+   - **活跃作业保护（v0.5.5）**：opt/NEB 续算脚本都在创建目录**之前**用 `bjobs -l`（含 `bjobs -o 'jobid exec_cwd'` 按源目录/映像子目录二次匹配）判定是否有 RUN/SSUSP/PSUSP/USUSP 作业，命中则只回传状态、返回 `action="running"`，**不建目录、不移动文件**。opt 自 v0.4.5 起如此，NEB 在 v0.5.5 补齐（此前 NEB 续算对运行中作业没有拦截）。
    - **WAVECAR 是移动语义**：续算成功后源目录不再保留 WAVECAR（opt 与 NEB 一致，目标已存在则不覆盖）。NEB 连端点 00/NN 的 WAVECAR 也一并移动，端点 POSCAR/OUTCAR 是复制。
 4. **提交/停止**：提交 = 定位最新 con → 检查 vasp.lsf → `bsub < vasp.lsf`，成功后**立即写库 job_id**；停止 = bkill，输出 `Job has already finished` 也按成功处理（状态→pending，job_id 保留为历史）。
 5. **文件构建**：`create_frac_files`（opt 最新输出 → frac，默认 ISYM=0/SIGMA=0.05/NSW=1/IBRION=5/**NFREE=2**/POTIM=0.015）；`create_neb_files`（**以 IS INCAR 为基底只改 NEB 参数**：IBRION=3/POTIM=0/IOPT=3/LCLIMB/IMAGES/ICHAIN/SPRING=-5/MAXMOVE=0.2）；`build_ele_inputs`（NSW=-1/IBRION=-1 + 各类型参数，冲突抛错）。
@@ -142,9 +142,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.5.1）
+## 7. 近期重要改动记录（v0.4.1 → v0.5.5）
 
-- v0.5.1（commit `60e995d`，已推送 origin/main）：① **NEB 续算活跃作业保护**——NEB 续算脚本补齐与 opt 一致的 `bjobs` 检查，运行中作业只回传 `action="running"`，不建 conN、不移动 WAVECAR（此前 NEB 路径无拦截，运行中任务可能被搬走 WAVECAR）。② NEB 续算各映像（含端点 00/NN 与中间态）存在 WAVECAR 时随续算 `mv` 移动（目标已有不覆盖），与 opt 语义一致。③ `modify_incar` 清理源文本头部空行（兼容 LF/CRLF/纯空白行；续算标记切片曾带入前导换行）。④ `_script_slice` 跳过标记行后的换行，修复 `===FILES===` 解析出空字符串首项。⑤ `GET /api/health` 的 `uptime` 改为后端进程运行秒数并新增 `startedAt`（原实现返回 `time.monotonic()`，在 Windows 上是**系统开机时长**，易误判后端是否已重启）。⑥ 文档：登记 TMDZYX 项目，明确交接文档由助手维护。
+> 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
+
+- v0.5.5（commit `60e995d`，已推送 origin/main）：① **NEB 续算活跃作业保护**——NEB 续算脚本补齐与 opt 一致的 `bjobs` 检查，运行中作业只回传 `action="running"`，不建 conN、不移动 WAVECAR（此前 NEB 路径无拦截，运行中任务可能被搬走 WAVECAR）。② NEB 续算各映像（含端点 00/NN 与中间态）存在 WAVECAR 时随续算 `mv` 移动（目标已有不覆盖），与 opt 语义一致。③ `modify_incar` 清理源文本头部空行（兼容 LF/CRLF/纯空白行；续算标记切片曾带入前导换行）。④ `_script_slice` 跳过标记行后的换行，修复 `===FILES===` 解析出空字符串首项。⑤ `GET /api/health` 的 `uptime` 改为后端进程运行秒数并新增 `startedAt`（原实现返回 `time.monotonic()`，在 Windows 上是**系统开机时长**，易误判后端是否已重启）。⑥ 文档：登记 TMDZYX 项目，明确交接文档由助手维护。
 
 - v0.4.5（commit `02c167c`，已推送）：续算合并单脚本 + 连接池化上传/下载/建目录（opt/NEB 10-15s→3.5s）；巡检修复（作业停止感知——bjobs 折行解析、NEB 按映像 OUTCAR 判定、运行中回传 last_energy）；NEB 创建文件以 IS INCAR 为基底、续算带端点 OUTCAR；停止作业 already-finished 按成功；SSH 真实延迟测试接口；INCAR 编辑器（自定义参数/生成到本地/分类分组空行/NFREE 仅 frac/MAGMOM 留空/POTIM 0.2/KPOINTS 纯 ASCII）；默认参数同步 task_registry.json（LWAVE/LCHARG=.FALSE.、NCORE=1、POTIM=0.2）；矫正项可点击重算。
 - v0.5.0（commit `6d6b78a`，已推送）：① **结构 3D 化**——结构分析触发条件改为「离子步每 25 步一桶 + 目录变化重置」（§6.2b）；新增 `scripts/vasp2cif.py`（经典 vasp2cif Python 3 移植，零第三方依赖）+ `backend/cif_convert.py`（原子写入：有 CIF 用 CIF、缺 CIF 现场转、失败保留旧结果）；详情接口返回 `poscar_cif/contcar_cif`（vesta_render 停用）；前端 Structure3DViewer + structure3d.ts + public/3dmol/3Dmol-min.js（backend/main.py 挂载 `/3dmol`），StructurePanel 以 3Dmol 结构视图替代 VESTA 三轴 PNG。② NEB 续算端点 OUTCAR 复制修复（find 仅匹配纯数字目录）。③ 组创建/加结构/独立任务改用服务器 remote_root 拼项目名（不再信任旧 remote_base）。④ 巡检列表 NEB 组按「项目+组名」自然排序相邻、组内 IS→FS→neb。⑤ SSH 保活延迟回传（后台 60s 保活实测延迟，`/api/ssh/status` 增 `latencyMs/latencyAt`，顶栏/SSH 页实时刷新）。⑥ 新增 DEPENDENCIES.md 依赖文档。数据侧修复（data/ 已 gitignore，不入库）：Ag_20260830.remote_base 已改回 HS 根、误建 test 下 PATH1_TS2 已删（本地移入 data/trash）、Ag PATH2/neb con6 已手动补 04/OUTCAR。
@@ -156,7 +158,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 8. 已知注意事项 / 坑
 
-- **后端无热重载**：改 `backend/*.py`（如 continuation.py / jobs.py）必须重启后端（当前进程可能仍是旧代码）。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.1 起）；**不要**再用 `uptime` 数值推断——v0.5.1 之前它返回的是系统开机时长。
+- **后端无热重载**：改 `backend/*.py`（如 continuation.py / jobs.py）必须重启后端（当前进程可能仍是旧代码）。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.5 起）；**不要**再用 `uptime` 数值推断——v0.5.5 之前它返回的是系统开机时长。
 - **生产模式静态资源**：后端只自动挂载 `dist/assets`；新增 `public/` 下的目录（如 `3dmol`）必须在 `backend/main.py` 显式 `app.mount`，否则会被 SPA 兜底路由当成 index.html 返回（浏览器拿到 HTML 当 JS 执行，`$3Dmol` 未定义、组件静默空白）。
 - **batch_check.py 例外**：每次巡检自动上传远端，改它无需重启后端；但下次巡检前远端副本可能是旧版。
 - **前端默认参数生效条件**：改 `src/data/mock/incar.ts` 后要刷新页面；且任务本地已有 `files/INCAR` 时，打开任务会**自动读取文件覆盖默认值**（精度切自定义）。
@@ -188,7 +190,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.5.1；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
+1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.5.5；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。

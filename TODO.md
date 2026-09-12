@@ -6,7 +6,7 @@
 
 ## 当前进度概览
 
-**已完成（v0.5.1，2026-09-13）**
+**已完成（v0.5.5，2026-09-13）**
 
 - [x] NEB 续算活跃作业保护：`bjobs` 命中 RUN/SSUSP/PSUSP/USUSP 时只回传 `action="running"`，
       不建 conN、不移动 WAVECAR（此前 NEB 路径无拦截，与 opt 不一致）

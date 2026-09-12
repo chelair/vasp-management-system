@@ -2,7 +2,7 @@
 
 基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
 
-当前版本（v0.5.1）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
+当前版本（v0.5.5）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
 **项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池与结构 3D 视图均已接入真实后端**
 （Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
 仅智能报告（大模型生成）仍为前端 Mock。

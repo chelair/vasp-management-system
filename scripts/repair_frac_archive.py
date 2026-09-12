@@ -71,9 +71,11 @@ def main() -> int:
                 frac = free_energy_frac_task(project, task)
                 if frac is None or str(frac.get("status")) == "archived":
                     continue
+                previous = str(frac.get("status") or "")
                 frac["status"] = "archived"
                 frac["archived_at"] = now_iso()
-                frac["archived_from"] = str(frac.get("status") or "completed")
+                # 先取原状态再改，否则会把 "archived" 记成归档前状态（重开时恢复不回去）
+                frac["archived_from"] = previous or "completed"
                 fixed += 1
         print(f"\n已归档 {fixed} 个频率矫正任务（归档前状态记录在 archived_from）。")
 

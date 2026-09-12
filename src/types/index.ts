@@ -66,6 +66,12 @@ export interface Task {
   /** 归档（关闭）：归档时间与归档前状态，重新打开时恢复 */
   archived_at?: string | null;
   archived_from?: string | null;
+  /** 自由能组主任务对应的频率矫正子任务（归档时会一并归档） */
+  frac_sibling?: {
+    task_id: string;
+    model_name: string;
+    status: TaskStatus;
+  } | null;
   /** 所属计算流程组（独立任务为 null） */
   group?: GroupMeta | null;
   parent_task_id?: string | null;

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.3（巡检详情归档入口 + 关闭项目展示细化）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.4（自由能主任务归档连带频率矫正）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -171,7 +171,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
    - **全局巡检分批**：`_plan_batches()` 按**项目**切批次（同一服务器可多批），脚本与阈值每个服务器每轮只上传一次；远端检查在**事务之外**执行，回填 + 归档时才进入该项目的独立 `db_transaction`，因此单项目失败不影响其他项目（摘要返回 `failed_batches`），数据库写锁只持有本地回填那一小段。
    - **自动巡检**：`inspection_scheduler` 后台线程每 60s 判定一次（开关 + 距上次巡检 ≥ 间隔，默认 2h）→ 触发全局巡检；页面开关写 `settings.json` 即刻生效。
    - **巡检后刷新集群**：全局巡检成功后（无失败批次）调用 `dashboard.invalidate_cluster_cache(servers, prewarm=True)`，作废快照缓存并后台预热，用户切到总览即是最新数据。
-   - **归档 / 关闭**：任务可「关闭（归档）」→ `status=archived`（记 `archived_at` / `archived_from`，可「重新打开」恢复原状态）；项目下**可见任务全部归档**后可「关闭项目」→ `project.closed=true`，在总览、巡检中心、作业管理里统一排到最后、灰显、默认折叠。归档/关闭都不动本地与远端文件。
+   - **归档 / 关闭**：任务可「关闭（归档）」→ `status=archived`（记 `archived_at` / `archived_from`，可「重新打开」恢复原状态）；**自由能结构优化主任务归档时，连同其 `<结构目录>/frac` 频率矫正子任务一起归档**，重新打开时也成对恢复（`archived_siblings` / `reopened_siblings` 回传，前端提示连带关系；主任务归档时若 frac 未完成会弹窗警告）。项目下**可见任务全部归档**后可「关闭项目」→ `project.closed=true`，在总览、巡检中心、作业管理里统一排到最后、灰显、默认折叠。归档/关闭都不动本地与远端文件。
 
 9. **总览数据流（v0.6.0）**：`GET /api/dashboard/overview` 一次返回整页（顶部统计 + 运行作业 + 核数 + 集群 + 风险 + 项目进度 + 趋势 + 最近任务）。
    - 集群部分来自**一次 exec** 的 `@@@` 分段输出（bjobs/blimits/df/bhosts/bqueues），服务端缓存 5 分钟（`settings.json: dashboard_cache_seconds`），前端每 30 分钟自动刷新一次；`?refresh=1` 强制查询（约 2-4s）。
@@ -181,7 +181,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.3）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.4）
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
 
@@ -212,6 +212,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - **前端新增依赖 echarts 6**：只被总览页使用，按需注册在 `components/dashboard/useEcharts.ts`；`vite.config.ts` 单独拆 `echarts-vendor` chunk（581KB / gzip 198KB）。若以后其它页面要用图表，复用该 hook 而不是再引入图表库。
 - **总览「未登记任务」**：如果作业在集群上跑但 `job_id` 与任务表对不上（且作业名也匹配不上），会归到「未登记任务」项目分组，不会静默丢弃。
 - **归档没有硬限制**：关闭（归档）任务只要求"非已归档"，未正常结束（不是 completed）也能关，前端只弹窗提醒；`archived` 任务不参与全局巡检（`SKIPPED_STATUSES`），但单任务巡检仍可强制查它。
+- **自由能主任务与 frac 成对归档**（v0.6.4）：归档 opt 会连带归档 `<结构目录>/frac`；历史数据中已存在"主任务 archived、frac 未归档"的状态，用 `python scripts/repair_frac_archive.py`（先预览，`--apply` 写入）一次性补齐，否则这些项目无法关闭。
 - **关闭项目的前提**：项目下**可见任务（不含 conN 续算子任务）全部 archived**；后端返回 400 时会把还没关的任务名列出来。关闭只写 `project.closed/closed_at`，任务状态与文件都不动。
 - **自动巡检默认开启**：`auto_inspection_enabled` 默认 true（与页面既有文案一致），阈值 `inspection_interval_hours` 默认 2。调度器在**后端启动时就开始判定**——如果上次巡检已超过 2 小时（或从未巡检过），启动后会立刻跑一轮全局巡检。不想让它自动跑就在巡检中心把开关关掉（写入 settings.json）。
 - **全局巡检的分批粒度是"项目"**：Ag / Co / TMDZYX 各一批，实测仍是 75-90 秒（脚本上传从每批 2 次降为每服务器 1 次），但失败隔离与锁粒度都更细；摘要里的 `failed_batches` 非空时不会触发集群快照预热。
@@ -254,3 +255,4 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。
 5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 package.json version 后 `git add -A && git commit && git push origin main`。
 6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
+- v0.6.4（commit 见 `git log --oneline -1`）：**自由能主任务归档连带频率矫正**。① 后端 `task_paths.free_energy_frac_task()` 按 `<结构目录>/frac` 约定（并校验 `parent_task_id`）定位 frac 子任务；`POST /jobs/tasks/{id}/archive` 归档自由能 opt 时**连带归档 frac**，`/unarchive` 连带恢复（各回各自的 `archived_from`），响应新增 `frac_status` / `archived_siblings` / `reopened_siblings`；对"主任务已归档但 frac 未归档"的历史状态，重复调用 archive 也会把 frac 补齐（幂等修复，不再直接 409）。② `mappers` 为自由能 opt 任务输出 `frac_sibling{task_id,model_name,status}`。③ 前端（作业管理任务面板 + 巡检详情弹窗）归档确认文案按 frac 状态区分：**未完成（非 completed）时加 ⚠️ 警告**"该任务的频率矫正（xxx）当前为「未收敛」，尚未正常结束；关闭主任务会一并归档它"，成功提示与"重新打开"提示也写明连带关系。④ 新增 `scripts/repair_frac_archive.py`：一次性修复历史"主任务已归档、frac 未归档"的数据（默认 dry-run，`--apply` 才写入，写入走事务并自动备份）。

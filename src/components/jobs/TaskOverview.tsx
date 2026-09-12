@@ -57,6 +57,23 @@ export default function TaskOverview({
 }: Props) {
   const { message } = App.useApp();
 
+  /** 归档确认文案：自由能主任务会连带归档频率矫正，未完成时特别提醒 */
+  const archiveDescription = (() => {
+    const base =
+      task.status === 'completed'
+        ? '任务已正常结束，关闭后不再参与全局巡检（可随时重新打开）'
+        : `任务当前状态为「${
+            TASK_STATUS_LABELS[task.status]
+          }」，并非正常结束；关闭后不再参与全局巡检（可随时重新打开）`;
+    const frac = task.frac_sibling;
+    if (!frac) return base;
+    const fracLabel = TASK_STATUS_LABELS[frac.status] ?? frac.status;
+    if (frac.status !== 'completed') {
+      return `⚠️ 该任务的频率矫正（${frac.model_name}）当前为「${fracLabel}」，尚未正常结束；关闭主任务会一并归档它。\n${base}`;
+    }
+    return `${base}\n将同时归档其频率矫正任务（${frac.model_name}，已完成）。`;
+  })();
+
   const handleOpenFolder = async () => {
     try {
       const r = await openTaskFolder(task.task_id);
@@ -131,7 +148,9 @@ export default function TaskOverview({
                     TASK_STATUS_LABELS[
                       (task.archived_from as TaskStatus) ?? 'pending'
                     ] ?? '待提交'
-                  }」状态，可继续巡检 / 续算`}
+                  }」状态，可继续巡检 / 续算${
+                    task.frac_sibling ? '；其频率矫正任务也会一并重新打开' : ''
+                  }`}
                   okText="重新打开"
                   cancelText="取消"
                   onConfirm={() => onUnarchive(task)}
@@ -143,11 +162,7 @@ export default function TaskOverview({
                 <Popconfirm
                   title="关闭（归档）该任务？"
                   description={
-                    task.status === 'completed'
-                      ? '任务已正常结束，关闭后不再参与全局巡检（可随时重新打开）'
-                      : `任务当前状态为「${
-                          TASK_STATUS_LABELS[task.status]
-                        }」，并非正常结束；关闭后不再参与全局巡检（可随时重新打开）`
+                    <span style={{ whiteSpace: 'pre-line' }}>{archiveDescription}</span>
                   }
                   okText="关闭"
                   cancelText="取消"

@@ -172,6 +172,15 @@ export async function archiveTask(taskId: string): Promise<{
   new_status: string;
   previous_status: string;
   was_completed: boolean;
+  /** 归档前的频率矫正状态（自由能主任务才有） */
+  frac_status: string | null;
+  /** 连带归档的频率矫正子任务 */
+  archived_siblings: {
+    task_id: string;
+    model_name: string;
+    previous_status: string;
+    was_completed: boolean;
+  }[];
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/archive`, {
     method: 'POST',
@@ -183,6 +192,8 @@ export async function unarchiveTask(taskId: string): Promise<{
   task_id: string;
   project_name: string;
   new_status: string;
+  /** 连带恢复的频率矫正子任务 */
+  reopened_siblings: { task_id: string; model_name: string; new_status: string }[];
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/unarchive`, {
     method: 'POST',

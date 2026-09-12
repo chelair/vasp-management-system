@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from config import PROJECTS_DIR
 from paths import to_local_rel
-from task_paths import is_continuation_task, task_dir
+from task_paths import free_energy_frac_task, is_continuation_task, task_dir
 
 
 def _str(value: Any, fallback: str) -> str:
@@ -68,6 +68,8 @@ def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
                 "group": task.get("group") or None,
                 "parent_task_id": task.get("parent_task_id") or None,
                 "input_source": task.get("input_source") or None,
+                # 自由能组主任务：带上频率矫正子任务状态，供归档前提示使用
+                "frac_sibling": _frac_sibling(project, task),
             }
         )
 
@@ -87,4 +89,16 @@ def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
         "createdAt": _str(project.get("created_at"), project.get("project_id", "")),
         "updatedAt": updated_at,
         "tasks": mapped_tasks,
+    }
+
+
+def _frac_sibling(project: Dict[str, Any], task: Dict[str, Any]):
+    """自由能结构优化任务的频率矫正子任务摘要（不存在则为 None）。"""
+    frac = free_energy_frac_task(project, task)
+    if frac is None:
+        return None
+    return {
+        "task_id": _str(frac.get("task_id"), ""),
+        "model_name": _str(frac.get("model_name"), ""),
+        "status": _str(frac.get("status"), ""),
     }

@@ -477,10 +477,15 @@ export default function Inspection() {
     if (!detail) return;
     try {
       const r = await archiveTask(detail.task_id);
+      const siblingNote = r.archived_siblings?.length
+        ? `，并一并归档频率矫正 ${r.archived_siblings
+            .map((s) => s.model_name)
+            .join('、')}`
+        : '';
       message.success(
         r.was_completed
-          ? `任务 ${detail.task_name} 已关闭（归档）`
-          : `任务 ${detail.task_name} 已关闭（归档，原状态 ${r.previous_status}）`,
+          ? `任务 ${detail.task_name} 已关闭（归档）${siblingNote}`
+          : `任务 ${detail.task_name} 已关闭（归档，原状态 ${r.previous_status}）${siblingNote}`,
       );
       setDetailOpen(false);
       setResults(await fetchInspectionResults());
@@ -494,7 +499,12 @@ export default function Inspection() {
     if (!detail) return;
     try {
       const r = await unarchiveTask(detail.task_id);
-      message.success(`任务 ${detail.task_name} 已重新打开（${r.new_status}）`);
+      const siblingNote = r.reopened_siblings?.length
+        ? `，频率矫正 ${r.reopened_siblings.map((s) => s.model_name).join('、')} 也已恢复`
+        : '';
+      message.success(
+        `任务 ${detail.task_name} 已重新打开（${r.new_status}）${siblingNote}`,
+      );
       setDetailData(await fetchInspectionDetail(detail.task_id));
       setResults(await fetchInspectionResults());
     } catch (err) {
@@ -883,7 +893,9 @@ export default function Inspection() {
             {detailData?.status === 'archived' ? (
               <Popconfirm
                 title="重新打开该任务？"
-                description="任务将恢复到归档前的状态，重新参与全局巡检"
+                description={`任务将恢复到归档前的状态，重新参与全局巡检${
+                  detailData?.frac ? '；其频率矫正任务也会一并重新打开' : ''
+                }`}
                 okText="重新打开"
                 cancelText="取消"
                 onConfirm={handleUnarchiveDetailTask}
@@ -895,12 +907,26 @@ export default function Inspection() {
                 <Popconfirm
                   title="关闭（归档）该任务？"
                   description={
-                    detailData.status === 'completed'
-                      ? '任务已正常结束，关闭后不再参与全局巡检（可随时重新打开）'
-                      : `任务当前状态为「${
-                          TASK_STATUS_LABELS[detailData.status as TaskStatus] ??
-                          detailData.status
-                        }」，并非正常结束；关闭后不再参与全局巡检（可随时重新打开）`
+                    <span style={{ whiteSpace: 'pre-line' }}>
+                      {(() => {
+                        const base =
+                          detailData.status === 'completed'
+                            ? '任务已正常结束，关闭后不再参与全局巡检（可随时重新打开）'
+                            : `任务当前状态为「${
+                                TASK_STATUS_LABELS[
+                                  detailData.status as TaskStatus
+                                ] ?? detailData.status
+                              }」，并非正常结束；关闭后不再参与全局巡检（可随时重新打开）`;
+                        const frac = detailData.frac;
+                        if (!frac) return base;
+                        const fracLabel =
+                          TASK_STATUS_LABELS[frac.status as TaskStatus] ?? frac.status;
+                        if (frac.status !== 'completed') {
+                          return `⚠️ 该任务的频率矫正（${frac.task_name}）当前为「${fracLabel}」，尚未正常结束；关闭主任务会一并归档它。\n${base}`;
+                        }
+                        return `${base}\n将同时归档其频率矫正任务（${frac.task_name}）。`;
+                      })()}
+                    </span>
                   }
                   okText="关闭"
                   cancelText="取消"

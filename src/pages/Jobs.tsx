@@ -563,10 +563,15 @@ export default function Jobs() {
   const handleArchiveTask = async (task: Task) => {
     try {
       const r = await archiveTask(task.task_id);
+      const siblingNote = r.archived_siblings?.length
+        ? `，并一并归档频率矫正 ${r.archived_siblings
+            .map((s) => s.model_name)
+            .join('、')}`
+        : '';
       message.success(
         r.was_completed
-          ? `任务 ${task.model_name} 已关闭（归档）`
-          : `任务 ${task.model_name} 已关闭（归档，原状态 ${r.previous_status}）`,
+          ? `任务 ${task.model_name} 已关闭（归档）${siblingNote}`
+          : `任务 ${task.model_name} 已关闭（归档，原状态 ${r.previous_status}）${siblingNote}`,
       );
       await refreshProjects();
     } catch (err) {
@@ -578,7 +583,12 @@ export default function Jobs() {
   const handleUnarchiveTask = async (task: Task) => {
     try {
       const r = await unarchiveTask(task.task_id);
-      message.success(`任务 ${task.model_name} 已重新打开（${r.new_status}）`);
+      const siblingNote = r.reopened_siblings?.length
+        ? `，频率矫正 ${r.reopened_siblings.map((s) => s.model_name).join('、')} 也已恢复`
+        : '';
+      message.success(
+        `任务 ${task.model_name} 已重新打开（${r.new_status}）${siblingNote}`,
+      );
       await refreshProjects();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '重新打开任务失败');

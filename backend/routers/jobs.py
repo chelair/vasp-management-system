@@ -39,7 +39,7 @@ from incar import modify_incar
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
 import ssh
 from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
-from task_paths import is_continuation_task, task_dir
+from task_paths import free_energy_frac_task, is_continuation_task, task_dir
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -756,24 +756,66 @@ def submit_task(task_id: str):
 def archive_task(task_id: str):
     """关闭（归档）任务：只改状态，本地/远端文件都不动。
 
-    前端在任务未正常结束（状态不是 completed）时会弹窗提醒，后端不做硬性拦截。
+    - 前端在任务未正常结束（状态不是 completed）时会弹窗提醒，后端不做硬性拦截；
+    - **自由能组的结构优化主任务**：连带归档其频率矫正（frac）子任务，
+      返回 `archived_siblings` 与归档前的 frac 状态（前端据此提示）。
     """
     try:
         project, task = _resolve_task(task_id)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
     previous = str(task.get("status") or "")
-    if previous == "archived":
+    frac = free_energy_frac_task(project, task)
+    frac_status = str(frac.get("status") or "") if frac else None
+    if previous == "archived" and (frac is None or frac_status == "archived"):
         return JSONResponse(status_code=409, content=fail("任务已经处于关闭（归档）状态"))
+    siblings: List[Dict[str, Any]] = []
     try:
         with db_transaction() as db:
-            update_task_status(
-                db,
-                project["name"],
-                task_id,
-                "archived",
-                {"archived_at": now_iso(), "archived_from": previous},
+            if previous != "archived":
+                update_task_status(
+                    db,
+                    project["name"],
+                    task_id,
+                    "archived",
+                    {"archived_at": now_iso(), "archived_from": previous},
+                )
+            # 自由能主任务归档 → 频率矫正子任务一并归档（否则项目无法关闭）
+            fresh_project = next(
+                (p for p in db.get("projects", []) if p.get("name") == project["name"]),
+                None,
             )
+            fresh_task = (
+                next(
+                    (
+                        t
+                        for t in fresh_project.get("tasks", [])
+                        if t.get("task_id") == task_id
+                    ),
+                    None,
+                )
+                if fresh_project
+                else None
+            )
+            if fresh_project and fresh_task:
+                sibling = free_energy_frac_task(fresh_project, fresh_task)
+                if sibling is not None and str(sibling.get("status")) != "archived":
+                    sibling_prev = str(sibling.get("status") or "")
+                    update_task_status(
+                        db,
+                        project["name"],
+                        str(sibling["task_id"]),
+                        "archived",
+                        {"archived_at": now_iso(), "archived_from": sibling_prev},
+                    )
+                    siblings.append(
+                        {
+                            "task_id": str(sibling["task_id"]),
+                            "model_name": str(sibling.get("model_name") or ""),
+                            "previous_status": sibling_prev,
+                            "was_completed": sibling_prev == "completed",
+                        }
+                    )
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"关闭任务失败：{e}"))
     return ok(
@@ -784,13 +826,18 @@ def archive_task(task_id: str):
             "new_status": "archived",
             "previous_status": previous,
             "was_completed": previous == "completed",
+            "frac_status": frac_status,
+            "archived_siblings": siblings,
         },
     )
 
 
 @router.post("/tasks/{task_id}/unarchive")
 def unarchive_task(task_id: str):
-    """重新打开已归档任务：恢复到归档前的状态（默认 pending）。"""
+    """重新打开已归档任务：恢复到归档前的状态（默认 pending）。
+
+    自由能组主任务重新打开时，**连带重新打开其频率矫正子任务**（保持成对）。
+    """
     try:
         project, task = _resolve_task(task_id)
     except LookupError as e:
@@ -800,6 +847,7 @@ def unarchive_task(task_id: str):
     restore = str(task.get("archived_from") or "")
     if restore not in STATUS_ENUM or restore == "archived":
         restore = "pending"
+    siblings: List[Dict[str, Any]] = []
     try:
         with db_transaction() as db:
             update_task_status(
@@ -809,11 +857,52 @@ def unarchive_task(task_id: str):
                 restore,
                 {"reopened_at": now_iso()},
             )
+            fresh_project = next(
+                (p for p in db.get("projects", []) if p.get("name") == project["name"]),
+                None,
+            )
+            fresh_task = (
+                next(
+                    (
+                        t
+                        for t in fresh_project.get("tasks", [])
+                        if t.get("task_id") == task_id
+                    ),
+                    None,
+                )
+                if fresh_project
+                else None
+            )
+            if fresh_project and fresh_task:
+                sibling = free_energy_frac_task(fresh_project, fresh_task)
+                if sibling is not None and str(sibling.get("status")) == "archived":
+                    sibling_restore = str(sibling.get("archived_from") or "")
+                    if sibling_restore not in STATUS_ENUM or sibling_restore == "archived":
+                        sibling_restore = "pending"
+                    update_task_status(
+                        db,
+                        project["name"],
+                        str(sibling["task_id"]),
+                        sibling_restore,
+                        {"reopened_at": now_iso()},
+                    )
+                    siblings.append(
+                        {
+                            "task_id": str(sibling["task_id"]),
+                            "model_name": str(sibling.get("model_name") or ""),
+                            "new_status": sibling_restore,
+                        }
+                    )
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"重新打开任务失败：{e}"))
     return ok(
         "任务已重新打开",
-        {"task_id": task_id, "project_name": project["name"], "new_status": restore},
+        {
+            "task_id": task_id,
+            "project_name": project["name"],
+            "new_status": restore,
+            "reopened_siblings": siblings,
+        },
     )
 
 

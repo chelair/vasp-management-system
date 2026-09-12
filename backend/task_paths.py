@@ -14,7 +14,7 @@ VASP 文件统一放在任务目录的 files/ 子目录（兼容直接放在任�
 
 from pathlib import Path
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from config import PROJECTS_DIR
 from paths import resolve_local_path, resolve_remote_path
@@ -34,6 +34,32 @@ def is_continuation_task(task: Dict[str, Any]) -> bool:
     续算在后台登记子任务记录（供巡检定位/文件重定向），但不在前端展示为独立子项。
     """
     return bool(re.search(r"/con\d+$", str(task.get("dir_path", "") or "")))
+
+
+def free_energy_frac_task(
+    project: Dict[str, Any], opt_task: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """自由能组结构优化任务对应的频率矫正子任务。
+
+    目录约定：frac 与 conN 同级，位于 `<结构目录>/frac`；同时校验
+    `parent_task_id`（若已登记）避免误配。非自由能组 opt 返回 None。
+    """
+    if opt_task.get("task_type") != "opt":
+        return None
+    if (opt_task.get("group") or {}).get("group_type") != "free_energy":
+        return None
+    target = f"{opt_task.get('dir_path', '')}/frac"
+    opt_id = str(opt_task.get("task_id") or "")
+    for task in project.get("tasks", []):
+        if task.get("task_type") != "frac":
+            continue
+        if str(task.get("dir_path") or "") != target:
+            continue
+        parent = str(task.get("parent_task_id") or "")
+        if parent and opt_id and parent != opt_id:
+            continue
+        return task
+    return None
 
 
 def task_dir(project_name: str, task: Dict[str, Any]) -> Path:

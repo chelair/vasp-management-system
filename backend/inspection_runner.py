@@ -73,6 +73,12 @@ def _plan_batches(
         if pair is None:
             raise ValueError(f"任务 '{task_id}' 不存在")
         project, task = pair
+        # 已关闭（归档）的任务不允许再巡检：否则观测状态会把 archived 覆盖回去
+        if str(task.get("status") or "") == "archived":
+            raise ValueError(
+                f"任务「{task.get('model_name') or task_id}」已关闭（归档），"
+                "请先「重新打开」再巡检"
+            )
         server = project.get("server") or ""
         if not server:
             raise ValueError(f"任务 '{task_id}' 未配置服务器，无法巡检")

@@ -68,6 +68,9 @@ def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
                 "group": task.get("group") or None,
                 "parent_task_id": task.get("parent_task_id") or None,
                 "input_source": task.get("input_source") or None,
+                # 归档（关闭）：归档前状态与时间，"重新打开"按 archived_from 恢复
+                "archived_from": task.get("archived_from") or None,
+                "archived_at": task.get("archived_at") or None,
                 # 自由能组主任务：带上频率矫正子任务状态，供归档前提示使用
                 "frac_sibling": _frac_sibling(project, task),
             }

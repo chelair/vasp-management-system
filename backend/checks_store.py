@@ -155,6 +155,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     group_id = group.get("group_id") or ""
     if entry is None:
         task_type = task.get("task_type", "")
+        archived = str(task.get("status") or "") == "archived"
         return {
             "id": str(task.get("task_id", "")),
             "check_time": "",
@@ -166,11 +167,15 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
             "structure_label": structure_label,
             "category": "queue",
             "task_category": task_category,
-            "status": "pending",
-            # 未巡检行：状态列仍是待提交（pending），信息列明确写“未检”，
-            # 避免与任务本身“待提交”的语义混淆
-            "message": "未检",
-            "detail": "暂无巡检记录，可点击「单独巡检」获取该任务当前状态",
+            # 已归档任务：状态列显示“关闭”，不再按未巡检处理
+            "status": "archived" if archived else "pending",
+            "task_status": str(task.get("status") or "pending"),
+            "message": "关闭" if archived else "未检",
+            "detail": (
+                "任务已关闭（归档），不再参与巡检"
+                if archived
+                else "暂无巡检记录，可点击「单独巡检」获取该任务当前状态"
+            ),
             "project_closed": bool(project.get("closed")),
             "analysis_needed": False,
             "has_force_history": False,
@@ -183,6 +188,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     markers = [str(m) for m in entry.get("markers", []) or []]
     notes = str(entry.get("notes", "") or "")
     status = entry.get("status")
+    task_status = str(task.get("status") or "")
     queue = entry.get("queue_status")
     energy = entry.get("last_energy")
     all_msgs = errors + markers
@@ -199,7 +205,10 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     ]
     # 僵尸/异常先判 error；未收敛（unconverged）优先于 error_messages
     # （batch_check 会把"forces not converged"写入 error_messages，不能因此判为错误）
-    if status == "zombied":
+    # 已归档优先：归档只改本地状态，不参与巡检判定，也不应被巡检结果覆盖
+    if task_status == "archived" or status == "archived":
+        check_status = "archived"
+    elif status == "zombied":
         check_status = "error"
     elif status == "unconverged":
         check_status = "warning"
@@ -230,6 +239,8 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
     energy_text = f"{energy:.4f} eV" if isinstance(energy, (int, float)) else "—"
     if check_status == "error":
         message = all_msgs[0] if all_msgs else "任务状态异常"
+    elif check_status == "archived":
+        message = "任务已关闭（归档）"
     elif status == "completed":
         message = f"计算完成 · 能量 {energy_text}"
         if entry.get("force_converged") is False:
@@ -285,6 +296,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         "message": message,
         "detail": detail,
         "task_category": task_category,
+        "task_status": task_status,
         "project_closed": bool(project.get("closed")),
         "analysis_needed": bool(entry.get("analysis_needed", False)),
         "has_force_history": isinstance(entry.get("force_history"), list)

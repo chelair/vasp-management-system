@@ -98,7 +98,7 @@ export interface Project {
   tasks: Task[];
 }
 
-export type CheckStatus = 'normal' | 'warning' | 'error' | 'pending';
+export type CheckStatus = 'normal' | 'warning' | 'error' | 'pending' | 'archived';
 
 export type CheckCategory = 'convergence' | 'resource' | 'file' | 'ssh' | 'queue';
 
@@ -131,6 +131,8 @@ export interface InspectionResult {
   output_status?: 'finished' | 'running' | 'failed' | 'waiting' | null;
   /** 任务类型分类（结构优化 / 自由能 / NEB / 电子结构） */
   task_category?: string;
+  /** 任务在 projects.json 中的真实状态（归档判断用：archived = 已关闭） */
+  task_status?: TaskStatus;
   /** 所属项目是否已关闭（关闭项目在列表中排最后并默认折叠） */
   project_closed?: boolean;
 }
@@ -790,6 +792,7 @@ export const CHECK_STATUS_LABELS: Record<CheckStatus, string> = {
   warning: '警告',
   error: '错误',
   pending: '待提交',
+  archived: '关闭',
 };
 
 export const CHECK_CATEGORY_LABELS: Record<CheckCategory, string> = {

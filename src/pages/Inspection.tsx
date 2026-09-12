@@ -80,6 +80,7 @@ const STATUS_FILTER_OPTIONS = [
   { text: '警告', value: 'warning' },
   { text: '错误', value: 'error' },
   { text: '待提交', value: 'pending' },
+  { text: '关闭', value: 'archived' },
 ];
 
 const TASK_CATEGORY_FILTER_OPTIONS = [
@@ -407,7 +408,9 @@ export default function Inspection() {
       rows,
       errors: rows.filter((r) => r.status === 'error').length,
       warnings: rows.filter((r) => r.status === 'warning').length,
-      uninspected: rows.filter((r) => !r.has_inspection).length,
+      archived: rows.filter((r) => r.status === 'archived').length,
+      // 已关闭任务不计入"未检"
+      uninspected: rows.filter((r) => !r.has_inspection && r.status !== 'archived').length,
       changed: rows.filter((r) => r.status_changed).length,
     }));
     blocks.sort((a, b) => {
@@ -726,16 +729,24 @@ export default function Inspection() {
             </Button>
           </Badge>
         ) : (
-          <Button
-            size="small"
-            type="link"
-            icon={<ReloadOutlined />}
-            loading={singleRunningIds.has(row.task_id)}
-            disabled={triggering}
-            onClick={() => runSingle(row)}
+          <Tooltip
+            title={
+              row.task_status === 'archived'
+                ? '任务已关闭（归档），请先在作业管理里「重新打开」再巡检'
+                : undefined
+            }
           >
-            单独巡检
-          </Button>
+            <Button
+              size="small"
+              type="link"
+              icon={<ReloadOutlined />}
+              loading={singleRunningIds.has(row.task_id)}
+              disabled={triggering || row.task_status === 'archived'}
+              onClick={() => runSingle(row)}
+            >
+              单独巡检
+            </Button>
+          </Tooltip>
         ),
     },
   ];
@@ -849,6 +860,9 @@ export default function Inspection() {
                     {block.uninspected > 0 && (
                       <span className="inspection-project__stat">未检 {block.uninspected}</span>
                     )}
+                    {block.archived > 0 && (
+                      <span className="inspection-project__stat">关闭 {block.archived}</span>
+                    )}
                     {block.changed > 0 && (
                       <span className="inspection-project__stat inspection-project__stat--changed">
                         状态变化 {block.changed}
@@ -936,14 +950,24 @@ export default function Inspection() {
                 </Popconfirm>
               )
             )}
-            <Button
-              icon={<ReloadOutlined />}
-              loading={detail ? singleRunningIds.has(detail.task_id) : false}
-              disabled={triggering || detailLoading}
-              onClick={() => detail && runSingle(detail, true)}
+            <Tooltip
+              title={
+                detailData?.status === 'archived'
+                  ? '任务已关闭（归档），请先「重新打开」再巡检'
+                  : undefined
+              }
             >
-              单独巡检
-            </Button>
+              <Button
+                icon={<ReloadOutlined />}
+                loading={detail ? singleRunningIds.has(detail.task_id) : false}
+                disabled={
+                  triggering || detailLoading || detailData?.status === 'archived'
+                }
+                onClick={() => detail && runSingle(detail, true)}
+              >
+                单独巡检
+              </Button>
+            </Tooltip>
           </div>
         }
         width="min(1000px, calc(100vw - 32px))"

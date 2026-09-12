@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.4（自由能主任务归档连带频率矫正）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.5（归档状态不被巡检覆盖 + 巡检列表显示「关闭」）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -171,7 +171,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
    - **全局巡检分批**：`_plan_batches()` 按**项目**切批次（同一服务器可多批），脚本与阈值每个服务器每轮只上传一次；远端检查在**事务之外**执行，回填 + 归档时才进入该项目的独立 `db_transaction`，因此单项目失败不影响其他项目（摘要返回 `failed_batches`），数据库写锁只持有本地回填那一小段。
    - **自动巡检**：`inspection_scheduler` 后台线程每 60s 判定一次（开关 + 距上次巡检 ≥ 间隔，默认 2h）→ 触发全局巡检；页面开关写 `settings.json` 即刻生效。
    - **巡检后刷新集群**：全局巡检成功后（无失败批次）调用 `dashboard.invalidate_cluster_cache(servers, prewarm=True)`，作废快照缓存并后台预热，用户切到总览即是最新数据。
-   - **归档 / 关闭**：任务可「关闭（归档）」→ `status=archived`（记 `archived_at` / `archived_from`，可「重新打开」恢复原状态）；**自由能结构优化主任务归档时，连同其 `<结构目录>/frac` 频率矫正子任务一起归档**，重新打开时也成对恢复（`archived_siblings` / `reopened_siblings` 回传，前端提示连带关系；主任务归档时若 frac 未完成会弹窗警告）。项目下**可见任务全部归档**后可「关闭项目」→ `project.closed=true`，在总览、巡检中心、作业管理里统一排到最后、灰显、默认折叠。归档/关闭都不动本地与远端文件。
+   - **归档 / 关闭**：任务可「关闭（归档）」→ `status=archived`（记 `archived_at` / `archived_from`，`/api/projects` 会把这两个字段一并返回，供"重新打开"显示恢复目标）；**自由能结构优化主任务归档时，连同其 `<结构目录>/frac` 频率矫正子任务一起归档**，重新打开时也成对恢复（`archived_siblings` / `reopened_siblings` 回传，前端提示连带关系；主任务归档时若 frac 未完成会弹窗警告）。项目下**可见任务全部归档**后可「关闭项目」→ `project.closed=true`，在总览、巡检中心、作业管理里统一排到最后、灰显、默认折叠。归档/关闭都不动本地与远端文件。
+   - **归档任务不可巡检（v0.6.5）**：单任务巡检遇到 `archived` 任务直接返回 400「任务已关闭（归档），请先重新打开再巡检」，避免巡检回填把归档状态覆盖回 completed/zombied；全局巡检本来就跳过 archived。巡检列表中归档任务状态列显示 **「关闭」**（`CheckStatus` 新增 `archived`），信息列写「任务已关闭（归档）」，且不计入项目块头部的「未检」计数，操作列的「单独巡检」按钮置灰并提示先重新打开。
 
 9. **总览数据流（v0.6.0）**：`GET /api/dashboard/overview` 一次返回整页（顶部统计 + 运行作业 + 核数 + 集群 + 风险 + 项目进度 + 趋势 + 最近任务）。
    - 集群部分来自**一次 exec** 的 `@@@` 分段输出（bjobs/blimits/df/bhosts/bqueues），服务端缓存 5 分钟（`settings.json: dashboard_cache_seconds`），前端每 30 分钟自动刷新一次；`?refresh=1` 强制查询（约 2-4s）。
@@ -181,7 +182,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.4）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.5）
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
 
@@ -205,7 +206,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 8. 已知注意事项 / 坑
 
-- **后端无热重载**：改 `backend/*.py`（如 continuation.py / jobs.py）必须重启后端（当前进程可能仍是旧代码）。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.5 起）；**不要**再用 `uptime` 数值推断——v0.5.5 之前它返回的是系统开机时长。
+- **后端无热重载（踩过坑，务必照做）**：改完 `backend/*.py` **必须重启后端进程**，否则页面行为还是旧逻辑。v0.6.4 就踩过：归档连带频率矫正的代码写完了，但 3001 上还是 01:30 启动的旧进程，用户在页面上归档时 frac 不会跟着归档。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.5 起）；**不要**再用 `uptime` 数值推断——v0.5.5 之前它返回的是系统开机时长。
 - **总览的集群命令只在 LSF 环境验证过**：`bjobs -o "jobid stat queue job_name slots exec_host" -noheader`、`blimits` 的 SLOTS 列、`bhosts`/`bqueues` 表头都按 IBM LSF 实测解析；换 Slurm 需改 `servers.json` 的 5 个命令键并同步改 `dashboard.py` 的解析函数（`parse_jobs/parse_blimits/parse_bhosts/parse_bqueues/parse_df`）。
 - **blimits 配额是“按队列组”的**：同一用户可能有多行（不同队列组各自限制），当前取各行的最大值作为上限；`usedCores` 优先用它的已用值，与 bjobs 汇总通常一致（实测 144 = 144）。
 - **核数/运行中任务趋势无法回溯**：`data/dashboard/core_history.json` 从 v0.6.0 起累积，页面会显示「自 X 起累积」；只有「提交作业数」来自 audit 日志可回溯 7 天。
@@ -256,3 +257,4 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 package.json version 后 `git add -A && git commit && git push origin main`。
 6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
 - v0.6.4（commit `3921566`，已推送 origin/main）：**自由能主任务归档连带频率矫正**。① 后端 `task_paths.free_energy_frac_task()` 按 `<结构目录>/frac` 约定（并校验 `parent_task_id`）定位 frac 子任务；`POST /jobs/tasks/{id}/archive` 归档自由能 opt 时**连带归档 frac**，`/unarchive` 连带恢复（各回各自的 `archived_from`），响应新增 `frac_status` / `archived_siblings` / `reopened_siblings`；对"主任务已归档但 frac 未归档"的历史状态，重复调用 archive 也会把 frac 补齐（幂等修复，不再直接 409）。② `mappers` 为自由能 opt 任务输出 `frac_sibling{task_id,model_name,status}`。③ 前端（作业管理任务面板 + 巡检详情弹窗）归档确认文案按 frac 状态区分：**未完成（非 completed）时加 ⚠️ 警告**"该任务的频率矫正（xxx）当前为「未收敛」，尚未正常结束；关闭主任务会一并归档它"，成功提示与"重新打开"提示也写明连带关系。④ 新增 `scripts/repair_frac_archive.py`：一次性修复历史"主任务已归档、frac 未归档"的数据（默认 dry-run，`--apply` 才写入，写入走事务并自动备份）。
+- v0.6.5（commit 见 `git log --oneline -1`）：**归档状态与巡检的关系修正**。① **归档任务禁止巡检**：`inspection_runner._plan_batches()` 单任务分支遇到 `archived` 任务抛 ValueError → 接口 400「任务已关闭（归档），请先重新打开再巡检」，杜绝"单独巡检把归档状态覆盖回 completed/zombied"（此前是线上实际发生的问题）。② **巡检列表显示「关闭」**：`CheckStatus` 新增 `archived`（`CHECK_STATUS_LABELS.archived = '关闭'`，CSS 用既有 `.status-tag--archived`），归档任务在列表状态列显示"关闭"、信息列"任务已关闭（归档）"，不再按"未检/待提交"呈现，也不计入项目块头部「未检」计数（改为单独统计「关闭 N」）；状态列筛选新增"关闭"选项。③ 归档行的「单独巡检」按钮置灰（列表与详情弹窗都加，带提示），已归档任务仍可查看详情。④ `mappers` 暴露 `archived_from` / `archived_at`，前端"重新打开"弹窗能显示真实恢复目标（此前恒显示"待提交"）。⑤ **运维教训归档**：v0.6.4 的归档连带在真机上"没生效"，原因是 3001 上的后端进程还是 01:30 启动的旧代码（改后端不重启 = 页面行为不变），已在 §8 强化说明。

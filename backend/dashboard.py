@@ -1,0 +1,876 @@
+"""总览页数据聚合（Dashboard）。
+
+设计要点：
+
+- **单次 SSH 往返**：把 bjobs / blimits / df / bhosts / bqueues 合并进一个
+  bash 脚本，用 `@@@SECTION` 标记分段（每条 exec 有 1.3-4s shell 启动开销）。
+- **缓存**：集群快照默认缓存 5 分钟（settings.json `dashboard_cache_seconds`
+  可调），`refresh=1` 强制刷新；本地聚合（风险/统计/趋势）缓存 60 秒。
+- **命令可配置**：node_status_cmd / queue_status_cmd / user_used_cores_cmd /
+  user_total_cores_cmd / storage_check_cmd，servers.json（按服务器）优先，
+  其次 settings.json（全局），最后用内置默认值，便于适配 Slurm 等调度器。
+- **历史趋势**：每次成功查询追加一条核数/任务数快照到
+  `data/dashboard/core_history.json`（10 分钟内不重复采样），前端按天聚合；
+  历史从接入本功能那天开始累积。
+"""
+
+import json
+import re
+import threading
+import time
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+from checks_store import CHECKS_DIR, collect_results, list_runs, to_frontend_rows
+from config import DATA_DIR, load_servers, load_settings
+from ssh import run_remote
+from storage import load_db
+from task_paths import is_continuation_task
+
+DASHBOARD_DIR = DATA_DIR / "dashboard"
+HISTORY_FILE = DASHBOARD_DIR / "core_history.json"
+AUDIT_FILE = DATA_DIR / "audit_submit.log"
+
+CLUSTER_CACHE_TTL = 300  # 集群快照缓存（秒）
+LOCAL_CACHE_TTL = 60  # 本地聚合缓存（秒）
+HISTORY_MIN_INTERVAL = 600  # 历史采样最小间隔（秒）
+HISTORY_MAX = 4000  # 历史文件最多保留条数
+TREND_DAYS = 7
+STORAGE_WARN_PERCENT = 85  # 存储使用率告警线（剩余 <15%）
+CORES_WARN_PERCENT = 90  # 核数占用告警线
+
+DEFAULT_COMMANDS = {
+    "node_status_cmd": "bhosts",
+    "queue_status_cmd": "bqueues",
+    "user_used_cores_cmd": (
+        'bjobs -u $USER -o "jobid stat queue job_name slots exec_host" -noheader'
+    ),
+    "user_total_cores_cmd": "blimits",
+    "storage_check_cmd": "df -h {storage_path}",
+}
+
+_cluster_cache: Dict[str, Dict[str, Any]] = {}
+_local_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------- 命令与脚本
+
+
+def _command(server_cfg: Dict[str, Any], key: str) -> str:
+    """取远端命令：servers.json（按服务器）> settings.json（全局）> 内置默认。"""
+    val = str(server_cfg.get(key, "") or "").strip()
+    if val:
+        return val
+    val = str(load_settings().get(key, "") or "").strip()
+    return val or DEFAULT_COMMANDS[key]
+
+
+def _cluster_script(server_name: str) -> str:
+    cfg = load_servers().get(server_name, {}) or {}
+    profile = str(
+        cfg.get("lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf")
+    )
+    storage_path = str(cfg.get("remote_base", "") or "").rstrip("/") or "."
+    commands = {
+        key: _command(cfg, key).replace("{storage_path}", storage_path)
+        for key in DEFAULT_COMMANDS
+    }
+    return "\n".join(
+        [
+            f"source {profile} >/dev/null 2>&1 || true",
+            "echo @@@BJOBS",
+            commands["user_used_cores_cmd"],
+            "echo @@@BLIMITS",
+            commands["user_total_cores_cmd"],
+            "echo @@@DF",
+            commands["storage_check_cmd"],
+            "echo @@@BHOSTS",
+            commands["node_status_cmd"],
+            "echo @@@BQUEUES",
+            commands["queue_status_cmd"],
+            "echo @@@END",
+        ]
+    )
+
+
+def _sections(output: str) -> Dict[str, str]:
+    """按 @@@NAME 标记切分远端输出。"""
+    result: Dict[str, str] = {}
+    current: Optional[str] = None
+    buf: List[str] = []
+    for line in output.splitlines():
+        m = re.match(r"^@@@([A-Z]+)\s*$", line.strip())
+        if m:
+            if current:
+                result[current] = "\n".join(buf).strip("\n")
+            current = m.group(1)
+            buf = []
+            continue
+        if current:
+            buf.append(line)
+    if current:
+        result[current] = "\n".join(buf).strip("\n")
+    return result
+
+
+# ------------------------------------------------------------------ 远端解析
+
+
+def parse_jobs(text: str) -> List[Dict[str, Any]]:
+    """解析 `bjobs -o "jobid stat queue job_name slots exec_host" -noheader`。
+
+    行格式：JOBID STAT QUEUE JOB_NAME SLOTS EXEC_HOST
+    挂起/排队作业的 SLOTS 与 EXEC_HOST 为 `-`。
+    """
+    jobs: List[Dict[str, Any]] = []
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 4 or not parts[0].isdigit():
+            continue
+        slots = 0
+        if len(parts) >= 5 and re.fullmatch(r"\d+", parts[4]):
+            slots = int(parts[4])
+        hosts: List[Dict[str, Any]] = []
+        if len(parts) >= 6 and parts[5] != "-":
+            for chunk in parts[5].split(":"):
+                m = re.fullmatch(r"(\d+)\*(\S+)", chunk)
+                if m:
+                    hosts.append({"cores": int(m.group(1)), "host": m.group(2)})
+                elif chunk:
+                    hosts.append({"cores": 0, "host": chunk})
+        jobs.append(
+            {
+                "job_id": parts[0],
+                "status": parts[1],
+                "queue": parts[2],
+                "name": parts[3],
+                "cores": slots,
+                "execHosts": hosts,
+            }
+        )
+    return jobs
+
+
+def parse_blimits(text: str, user: str) -> Dict[str, Any]:
+    """解析 `blimits` 中当前用户的 SLOTS 配额行。
+
+    列：NAME USERS QUEUES HOSTS PROJECTS APPS SLOTS MEM TMP SWP JOBS，
+    其中 QUEUES 可能含多个队列（含空格），所以取该行第一个 `n/m` 形式的
+    数值作为 SLOTS（已用/上限）；同一用户多行（按队列组分别限制）取最大值。
+    """
+    used: Optional[int] = None
+    limit: Optional[int] = None
+    queues: List[str] = []
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[0].upper() == "NAME":
+            continue
+        if user not in parts:
+            continue
+        slot_tokens = [p for p in parts if re.fullmatch(r"\d+/\d+", p)]
+        if not slot_tokens:
+            continue
+        cur_used, cur_limit = (int(x) for x in slot_tokens[0].split("/"))
+        used = cur_used if used is None else max(used, cur_used)
+        limit = cur_limit if limit is None else max(limit, cur_limit)
+        if not queues:
+            # USERS 之后的队列名（到第一个非队列标记前）
+            idx = parts.index(user) + 1
+            for token in parts[idx:]:
+                if token in ("-",) or re.fullmatch(r"[\d/]+", token):
+                    break
+                queues.append(token)
+    return {"used": used, "limit": limit, "queues": queues}
+
+
+def parse_bhosts(text: str) -> Dict[str, Any]:
+    """解析 `bhosts`：按节点汇总正常/满载/关闭/不可用与核数占用。"""
+    nodes: List[Dict[str, Any]] = []
+    header: Dict[str, int] = {}
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0].upper() == "HOST_NAME":
+            header = {name.upper(): i for i, name in enumerate(parts)}
+            continue
+        if not header:
+            continue
+
+        def col(key: str) -> int:
+            idx = header.get(key)
+            if idx is None or idx >= len(parts):
+                return 0
+            try:
+                return int(parts[idx])
+            except ValueError:
+                return 0
+
+        max_cores = col("MAX")
+        if max_cores <= 0:  # 登录/管理节点不计入计算资源
+            continue
+        running = col("RUN")
+        suspended = col("SSUSP") + col("USUSP")
+        unavail = col("UNAVAIL")
+        idle = max(0, max_cores - running - suspended - unavail)
+        nodes.append(
+            {
+                "name": parts[0],
+                "lsfStatus": parts[1] if len(parts) > 1 else "",
+                "maxCores": max_cores,
+                "runningCores": running,
+                "idleCores": idle,
+                "unavailCores": unavail,
+            }
+        )
+
+    def kind(node: Dict[str, Any]) -> str:
+        status = str(node["lsfStatus"]).lower()
+        if status in ("unavail", "unknow", "new"):
+            return "down"
+        # LSF 常把跑满的节点置为 closed：先按核数判定满载，再区分真正关闭的节点
+        if node["runningCores"] >= node["maxCores"] > 0:
+            return "full"
+        if status.startswith("closed"):
+            return "closed"
+        if node["idleCores"] <= 0 and node["runningCores"] > 0:
+            return "full"
+        return "ok"
+
+    counted = [{**n, "kind": kind(n)} for n in nodes]
+    by_kind = {
+        k: sum(1 for n in counted if n["kind"] == k)
+        for k in ("ok", "full", "closed", "down")
+    }
+    return {
+        "total": len(counted),
+        "ok": by_kind["ok"],
+        "full": by_kind["full"],
+        "closed": by_kind["closed"],
+        "down": by_kind["down"],
+        "totalCores": sum(n["maxCores"] for n in counted),
+        "runningCores": sum(n["runningCores"] for n in counted),
+        "idleCores": sum(n["idleCores"] for n in counted),
+    }
+
+
+def parse_bqueues(text: str) -> List[Dict[str, Any]]:
+    """解析 `bqueues`：QUEUE_NAME PRIO STATUS MAX JL/U JL/P JL/H NJOBS PEND RUN SUSP。"""
+    queues: List[Dict[str, Any]] = []
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 11 or parts[0].upper() == "QUEUE_NAME":
+            continue
+        try:
+            queues.append(
+                {
+                    "queue": parts[0],
+                    "status": parts[2],
+                    "jobs": int(parts[7]),
+                    "pending": int(parts[8]),
+                    "running": int(parts[9]),
+                    "suspended": int(parts[10]),
+                }
+            )
+        except ValueError:
+            continue
+    return queues
+
+
+def parse_df(text: str) -> Optional[Dict[str, Any]]:
+    """解析 `df -h`，取第一条数据行（项目根所在文件系统）。"""
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 6 or parts[0].lower() == "filesystem":
+            continue
+        if not re.fullmatch(r"\d+%", parts[4]):
+            continue
+        used_percent = int(parts[4].rstrip("%"))
+        return {
+            "filesystem": parts[0],
+            "size": parts[1],
+            "used": parts[2],
+            "available": parts[3],
+            "usedPercent": used_percent,
+            "mountedOn": parts[5],
+            "warning": used_percent >= STORAGE_WARN_PERCENT,
+        }
+    return None
+
+
+# ------------------------------------------------------------------ 集群快照
+
+
+def cluster_snapshot(
+    server_name: str, refresh: bool = False
+) -> Dict[str, Any]:
+    """取集群快照（缓存 5 分钟）；失败时返回上一份可用快照并带 error。"""
+    global _cluster_cache
+    cached = _cluster_cache.get(server_name)
+    ttl = int(load_settings().get("dashboard_cache_seconds", CLUSTER_CACHE_TTL) or CLUSTER_CACHE_TTL)
+    now = time.time()
+    if cached and not refresh and now - cached["at"] < ttl:
+        return {**cached["data"], "cached": True, "cacheAgeSeconds": round(now - cached["at"], 1)}
+
+    with _lock:
+        cached = _cluster_cache.get(server_name)
+        now = time.time()
+        if cached and not refresh and now - cached["at"] < ttl:
+            return {**cached["data"], "cached": True, "cacheAgeSeconds": round(now - cached["at"], 1)}
+
+        cfg = load_servers().get(server_name, {}) or {}
+        user = str(cfg.get("user", "") or "")
+        snapshot: Dict[str, Any] = {
+            "server": server_name,
+            "source": "real",
+            "error": None,
+            "queriedAt": datetime.now().isoformat(timespec="seconds"),
+            "jobs": [],
+            "coreLimit": {"used": None, "limit": None, "queues": []},
+            "storage": None,
+            "nodes": None,
+            "queues": [],
+        }
+        try:
+            result = run_remote(server_name, _cluster_script(server_name), timeout=90)
+            if result.get("exit_code") != 0:
+                raise RuntimeError(
+                    (result.get("stderr") or result.get("stdout") or "集群查询失败").strip()[:300]
+                )
+            sections = _sections(result.get("stdout", ""))
+            snapshot["jobs"] = parse_jobs(sections.get("BJOBS", ""))
+            snapshot["coreLimit"] = parse_blimits(sections.get("BLIMITS", ""), user)
+            snapshot["storage"] = parse_df(sections.get("DF", ""))
+            snapshot["nodes"] = parse_bhosts(sections.get("BHOSTS", ""))
+            snapshot["queues"] = parse_bqueues(sections.get("BQUEUES", ""))
+            snapshot["raw"] = {
+                key: sections.get(key, "")[:4000]
+                for key in ("BJOBS", "BLIMITS", "DF")
+            }
+        except Exception as e:  # noqa: BLE001 - SSH 不可用时保留上一份快照
+            snapshot.update({"source": "error", "error": str(e)})
+            if cached:
+                return {
+                    **cached["data"],
+                    "cached": True,
+                    "cacheAgeSeconds": round(now - cached["at"], 1),
+                    "stale": True,
+                    "error": str(e),
+                }
+        _cluster_cache[server_name] = {"at": now, "data": snapshot}
+        if snapshot["source"] == "real":
+            _append_history(snapshot)
+        return {**snapshot, "cached": False, "cacheAgeSeconds": 0.0}
+
+
+# ------------------------------------------------------------------ 历史趋势
+
+
+def _read_history() -> List[Dict[str, Any]]:
+    if not HISTORY_FILE.is_file():
+        return []
+    try:
+        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _append_history(snapshot: Dict[str, Any]) -> None:
+    """记录一条核数/任务快照（10 分钟内不重复采样）。"""
+    jobs = snapshot.get("jobs", [])
+    running = [j for j in jobs if j.get("status") == "RUN"]
+    sample = {
+        "ts": snapshot.get("queriedAt"),
+        "usedCores": sum(int(j.get("cores") or 0) for j in running),
+        "runningTasks": len(running),
+        "pendingTasks": sum(1 for j in jobs if j.get("status") == "PEND"),
+        "limitCores": (snapshot.get("coreLimit") or {}).get("limit"),
+    }
+    history = _read_history()
+    if history:
+        try:
+            last = datetime.fromisoformat(str(history[-1].get("ts")))
+            if (datetime.now() - last).total_seconds() < HISTORY_MIN_INTERVAL:
+                return
+        except Exception:  # noqa: BLE001
+            pass
+    history.append(sample)
+    history = history[-HISTORY_MAX:]
+    try:
+        DASHBOARD_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = HISTORY_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(HISTORY_FILE)
+    except Exception:  # noqa: BLE001 - 历史写入失败不影响接口
+        pass
+
+
+def _audit_submissions() -> Dict[str, int]:
+    """从 data/audit_submit.log 统计每日提交成功作业数（result=OK）。"""
+    counts: Dict[str, int] = {}
+    if not AUDIT_FILE.is_file():
+        return counts
+    try:
+        lines = AUDIT_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()[-2000:]
+    except Exception:  # noqa: BLE001
+        return counts
+    for line in lines:
+        m = re.match(r"^\[(\d{4}-\d{2}-\d{2})T[^\]]*\]", line)
+        if not m or "result=OK" not in line or "job=" not in line:
+            continue
+        counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    return counts
+
+
+def build_trend(days: int = TREND_DAYS) -> Dict[str, Any]:
+    """近 N 天趋势：核数占用/运行中任务（历史快照按天取峰值）+ 每日提交数。"""
+    today = date.today()
+    dates = [today - timedelta(days=i) for i in range(days - 1, -1, -1)]
+    samples = _read_history()
+    submissions = _audit_submissions()
+    buckets: Dict[str, List[Dict[str, Any]]] = {d.isoformat(): [] for d in dates}
+    for sample in samples:
+        day = str(sample.get("ts", ""))[:10]
+        if day in buckets:
+            buckets[day].append(sample)
+    points: List[Dict[str, Any]] = []
+    for d in dates:
+        key = d.isoformat()
+        day_samples = buckets[key]
+        points.append(
+            {
+                "date": key,
+                "label": d.strftime("%m-%d"),
+                "usedCores": max((int(s.get("usedCores") or 0) for s in day_samples), default=None),
+                "runningTasks": max((int(s.get("runningTasks") or 0) for s in day_samples), default=None),
+                "submissions": submissions.get(key, 0),
+            }
+        )
+    return {
+        "points": points,
+        "since": str(samples[0].get("ts"))[:10] if samples else None,
+        "sampleCount": len(samples),
+        "note": (
+            f"核数占用/运行中任务自 {str(samples[0].get('ts'))[:10]} 起累积（每次查询集群时采样）"
+            if samples
+            else "尚无集群采样记录：刷新集群状态后开始累积"
+        ),
+    }
+
+
+# ------------------------------------------------------------------ 本地聚合
+
+
+def _completed_stats() -> Dict[str, Any]:
+    """今日/昨日「新完成」任务数：当天巡检观察到 completed 且前一天未完成的任务。
+
+    按检查文件 mtime 归日（归档文件即一轮巡检的产物），任务去重。
+    """
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+    prev = today - timedelta(days=2)
+    seen: Dict[str, set] = {"today": set(), "yesterday": set(), "prev": set()}
+    files = sorted(CHECKS_DIR.glob("check_results_*.json"), key=lambda p: p.stat().st_mtime)
+    for path in files[-400:]:
+        try:
+            day = datetime.fromtimestamp(path.stat().st_mtime).date()
+        except OSError:
+            continue
+        if day == today:
+            key = "today"
+        elif day == yesterday:
+            key = "yesterday"
+        elif day == prev:
+            key = "prev"
+        else:
+            continue
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if entry.get("status") == "completed" and entry.get("task_id"):
+                seen[key].add(str(entry["task_id"]))
+    today_new = seen["today"] - seen["yesterday"]
+    yesterday_new = seen["yesterday"] - seen["prev"]
+    return {
+        "todayCompleted": len(today_new),
+        "yesterdayCompleted": len(yesterday_new),
+        "delta": len(today_new) - len(yesterday_new),
+        "stillCompletedToday": len(seen["today"]),
+    }
+
+
+def _task_index(db: Dict[str, Any]) -> Tuple[Dict[str, Tuple[Dict, Dict]], Dict[str, Tuple[Dict, Dict]]]:
+    """按 job_id 与作业名建立 task 索引（作业名回退匹配，LSF 名可能被截断）。"""
+    by_job: Dict[str, Tuple[Dict, Dict]] = {}
+    by_name: Dict[str, Tuple[Dict, Dict]] = {}
+    for project in db.get("projects", []):
+        for task in project.get("tasks", []):
+            if is_continuation_task(task):
+                continue
+            job_id = str(task.get("job_id") or "").strip()
+            if job_id:
+                by_job.setdefault(job_id, (project, task))
+            name = str(task.get("model_name") or "").strip()
+            if name:
+                by_name.setdefault(name, (project, task))
+    return by_job, by_name
+
+
+UNREGISTERED = "未登记任务"
+
+
+def build_running_tasks(db: Dict[str, Any], snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    by_job, by_name = _task_index(db)
+    rows: List[Dict[str, Any]] = []
+    order = {"RUN": 0, "SSUSP": 1, "USUSP": 2, "PSUSP": 3, "PEND": 4}
+    for job in snapshot.get("jobs", []):
+        pair = by_job.get(str(job.get("job_id")))
+        lsf_name = str(job.get("name") or "")
+        if pair is None and lsf_name:
+            pair = by_name.get(lsf_name)
+        project, task = pair if pair else (None, None)
+        rows.append(
+            {
+                "job_id": str(job.get("job_id")),
+                "job_name": lsf_name,
+                "task_id": str(task.get("task_id")) if task else None,
+                "task_name": str(task.get("model_name")) if task else lsf_name,
+                "task_type": str(task.get("task_type")) if task else None,
+                "project_name": str(project.get("name")) if project else UNREGISTERED,
+                "queue": str(job.get("queue") or ""),
+                "cores": int(job.get("cores") or 0),
+                "status": str(job.get("status") or ""),
+                "execHosts": job.get("execHosts") or [],
+            }
+        )
+    rows.sort(key=lambda r: (order.get(r["status"], 9), r["project_name"], r["task_name"]))
+    return rows
+
+
+def build_cores_usage(db: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    running = [j for j in snapshot.get("jobs", []) if j.get("status") == "RUN"]
+    used_from_jobs = sum(int(j.get("cores") or 0) for j in running)
+    core_limit = snapshot.get("coreLimit") or {}
+    limit = core_limit.get("limit")
+    used = core_limit.get("used")
+    if used is None:
+        used = used_from_jobs
+
+    by_job, by_name = _task_index(db)
+    groups: Dict[str, int] = {}
+    for job in running:
+        pair = by_job.get(str(job.get("job_id"))) or by_name.get(str(job.get("name") or ""))
+        project_name = str(pair[0].get("name")) if pair else UNREGISTERED
+        groups[project_name] = groups.get(project_name, 0) + int(job.get("cores") or 0)
+
+    total = int(limit) if limit else None
+    remaining = max(0, total - int(used)) if total else None
+    percent = round(int(used) / total * 100, 1) if total else None
+    level = "normal"
+    if percent is not None and percent >= 100:
+        level = "critical"
+    elif percent is not None and percent >= CORES_WARN_PERCENT:
+        level = "warning"
+    return {
+        "usedCores": int(used),
+        "totalCores": total,
+        "remainingCores": remaining,
+        "usedPercent": percent,
+        "level": level,
+        "limitSource": "blimits" if core_limit.get("limit") else "unknown",
+        "runningJobs": len(running),
+        "summedJobCores": used_from_jobs,
+        "queues": core_limit.get("queues") or [],
+        "byProject": sorted(
+            ({"project_name": k, "cores": v} for k, v in groups.items()),
+            key=lambda g: -g["cores"],
+        ),
+    }
+
+
+def build_cluster_health(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    nodes = snapshot.get("nodes") or {}
+    queues = snapshot.get("queues") or []
+    top_queues = sorted(queues, key=lambda q: -int(q.get("pending") or 0))[:6]
+    return {
+        "nodes": nodes,
+        "queues": [
+            {
+                "queue": q.get("queue"),
+                "pending": q.get("pending"),
+                "running": q.get("running"),
+                "suspended": q.get("suspended"),
+                "status": q.get("status"),
+            }
+            for q in top_queues
+        ],
+        "queueTotals": {
+            "pending": sum(int(q.get("pending") or 0) for q in queues),
+            "running": sum(int(q.get("running") or 0) for q in queues),
+            "queues": len(queues),
+        },
+        "storage": snapshot.get("storage"),
+    }
+
+
+def build_risk_alerts(db: Dict[str, Any]) -> Dict[str, Any]:
+    merged = collect_results()
+    rows = to_frontend_rows(db, merged)
+    alerts: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    def add(item: Dict[str, Any]) -> None:
+        key = f"{item.get('task_id')}:{item.get('kind')}"
+        if key in seen:
+            return
+        seen.add(key)
+        alerts.append(item)
+
+    for project in db.get("projects", []):
+        for task in project.get("tasks", []):
+            if is_continuation_task(task):
+                continue
+            status = str(task.get("status") or "")
+            base = {
+                "task_id": str(task.get("task_id") or ""),
+                "task_name": str(task.get("model_name") or ""),
+                "task_type": str(task.get("task_type") or ""),
+                "project_name": str(project.get("name") or ""),
+                "status": status,
+                "last_check_time": task.get("last_check_time"),
+                "remote_dir": task.get("remote_dir"),
+            }
+            if status == "unconverged":
+                add(
+                    {
+                        **base,
+                        "kind": "unconverged",
+                        "severity": "warning",
+                        "title": "力未收敛，需要续算",
+                        "reason": "结构优化未达到力收敛标准（max>0.02 或 rms>0.01 eV/A）",
+                        "action": "续算",
+                    }
+                )
+            elif status == "zombied":
+                add(
+                    {
+                        **base,
+                        "kind": "zombied",
+                        "severity": "error",
+                        "title": "作业异常中断（Zombie）",
+                        "reason": "计算被中断且无结束标志，需要重新提交或续算",
+                        "action": "重新提交",
+                    }
+                )
+
+    for row in rows:
+        if row.get("status") not in ("error", "warning"):
+            continue
+        if any(a.get("task_id") == str(row.get("task_id")) for a in alerts):
+            continue
+        add(
+            {
+                "task_id": str(row.get("task_id") or ""),
+                "task_name": str(row.get("task_name") or "").split(" · ")[0],
+                "task_type": "",
+                "project_name": str(row.get("project_name") or ""),
+                "status": "check",
+                "kind": "inspection",
+                "severity": str(row.get("status")),
+                "title": "巡检发现异常",
+                "reason": str(row.get("message") or row.get("detail") or ""),
+                "action": "查看巡检",
+                "last_check_time": row.get("check_time"),
+                "remote_dir": None,
+            }
+        )
+
+    runs = list_runs()
+    last_run = runs[0] if runs else None
+    severity_order = {"error": 0, "warning": 1}
+    alerts.sort(key=lambda a: severity_order.get(str(a.get("severity")), 9))
+    return {
+        "alerts": alerts,
+        "errorCount": sum(1 for a in alerts if a.get("severity") == "error"),
+        "warningCount": sum(1 for a in alerts if a.get("severity") == "warning"),
+        "lastInspectionAt": (last_run or {}).get("checked_at"),
+        "lastInspectionInspected": (last_run or {}).get("inspected"),
+        "lastInspectionUpdated": (last_run or {}).get("updated"),
+    }
+
+
+def build_project_progress(db: Dict[str, Any]) -> List[Dict[str, Any]]:
+    today = date.today()
+    result: List[Dict[str, Any]] = []
+    for project in db.get("projects", []):
+        tasks = [t for t in project.get("tasks", []) if not is_continuation_task(t)]
+        total = len(tasks)
+        completed = sum(1 for t in tasks if t.get("status") in ("completed", "archived"))
+        running = sum(1 for t in tasks if t.get("status") == "running")
+        queued = sum(1 for t in tasks if t.get("status") == "queued")
+        anomalies = sum(1 for t in tasks if t.get("status") in ("zombied", "unconverged"))
+        deadline = str(project.get("deadline") or "")
+        try:
+            days_left = (date.fromisoformat(deadline) - today).days
+        except ValueError:
+            days_left = None
+        started = str(project.get("created_at") or "")[:10]
+        try:
+            span = max(1, (date.fromisoformat(deadline) - date.fromisoformat(started)).days)
+            time_ratio = min(1.0, max(0.0, (today - date.fromisoformat(started)).days / span))
+        except ValueError:
+            time_ratio = None
+        result.append(
+            {
+                "project_id": str(project.get("project_id") or ""),
+                "project_name": str(project.get("name") or ""),
+                "deadline": deadline,
+                "daysLeft": days_left,
+                "overdue": days_left is not None and days_left < 0 and completed < total,
+                "totalTasks": len(project.get("tasks", []) or []),
+                "visibleTasks": total,
+                "continuationTasks": len(project.get("tasks", []) or []) - total,
+                "completed": completed,
+                "running": running,
+                "queued": queued,
+                "anomalies": anomalies,
+                "progress": round(completed / total * 100) if total else 0,
+                "timeRatio": time_ratio,
+                "workload": str(project.get("workload") or ""),
+            }
+        )
+    return result
+
+
+def local_bundle(refresh: bool = False) -> Dict[str, Any]:
+    """本地聚合结果（风险任务 / 趋势 / 项目进度 / 完成统计），缓存 60 秒。
+
+    巡检归档目录有数百个结果文件，逐个读取约 1-2 秒，因此整体缓存。
+    """
+    global _local_cache
+    now = time.time()
+    if (
+        not refresh
+        and _local_cache["data"]
+        and now - _local_cache["at"] < LOCAL_CACHE_TTL
+    ):
+        return _local_cache["data"]
+    db = load_db()
+    month = datetime.now().strftime("%Y-%m")
+    all_tasks = [
+        t
+        for p in db.get("projects", [])
+        for t in p.get("tasks", [])
+        if not is_continuation_task(t)
+    ]
+    bundle = {
+        "riskAlerts": build_risk_alerts(db),
+        "trend": build_trend(),
+        "projectProgress": build_project_progress(db),
+        "completed": _completed_stats(),
+        "stats": {
+            "projects": len(db.get("projects", [])),
+            "projectsThisMonth": sum(
+                1
+                for p in db.get("projects", [])
+                if str(p.get("created_at") or "").startswith(month)
+            ),
+            "running": sum(1 for t in all_tasks if t.get("status") == "running"),
+            "queued": sum(1 for t in all_tasks if t.get("status") == "queued"),
+            "totalTasks": len(all_tasks),
+        },
+        "at": now,
+    }
+    _local_cache = {"at": now, "data": bundle}
+    return bundle
+
+
+def build_overview(server_name: str, refresh: bool = False) -> Dict[str, Any]:
+    """总览页聚合数据（顶部统计 + 运行任务 + 核数 + 集群 + 风险 + 项目进度 + 趋势）。"""
+    snapshot = cluster_snapshot(server_name, refresh=refresh)
+    local = local_bundle(refresh=refresh)
+    db = load_db()
+    risks = local["riskAlerts"]
+    completed = local["completed"]
+    base = local["stats"]
+    return {
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "server": server_name,
+        "stats": {
+            **base,
+            "runningJobs": len([j for j in snapshot.get("jobs", []) if j.get("status") == "RUN"]),
+            "pendingJobs": len([j for j in snapshot.get("jobs", []) if j.get("status") == "PEND"]),
+            "todayCompleted": completed["todayCompleted"],
+            "yesterdayCompleted": completed["yesterdayCompleted"],
+            "completedDelta": completed["delta"],
+            "anomalies": len(risks["alerts"]),
+            "errorCount": risks["errorCount"],
+            "warningCount": risks["warningCount"],
+        },
+        "runningTasks": build_running_tasks(db, snapshot),
+        "coresUsage": build_cores_usage(db, snapshot),
+        "clusterHealth": build_cluster_health(snapshot),
+        "riskAlerts": risks,
+        "projectProgress": local["projectProgress"],
+        "recentTasks": recent_tasks(db),
+        "trend": local["trend"],
+        "cluster": {
+            "source": snapshot.get("source"),
+            "error": snapshot.get("error"),
+            "queriedAt": snapshot.get("queriedAt"),
+            "cached": snapshot.get("cached"),
+            "cacheAgeSeconds": snapshot.get("cacheAgeSeconds"),
+            "stale": snapshot.get("stale", False),
+        },
+    }
+
+
+def recent_tasks(db: Dict[str, Any], limit: int = 8) -> List[Dict[str, Any]]:
+    """最近有巡检记录的任务，按项目轮转取样，避免整张表只来自一个项目。"""
+    by_project: Dict[str, List[Dict[str, Any]]] = {}
+    for project in db.get("projects", []):
+        name = str(project.get("name") or "")
+        for task in project.get("tasks", []):
+            if is_continuation_task(task):
+                continue
+            by_project.setdefault(name, []).append(
+                {
+                    "task_id": str(task.get("task_id") or ""),
+                    "task_name": str(task.get("model_name") or ""),
+                    "task_type": str(task.get("task_type") or ""),
+                    "project_name": name,
+                    "status": str(task.get("status") or ""),
+                    "last_energy": task.get("last_energy"),
+                    "job_id": task.get("job_id"),
+                    "last_check_time": task.get("last_check_time"),
+                }
+            )
+    for rows in by_project.values():
+        rows.sort(
+            key=lambda r: (str(r.get("last_check_time") or ""), str(r.get("task_id") or "")),
+            reverse=True,
+        )
+    # 轮转取样：每轮从各项目取一条最新的，直到取满 limit
+    result: List[Dict[str, Any]] = []
+    index = 0
+    while len(result) < limit:
+        added = False
+        for rows in by_project.values():
+            if index < len(rows) and len(result) < limit:
+                result.append(rows[index])
+                added = True
+        if not added:
+            break
+        index += 1
+    return result
+
+
+def cached_overview(server_name: str, refresh: bool = False) -> Dict[str, Any]:
+    """兼容入口：集群快照与本地聚合各自带缓存。"""
+    return build_overview(server_name, refresh=refresh)

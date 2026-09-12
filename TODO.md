@@ -6,6 +6,23 @@
 
 ## 当前进度概览
 
+**已完成（v0.6.0，2026-09-13 · 总览模块重构与扩展）**
+
+- [x] 后端 `backend/dashboard.py` + `routers/dashboard.py`：单次 SSH 合并查询集群（bjobs/blimits/df/bhosts/bqueues）
+      + `@@@` 分段解析 + 5 分钟缓存（`settings.json: dashboard_cache_seconds`）+ 集群采样历史
+      `data/dashboard/core_history.json` + 作业↔任务映射 + 核数按项目聚合 + 风险预警 + 项目进度 + 近 7 天趋势
+- [x] 新增接口 `GET /api/dashboard/overview | cores-usage | cluster-health | risk-alerts | trend`
+      （`?refresh=1` 强制重新查询集群）
+- [x] 前端总览重构：顶部状态栏（异常卡片→巡检中心、运行中卡片→展开运行任务）+ 快捷操作
+      （新建项目 / 触发全局巡检 / 刷新集群状态）+ 运行中任务表（点行跳 `/jobs?task=`）
+      + ECharts 核数圆环（按项目着色、90% 橙 / 100% 红闪烁）+ 集群健康（节点灯 / 队列拥堵 / 存储告警）
+      + 风险预警（未收敛 / Zombie / 巡检异常）+ 项目四象限气泡 + 最近任务明细
+- [x] 引入 echarts 6.1.0（按需注册 + 独立 vendor chunk）、数字滚动动画、30 分钟自动刷新
+- [x] 修复总览既有问题：逾期项目显示「已完成」、进度分母含隐藏续算目录、删除按钮换行破版、
+      趋势图为 MOCK 假数据；清理死代码 `TrendChart.tsx` / `src/data/mock/projects.ts`
+- [x] 集群查询命令可配置（`servers.json` 5 个键：node_status / queue_status / user_used_cores /
+      user_total_cores / storage_check，`{storage_path}` 自动替换为 remote_base）
+
 **已完成（v0.5.5，2026-09-13）**
 
 - [x] NEB 续算活跃作业保护：`bjobs` 命中 RUN/SSUSP/PSUSP/USUSP 时只回传 `action="running"`，
@@ -140,7 +157,8 @@
   - `persistServerConfigs` → `PUT /api/ssh/config`
   - `testRemoteConnection` → `POST /api/ssh/test`（真实握手）
 - [x] 顶栏 SSH 状态改为轮询 `GET /api/ssh/status`（后端常驻连接池真实状态，前端回退 UI 状态）
-- [ ] 前端请求封装：统一 loading / 错误提示（当前 `src/api/client.ts` 仅为模拟延迟）
+- [x] 前端请求封装：`src/api/client.ts` 提供统一 `request()`（统一信封解析 + 后端不可用提示），
+      总览/巡检/作业等接口已复用；页面级 loading 与错误提示仍在各页实现
 
 ### 2. 文件型存储（网站同级目录，不使用数据库）
 
@@ -154,9 +172,15 @@
 ### 3. 总览模块（Dashboard）
 
 - [x] 「新增项目」表单接真实后端：服务器下拉 + 子任务动态列表 + 后端校验/优先级计算/目录创建
-- [ ] 统计卡片 / 项目进度 / 剩余时间接真实统计接口（当前进度由后端按任务状态派生）
-- [ ] 近 7 天趋势图接后端统计接口（当前为 Mock 的 `src/data/mock/projects.ts`）
-- [x] 最近任务表接 `GET /api/projects` 数据
+- [x] 统计卡片接真实聚合接口（项目数/异常项/今日完成/运行中任务，均来自 `/api/dashboard/overview`）
+- [x] 近 7 天趋势图接后端（核数占用 + 运行中任务 + 每日提交数；核数历史自 v0.6.0 累积，提交数可回溯）
+- [x] 最近任务表走总览接口（按项目轮转取样，避免整表只来自一个项目）
+- [x] 运行中任务明细（bjobs 实时：任务名/队列/核数/作业号/状态，点行跳转作业管理）
+- [x] 核数占用圆环（blimits 配额 + 按项目分组，90%/100% 阈值告警）
+- [x] 集群健康（bhosts 节点灯 + bqueues 队列拥堵 + df 存储配额告警）
+- [x] 任务健康与风险预警（未收敛 / Zombie / 巡检异常，点击跳转）
+- [x] 项目进度四象限气泡图 + 进度列表（逾期/落后计划提示）
+- [ ] 队列预计等待时间估算、趋势回溯（需外部数据源）
 
 ### 4. 巡检模块（Inspection）
 

@@ -2,9 +2,10 @@
 
 基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
 
-当前版本（v0.5.5）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
+当前版本（v0.6.0）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
 **项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池与结构 3D 视图均已接入真实后端**
 （Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
+总览页已是集群实时视图（bjobs 作业、blimits 核数配额、bhosts/bqueues 节点队列、df 存储），
 仅智能报告（大模型生成）仍为前端 Mock。
 
 > 跨窗口交接看 `process.md`（版本、改动记录、已知坑、待办）；`TODO.md` 为历史清单，个别条目已过时。
@@ -22,6 +23,7 @@
 | 框架 | React 18 + TypeScript |
 | 构建 | Vite 7（已配置 `host: true`，支持局域网访问） |
 | UI | Ant Design 5 + 自定义设计令牌（主色 `#5B8DEF`，辅助色 `#67C6B0`） |
+| 图表 | ECharts 6（按需注册：圆环/折线/柱/散点，见 `src/components/dashboard/useEcharts.ts`） |
 | 动画 | Framer Motion（页面切换淡入淡出 + 卡片悬停上浮） |
 | 路由 | React Router 7 |
 | 后端 | Python + FastAPI（Uvicorn 运行，端口 3001，自带 Swagger 文档 `/docs`） |
@@ -222,7 +224,8 @@ vasp-project-manager-web/
     ├── data/mock/          # ★ Mock 数据（项目/巡检/报告/VASP 输入文件/SSH 服务器）
     ├── components/
     │   ├── layout/         # 侧边栏、顶栏、整体布局、Logo
-    │   └── common/         # 统计卡片、状态标签、进度条、趋势图、页面头等
+    │   ├── common/         # 统计卡片、状态标签、进度条、页面头等
+    │   └── dashboard/      # 总览：运行任务/核数圆环/集群健康/风险预警/趋势/项目四象限（useEcharts）
     └── pages/              # 模块页面
         ├── Dashboard.tsx   # 总览
         ├── Inspection.tsx  # 巡检中心
@@ -234,11 +237,24 @@ vasp-project-manager-web/
 ## 模块说明
 
 ### 总览 Dashboard
-- 统计卡片：项目总数 / 运行中任务 / 今日完成 / 异常警告项
-- 项目进度总览（渐变进度条 + 剩余时间）
-- 近 7 天运行任务趋势（SVG 面积折线图）
-- 最近更新任务表格
-- 「新增项目」弹窗：服务器 / 子任务（任务类型 + 模型名）动态列表，提交后真实调用后端
+
+v0.6.0 按「状态 → 资源 → 趋势 → 明细」四层重构，数据全部来自真实后端 `/api/dashboard/*`：
+
+- **顶部状态栏**：项目总数 / 异常警告项（点卡片跳巡检中心）/ 今日完成（含较昨日）/ 运行中任务（点卡片展开下方列表）
+- **快捷操作**：新建项目、触发全局巡检、刷新集群状态（强制重新 SSH 查询，带 loading 反馈）
+- **运行中任务**（核心新增）：`bjobs` 实时作业表——任务名 / 所属项目 / 队列 / 核数（悬停看节点分布）/ 作业号 / 状态，点行跳转 `/jobs?task=`
+- **核数占用**：ECharts 圆环，中心 `已用 / 总核数`（如 `144 / 200`）+ 剩余核数，外圈按项目着色，
+  使用率 ≥90% 橙色、≥100% 红色闪烁；上限取 `blimits` 配额，取不到时退回 bjobs 汇总
+- **计算资源趋势（近 7 天）**：核数占用（面积线，左轴）+ 运行中任务（线，右轴）+ 每日提交作业数（柱）
+- **集群健康与资源**：节点状态灯（正常 / 满载 / 关闭 / 宕机）、队列拥堵（PEND/RUN + 占比条）、
+  项目根所在文件系统容量（剩余 <15% 变红告警）
+- **任务健康与风险预警**：未收敛需续算、Zombie 需重新提交、巡检发现异常，点条目跳作业管理 / 巡检中心
+- **项目进度**：四象限气泡图（横轴时间进度、纵轴完成度、气泡大小=任务数、对角线为预期进度）+ 进度列表（逾期/落后提示）
+- **最近更新的任务**：按项目轮转取样，点行跳转作业管理
+
+刷新策略：打开页面加载一次 → 每 30 分钟自动刷新；集群查询在服务端缓存 5 分钟（`settings.json: dashboard_cache_seconds`）。
+集群命令可在 `servers.json` 覆盖（`node_status_cmd` / `queue_status_cmd` / `user_used_cores_cmd` /
+`user_total_cores_cmd` / `storage_check_cmd`，`{storage_path}` 会替换为项目远程根）。
 
 ### 巡检中心 Inspection
 - 状态筛选胶囊（全部/正常/警告/错误，带计数）
@@ -363,6 +379,19 @@ vasp-project-manager-web/
 - `POST /api/inspections/run`：立即巡检，请求体 `{"project_name": "Ag_20260830"}` 可限定范围
 - `GET /api/inspections`：巡检结果列表（按任务合并最近一次结果）
 - `GET /api/inspections/meta`：自动巡检间隔（默认 2 小时）、上次 / 下次执行时间
+
+### 总览接口（v0.6.0）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/dashboard/overview` | 整页聚合：统计 / 运行作业 / 核数 / 集群 / 风险 / 项目进度 / 趋势 / 最近任务 |
+| GET | `/api/dashboard/cores-usage` | 核数占用（blimits 配额 + 按项目分组） |
+| GET | `/api/dashboard/cluster-health` | 节点状态 / 队列拥堵 / 存储容量 |
+| GET | `/api/dashboard/risk-alerts` | 需干预任务（未收敛 / Zombie / 巡检异常）+ 上次巡检时间 |
+| GET | `/api/dashboard/trend` | 近 N 天核数占用 / 运行任务 / 提交作业数 |
+
+以上接口都支持 `?refresh=1` 强制重新执行集群查询（默认命中服务端 5 分钟缓存）。
+`data/dashboard/core_history.json` 记录每次查询的核数/任务快照，趋势图的核数曲线自 v0.6.0 起累积。
 
 ### 本地模拟模式（离线测试）
 

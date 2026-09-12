@@ -3,6 +3,7 @@ dist
 .vite
 *.local
 *.log
+vite_dev.log*
 backend_server.log*
 .DS_Store
 Thumbs.db

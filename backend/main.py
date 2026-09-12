@@ -13,7 +13,18 @@ from dependencies import INSTALL_HINT, check_dependencies
 from envelope import fail
 from routers import auxiliary as aux
 from routers import free_energy
-from routers import groups, inspections, jobs, meta, paths, projects, reports, settings, ssh
+from routers import (
+    dashboard,
+    groups,
+    inspections,
+    jobs,
+    meta,
+    paths,
+    projects,
+    reports,
+    settings,
+    ssh,
+)
 from ssh import warmup_connection
 
 
@@ -101,6 +112,7 @@ async def validation_handler(_, exc: RequestValidationError):
 
 
 app.include_router(meta.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(groups.router, prefix="/api")

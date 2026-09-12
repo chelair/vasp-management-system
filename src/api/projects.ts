@@ -1,13 +1,10 @@
 import { wait } from './client';
-import { mockDashboardMeta, mockWeeklyTrend } from '../data/mock/projects';
 import type {
   CreateProjectPayload,
   CreateProjectResult,
-  DashboardMeta,
   Project,
   ServerOption,
   TaskTypeOption,
-  TrendPoint,
 } from '../types';
 
 /**
@@ -121,16 +118,4 @@ export async function deleteProject(projectId: string): Promise<{
   local_trash: string | null;
 }> {
   return request(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
-}
-
-/** 获取仪表盘汇总信息（Mock） */
-export async function fetchDashboardMeta(): Promise<DashboardMeta> {
-  await wait(500);
-  return mockDashboardMeta;
-}
-
-/** 获取近 7 天运行任务趋势（Mock） */
-export async function fetchWeeklyTrend(): Promise<TrendPoint[]> {
-  await wait(450);
-  return mockWeeklyTrend;
 }

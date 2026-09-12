@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.5.5（commit 见 §7，已推送 origin/main）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.0（总览模块重构，commit 见 §7）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -37,12 +37,14 @@ data/
 ├── projects.json              # 项目/任务主库（dir_path、remote_dir 均为相对根目录的路径）
 ├── backups/                   # projects.json 自动备份（20 份）+ 迁移前备份
 ├── checks/                    # 巡检归档 check_results_*.json + runs.json
+├── dashboard/
+│   └── core_history.json      # 总览集群采样历史（核数/运行中任务，v0.6.0 起累积）
 ├── projects/                  # 本地项目镜像目录（files/ 等）
 ├── trash/                     # 删除任务/项目的回收站
 ├── aux_molecules/             # 辅助分子全局目录（opt|frac）
 └── config/
     ├── servers.json           # 远程服务器配置（server1，见下）
-    ├── settings.json          # 力收敛阈值、同步开关等运行设置
+    ├── settings.json          # 力收敛阈值、同步开关、dashboard_cache_seconds 等
     ├── task_registry.json     # 各任务类型 default_incar / 权重 / 续算规则（后端模板）
     ├── path_mapping.json      # local_root ↔ remote_root（根目录迁移核心）
     └── check_registry.json    # 巡检力收敛阈值（0.02 / 0.01）
@@ -55,6 +57,20 @@ data/
 - batch_check 部署路径：`/data/gpfs03/mdye/tools/vasp_skill/batch_check.py`（**每次巡检自动上传覆盖**）。
 - LSF profile：`/opt/ibm/lsfsuite/lsf/conf/profile.lsf`（bsub/bjobs/bkill 前需 source）。
 - VTST 脚本：`/data/gpfs03/mdye/VTST/vtstscripts/nebef.pl`（NEB 能垒分析）。
+
+### 总览集群查询命令（v0.6.0，可配置）
+
+总览页把 5 条集群命令合并进**一次 exec**（标记分段 `@@@BJOBS / @@@BLIMITS / @@@DF / @@@BHOSTS / @@@BQUEUES`），
+命令可在 `servers.json`（按服务器）或 `settings.json`（全局）中覆盖，缺省用内置默认值
+（见 `backend/dashboard.py DEFAULT_COMMANDS），便于适配 Slurm：
+
+| 键 | 默认值 | 用途 |
+| --- | --- | --- |
+| `user_used_cores_cmd` | `bjobs -u $USER -o "jobid stat queue job_name slots exec_host" -noheader` | 当前用户作业与核数 |
+| `user_total_cores_cmd` | `blimits` | 核数配额（取本用户的 SLOTS `已用/上限`） |
+| `node_status_cmd` | `bhosts` | 节点状态（正常/满载/关闭/宕机） |
+| `queue_status_cmd` | `bqueues` | 队列拥堵（PEND/RUN） |
+| `storage_check_cmd` | `df -h {storage_path}` | 存储容量（`{storage_path}` 自动替换为 remote_base） |
 
 ### 项目盘点（2026-09-13，均 server1 / HS 根下，以 projects.json 为准）
 
@@ -92,6 +108,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `batch_check.py` | **远端巡检脚本**（自动上传部署）：定位最新输出、bjobs 状态（抗折行解析）、OUTCAR 解析（能量/力历史/收敛）、NEB 映像状态判定、nebef.pl 能垒 |
 | `inspection_runner.py` | 巡检编排：筛选 → 上传脚本 → 远端批量执行 → 结果回填（job_id/current_output/状态）→ 归档；结构同步按「离子步每 25 步一桶 + 目录变化重置」触发（见 §6.2b），触发时下载 POSCAR/CONTCAR 并调 `scripts/vasp2cif.py` 生成 CIF（reports/structure/） |
 | `checks_store.py` | 巡检归档合并（最新条目 + 旧 force_history 沿用）、列表行组装（has_inspection 等） |
+| `dashboard.py` | **总览聚合**：单次 SSH 合并查询（bjobs/blimits/df/bhosts/bqueues）+ 解析 + 5 分钟缓存（`dashboard_cache_seconds`）+ 集群采样历史 + 运行作业↔任务映射 + 核数按项目聚合 + 风险预警 + 项目进度 + 近 7 天趋势 |
 | `continuation.py` | **续算与文件构建核心**：opt/NEB 续算（单次 base64 远程脚本 + 池化 SFTP 上传 + 活跃作业保护）、`create_frac_files`（opt→frac）、`build_ele_inputs`（ele 输入构建）、`create_neb_files`（IS/FS→NEB 映像 + nebmake.pl）、矫正项 vaspkit 501 |
 | `incar.py` | `modify_incar` 统一 INCAR 参数修改（大小写/空格/布尔兼容、重复合并、缺失追加） |
 | `cluster_status.py` | bhost/bqueues/节点分组快照 |
@@ -109,6 +126,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `jobs.py` | 作业管理：文件读写（白名单）、提交 `POST /tasks/{id}/submit`、停止 `POST /tasks/{id}/stop`（已结束按成功处理）、续算 `continuation`、create-frac、build-ele-inputs、create-neb、upload-incar/upload-kpoints（备份 old_*） |
 | `inspections.py` | 巡检列表/详情/立即巡检/单任务巡检 `run-single/{task_id}` |
 | `reports.py` | 报告数据（自由能台阶、NEB 能垒） |
+| `dashboard.py` | 总览接口：`/api/dashboard/overview`（整页聚合）、`cores-usage`、`cluster-health`、`risk-alerts`、`trend`；`?refresh=1` 强制重新查询集群 |
 | `ssh.py` | SSH 配置 CRUD + 状态 `GET /status` + **真实延迟测试 `POST /test`** |
 | `settings.py` / `paths.py` | 根目录配置、路径迁移 rebase |
 | `auxiliary.py` / `meta.py` | 辅助分子、元信息/健康检查 |
@@ -117,7 +135,10 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 5. 前端模块说明（src/）
 
-- `pages/`：Dashboard（总览）、Inspection（巡检中心，含筛选/详情/单任务巡检/自由能详情看板）、Jobs（作业管理，任务树 + 详情面板）、Report、SSH。
+- `pages/`：Dashboard（总览，v0.6.0 重构：状态→资源→趋势→明细四层 + 快捷操作）、Inspection（巡检中心，含筛选/详情/单任务巡检/自由能详情看板）、Jobs（作业管理，任务树 + 详情面板）、Report、SSH。
+- `components/dashboard/`：RunningTasksPanel（bjobs 实时作业表，点行跳 `/jobs?task=`）、CoresUsagePanel（ECharts 圆环 + 项目着色 + 90%/100% 阈值）、ClusterHealthPanel（节点灯 / 队列拥堵 / 存储进度）、RiskAlertsPanel（未收敛+Zombie+巡检异常，点条目跳转）、TrendPanel（近 7 天核数/运行任务/提交数）、ProjectProgressPanel（四象限气泡 + 项目进度列表）、`useEcharts.ts`（**ECharts 按需注册**：Pie/Line/Bar/Scatter + Grid/Tooltip/Legend/Title/MarkLine + Canvas）。
+- `hooks/useCountUp.ts`：统计卡片数字滚动动画。
+- `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `components/jobs/`：IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、SubmitScriptPanel、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、PathStepChart（自由能台阶图）、PathSummaryModal、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
@@ -139,12 +160,19 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 5. **文件构建**：`create_frac_files`（opt 最新输出 → frac，默认 ISYM=0/SIGMA=0.05/NSW=1/IBRION=5/**NFREE=2**/POTIM=0.015）；`create_neb_files`（**以 IS INCAR 为基底只改 NEB 参数**：IBRION=3/POTIM=0/IOPT=3/LCLIMB/IMAGES/ICHAIN/SPRING=-5/MAXMOVE=0.2）；`build_ele_inputs`（NSW=-1/IBRION=-1 + 各类型参数，冲突抛错）。
 6. **矫正项**：frac 巡检完成后自动尝试 vaspkit 501；前端矫正项框有值也可点击重算（联动：frac 未完成先单独巡检）。
 7. **NEB 能垒**：巡检对 NEB 任务跑 nebef.pl，结果 `neb_barrier.images`；端点 OUTCAR 是创建时从 IS/FS 复制的伪结果，**不作为运行证据**。
+8. **总览数据流（v0.6.0）**：`GET /api/dashboard/overview` 一次返回整页（顶部统计 + 运行作业 + 核数 + 集群 + 风险 + 项目进度 + 趋势 + 最近任务）。
+   - 集群部分来自**一次 exec** 的 `@@@` 分段输出（bjobs/blimits/df/bhosts/bqueues），服务端缓存 5 分钟（`settings.json: dashboard_cache_seconds`），前端每 30 分钟自动刷新一次；`?refresh=1` 强制查询（约 2-4s）。
+   - 本地聚合（风险/趋势/项目进度/完成统计）缓存 60 秒：巡检归档有数百个结果文件，逐个读取约 1-2 秒。
+   - **口径**：①「运行中任务」取 LSF 实时 `RUN` 作业数（不是任务表状态，任务状态要等巡检回填）；②「核数占用」优先用 `blimits` 的 SLOTS 已用/上限（按队列组），取不到时退回 bjobs 汇总；③「项目进度」分母为**可见任务**（不含 conN 续算目录），与作业管理页口径一致；④「今日完成」= 当天巡检观察到 completed 且前一天未完成的任务；⑤「节点满载」按 RUN≥MAX 判定（LSF 常把跑满节点置为 closed）。
+   - 每次成功查询把 `{ts, usedCores, runningTasks, pendingTasks} `追加到 `data/dashboard/core_history.json`（10 分钟内不重复采样，最多 4000 条），趋势图按天取峰值；**历史从 v0.6.0 上线那天开始累积**，之前不可回溯；「提交作业数」由 `data/audit_submit.log` 回溯统计，是完整历史。
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.5.5）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.0）
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
+
+- v0.6.0（commit 见 `git log --oneline -1`）：**总览模块重构与扩展**。① 后端新增 `backend/dashboard.py` + `routers/dashboard.py`：单次 SSH 合并查询（bjobs/blimits/df/bhosts/bqueues，`@@@` 分段解析）、5 分钟缓存（可配）、集群采样历史 `data/dashboard/core_history.json`、作业↔任务映射（job_id 优先、作业名回退）、核数按项目聚合、风险预警（未收敛/Zombie/巡检异常）、项目进度与近 7 天趋势；新增接口 `/api/dashboard/overview|cores-usage|cluster-health|risk-alerts|trend`（`?refresh=1` 强制刷新）。② 前端重写总览页：顶部状态栏（可点击跳巡检/展开运行任务）+ 快捷操作（新建项目/触发全局巡检/刷新集群状态）+ 运行中任务表（点行跳 `/jobs?task=`）+ ECharts 核数圆环（按项目着色、90% 橙 / 100% 红闪烁）+ 集群健康（节点灯/队列拥堵/存储告警）+ 风险预警 + 项目四象限气泡 + 最近任务明细；引入 **echarts 6.1.0（按需注册，独立 vendor chunk）**、`useCountUp` 数字滚动、30 分钟自动刷新。③ 修掉 4 个原有总览问题：逾期项目显示「已完成」、进度分母含隐藏续算目录、删除按钮换行破版（网格 4 列 5 元素）、趋势图 MOCK 假数据。④ 清理死代码：`TrendChart.tsx`、`src/data/mock/projects.ts`、`fetchDashboardMeta/fetchWeeklyTrend`。⑤ 配置：`servers.json` 新增 5 个可覆盖查询命令，`settings.json` 新增 `dashboard_cache_seconds`。
 
 - v0.5.5（commit `60e995d`，已推送 origin/main）：① **NEB 续算活跃作业保护**——NEB 续算脚本补齐与 opt 一致的 `bjobs` 检查，运行中作业只回传 `action="running"`，不建 conN、不移动 WAVECAR（此前 NEB 路径无拦截，运行中任务可能被搬走 WAVECAR）。② NEB 续算各映像（含端点 00/NN 与中间态）存在 WAVECAR 时随续算 `mv` 移动（目标已有不覆盖），与 opt 语义一致。③ `modify_incar` 清理源文本头部空行（兼容 LF/CRLF/纯空白行；续算标记切片曾带入前导换行）。④ `_script_slice` 跳过标记行后的换行，修复 `===FILES===` 解析出空字符串首项。⑤ `GET /api/health` 的 `uptime` 改为后端进程运行秒数并新增 `startedAt`（原实现返回 `time.monotonic()`，在 Windows 上是**系统开机时长**，易误判后端是否已重启）。⑥ 文档：登记 TMDZYX 项目，明确交接文档由助手维护。
 
@@ -159,6 +187,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 ## 8. 已知注意事项 / 坑
 
 - **后端无热重载**：改 `backend/*.py`（如 continuation.py / jobs.py）必须重启后端（当前进程可能仍是旧代码）。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.5 起）；**不要**再用 `uptime` 数值推断——v0.5.5 之前它返回的是系统开机时长。
+- **总览的集群命令只在 LSF 环境验证过**：`bjobs -o "jobid stat queue job_name slots exec_host" -noheader`、`blimits` 的 SLOTS 列、`bhosts`/`bqueues` 表头都按 IBM LSF 实测解析；换 Slurm 需改 `servers.json` 的 5 个命令键并同步改 `dashboard.py` 的解析函数（`parse_jobs/parse_blimits/parse_bhosts/parse_bqueues/parse_df`）。
+- **blimits 配额是“按队列组”的**：同一用户可能有多行（不同队列组各自限制），当前取各行的最大值作为上限；`usedCores` 优先用它的已用值，与 bjobs 汇总通常一致（实测 144 = 144）。
+- **核数/运行中任务趋势无法回溯**：`data/dashboard/core_history.json` 从 v0.6.0 起累积，页面会显示「自 X 起累积」；只有「提交作业数」来自 audit 日志可回溯 7 天。
+- **前端新增依赖 echarts 6**：只被总览页使用，按需注册在 `components/dashboard/useEcharts.ts`；`vite.config.ts` 单独拆 `echarts-vendor` chunk（581KB / gzip 198KB）。若以后其它页面要用图表，复用该 hook 而不是再引入图表库。
+- **总览「未登记任务」**：如果作业在集群上跑但 `job_id` 与任务表对不上（且作业名也匹配不上），会归到「未登记任务」项目分组，不会静默丢弃。
 - **生产模式静态资源**：后端只自动挂载 `dist/assets`；新增 `public/` 下的目录（如 `3dmol`）必须在 `backend/main.py` 显式 `app.mount`，否则会被 SPA 兜底路由当成 index.html 返回（浏览器拿到 HTML 当 JS 执行，`$3Dmol` 未定义、组件静默空白）。
 - **batch_check.py 例外**：每次巡检自动上传远端，改它无需重启后端；但下次巡检前远端副本可能是旧版。
 - **前端默认参数生效条件**：改 `src/data/mock/incar.ts` 后要刷新页面；且任务本地已有 `files/INCAR` 时，打开任务会**自动读取文件覆盖默认值**（精度切自定义）。
@@ -183,6 +216,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 5. 后端定时巡检（APScheduler 每 2 小时）只有配置与展示，未真正调度。
 6. 提交/巡检路径的进一步合并 exec 优化（提交已 3 次调用，可压到 1 次）。
 7. 常驻 shell 命令网关（可选提速，需专门设计）；后端“精度档”（低/中/高）机制未实现，仅前端概念；自由能路径汇总表（`free_energy_path_summary`）未落独立表，当前用巡检归档实时聚合。
+8. **总览可选增强**（v0.6.0 已交付主体，剩余为锦上添花）：队列预计等待时间估算、趋势图核数历史回溯（需要外部数据源）、集群健康按队列筛选、总览卡片自定义排序。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 
@@ -190,7 +224,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.5.5；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
+1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.6.0；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。

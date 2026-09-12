@@ -1,7 +1,7 @@
 {
   "name": "vasp-management-system",
   "private": true,
-  "version": "0.5.5",
+  "version": "0.6.0",
   "type": "module",
   "description": "VASP 第一性原理计算项目管理系统 - 前端框架（Mock 数据演示）",
   "scripts": {
@@ -15,6 +15,7 @@
   "dependencies": {
     "@ant-design/icons": "^5.5.2",
     "antd": "^5.22.5",
+    "echarts": "^6.1.0",
     "framer-motion": "^11.15.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

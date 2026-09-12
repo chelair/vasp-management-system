@@ -256,14 +256,191 @@ export interface ReportRecord {
   suggestions: string[];
 }
 
-export interface DashboardMeta {
-  todayCompleted: number;
-  anomalyCount: number;
+/* ---------------- 总览（Dashboard 重构版） ---------------- */
+
+/** LSF 作业行：bjobs 实时查询结果 + 本地任务元数据映射 */
+export interface DashboardJob {
+  job_id: string;
+  /** 集群上的作业名（LSF JOB_NAME） */
+  job_name: string;
+  /** 匹配到的本地任务（未登记时为 null） */
+  task_id: string | null;
+  task_name: string;
+  task_type: TaskType | null;
+  project_name: string;
+  queue: string;
+  cores: number;
+  /** RUN / PEND / SSUSP / USUSP / PSUSP */
+  status: string;
+  execHosts: { cores: number; host: string }[];
 }
 
-export interface TrendPoint {
+/** 核数占用（blimits 配额 + bjobs 汇总，按项目分组） */
+export interface DashboardCoresUsage {
+  usedCores: number;
+  totalCores: number | null;
+  remainingCores: number | null;
+  usedPercent: number | null;
+  level: 'normal' | 'warning' | 'critical';
+  limitSource: string;
+  runningJobs: number;
+  summedJobCores: number;
+  queues: string[];
+  byProject: { project_name: string; cores: number }[];
+  queriedAt?: string | null;
+  source?: string;
+  error?: string | null;
+}
+
+export interface DashboardNodeStats {
+  total: number;
+  ok: number;
+  full: number;
+  closed: number;
+  down: number;
+  totalCores: number;
+  runningCores: number;
+  idleCores: number;
+}
+
+export interface DashboardQueueRow {
+  queue: string;
+  pending: number;
+  running: number;
+  suspended: number;
+  status: string;
+}
+
+export interface DashboardStorage {
+  filesystem: string;
+  size: string;
+  used: string;
+  available: string;
+  usedPercent: number;
+  mountedOn: string;
+  warning: boolean;
+}
+
+export interface DashboardClusterHealth {
+  nodes: DashboardNodeStats | null;
+  queues: DashboardQueueRow[];
+  queueTotals: { pending: number; running: number; queues: number };
+  storage: DashboardStorage | null;
+  queriedAt?: string | null;
+  source?: string;
+  error?: string | null;
+  cached?: boolean;
+  cacheAgeSeconds?: number;
+  stale?: boolean;
+}
+
+export interface DashboardRiskAlert {
+  task_id: string;
+  task_name: string;
+  task_type: string;
+  project_name: string;
+  status: string;
+  kind: string;
+  severity: 'error' | 'warning';
+  title: string;
+  reason: string;
+  action: string;
+  last_check_time?: string | null;
+  remote_dir?: string | null;
+}
+
+export interface DashboardRiskSummary {
+  alerts: DashboardRiskAlert[];
+  errorCount: number;
+  warningCount: number;
+  lastInspectionAt: string | null;
+  lastInspectionInspected?: number;
+  lastInspectionUpdated?: number;
+}
+
+export interface DashboardProjectProgress {
+  project_id: string;
+  project_name: string;
+  deadline: string;
+  daysLeft: number | null;
+  overdue: boolean;
+  totalTasks: number;
+  visibleTasks: number;
+  continuationTasks: number;
+  completed: number;
+  running: number;
+  queued: number;
+  anomalies: number;
+  progress: number;
+  timeRatio: number | null;
+  workload: string;
+}
+
+export interface DashboardTrendPoint {
   date: string;
-  value: number;
+  label: string;
+  usedCores: number | null;
+  runningTasks: number | null;
+  submissions: number;
+}
+
+export interface DashboardTrend {
+  points: DashboardTrendPoint[];
+  since: string | null;
+  sampleCount: number;
+  note: string;
+  days?: number;
+}
+
+export interface DashboardStats {
+  projects: number;
+  projectsThisMonth: number;
+  running: number;
+  queued: number;
+  runningJobs: number;
+  pendingJobs: number;
+  todayCompleted: number;
+  yesterdayCompleted: number;
+  completedDelta: number;
+  anomalies: number;
+  errorCount: number;
+  warningCount: number;
+  totalTasks: number;
+}
+
+export interface DashboardClusterMeta {
+  source: string;
+  error: string | null;
+  queriedAt: string | null;
+  cached?: boolean;
+  cacheAgeSeconds?: number;
+  stale?: boolean;
+}
+
+export interface DashboardOverview {
+  generatedAt: string;
+  server: string;
+  stats: DashboardStats;
+  runningTasks: DashboardJob[];
+  coresUsage: DashboardCoresUsage;
+  clusterHealth: DashboardClusterHealth;
+  riskAlerts: DashboardRiskSummary;
+  projectProgress: DashboardProjectProgress[];
+  recentTasks: DashboardRecentTask[];
+  trend: DashboardTrend;
+  cluster: DashboardClusterMeta;
+}
+
+/** 最近更新的任务（总览明细表） */
+export interface DashboardRecentTask {
+  task_id: string;
+  task_name: string;
+  task_type: TaskType;
+  project_name: string;
+  status: TaskStatus;
+  last_energy: number | null;
+  job_id: string | null;
+  last_check_time: string | null;
 }
 
 /** SSH 服务器认证方式 */

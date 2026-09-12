@@ -2132,3 +2132,102 @@ p {
     display: none;
   }
 }
+
+/* ---------- 巡检中心：按项目分块（v0.6.2） ---------- */
+
+.inspection-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inspection-project {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.inspection-project__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 1px solid var(--color-border-soft);
+  background: #f7f9fc;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.inspection-project__head:hover {
+  background: #eef3fa;
+}
+
+.inspection-project__name {
+  font-weight: 600;
+}
+
+.inspection-project__closed {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #eef2f7;
+  color: #7a8ba1;
+  font-size: 12px;
+}
+
+.inspection-project__meta {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.inspection-project__stat--error {
+  color: #d9535b;
+}
+
+.inspection-project__stat--warning {
+  color: #b8761f;
+}
+
+.inspection-project__stat--changed {
+  color: #4a7bdd;
+}
+
+/* 已关闭项目：整块灰显，默认折叠 */
+.inspection-project--closed {
+  opacity: 0.78;
+}
+
+.inspection-project--closed .inspection-project__head {
+  background: #f2f4f7;
+}
+
+.inspection-project--closed .inspection-project__name {
+  color: #8a98ac;
+}
+
+.inspection-row--closed td {
+  color: #8a98ac !important;
+  background: #fafbfc !important;
+}
+
+/* ---------- 作业管理：已关闭项目（v0.6.2） ---------- */
+
+.job-tree__project-row--closed .job-tree__project {
+  color: #8a98ac;
+}
+
+.job-tree__closed {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #eef2f7;
+  color: #8a98ac;
+  font-size: 11px;
+  line-height: 16px;
+}

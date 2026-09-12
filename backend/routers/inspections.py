@@ -12,6 +12,7 @@ from cif_convert import read_or_convert_cif
 from config import load_settings, load_servers
 from continuation import _remote_latest_con
 from envelope import fail, ok
+from inspection_scheduler import scheduler_status, update_schedule
 from inspection_runner import run_inspection
 from paths import resolve_remote_path
 import ssh
@@ -35,33 +36,35 @@ def list_inspections():
 
 @router.get("/meta")
 def inspection_meta():
-    """自动巡检调度信息（每 N 小时；调度执行器后续接入 APScheduler）。"""
+    """自动巡检调度信息：开关、间隔、上次 / 下次执行时间、调度器运行状态。"""
     try:
-        settings = load_settings()
-        interval = int(settings.get("inspection_interval_hours", 2))
-        enabled = bool(settings.get("auto_inspection_enabled", True))
+        status = scheduler_status()
         runs = list_runs()
         last = runs[0] if runs else None
-        next_run_at = None
-        if last and last.get("checked_at"):
-            try:
-                next_run_at = (
-                    datetime.fromisoformat(last["checked_at"]) + timedelta(hours=interval)
-                ).strftime("%Y-%m-%d %H:%M")
-            except ValueError:
-                next_run_at = None
         return ok(
             "查询成功",
             {
-                "enabled": enabled,
-                "interval_hours": interval,
-                "last_run_at": last.get("checked_at") if last else None,
+                "enabled": status["enabled"],
+                "interval_hours": status["interval_hours"],
+                "last_run_at": status["last_run_at"] or (last.get("checked_at") if last else None),
                 "last_run_summary": last,
-                "next_run_at": next_run_at,
+                "next_run_at": status["next_run_at"],
+                "scheduler": status,
             },
         )
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取巡检配置失败：{e}"))
+
+
+@router.put("/auto")
+def update_auto_inspection(payload: dict = Body(default={})):
+    """开关自动巡检 / 调整间隔（写入 settings.json，调度线程下一轮生效）。"""
+    try:
+        return ok("自动巡检设置已保存", update_schedule(payload))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"保存自动巡检设置失败：{e}"))
 
 
 @router.post("/run")

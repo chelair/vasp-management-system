@@ -23,6 +23,8 @@ import {
   submitTask,
   stopTask,
   createFracFiles,
+  archiveTask,
+  unarchiveTask,
 } from '../api/jobs';
 import type { TaskFileEntry } from '../api/jobs';
 import PageHeader from '../components/common/PageHeader';
@@ -557,6 +559,32 @@ export default function Jobs() {
     }
   };
 
+  /** 关闭（归档）任务：只改状态，文件不动；未正常结束时前端已弹窗提醒 */
+  const handleArchiveTask = async (task: Task) => {
+    try {
+      const r = await archiveTask(task.task_id);
+      message.success(
+        r.was_completed
+          ? `任务 ${task.model_name} 已关闭（归档）`
+          : `任务 ${task.model_name} 已关闭（归档，原状态 ${r.previous_status}）`,
+      );
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '关闭任务失败');
+    }
+  };
+
+  /** 重新打开已归档任务（恢复到归档前状态） */
+  const handleUnarchiveTask = async (task: Task) => {
+    try {
+      const r = await unarchiveTask(task.task_id);
+      message.success(`任务 ${task.model_name} 已重新打开（${r.new_status}）`);
+      await refreshProjects();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '重新打开任务失败');
+    }
+  };
+
   /** 停止作业：远程 bkill 终止运行中的作业 */
   const handleStopTask = async (task: Task) => {
     if (stoppingTaskId) return;
@@ -795,6 +823,8 @@ export default function Jobs() {
                 onStop={handleStopTask}
                 stopping={stoppingTaskId === task.task_id}
                 onBuildEle={setEleBuildTask}
+                onArchive={(t) => void handleArchiveTask(t)}
+                onUnarchive={(t) => void handleUnarchiveTask(t)}
                 onRename={(t) => {
                   setRenameTaskState(t);
                   setRenameName(t.model_name);

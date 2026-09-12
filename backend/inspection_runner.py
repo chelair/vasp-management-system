@@ -20,7 +20,7 @@ from config import PROJECTS_DIR, load_servers
 from continuation import compute_g_correction
 from dates import now_iso
 from paths import to_remote_rel
-from storage import db_transaction, update_task_status
+from storage import db_transaction, get_project, load_db, update_task_status
 from task_paths import task_dir, task_remote_dir
 
 SKIPPED_STATUSES = ("pending", "archived")
@@ -42,26 +42,94 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
-def _filter_tasks(
+def _manifest_entry(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    """远端 batch_check 的任务清单条目。"""
+    return {
+        "task_id": task["task_id"],
+        "remote_dir": task_remote_dir(project["server"], task),
+        "job_id": task.get("job_id") or "",
+        "task_type": task.get("task_type", ""),
+        "project_name": project["name"],
+    }
+
+
+def _plan_batches(
     db: Dict[str, Any],
     project_name: Optional[str],
-) -> Tuple[Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]], List[str]]:
-    """全局巡检：按状态筛选待巡检任务并按服务器分组；返回 (by_server, skipped_projects)。"""
-    by_server: Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]] = {}
+    task_id: Optional[str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """规划巡检批次：**每个项目一个批次**（同一服务器可多个批次）。
+
+    - 全局巡检：跳过 pending / archived 任务与已关闭项目；无待巡检任务的项目记入 skipped。
+    - 单任务巡检：不做状态筛选；自由能组的 opt 任务会带上同目录的 frac 子任务一起检查。
+    返回 (batches, skipped_projects)，batch 结构：
+      {server, project_name, task_ids, manifest}
+    """
+    batches: List[Dict[str, Any]] = []
     skipped: List[str] = []
+
+    if task_id is not None:
+        pair = _find_task(db, project_name, task_id)
+        if pair is None:
+            raise ValueError(f"任务 '{task_id}' 不存在")
+        project, task = pair
+        server = project.get("server") or ""
+        if not server:
+            raise ValueError(f"任务 '{task_id}' 未配置服务器，无法巡检")
+        targets = [task]
+        # 自由能 opt 单任务巡检：顺带检查其 frac 频率矫正子任务
+        # （frac 目录有输出才产生数据，未收敛/未生成时结果为空，不影响主任务）
+        if (
+            task.get("task_type") == STRUCTURE_OPT_TYPE
+            and (task.get("group") or {}).get("group_type") == "free_energy"
+        ):
+            frac_task = next(
+                (
+                    t
+                    for t in project.get("tasks", [])
+                    if t.get("dir_path") == f"{task.get('dir_path', '')}/frac"
+                ),
+                None,
+            )
+            if frac_task is not None:
+                targets.append(frac_task)
+        return (
+            [
+                {
+                    "server": server,
+                    "project_name": str(project.get("name") or ""),
+                    "task_ids": [t["task_id"] for t in targets],
+                    "manifest": [_manifest_entry(project, t) for t in targets],
+                }
+            ],
+            [],
+        )
+
     for project in db.get("projects", []):
         if project_name is not None and project.get("name") != project_name:
             continue
-        targets = [
-            t for t in project.get("tasks", []) if t.get("status") not in SKIPPED_STATUSES
-        ]
-        if not targets:
-            skipped.append(project.get("name"))
+        name = str(project.get("name") or "")
+        # 已关闭的项目不再巡检（关闭前提是全部任务已归档，正常情况下也不会命中）
+        if project.get("closed"):
+            skipped.append(name)
             continue
-        by_server.setdefault(project.get("server"), []).extend(
-            (project, task) for task in targets
+        targets = [
+            t
+            for t in project.get("tasks", [])
+            if t.get("status") not in SKIPPED_STATUSES
+        ]
+        if not targets or not project.get("server"):
+            skipped.append(name)
+            continue
+        batches.append(
+            {
+                "server": project.get("server"),
+                "project_name": name,
+                "task_ids": [t["task_id"] for t in targets],
+                "manifest": [_manifest_entry(project, t) for t in targets],
+            }
         )
-    return by_server, skipped
+    return batches, skipped
 
 
 def _find_task(
@@ -79,12 +147,8 @@ def _find_task(
     return None
 
 
-def _run_server_batch(
-    server: str,
-    pairs: List[Tuple[Dict[str, Any], Dict[str, Any]]],
-    timestamp: str,
-) -> List[Dict[str, Any]]:
-    """上传任务清单与 batch_check 脚本，在服务器运行并下载结果。"""
+def _ensure_scripts(server: str) -> None:
+    """把 batch_check.py 与 check_registry.json 上传到服务器（每个服务器每轮一次）。"""
     servers = load_servers()
     cfg = servers.get(server)
     if cfg is None:
@@ -97,24 +161,26 @@ def _run_server_batch(
     registry_local = Path(__file__).resolve().parent / "check_registry.json"
     # Windows 上 Path.__str__ 会把正斜杠转成反斜杠，远程路径必须统一为正斜杠
     script_dir = str(Path(batch_path).parent).replace("\\", "/")
-    remote_input = f"/tmp/vasp_tasks_{timestamp}.json"
-    remote_output = f"/tmp/vasp_results_{timestamp}.json"
-
-    # 上传脚本与阈值配置（自动部署，无需手动同步）
     ssh.mkdir_remote(server, script_dir)
     ssh.upload_file(server, str(script_local), batch_path)
     ssh.upload_file(server, str(registry_local), f"{script_dir}/check_registry.json")
 
-    manifest = [
-        {
-            "task_id": task["task_id"],
-            "remote_dir": task_remote_dir(project["server"], task),
-            "job_id": task.get("job_id") or "",
-            "task_type": task.get("task_type", ""),
-            "project_name": project["name"],
-        }
-        for project, task in pairs
-    ]
+
+def _run_server_batch(
+    server: str,
+    manifest: List[Dict[str, Any]],
+    timestamp: str,
+) -> List[Dict[str, Any]]:
+    """上传任务清单 → 远端运行 batch_check → 下载结果（脚本/阈值由 _ensure_scripts 预置）。"""
+    servers = load_servers()
+    cfg = servers.get(server)
+    if cfg is None:
+        raise ValueError(f"服务器 '{server}' 未在 servers.json 中配置")
+    batch_path = cfg.get("batch_check_path")
+    if not batch_path:
+        raise ValueError(f"服务器 '{server}' 未配置 batch_check_path")
+    remote_input = f"/tmp/vasp_tasks_{timestamp}.json"
+    remote_output = f"/tmp/vasp_results_{timestamp}.json"
 
     with tempfile.TemporaryDirectory() as tmp:
         local_input = Path(tmp) / "tasks_to_check.json"
@@ -301,62 +367,113 @@ def _apply_result(
 def run_inspection(
     project_name: Optional[str] = None, task_id: Optional[str] = None
 ) -> Dict[str, Any]:
-    """执行一轮巡检并返回摘要（前端「立即巡检」调用）。"""
-    # 串行事务：并发巡检（多个单任务）不会互相覆盖数据库回填
-    with db_transaction() as db:
-        return _run_inspection_locked(db, project_name, task_id)
+    """执行一轮巡检并返回摘要（前端「立即巡检」/「单独巡检」调用）。
 
+    批次划分：**每个项目一批**（见 `_plan_batches`）。远端检查在事务外加锁执行，
+    只有"回填 + 归档"这一小段进入 `db_transaction`，因此：
+    - 单个批次失败只影响该项目，其余项目照常回填（不再整轮回滚）；
+    - 数据库写锁只持有回填的短暂时间，不会因一个 90 秒的远端调用锁住整个库。
+    """
+    db = load_db()
+    batches, skipped_projects = _plan_batches(db, project_name, task_id)
 
-def _run_inspection_locked(
-    db: Dict[str, Any],
-    project_name: Optional[str],
-    task_id: Optional[str],
-) -> Dict[str, Any]:
-    """数据库锁内的巡检主体（读取、SSH 检查、回填、归档、保存）。"""
-
-    if task_id is not None:
-        # 单任务巡检：跳过状态筛选，直接定位任务（任意状态均可巡检）
-        pair = _find_task(db, project_name, task_id)
-        if pair is None:
-            raise ValueError(f"任务 '{task_id}' 不存在")
-        server = pair[0].get("server") or ""
-        if not server:
-            raise ValueError(f"任务 '{task_id}' 未配置服务器，无法巡检")
-        by_server = {server: [pair]}
-        # 自由能 opt 单任务巡检：顺带检查其 frac 频率矫正子任务
-        # （frac 目录有输出才产生数据，未收敛/未生成时结果为空，不影响主任务）
-        opt_task = pair[1]
-        if (
-            opt_task.get("task_type") == STRUCTURE_OPT_TYPE
-            and (opt_task.get("group") or {}).get("group_type") == "free_energy"
-        ):
-            frac_task = next(
-                (
-                    t
-                    for t in pair[0].get("tasks", [])
-                    if t.get("dir_path") == f"{opt_task.get('dir_path', '')}/frac"
-                ),
-                None,
-            )
-            if frac_task is not None:
-                by_server[server].append((pair[0], frac_task))
-        skipped_projects: List[str] = []
-    else:
-        by_server, skipped_projects = _filter_tasks(db, project_name)
     rows: List[Dict[str, Any]] = []
+    archived_files: List[str] = []
+    failures: List[Dict[str, str]] = []
     inspected = updated = unchanged = warnings_count = 0
     rejected: List[Dict[str, str]] = []
-    archived_files: List[str] = []
+    ensured_servers: set = set()
 
-    for server, pairs in by_server.items():
-        ts = _timestamp()
-        results = _run_server_batch(server, pairs, ts)
+    for batch in batches:
+        server = str(batch["server"])
+        try:
+            if server not in ensured_servers:
+                _ensure_scripts(server)
+                ensured_servers.add(server)
+            ts = _timestamp()
+            # 远端检查在事务外：任务清单已在规划阶段生成，不需要持有数据库写锁
+            results = _run_server_batch(server, batch["manifest"], ts)
+            batch_rows, archived = _apply_batch(
+                server, batch["project_name"], batch["task_ids"], results, ts
+            )
+        except Exception as e:  # noqa: BLE001 - 单批次失败不影响其他项目
+            failures.append(
+                {
+                    "server": server,
+                    "project_name": str(batch["project_name"]),
+                    "error": str(e),
+                }
+            )
+            continue
+
+        rows.extend(batch_rows)
+        archived_files.append(archived)
+        for row in batch_rows:
+            inspected += 1
+            if row["status_changed"]:
+                updated += 1
+            elif not row["rejected"]:
+                unchanged += 1
+            if row["rejected"]:
+                rejected.append({"task_id": row["task_id"], "message": row["rejected"]})
+            warnings_count += len(row["warnings"])
+
+    summary = {
+        "run_id": f"run_{_timestamp()}",
+        "checked_at": now_iso(),
+        "inspected": inspected,
+        "updated": updated,
+        "unchanged": unchanged,
+        "warnings": warnings_count,
+        "rejected": rejected,
+        "skipped_projects": skipped_projects,
+        "failed_batches": failures,
+        "archived_files": archived_files,
+        "scope": "single" if task_id is not None else "global",
+    }
+    record_run(summary)
+
+    # 全局巡检后静默刷新集群状态：作废快照缓存并后台预热（不阻塞返回）
+    if task_id is None and not failures:
+        try:
+            from dashboard import invalidate_cluster_cache
+
+            invalidate_cluster_cache(
+                sorted({str(b["server"]) for b in batches if b.get("server")}),
+                prewarm=True,
+            )
+        except Exception:  # noqa: BLE001 - 刷新集群状态失败不影响巡检结果
+            pass
+    return summary
+
+
+def _apply_batch(
+    server: str,
+    project_name: str,
+    task_ids: List[str],
+    results: List[Dict[str, Any]],
+    ts: str,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """在**独立事务**内回填一个项目的巡检结果并归档（锁只在本地写入期间持有）。"""
+    with db_transaction() as db:
+        project = get_project(db, project_name)
+        if project is None:
+            raise ValueError(f"项目 '{project_name}' 不存在（可能已被删除）")
+        pairs: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        for tid in task_ids:
+            task = next(
+                (t for t in project.get("tasks", []) if t.get("task_id") == tid), None
+            )
+            if task is not None:
+                pairs.append((project, task))
+        if not pairs:
+            return [], ""
+
         results_by_id = {r.get("task_id"): r for r in results}
-        server_rows = []
+        server_rows: List[Dict[str, Any]] = []
         for project, task in pairs:
             row = _apply_result(db, project, task, results_by_id.get(task["task_id"], {}))
             server_rows.append(row)
-            rows.append(row)
             # 自由能 frac 巡检完成（completed）且尚无矫正项：自动尝试计算矫正项
             if (
                 task.get("task_type") == "frac"
@@ -371,14 +488,6 @@ def _run_inspection_locked(
                     task["correction_at"] = now_iso()
                 except Exception as e:  # noqa: BLE001 - 自动计算失败不阻塞巡检
                     row["warnings"].append(f"自动计算矫正项失败：{e}")
-            inspected += 1
-            if row["status_changed"]:
-                updated += 1
-            elif not row["rejected"]:
-                unchanged += 1
-            if row["rejected"]:
-                rejected.append({"task_id": row["task_id"], "message": row["rejected"]})
-            warnings_count += len(row["warnings"])
 
         # 富化（prev_status / observed_changed / analysis_needed）并归档
         row_by_id = {r["task_id"]: r for r in server_rows}
@@ -398,21 +507,5 @@ def _run_inspection_locked(
                 enriched_entry["notes"] = "；".join(row["notes"]) if row["notes"] else ""
                 enriched_entry["markers"] = row["markers"]
             enriched.append(enriched_entry)
-        archived_files.append(archive_results(enriched, server, ts))
-
-    # 状态/备注/巡检时间落库由 db_transaction 统一保存（含备份）
-
-    run_id = f"run_{_timestamp()}"
-    summary = {
-        "run_id": run_id,
-        "checked_at": now_iso(),
-        "inspected": inspected,
-        "updated": updated,
-        "unchanged": unchanged,
-        "warnings": warnings_count,
-        "rejected": rejected,
-        "skipped_projects": skipped_projects,
-        "archived_files": archived_files,
-    }
-    record_run(summary)
-    return summary
+        archived = archive_results(enriched, server, ts)
+    return server_rows, archived

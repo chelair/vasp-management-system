@@ -1,6 +1,7 @@
 import { App, Button, Card, Descriptions, Empty, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import {
   CheckCircleFilled,
+  InboxOutlined,
   CodeOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -11,9 +12,10 @@ import {
   RocketOutlined,
   StopOutlined,
   ToolOutlined,
+  UndoOutlined,
 } from '@ant-design/icons';
-import type { JobWorkspace, Task, TaskType } from '../../types';
-import { GROUP_ROLE_LABELS, TASK_TYPE_LABELS } from '../../types';
+import type { JobWorkspace, Task, TaskStatus, TaskType } from '../../types';
+import { GROUP_ROLE_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS } from '../../types';
 import { openTaskFolder } from '../../api/jobs';
 import StatusTag from '../common/StatusTag';
 
@@ -30,6 +32,9 @@ interface Props {
   onBuildEle: (task: Task) => void;
   onRename: (task: Task) => void;
   onDelete: (task: Task) => void;
+  /** 关闭（归档）任务 / 重新打开已归档任务 */
+  onArchive?: (task: Task) => void;
+  onUnarchive?: (task: Task) => void;
 }
 
 const FILE_ORDER = ['INCAR', 'POSCAR', 'KPOINTS', 'POTCAR', 'submit.sh', 'CONTCAR', 'WAVECAR'];
@@ -47,6 +52,8 @@ export default function TaskOverview({
   onBuildEle,
   onRename,
   onDelete,
+  onArchive,
+  onUnarchive,
 }: Props) {
   const { message } = App.useApp();
 
@@ -116,6 +123,39 @@ export default function TaskOverview({
           <Button icon={<EditOutlined />} onClick={() => onRename(task)}>
             重命名
           </Button>
+          {task.status === 'archived'
+            ? onUnarchive && (
+                <Popconfirm
+                  title="重新打开该任务？"
+                  description={`任务将恢复为「${
+                    TASK_STATUS_LABELS[
+                      (task.archived_from as TaskStatus) ?? 'pending'
+                    ] ?? '待提交'
+                  }」状态，可继续巡检 / 续算`}
+                  okText="重新打开"
+                  cancelText="取消"
+                  onConfirm={() => onUnarchive(task)}
+                >
+                  <Button icon={<UndoOutlined />}>重新打开</Button>
+                </Popconfirm>
+              )
+            : onArchive && (
+                <Popconfirm
+                  title="关闭（归档）该任务？"
+                  description={
+                    task.status === 'completed'
+                      ? '任务已正常结束，关闭后不再参与全局巡检（可随时重新打开）'
+                      : `任务当前状态为「${
+                          TASK_STATUS_LABELS[task.status]
+                        }」，并非正常结束；关闭后不再参与全局巡检（可随时重新打开）`
+                  }
+                  okText="关闭"
+                  cancelText="取消"
+                  onConfirm={() => onArchive(task)}
+                >
+                  <Button icon={<InboxOutlined />}>关闭（归档）</Button>
+                </Popconfirm>
+              )}
           <Popconfirm
             title="确认删除该子项？"
             description="本地目录将移入回收站，远端目录不自动删除。"

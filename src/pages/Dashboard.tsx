@@ -11,7 +11,7 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { deleteProject } from '../api/projects';
+import { closeProject, deleteProject, reopenProject } from '../api/projects';
 import { fetchDashboardOverview } from '../api/dashboard';
 import { runInspection } from '../api/inspections';
 import AddProjectModal from '../components/projects/AddProjectModal';
@@ -132,6 +132,26 @@ export default function Dashboard() {
       await load(false, true);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '删除项目失败');
+    }
+  };
+
+  const handleProjectClose = async (project: DashboardProjectProgress) => {
+    try {
+      await closeProject(project.project_id);
+      message.success(`项目 ${project.project_name} 已关闭（可在「已关闭项目」里重新打开）`);
+      await load(false, true);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '关闭项目失败');
+    }
+  };
+
+  const handleProjectReopen = async (project: DashboardProjectProgress) => {
+    try {
+      await reopenProject(project.project_id);
+      message.success(`项目 ${project.project_name} 已重新打开`);
+      await load(false, true);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '重新打开项目失败');
     }
   };
 
@@ -293,6 +313,8 @@ export default function Dashboard() {
               projects={overview.projectProgress}
               loading={loading}
               onDelete={handleProjectDeleted}
+              onClose={handleProjectClose}
+              onReopen={handleProjectReopen}
             />
           </div>
 

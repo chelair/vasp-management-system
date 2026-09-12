@@ -165,6 +165,30 @@ export async function submitTask(taskId: string): Promise<{
   });
 }
 
+/** 关闭（归档）任务：只改状态，本地/远端文件都不动 */
+export async function archiveTask(taskId: string): Promise<{
+  task_id: string;
+  project_name: string;
+  new_status: string;
+  previous_status: string;
+  was_completed: boolean;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/archive`, {
+    method: 'POST',
+  });
+}
+
+/** 重新打开已归档任务（恢复到归档前状态） */
+export async function unarchiveTask(taskId: string): Promise<{
+  task_id: string;
+  project_name: string;
+  new_status: string;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/unarchive`, {
+    method: 'POST',
+  });
+}
+
 /** 停止作业：远程 bkill 终止运行中的作业，任务状态回退为待提交 */
 export async function stopTask(taskId: string): Promise<{
   job_id: string;

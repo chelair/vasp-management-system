@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Button, Card, Popconfirm, Skeleton, Tooltip } from 'antd';
-import { DeleteOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownOutlined, RightOutlined } from '@ant-design/icons';
 import type { DashboardProjectProgress } from '../../types';
 import useEcharts, { DASHBOARD_PALETTE } from './useEcharts';
 
@@ -8,12 +8,23 @@ interface Props {
   projects: DashboardProjectProgress[];
   loading?: boolean;
   onDelete?: (project: DashboardProjectProgress) => void;
+  onClose?: (project: DashboardProjectProgress) => void;
+  onReopen?: (project: DashboardProjectProgress) => void;
 }
 
 /** 四象限气泡图：横轴时间进度、纵轴完成度、气泡大小=任务数；对角线为“预期进度”基准 */
-export default function ProjectProgressPanel({ projects, loading, onDelete }: Props) {
+export default function ProjectProgressPanel({
+  projects,
+  loading,
+  onDelete,
+  onClose,
+  onReopen,
+}: Props) {
+  const [showClosed, setShowClosed] = useState(false);
+  const activeProjects = projects.filter((p) => !p.closed);
+  const closedProjects = projects.filter((p) => p.closed);
   const option = useMemo(() => {
-    const data = projects.map((p, i) => {
+    const data = activeProjects.map((p, i) => {
       const behind = (p.timeRatio ?? 0) * 100 - p.progress;
       const color = p.overdue && p.progress < 100 ? '#E4572E' : behind > 20 ? '#E8963C' : DASHBOARD_PALETTE[i % DASHBOARD_PALETTE.length];
       return {
@@ -73,7 +84,7 @@ export default function ProjectProgressPanel({ projects, loading, onDelete }: Pr
         },
       ],
     };
-  }, [projects]);
+  }, [activeProjects]);
 
   const chartRef = useEcharts(option, [option]);
 
@@ -83,9 +94,15 @@ export default function ProjectProgressPanel({ projects, loading, onDelete }: Pr
         <Skeleton active paragraph={{ rows: 4 }} />
       ) : (
         <>
-          <div ref={chartRef} className="progress-quadrant" />
+          {activeProjects.length > 0 ? (
+            <div ref={chartRef} className="progress-quadrant" />
+          ) : (
+            <div className="dashboard-muted" style={{ padding: '12px 0' }}>
+              没有进行中的项目（已关闭项目见下方）
+            </div>
+          )}
           <div className="project-progress-rows">
-            {projects.map((p) => {
+            {activeProjects.map((p) => {
               const timePercent = Math.round((p.timeRatio ?? 0) * 100);
               const behind = timePercent - p.progress;
               return (
@@ -146,11 +163,81 @@ export default function ProjectProgressPanel({ projects, loading, onDelete }: Pr
                         <span className="dashboard-sub">另 {p.continuationTasks} 个续算目录</span>
                       </Tooltip>
                     )}
+                    {p.closable && onClose && (
+                      <Popconfirm
+                        title={`关闭项目 ${p.project_name}？`}
+                        description="项目下所有任务都已关闭；关闭后项目在列表中折叠显示，可随时重新打开（文件不受影响）"
+                        okText="关闭项目"
+                        cancelText="取消"
+                        onConfirm={() => onClose(p)}
+                      >
+                        <Button size="small" type="link" style={{ padding: 0, height: 'auto' }}>
+                          关闭项目
+                        </Button>
+                      </Popconfirm>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
+          {closedProjects.length > 0 && (
+            <div className="project-closed-block">
+              <button
+                type="button"
+                className="project-closed-toggle"
+                onClick={() => setShowClosed((v) => !v)}
+              >
+                {showClosed ? <DownOutlined /> : <RightOutlined />}
+                已关闭项目（{closedProjects.length}）
+              </button>
+              {showClosed &&
+                closedProjects.map((p) => (
+                  <div key={p.project_id} className="project-row project-row--closed">
+                    <div className="project-row__head">
+                      <span className="project-row__name" title={p.project_name}>
+                        {p.project_name}
+                      </span>
+                      <span className="dashboard-badge">已关闭</span>
+                      <span className="dashboard-sub">
+                        完成 {p.completed}/{p.visibleTasks}
+                      </span>
+                      {onReopen && (
+                        <Popconfirm
+                          title={`重新打开项目 ${p.project_name}？`}
+                          description="任务状态不变，仅让项目重新出现在进行中列表"
+                          okText="重新打开"
+                          cancelText="取消"
+                          onConfirm={() => onReopen(p)}
+                        >
+                          <Button size="small" type="link">
+                            重新打开
+                          </Button>
+                        </Popconfirm>
+                      )}
+                      {onDelete && (
+                        <Popconfirm
+                          title={`删除项目 ${p.project_name}？`}
+                          description="本地目录将移入回收站，远端文件不受影响"
+                          okText="删除"
+                          okButtonProps={{ danger: true }}
+                          cancelText="取消"
+                          onConfirm={() => onDelete(p)}
+                        >
+                          <Button
+                            size="small"
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            aria-label={`删除项目 ${p.project_name}`}
+                          />
+                        </Popconfirm>
+                      )}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
         </>
       )}
     </Card>

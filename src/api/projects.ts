@@ -119,3 +119,19 @@ export async function deleteProject(projectId: string): Promise<{
 }> {
   return request(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
 }
+
+/** 关闭项目：前提是项目下可见任务全部已关闭（归档） */
+export async function closeProject(projectId: string): Promise<{
+  project_id: string;
+  project_name: string;
+}> {
+  return request(`/projects/${encodeURIComponent(projectId)}/close`, { method: 'POST' });
+}
+
+/** 重新打开项目（清除 closed 标记，任务状态不变） */
+export async function reopenProject(projectId: string): Promise<{
+  project_id: string;
+  project_name: string;
+}> {
+  return request(`/projects/${encodeURIComponent(projectId)}/reopen`, { method: 'POST' });
+}

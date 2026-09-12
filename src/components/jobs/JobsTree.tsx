@@ -261,15 +261,29 @@ export default function JobsTree({
   onNewGroup,
   onAddStructure,
 }: Props) {
-  const treeData: DataNode[] = projects.map((p) => ({
+  // 已关闭项目排到最后（灰色显示、默认折叠子项），与总览 / 巡检中心口径一致
+  const orderedProjects = [
+    ...projects.filter((p) => !p.closed),
+    ...projects.filter((p) => p.closed),
+  ];
+
+  const treeData: DataNode[] = orderedProjects.map((p) => ({
     key: `p:${p.id}`,
-    icon: <FolderOpenOutlined style={{ color: 'var(--color-primary)' }} />,
+    icon: (
+      <FolderOpenOutlined
+        style={{ color: p.closed ? '#9aa7b8' : 'var(--color-primary)' }}
+      />
+    ),
     title: (
-      <span className="job-tree__project-row">
+      <span
+        className={`job-tree__project-row${p.closed ? ' job-tree__project-row--closed' : ''}`}
+      >
         <span className="job-tree__project">
           <span>{p.name}</span>
           <span className="job-tree__count">{p.tasks.length}</span>
+          {p.closed && <span className="job-tree__closed">已关闭</span>}
         </span>
+        {!p.closed && (
         <Dropdown
           trigger={['click']}
           menu={{
@@ -294,6 +308,7 @@ export default function JobsTree({
             <PlusOutlined />
           </span>
         </Dropdown>
+        )}
       </span>
     ),
     children: buildProjectChildren(p, onNewTask, onNewGroup, onAddStructure),

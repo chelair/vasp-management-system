@@ -37,6 +37,30 @@ export interface InspectionMeta {
   last_run_at: string | null;
   next_run_at: string | null;
   last_run_summary: InspectionRunSummary | null;
+  /** 调度器实际运行状态（v0.6.2 起接入后台线程） */
+  scheduler?: {
+    enabled: boolean;
+    interval_hours: number;
+    scheduler_started: boolean;
+    running: boolean;
+    last_run_at: string | null;
+    next_run_at: string | null;
+    last_triggered_at: string | null;
+    last_finished_at: string | null;
+    last_error: string | null;
+  };
+}
+
+/** 开关自动巡检 / 调整间隔（写入 settings.json） */
+export async function updateAutoInspection(payload: {
+  enabled?: boolean;
+  interval_hours?: number;
+}): Promise<InspectionMeta['scheduler']> {
+  return request('/inspections/auto', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 }
 
 export interface InspectionRunScope {

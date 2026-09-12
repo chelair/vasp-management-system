@@ -46,6 +46,20 @@ def load_settings() -> dict:
     return load_json(CONFIG_DIR / "settings.json")
 
 
+def save_settings(patch: dict) -> dict:
+    """合并写入 settings.json（原子替换），返回写入后的完整配置。"""
+    ensure_data_dirs()
+    path = CONFIG_DIR / "settings.json"
+    current = load_json(path) if path.is_file() else {}
+    current.update(patch or {})
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(current, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    tmp.replace(path)
+    return current
+
+
 def load_task_registry() -> dict:
     return load_json(CONFIG_DIR / "task_registry.json")
 

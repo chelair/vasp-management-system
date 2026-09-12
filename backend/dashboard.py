@@ -722,6 +722,7 @@ def build_project_progress(db: Dict[str, Any]) -> List[Dict[str, Any]]:
         tasks = [t for t in project.get("tasks", []) if not is_continuation_task(t)]
         total = len(tasks)
         completed = sum(1 for t in tasks if t.get("status") in ("completed", "archived"))
+        archived = sum(1 for t in tasks if t.get("status") == "archived")
         running = sum(1 for t in tasks if t.get("status") == "running")
         queued = sum(1 for t in tasks if t.get("status") == "queued")
         anomalies = sum(1 for t in tasks if t.get("status") in ("zombied", "unconverged"))
@@ -747,6 +748,9 @@ def build_project_progress(db: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "visibleTasks": total,
                 "continuationTasks": len(project.get("tasks", []) or []) - total,
                 "completed": completed,
+                "archived": archived,
+                "closable": bool(tasks) and archived == total,
+                "closed": bool(project.get("closed")),
                 "running": running,
                 "queued": queued,
                 "anomalies": anomalies,
@@ -884,3 +888,34 @@ def recent_tasks(db: Dict[str, Any], limit: int = 8) -> List[Dict[str, Any]]:
 def cached_overview(server_name: str, refresh: bool = False) -> Dict[str, Any]:
     """兼容入口：集群快照与本地聚合各自带缓存。"""
     return build_overview(server_name, refresh=refresh)
+
+
+def invalidate_cluster_cache(
+    servers: Optional[List[str]] = None, prewarm: bool = True
+) -> List[str]:
+    """作废集群快照缓存（巡检结束后调用，让总览拿到最新数据）。
+
+    - 只作废传入的服务器；不传则作废全部有缓存的服务器。
+    - `prewarm=True` 时后台线程立即重查一次（静默，不阻塞调用方），
+      这样用户切到总览页时直接命中新快照。
+    """
+    global _local_cache
+    targets = [s for s in (servers or list(_cluster_cache.keys())) if s]
+    for name in targets:
+        if name in _cluster_cache:
+            _cluster_cache[name] = {"at": 0.0, "data": None}
+    # 本地聚合（风险/趋势/项目进度）同样可能与巡检结果相关
+    _local_cache = {"at": 0.0, "data": None}
+
+    if not prewarm or not targets:
+        return targets
+
+    def _worker() -> None:
+        for name in targets:
+            try:
+                cluster_snapshot(name, refresh=True)
+            except Exception:  # noqa: BLE001 - 预热失败不影响任何功能
+                pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return targets

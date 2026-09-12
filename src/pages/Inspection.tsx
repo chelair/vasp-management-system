@@ -11,6 +11,7 @@ import {
   Input,
   Modal,
   Skeleton,
+  Switch,
   Tag,
   Table,
   Tooltip,
@@ -20,9 +21,11 @@ import type { FilterDropdownProps } from 'antd/es/table/interface';
 import type { Key } from 'react';
 import {
   ClearOutlined,
+  DownOutlined,
   FileSearchOutlined,
   InfoCircleOutlined,
   ReloadOutlined,
+  RightOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
 import {
@@ -31,6 +34,7 @@ import {
   fetchInspectionResults,
   runInspection,
   runSingleInspection,
+  updateAutoInspection,
 } from '../api/inspections';
 import type { InspectionMeta } from '../api/inspections';
 import { calculateCorrection } from '../api/jobs';
@@ -50,7 +54,6 @@ import type {
 } from '../types';
 import { formatTime } from '../utils/format';
 
-const SCROLL_PAGE_SIZE = 20;
 const READ_CHANGES_KEY = 'vasp.inspection.read-changes.v1';
 const FILTERS_KEY = 'vasp.inspection.filters.v1';
 
@@ -208,7 +211,9 @@ export default function Inspection() {
   const [statusFilter, setStatusFilter] = useState<string[] | null>(() =>
     parseFilter(searchParams, 'statuses') ?? savedFilters.statuses,
   );
-  const [visibleCount, setVisibleCount] = useState(SCROLL_PAGE_SIZE);
+  // 关闭项目默认折叠：这里记录"被用户手动展开"的项目名
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [autoSaving, setAutoSaving] = useState(false);
   const [detail, setDetail] = useState<InspectionResult | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<InspectionDetail | null>(null);
@@ -294,8 +299,9 @@ export default function Inspection() {
       .finally(() => setLoading(false));
   }, []);
 
+  // 筛选变化时重置折叠状态（关闭项目仍保持默认折叠）
   useEffect(() => {
-    setVisibleCount(SCROLL_PAGE_SIZE);
+    setExpandedProjects(new Set());
   }, [keyword, projectFilter, taskCategoryFilter, statusFilter]);
 
   // 筛选同步到 URL：切换页面 / 刷新后自动恢复
@@ -383,54 +389,84 @@ export default function Inspection() {
       });
   }, [results, keyword, projectFilter, taskCategoryFilter, statusFilter]);
 
-  const visibleRows = filtered.slice(0, visibleCount);
+  /** 按项目分块：项目内保持既有排序（类别 → 组 → 组内顺序），关闭项目排最后 */
+  const projectBlocks = useMemo(() => {
+    const byProject = new Map<string, InspectionResult[]>();
+    filtered.forEach((row) => {
+      const list = byProject.get(row.project_name) ?? [];
+      list.push(row);
+      byProject.set(row.project_name, list);
+    });
+    const blocks = [...byProject.entries()].map(([projectName, rows]) => ({
+      projectName,
+      closed: Boolean(rows[0]?.project_closed),
+      rows,
+      errors: rows.filter((r) => r.status === 'error').length,
+      warnings: rows.filter((r) => r.status === 'warning').length,
+      uninspected: rows.filter((r) => !r.has_inspection).length,
+      changed: rows.filter((r) => r.status_changed).length,
+    }));
+    blocks.sort((a, b) => {
+      if (a.closed !== b.closed) return a.closed ? 1 : -1;
+      return a.projectName.localeCompare(b.projectName, 'zh-CN');
+    });
+    return blocks;
+  }, [filtered]);
 
-  // 自由能路径跨行合并：同一项目 + 同一路径的任务连续行合并为一格
-  const rowSpanMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    let i = 0;
-    while (i < visibleRows.length) {
-      const row = visibleRows[i];
-      const grouped =
-        row.task_category === '自由能' ||
-        (row.task_category === 'NEB' && Boolean(row.group_name));
-      if (!grouped) {
-        i += 1;
-        continue;
+  /** 自由能路径 / NEB 组跨行合并：同项目同组的连续行合并为一格（按项目块分别计算） */
+  const rowSpanByProject = useMemo(() => {
+    const result: Record<string, Record<string, number>> = {};
+    projectBlocks.forEach((block) => {
+      const rows = block.rows;
+      const map: Record<string, number> = {};
+      let i = 0;
+      while (i < rows.length) {
+        const row = rows[i];
+        const grouped =
+          row.task_category === '自由能' ||
+          (row.task_category === 'NEB' && Boolean(row.group_name));
+        if (!grouped) {
+          i += 1;
+          continue;
+        }
+        const key = `${row.project_name}|${row.group_name}`;
+        let j = i + 1;
+        while (
+          j < rows.length &&
+          (rows[j].task_category === '自由能' ||
+            (rows[j].task_category === 'NEB' && Boolean(rows[j].group_name))) &&
+          `${rows[j].project_name}|${rows[j].group_name}` === key
+        ) {
+          j += 1;
+        }
+        map[row.task_id] = j - i;
+        for (let k = i + 1; k < j; k += 1) {
+          map[rows[k].task_id] = 0;
+        }
+        i = j;
       }
-      const key = `${row.project_name}|${row.group_name}`;
-      let j = i + 1;
-      while (
-        j < visibleRows.length &&
-        (visibleRows[j].task_category === '自由能' ||
-          (visibleRows[j].task_category === 'NEB' &&
-            Boolean(visibleRows[j].group_name))) &&
-        `${visibleRows[j].project_name}|${visibleRows[j].group_name}` === key
-      ) {
-        j += 1;
-      }
-      map[row.task_id] = j - i;
-      for (let k = i + 1; k < j; k += 1) {
-        map[visibleRows[k].task_id] = 0;
-      }
-      i = j;
-    }
-    return map;
-  }, [visibleRows]);
+      result[block.projectName] = map;
+    });
+    return result;
+  }, [projectBlocks]);
 
-  const handleScrollLoad = (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 48) {
-      setVisibleCount((v) =>
-        v >= filtered.length ? v : Math.min(v + SCROLL_PAGE_SIZE, filtered.length),
+  /** 开关自动巡检（写入 settings.json，调度线程下一轮生效） */
+  const handleToggleAuto = async (enabled: boolean) => {
+    setAutoSaving(true);
+    try {
+      await updateAutoInspection({ enabled });
+      setMeta(await fetchInspectionMeta());
+      message.success(
+        enabled
+          ? `自动巡检已开启：距上次巡检超过 ${meta?.interval_hours ?? 2} 小时自动执行`
+          : '自动巡检已停用',
       );
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '保存自动巡检设置失败');
+    } finally {
+      setAutoSaving(false);
     }
   };
-
-  const fallbackNextAutoTime = useMemo(() => {
-    const d = new Date(Date.now() + 2 * 60 * 60 * 1000);
-    return formatTime(d);
-  }, []);
 
   const handleTrigger = async () => {
     setTriggering(true);
@@ -513,7 +549,10 @@ export default function Inspection() {
     row.task_category === '自由能' ||
     (row.task_category === 'NEB' && Boolean(row.group_name));
 
-  const columns: ColumnsType<InspectionResult> = [
+  /** 每个项目块单独生成列定义：组内跨行合并需要按块内的行序计算 */
+  const buildColumns = (
+    spanMap: Record<string, number>,
+  ): ColumnsType<InspectionResult> => [
     {
       title: '检查时间',
       dataIndex: 'check_time',
@@ -541,7 +580,7 @@ export default function Inspection() {
       ellipsis: true,
       onCell: (row) =>
         isGroupedRow(row)
-          ? { rowSpan: rowSpanMap[row.task_id] ?? 1 }
+          ? { rowSpan: spanMap[row.task_id] ?? 1 }
           : { colSpan: 2 },
       render: (_, row) =>
         isGroupedRow(row) ? (
@@ -665,17 +704,33 @@ export default function Inspection() {
         extra={
           <div className="header-actions">
             <div className="auto-chip">
-              <SyncOutlined />
-              {meta?.enabled === false ? '自动巡检已停用' : '自动巡检已启用'}
+              <SyncOutlined spin={Boolean(meta?.scheduler?.running)} />
+              {meta?.scheduler?.running
+                ? '巡检进行中'
+                : meta?.enabled === false
+                  ? '自动巡检已停用'
+                  : '自动巡检已启用'}
               <span>
                 每 {meta?.interval_hours ?? 2} 小时
                 {meta?.last_run_at
-                  ? ` · 上次 ${meta.last_run_at}`
-                  : ` · 下次约 ${fallbackNextAutoTime}`}
-                {meta?.last_run_at && meta.next_run_at
-                  ? ` · 下次 ${meta.next_run_at}`
-                  : ''}
+                  ? ` · 上次 ${formatTime(new Date(meta.last_run_at))}`
+                  : ' · 尚未巡检'}
+                {meta?.next_run_at ? ` · 下次 ${meta.next_run_at}` : ''}
               </span>
+              <Tooltip
+                title={
+                  meta?.scheduler?.last_error
+                    ? `上次自动巡检失败：${meta.scheduler.last_error}`
+                    : '距上次巡检超过间隔后自动执行全局巡检（后端后台线程）'
+                }
+              >
+                <Switch
+                  size="small"
+                  checked={meta?.enabled !== false}
+                  loading={autoSaving}
+                  onChange={handleToggleAuto}
+                />
+              </Tooltip>
             </div>
             <Button
               type="primary"
@@ -709,22 +764,74 @@ export default function Inspection() {
           />
         </div>
 
-        <div className="inspection-scroll" onScroll={handleScrollLoad}>
-          <Table
-            rowKey="id"
-            dataSource={visibleRows}
-            columns={columns}
-            loading={loading}
-            pagination={false}
-            size="middle"
-            sticky
-          />
+        <div className="inspection-projects">
+          {projectBlocks.map((block) => {
+            const expanded =
+              !block.closed || expandedProjects.has(block.projectName);
+            return (
+              <div
+                key={block.projectName}
+                className={`inspection-project${block.closed ? ' inspection-project--closed' : ''}`}
+              >
+                <button
+                  type="button"
+                  className="inspection-project__head"
+                  onClick={() =>
+                    setExpandedProjects((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(block.projectName)) next.delete(block.projectName);
+                      else next.add(block.projectName);
+                      return next;
+                    })
+                  }
+                >
+                  {expanded ? <DownOutlined /> : <RightOutlined />}
+                  <span className="inspection-project__name">{block.projectName}</span>
+                  {block.closed && (
+                    <span className="inspection-project__closed">已关闭</span>
+                  )}
+                  <span className="inspection-project__meta">
+                    共 {block.rows.length} 项
+                    {block.errors > 0 && (
+                      <span className="inspection-project__stat inspection-project__stat--error">
+                        错误 {block.errors}
+                      </span>
+                    )}
+                    {block.warnings > 0 && (
+                      <span className="inspection-project__stat inspection-project__stat--warning">
+                        警告 {block.warnings}
+                      </span>
+                    )}
+                    {block.uninspected > 0 && (
+                      <span className="inspection-project__stat">未检 {block.uninspected}</span>
+                    )}
+                    {block.changed > 0 && (
+                      <span className="inspection-project__stat inspection-project__stat--changed">
+                        状态变化 {block.changed}
+                      </span>
+                    )}
+                  </span>
+                </button>
+                {expanded && (
+                  <Table
+                    rowKey="id"
+                    dataSource={block.rows}
+                    columns={buildColumns(rowSpanByProject[block.projectName] ?? {})}
+                    loading={loading}
+                    pagination={false}
+                    size="middle"
+                    rowClassName={() =>
+                      block.closed ? 'inspection-row--closed' : ''
+                    }
+                  />
+                )}
+              </div>
+            );
+          })}
+          {projectBlocks.length === 0 && (
+            <Empty description="没有符合条件的巡检结果" />
+          )}
         </div>
-        {visibleRows.length < filtered.length && (
-          <div className="scroll-hint">
-            下滑加载更多（{visibleRows.length} / {filtered.length}）
-          </div>
-        )}
       </Card>
 
       <Modal

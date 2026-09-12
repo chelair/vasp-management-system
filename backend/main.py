@@ -54,6 +54,14 @@ async def lifespan(_: FastAPI):
 
     # 启动时后台建立常驻 SSH 连接（保持登录状态）
     threading.Thread(target=_warmup_ssh, daemon=True).start()
+
+    # 自动巡检调度：距上次巡检超过 inspection_interval_hours 即触发全局巡检
+    try:
+        from inspection_scheduler import start_scheduler
+
+        start_scheduler()
+    except Exception as e:  # noqa: BLE001 - 调度器启动失败不影响服务
+        print(f"[auto-inspection] 调度器启动失败：{e}")
     yield
 
 

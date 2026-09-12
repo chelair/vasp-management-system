@@ -81,6 +81,9 @@ def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
         "remote_base": _str(project.get("remote_base"), ""),
         "progress": progress,
         "remainingHours": remaining_hours,
+        # 项目关闭（归档）：需要项目下可见任务全部归档后才允许，只影响展示排序与折叠
+        "closed": project.get("closed") is True,
+        "closedAt": _str(project.get("closed_at"), "") or None,
         "createdAt": _str(project.get("created_at"), project.get("project_id", "")),
         "updatedAt": updated_at,
         "tasks": mapped_tasks,

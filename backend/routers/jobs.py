@@ -38,7 +38,7 @@ from envelope import fail, ok
 from incar import modify_incar
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
 import ssh
-from storage import db_transaction, load_db, save_db, update_task_status
+from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
 from task_paths import is_continuation_task, task_dir
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -728,17 +728,16 @@ def submit_task(task_id: str):
         )
     new_job_id = match.group(1)
 
-    # 登记 job_id 并将状态更新为 queued（状态机已放开流转限制）
+    # 登记 job_id 并将状态更新为 queued（走串行事务，避免与巡检回填互相覆盖）
     try:
-        db = load_db()
-        update_task_status(
-            db,
-            project["name"],
-            task_id,
-            "queued",
-            {"job_id": new_job_id},
-        )
-        save_db(db)
+        with db_transaction() as db:
+            update_task_status(
+                db,
+                project["name"],
+                task_id,
+                "queued",
+                {"job_id": new_job_id},
+            )
     except Exception as e:  # noqa: BLE001 - 状态落库失败不影响已提交事实
         _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")
 
@@ -750,6 +749,71 @@ def submit_task(task_id: str):
             "new_status": "queued",
             "raw_output": raw,
         },
+    )
+
+
+@router.post("/tasks/{task_id}/archive")
+def archive_task(task_id: str):
+    """关闭（归档）任务：只改状态，本地/远端文件都不动。
+
+    前端在任务未正常结束（状态不是 completed）时会弹窗提醒，后端不做硬性拦截。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    previous = str(task.get("status") or "")
+    if previous == "archived":
+        return JSONResponse(status_code=409, content=fail("任务已经处于关闭（归档）状态"))
+    try:
+        with db_transaction() as db:
+            update_task_status(
+                db,
+                project["name"],
+                task_id,
+                "archived",
+                {"archived_at": now_iso(), "archived_from": previous},
+            )
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"关闭任务失败：{e}"))
+    return ok(
+        "任务已关闭（归档）",
+        {
+            "task_id": task_id,
+            "project_name": project["name"],
+            "new_status": "archived",
+            "previous_status": previous,
+            "was_completed": previous == "completed",
+        },
+    )
+
+
+@router.post("/tasks/{task_id}/unarchive")
+def unarchive_task(task_id: str):
+    """重新打开已归档任务：恢复到归档前的状态（默认 pending）。"""
+    try:
+        project, task = _resolve_task(task_id)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    if str(task.get("status") or "") != "archived":
+        return JSONResponse(status_code=409, content=fail("任务未处于关闭（归档）状态"))
+    restore = str(task.get("archived_from") or "")
+    if restore not in STATUS_ENUM or restore == "archived":
+        restore = "pending"
+    try:
+        with db_transaction() as db:
+            update_task_status(
+                db,
+                project["name"],
+                task_id,
+                restore,
+                {"reopened_at": now_iso()},
+            )
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"重新打开任务失败：{e}"))
+    return ok(
+        "任务已重新打开",
+        {"task_id": task_id, "project_name": project["name"], "new_status": restore},
     )
 
 

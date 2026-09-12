@@ -171,6 +171,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
             # 避免与任务本身“待提交”的语义混淆
             "message": "未检",
             "detail": "暂无巡检记录，可点击「单独巡检」获取该任务当前状态",
+            "project_closed": bool(project.get("closed")),
             "analysis_needed": False,
             "has_force_history": False,
             "has_inspection": False,
@@ -284,6 +285,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         "message": message,
         "detail": detail,
         "task_category": task_category,
+        "project_closed": bool(project.get("closed")),
         "analysis_needed": bool(entry.get("analysis_needed", False)),
         "has_force_history": isinstance(entry.get("force_history"), list)
         and bool(entry.get("force_history")),

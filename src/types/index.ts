@@ -63,6 +63,9 @@ export interface Task {
   current_output?: CurrentOutput | null;
   /** 任务本地目录绝对路径（dir_path 权威字段） */
   dir_path?: string;
+  /** 归档（关闭）：归档时间与归档前状态，重新打开时恢复 */
+  archived_at?: string | null;
+  archived_from?: string | null;
   /** 所属计算流程组（独立任务为 null） */
   group?: GroupMeta | null;
   parent_task_id?: string | null;
@@ -81,6 +84,9 @@ export interface Project {
   remote_base?: string;
   progress: number;
   remainingHours: number;
+  /** 项目已关闭（全部可见任务归档后可关闭）：展示上排到最后并折叠 */
+  closed?: boolean;
+  closedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   tasks: Task[];
@@ -119,6 +125,8 @@ export interface InspectionResult {
   output_status?: 'finished' | 'running' | 'failed' | 'waiting' | null;
   /** 任务类型分类（结构优化 / 自由能 / NEB / 电子结构） */
   task_category?: string;
+  /** 所属项目是否已关闭（关闭项目在列表中排最后并默认折叠） */
+  project_closed?: boolean;
 }
 
 /** 任务最新输出定位（续算 conN 优先） */
@@ -368,6 +376,12 @@ export interface DashboardProjectProgress {
   visibleTasks: number;
   continuationTasks: number;
   completed: number;
+  /** 已关闭（归档）任务数 */
+  archived: number;
+  /** 全部可见任务都已归档 → 可以关闭项目 */
+  closable: boolean;
+  /** 项目是否已关闭 */
+  closed: boolean;
   running: number;
   queued: number;
   anomalies: number;

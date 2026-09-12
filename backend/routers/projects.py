@@ -16,8 +16,8 @@ from models import AddProjectPayload
 from paths import resolve_remote_path, to_local_rel, to_remote_rel
 from priority import compute_priority
 from ssh import mkdir_remote
-from storage import add_project, load_db, save_db
-from task_paths import CATEGORY_DIRS
+from storage import add_project, db_transaction, load_db, save_db
+from task_paths import CATEGORY_DIRS, is_continuation_task
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -169,6 +169,71 @@ def create_project(payload: AddProjectPayload):
             return JSONResponse(status_code=400, content=fail(str(e)))
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"服务器内部错误：{e}"))
+
+
+@router.post("/{project_id}/close")
+def close_project(project_id: str):
+    """关闭项目：前提是项目下（可见）任务全部已关闭（归档）。
+
+    关闭只改项目元数据（closed / closed_at），本地与远端文件都不动；
+    关闭后的项目在总览 / 巡检中心 / 作业管理里都排到最后并默认折叠。
+    """
+    try:
+        db = load_db()
+        project = next(
+            (p for p in db.get("projects", []) if p.get("project_id") == project_id),
+            None,
+        )
+        if project is None:
+            return JSONResponse(status_code=404, content=fail("项目不存在"))
+        if project.get("closed"):
+            return JSONResponse(status_code=409, content=fail("项目已经关闭"))
+        remaining = [
+            str(t.get("model_name") or "")
+            for t in project.get("tasks", [])
+            if not is_continuation_task(t) and t.get("status") != "archived"
+        ]
+        if remaining:
+            head = "、".join(remaining[:5])
+            more = f" 等 {len(remaining)} 个" if len(remaining) > 5 else ""
+            return JSONResponse(
+                status_code=400,
+                content=fail(f"还有未关闭的任务（{head}{more}），请先全部关闭后再关闭项目"),
+            )
+        with db_transaction() as fresh:
+            target = next(
+                (p for p in fresh.get("projects", []) if p.get("project_id") == project_id),
+                None,
+            )
+            if target is None:
+                return JSONResponse(status_code=404, content=fail("项目不存在"))
+            target["closed"] = True
+            target["closed_at"] = now_iso()
+        return ok(
+            "项目已关闭",
+            {"project_id": project_id, "project_name": str(project.get("name") or "")},
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"关闭项目失败：{e}"))
+
+
+@router.post("/{project_id}/reopen")
+def reopen_project(project_id: str):
+    """重新打开项目：清除 closed 标记（任务状态不变）。"""
+    try:
+        with db_transaction() as db:
+            target = next(
+                (p for p in db.get("projects", []) if p.get("project_id") == project_id),
+                None,
+            )
+            if target is None:
+                return JSONResponse(status_code=404, content=fail("项目不存在"))
+            target["closed"] = False
+            target.pop("closed_at", None)
+            name = str(target.get("name") or "")
+        return ok("项目已重新打开", {"project_id": project_id, "project_name": name})
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"重新打开项目失败：{e}"))
 
 
 @router.delete("/{project_id}")

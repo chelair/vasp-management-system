@@ -2231,3 +2231,60 @@ p {
   font-size: 11px;
   line-height: 16px;
 }
+
+/* ---------- 总览：已关闭项目折叠区（与卡片风格统一，v0.6.3） ---------- */
+
+.project-closed-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--color-border-soft);
+}
+
+.project-closed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 999px;
+  background: #f7f9fc;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.project-closed-toggle:hover {
+  background: #eef3fa;
+  border-color: rgba(91, 141, 239, 0.35);
+  color: #4a7bdd;
+}
+
+.project-closed-toggle .anticon {
+  font-size: 11px;
+}
+
+.project-closed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.project-row--closed .project-row__name {
+  color: #8a98ac;
+  font-weight: 500;
+}
+
+.project-row--closed .project-row__meta,
+.project-row--closed .project-row__percent {
+  color: #9aa7b8;
+}
+
+.project-row--closed .progress-fill {
+  background: linear-gradient(90deg, #c3cdda, #aab6c6);
+}

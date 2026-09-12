@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.2（巡检分批/定时调度 + 任务归档与项目关闭）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.3（巡检详情归档入口 + 关闭项目展示细化）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -142,7 +142,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 ## 5. 前端模块说明（src/）
 
 - `pages/`：Dashboard（总览，v0.6.0 重构：状态→资源→趋势→明细四层 + 快捷操作）、Inspection（巡检中心，含筛选/详情/单任务巡检/自由能详情看板）、Jobs（作业管理，任务树 + 详情面板）、Report、SSH。
-- `components/dashboard/`：RunningTasksPanel（bjobs 实时作业表，点行跳 `/jobs?task=`）、CoresUsagePanel（ECharts 圆环 + 项目着色 + 90%/100% 阈值）、ClusterHealthPanel（节点灯 / 队列拥堵 / 存储进度）、RiskAlertsPanel（未收敛+Zombie+巡检异常，点条目跳转）、TrendPanel（近 7 天核数/运行任务/提交数）、ProjectProgressPanel（四象限气泡 + 项目进度列表）、`useEcharts.ts`（**ECharts 按需注册**：Pie/Line/Bar/Scatter + Grid/Tooltip/Legend/Title/MarkLine + Canvas）。
+- `components/dashboard/`：RunningTasksPanel（bjobs 实时作业表，点行跳 `/jobs?task=`）、CoresUsagePanel（ECharts 圆环 + 项目着色 + 90%/100% 阈值）、ClusterHealthPanel（节点灯 / 队列拥堵 / 存储进度）、RiskAlertsPanel（未收敛+Zombie+巡检异常，点条目跳转）、TrendPanel（近 7 天核数/运行任务/提交数）、ProjectProgressPanel（四象限气泡 + 项目进度列表 + **已关闭项目折叠区**，样式为胶囊按钮 + 虚线分隔）、`useEcharts.ts`（**ECharts 按需注册**：Pie/Line/Bar/Scatter + Grid/Tooltip/Legend/Title/MarkLine + Canvas）。
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `components/jobs/`：IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、SubmitScriptPanel、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
@@ -181,9 +181,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.2）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.3）
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
+
+- v0.6.3（commit 见 `git log --oneline -1`）：**归档入口补齐 + 关闭项目展示细化**。① **巡检详情弹窗 footer 新增「关闭（归档）」**（已归档任务显示「重新打开」）：未正常结束的任务同样弹窗警告（写明当前状态、说明"关闭后不再参与全局巡检"），关闭后自动关闭弹窗并刷新列表；重新打开会重拉详情。② **作业管理已关闭项目默认折叠**：`JobsTree` 从 `defaultExpandAll` 改为受控 `expandedKeys`，初始集合排除已关闭项目及其子树（新建/归档/关闭后重置为该规则），用户仍可手动展开。③ **总览「已关闭项目」样式重做**：原来只有裸按钮 + 默认样式（看起来与卡片风格不一致），现在改为虚线分隔 + 胶囊按钮（圆角 999px、浅底、hover 变蓝）+ 列表项带灰色进度条与「另 N 个续算目录」说明。
 
 - v0.6.2（commit `2c04a1e`，已推送 origin/main）：**巡检链路加固 + 任务归档/项目关闭 + 定时调度**。① `submit` 改走 `db_transaction`，消除"提交后又被巡检回填覆盖"的竞态（[jobs.py](backend/routers/jobs.py)）。② 全局巡检改为**按项目分批**：`_plan_batches()` 规划批次，脚本/阈值每服务器每轮只上传一次，远端检查在事务外、每项目独立事务回填归档——单项目失败不再整轮回滚（摘要新增 `failed_batches`），数据库写锁从 75-90s 缩到单项目回填的几秒。③ 新增 `inspection_scheduler.py`：后台线程每 60s 判定，开关 + 间隔（默认 2h）→ 自动跑全局巡检；`PUT /api/inspections/auto` 切换，`GET /inspections/meta` 返回调度器实时状态（running / last / next / error）。④ 每次全局巡检成功后 `dashboard.invalidate_cluster_cache(prewarm=True)` 静默作废并预热集群快照。⑤ **任务归档**：`POST /jobs/tasks/{id}/archive`（未强制要求 completed，前端弹窗提醒）、`/unarchive` 恢复 `archived_from`；`archived` 状态终于接入 UI（此前枚举里有、无处写入）。⑥ **项目关闭**：`POST /projects/{id}/close`（要求该项目可见任务全部归档）与 `/reopen`；`mappers` 输出 `closed/closedAt`。⑦ 前端：巡检中心表格改为**按项目分块**（项目内保持自由能/NEB 组顺序，关闭项目排最后、默认折叠、灰显）并加入自动巡检开关与调度状态；总览项目进度把已关闭项目收进「已关闭项目」折叠区并支持关闭/重新打开；作业管理任务快捷操作新增「关闭（归档）/重新打开」、已关闭项目在树中排最后且灰显（不提供新建入口）；`vite.config.ts` 支持 `VITE_API_TARGET` 覆盖后端地址（便于隔离测试）。
 

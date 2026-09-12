@@ -191,51 +191,67 @@ export default function ProjectProgressPanel({
                 {showClosed ? <DownOutlined /> : <RightOutlined />}
                 已关闭项目（{closedProjects.length}）
               </button>
-              {showClosed &&
-                closedProjects.map((p) => (
-                  <div key={p.project_id} className="project-row project-row--closed">
-                    <div className="project-row__head">
-                      <span className="project-row__name" title={p.project_name}>
-                        {p.project_name}
-                      </span>
-                      <span className="dashboard-badge">已关闭</span>
-                      <span className="dashboard-sub">
-                        完成 {p.completed}/{p.visibleTasks}
-                      </span>
-                      {onReopen && (
-                        <Popconfirm
-                          title={`重新打开项目 ${p.project_name}？`}
-                          description="任务状态不变，仅让项目重新出现在进行中列表"
-                          okText="重新打开"
-                          cancelText="取消"
-                          onConfirm={() => onReopen(p)}
-                        >
-                          <Button size="small" type="link">
-                            重新打开
-                          </Button>
-                        </Popconfirm>
-                      )}
-                      {onDelete && (
-                        <Popconfirm
-                          title={`删除项目 ${p.project_name}？`}
-                          description="本地目录将移入回收站，远端文件不受影响"
-                          okText="删除"
-                          okButtonProps={{ danger: true }}
-                          cancelText="取消"
-                          onConfirm={() => onDelete(p)}
-                        >
-                          <Button
-                            size="small"
-                            type="text"
-                            danger
-                            icon={<DeleteOutlined />}
-                            aria-label={`删除项目 ${p.project_name}`}
-                          />
-                        </Popconfirm>
-                      )}
+              {showClosed && (
+                <div className="project-closed-list">
+                  {closedProjects.map((p) => (
+                    <div key={p.project_id} className="project-row project-row--closed">
+                      <div className="project-row__head">
+                        <span className="project-row__name" title={p.project_name}>
+                          {p.project_name}
+                        </span>
+                        <span className="dashboard-badge">已关闭</span>
+                        {onReopen && (
+                          <Popconfirm
+                            title={`重新打开项目 ${p.project_name}？`}
+                            description="任务状态不变，仅让项目重新出现在进行中列表"
+                            okText="重新打开"
+                            cancelText="取消"
+                            onConfirm={() => onReopen(p)}
+                          >
+                            <Button size="small" type="link" style={{ padding: 0, height: 'auto' }}>
+                              重新打开
+                            </Button>
+                          </Popconfirm>
+                        )}
+                        {onDelete && (
+                          <Popconfirm
+                            title={`删除项目 ${p.project_name}？`}
+                            description="本地目录将移入回收站，远端文件不受影响"
+                            okText="删除"
+                            okButtonProps={{ danger: true }}
+                            cancelText="取消"
+                            onConfirm={() => onDelete(p)}
+                          >
+                            <Button
+                              size="small"
+                              type="text"
+                              danger
+                              icon={<DeleteOutlined />}
+                              aria-label={`删除项目 ${p.project_name}`}
+                            />
+                          </Popconfirm>
+                        )}
+                      </div>
+                      <div className="project-row__bar">
+                        <div className="progress-track">
+                          <div className="progress-fill" style={{ width: '100%' }} />
+                        </div>
+                        <span className="project-row__percent">{p.progress}%</span>
+                      </div>
+                      <div className="project-row__meta">
+                        <span>
+                          完成 {p.completed}/{p.visibleTasks}
+                        </span>
+                        {p.continuationTasks > 0 && (
+                          <span className="dashboard-sub">
+                            另 {p.continuationTasks} 个续算目录
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>

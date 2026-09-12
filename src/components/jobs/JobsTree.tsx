@@ -1,5 +1,6 @@
 import { Dropdown, Tooltip, Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ApartmentOutlined,
   ExperimentOutlined,
@@ -324,6 +325,31 @@ export default function JobsTree({
           ? [`p:${selectedProjectId}`]
           : [];
 
+  // 已关闭项目默认折叠（不展开其子树），其余项目保持展开
+  const closedProjectKeys = new Set(
+    orderedProjects.filter((p) => p.closed).map((p) => `p:${p.id}`),
+  );
+  const collectKeys = (nodes: DataNode[], underClosed = false): string[] =>
+    nodes.flatMap((node) => {
+      const key = String(node.key);
+      const closedHere = underClosed || closedProjectKeys.has(key);
+      const own = closedHere ? [] : [key];
+      const children = (node.children as DataNode[] | undefined) ?? [];
+      return [...own, ...collectKeys(children, closedHere)];
+    });
+  const allExpandableKeys = useMemo(
+    () => collectKeys(treeData),
+    // treeData 由 projects 派生，随 projects 变化重算即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projects],
+  );
+  const [expandedKeys, setExpandedKeys] = useState<string[]>(allExpandableKeys);
+  // 项目列表变化时（新建/归档/关闭）重置为「关闭项目折叠、其余展开」
+  useEffect(() => {
+    setExpandedKeys(allExpandableKeys);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects]);
+
   return (
     <div className="job-tree">
       <Tree
@@ -331,7 +357,8 @@ export default function JobsTree({
         blockNode
         treeData={treeData}
         selectedKeys={selectedKeys}
-        defaultExpandAll
+        expandedKeys={expandedKeys}
+        onExpand={(keys) => setExpandedKeys(keys.map(String))}
         onSelect={(_keys, info) => {
           const key = String(info.node.key);
           if (key.startsWith('t:')) onSelectTask(key.slice(2));

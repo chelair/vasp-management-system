@@ -10,6 +10,7 @@ import {
   Empty,
   Input,
   Modal,
+  Popconfirm,
   Skeleton,
   Switch,
   Tag,
@@ -20,6 +21,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { FilterDropdownProps } from 'antd/es/table/interface';
 import type { Key } from 'react';
 import {
+  InboxOutlined,
   ClearOutlined,
   DownOutlined,
   FileSearchOutlined,
@@ -27,6 +29,7 @@ import {
   ReloadOutlined,
   RightOutlined,
   SyncOutlined,
+  UndoOutlined,
 } from '@ant-design/icons';
 import {
   fetchInspectionDetail,
@@ -37,7 +40,7 @@ import {
   updateAutoInspection,
 } from '../api/inspections';
 import type { InspectionMeta } from '../api/inspections';
-import { calculateCorrection } from '../api/jobs';
+import { archiveTask, calculateCorrection, unarchiveTask } from '../api/jobs';
 import LineChart from '../components/inspection/LineChart';
 import ForceHistoryCharts from '../components/inspection/ForceHistoryCharts';
 import EleAnalysisPanel from '../components/inspection/EleAnalysisPanel';
@@ -52,6 +55,7 @@ import type {
   InspectionResult,
   TaskStatus,
 } from '../types';
+import { TASK_STATUS_LABELS } from '../types';
 import { formatTime } from '../utils/format';
 
 const READ_CHANGES_KEY = 'vasp.inspection.read-changes.v1';
@@ -468,6 +472,36 @@ export default function Inspection() {
     }
   };
 
+  /** 关闭（归档）当前详情里的任务；未正常结束时前端弹窗提醒（后端不做硬限制） */
+  const handleArchiveDetailTask = async () => {
+    if (!detail) return;
+    try {
+      const r = await archiveTask(detail.task_id);
+      message.success(
+        r.was_completed
+          ? `任务 ${detail.task_name} 已关闭（归档）`
+          : `任务 ${detail.task_name} 已关闭（归档，原状态 ${r.previous_status}）`,
+      );
+      setDetailOpen(false);
+      setResults(await fetchInspectionResults());
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '关闭任务失败');
+    }
+  };
+
+  /** 重新打开已归档任务（恢复到归档前状态） */
+  const handleUnarchiveDetailTask = async () => {
+    if (!detail) return;
+    try {
+      const r = await unarchiveTask(detail.task_id);
+      message.success(`任务 ${detail.task_name} 已重新打开（${r.new_status}）`);
+      setDetailData(await fetchInspectionDetail(detail.task_id));
+      setResults(await fetchInspectionResults());
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '重新打开任务失败');
+    }
+  };
+
   const handleTrigger = async () => {
     setTriggering(true);
     try {
@@ -846,6 +880,36 @@ export default function Inspection() {
               gap: 8,
             }}
           >
+            {detailData?.status === 'archived' ? (
+              <Popconfirm
+                title="重新打开该任务？"
+                description="任务将恢复到归档前的状态，重新参与全局巡检"
+                okText="重新打开"
+                cancelText="取消"
+                onConfirm={handleUnarchiveDetailTask}
+              >
+                <Button icon={<UndoOutlined />}>重新打开</Button>
+              </Popconfirm>
+            ) : (
+              detailData && (
+                <Popconfirm
+                  title="关闭（归档）该任务？"
+                  description={
+                    detailData.status === 'completed'
+                      ? '任务已正常结束，关闭后不再参与全局巡检（可随时重新打开）'
+                      : `任务当前状态为「${
+                          TASK_STATUS_LABELS[detailData.status as TaskStatus] ??
+                          detailData.status
+                        }」，并非正常结束；关闭后不再参与全局巡检（可随时重新打开）`
+                  }
+                  okText="关闭"
+                  cancelText="取消"
+                  onConfirm={handleArchiveDetailTask}
+                >
+                  <Button icon={<InboxOutlined />}>关闭（归档）</Button>
+                </Popconfirm>
+              )
+            )}
             <Button
               icon={<ReloadOutlined />}
               loading={detail ? singleRunningIds.has(detail.task_id) : false}

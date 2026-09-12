@@ -68,6 +68,15 @@ const TASK_CATEGORY_META: Record<string, { color: string; bg: string }> = {
   '电子结构': { color: '#D18A2B', bg: '#FEF3E0' },
 };
 
+/** 巡检列表状态优先级（数字越小越靠前）：错误 > 警告 > 待提交（未检）> 正常 > 关闭 */
+const CHECK_STATUS_RANK: Record<string, number> = {
+  error: 0,
+  warning: 1,
+  pending: 2,
+  normal: 3,
+  archived: 4,
+};
+
 const TASK_CATEGORY_ORDER: Record<string, number> = {
   '结构优化': 0,
   '自由能': 1,
@@ -358,8 +367,7 @@ export default function Inspection() {
       const n = parseInt(label, 10);
       return Number.isFinite(n) ? n : 9;
     };
-    return results
-      .filter((r) => {
+    const kept = results.filter((r) => {
         if (projectFilter && projectFilter.length && !projectFilter.includes(r.project_name))
           return false;
         if (
@@ -376,14 +384,53 @@ export default function Inspection() {
           return false;
         }
         return true;
-      })
-      .sort((a, b) => {
+      });
+
+    // 排序单元：自由能 / NEB 的同一组算一个整体，其余任务各自成单元。
+    // 注意必须带上 task_category：同一项目下自由能组与 NEB 组可能同名（如都有 PATH1）
+    const unitKey = (r: InspectionResult) =>
+      isGrouped(r)
+        ? `${r.project_name}|${r.task_category || ''}|${r.group_name || ''}`
+        : `task|${r.task_id}`;
+    // 状态优先级：错误 > 警告 > 待提交（未检）> 正常 > 关闭
+    const unitRank = new Map<string, number>();
+    const unitMembers = new Map<string, InspectionResult[]>();
+    kept.forEach((r) => {
+      const key = unitKey(r);
+      unitMembers.set(key, [...(unitMembers.get(key) ?? []), r]);
+    });
+    unitMembers.forEach((list, key) => {
+      const active = list.filter((r) => r.status !== 'archived');
+      const pool = active.length ? active : list; // 整组归档才算"已关闭"
+      unitRank.set(
+        key,
+        Math.min(...pool.map((r) => CHECK_STATUS_RANK[r.status] ?? 9)),
+      );
+    });
+
+    return kept.sort((a, b) => {
+        // ① 整组归档的单元沉到其他任务下面（"归档任务放在其他任务下面"）
+        const ua = unitRank.get(unitKey(a)) ?? 9;
+        const ub = unitRank.get(unitKey(b)) ?? 9;
+        const closedA = ua === CHECK_STATUS_RANK.archived ? 1 : 0;
+        const closedB = ub === CHECK_STATUS_RANK.archived ? 1 : 0;
+        if (closedA !== closedB) return closedA - closedB;
+        // ② 组/任务按状态优先级参与排序（组取组内最高优先级）
+        if (ua !== ub) return ua - ub;
+        // ③ 以下保持原有排序逻辑不变：类别 → 组名自然序（同组必然相邻）
         const ca = TASK_CATEGORY_ORDER[a.task_category || '结构优化'] ?? 9;
         const cb = TASK_CATEGORY_ORDER[b.task_category || '结构优化'] ?? 9;
         if (ca !== cb) return ca - cb;
         if (isGrouped(a) && isGrouped(b)) {
           const g = natCmp(groupKey(a), groupKey(b));
           if (g !== 0) return g;
+        }
+        // ④ 组内被归档的成员沉到该组末尾（不影响组之间的相邻关系）
+        const archA = a.status === 'archived' ? 1 : 0;
+        const archB = b.status === 'archived' ? 1 : 0;
+        if (archA !== archB) return archA - archB;
+        // ⑤ 组内结构顺序（自由能 1..N；NEB IS→FS→neb）→ 任务名
+        if (isGrouped(a) && isGrouped(b)) {
           const s = structOrder(a) - structOrder(b);
           if (s !== 0) return s;
         }

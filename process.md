@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.5（归档状态不被巡检覆盖 + 巡检列表显示「关闭」）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.6（巡检列表排序：状态优先 + 组整体参与 + 归档沉底）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -142,6 +142,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 ## 5. 前端模块说明（src/）
 
 - `pages/`：Dashboard（总览，v0.6.0 重构：状态→资源→趋势→明细四层 + 快捷操作）、Inspection（巡检中心，含筛选/详情/单任务巡检/自由能详情看板）、Jobs（作业管理，任务树 + 详情面板）、Report、SSH。
+  - 巡检中心**列表排序**（v0.6.6）：状态优先级 `错误(0) > 警告(1) > 待提交/未检(2) > 正常(3) > 关闭(4)`；自由能 / NEB **同一组算一个排序单元**，用组内最高优先级状态整体参与排序（组内成员恒定相邻）；整组归档的单元沉到其他任务下面；其余保持原规则（类别 → 组名自然序 → 组内结构顺序 → 任务名）。同项目下自由能组与 NEB 组可能同名（如都有 PATH1），排序单元键必须带 `task_category` 区分。
 - `components/dashboard/`：RunningTasksPanel（bjobs 实时作业表，点行跳 `/jobs?task=`）、CoresUsagePanel（ECharts 圆环 + 项目着色 + 90%/100% 阈值）、ClusterHealthPanel（节点灯 / 队列拥堵 / 存储进度）、RiskAlertsPanel（未收敛+Zombie+巡检异常，点条目跳转）、TrendPanel（近 7 天核数/运行任务/提交数）、ProjectProgressPanel（四象限气泡 + 项目进度列表 + **已关闭项目折叠区**，样式为胶囊按钮 + 虚线分隔）、`useEcharts.ts`（**ECharts 按需注册**：Pie/Line/Bar/Scatter + Grid/Tooltip/Legend/Title/MarkLine + Canvas）。
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
@@ -182,7 +183,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.5）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.6）
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
 
@@ -258,3 +259,4 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
 - v0.6.4（commit `3921566`，已推送 origin/main）：**自由能主任务归档连带频率矫正**。① 后端 `task_paths.free_energy_frac_task()` 按 `<结构目录>/frac` 约定（并校验 `parent_task_id`）定位 frac 子任务；`POST /jobs/tasks/{id}/archive` 归档自由能 opt 时**连带归档 frac**，`/unarchive` 连带恢复（各回各自的 `archived_from`），响应新增 `frac_status` / `archived_siblings` / `reopened_siblings`；对"主任务已归档但 frac 未归档"的历史状态，重复调用 archive 也会把 frac 补齐（幂等修复，不再直接 409）。② `mappers` 为自由能 opt 任务输出 `frac_sibling{task_id,model_name,status}`。③ 前端（作业管理任务面板 + 巡检详情弹窗）归档确认文案按 frac 状态区分：**未完成（非 completed）时加 ⚠️ 警告**"该任务的频率矫正（xxx）当前为「未收敛」，尚未正常结束；关闭主任务会一并归档它"，成功提示与"重新打开"提示也写明连带关系。④ 新增 `scripts/repair_frac_archive.py`：一次性修复历史"主任务已归档、frac 未归档"的数据（默认 dry-run，`--apply` 才写入，写入走事务并自动备份）。
 - v0.6.5（commit `1da2de6`，已推送 origin/main）：**归档状态与巡检的关系修正**。① **归档任务禁止巡检**：`inspection_runner._plan_batches()` 单任务分支遇到 `archived` 任务抛 ValueError → 接口 400「任务已关闭（归档），请先重新打开再巡检」，杜绝"单独巡检把归档状态覆盖回 completed/zombied"（此前是线上实际发生的问题）。② **巡检列表显示「关闭」**：`CheckStatus` 新增 `archived`（`CHECK_STATUS_LABELS.archived = '关闭'`，CSS 用既有 `.status-tag--archived`），归档任务在列表状态列显示"关闭"、信息列"任务已关闭（归档）"，不再按"未检/待提交"呈现，也不计入项目块头部「未检」计数（改为单独统计「关闭 N」）；状态列筛选新增"关闭"选项。③ 归档行的「单独巡检」按钮置灰（列表与详情弹窗都加，带提示），已归档任务仍可查看详情。④ `mappers` 暴露 `archived_from` / `archived_at`，前端"重新打开"弹窗能显示真实恢复目标（此前恒显示"待提交"）。⑤ **运维教训归档**：v0.6.4 的归档连带在真机上"没生效"，原因是 3001 上的后端进程还是 01:30 启动的旧代码（改后端不重启 = 页面行为不变），已在 §8 强化说明。
+- v0.6.6（commit 见 `git log --oneline -1`）：**巡检列表排序规则**（前端 `Inspection.tsx` 的 `filtered` 排序键）。① 状态优先级进入排序：`错误 > 警告 > 待提交（未检）> 正常 > 关闭`。② 自由能 / NEB **同组作为一个排序单元**，取组内**最高优先级状态**整体参与排序（组员恒定相邻）；整组归档的单元沉到其他任务下面（"归档任务放在其他任务下面"）。③ 原有规则保持不变，作为后续 tie-break：任务类别（结构优化→自由能→NEB→电子结构）→ 组名自然序（PATH1 < PATH2 < PATH10）→ 组内结构顺序（自由能 1..N、NEB IS→FS→neb）→ 任务名；组内被归档的成员沉到**该组末尾**（不破坏组相邻）。④ 实现中修掉两个自测发现的坑：排序单元键最初用 `项目|组名`，但同项目下自由能组与 NEB 组可能同名（Ag 都有 PATH1/2/3），导致跨类别串组、组权重算错 → 键改为 `项目|类别|组名`；"组内归档成员沉底"最初放在组键之前，会把归档成员挤到别的组后面（NEB 的 NC 组被拆开）→ 移到组键之后。

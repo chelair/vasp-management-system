@@ -175,7 +175,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
 
-- v0.6.1（commit `9773b35`，已推送 origin/main）：**巡检列表未巡检行文案修正**。① 未巡检（无归档记录）的合成行，信息列由「待提交」改为 **「未检」**，detail 由「任务待提交，暂无运行输出」改为「暂无巡检记录，可点击「单独巡检」获取该任务当前状态」——原文案把「没有巡检记录」误述成任务状态，容易和任务本身的「待提交」混淆（**状态列仍是待提交/灰色，本次不改**）。② 修掉同一行操作按钮的英文残留 `check` → **「单独巡检」**（与 TODO/本文档既有描述一致）。③ 前端点击未巡检行的提示语同步改为「该任务暂无巡检记录，请先用「单独巡检」获取当前状态」。
+- v0.6.1（commit `9773b35`，已推送 origin/main）：**巡检列表未巡检行文案修正**。① 未巡检（无归档记录）的合成行，信息列由「待提交」改为 **「未检」**，detail 由「任务待提交，暂无运行输出」改为「暂无巡检记录，可点击「单独巡检」获取该任务当前状态」——原文案把「没有巡检记录」误述成任务状态，容易和任务本身的「待提交」混淆（**状态列仍是待提交/灰色，本次不改**）。② 修掉两处按钮的英文残留 `check` → **「单独巡检」**（列表未巡检行的操作按钮 + 巡检详情弹窗 footer 按钮，与 TODO/本文档既有描述一致）。③ 前端点击未巡检行的提示语同步改为「该任务暂无巡检记录，请先用「单独巡检」获取当前状态」。
 
 - v0.6.0（commit `8b9d629`，已推送 origin/main）：**总览模块重构与扩展**。① 后端新增 `backend/dashboard.py` + `routers/dashboard.py`：单次 SSH 合并查询（bjobs/blimits/df/bhosts/bqueues，`@@@` 分段解析）、5 分钟缓存（可配）、集群采样历史 `data/dashboard/core_history.json`、作业↔任务映射（job_id 优先、作业名回退）、核数按项目聚合、风险预警（未收敛/Zombie/巡检异常）、项目进度与近 7 天趋势；新增接口 `/api/dashboard/overview|cores-usage|cluster-health|risk-alerts|trend`（`?refresh=1` 强制刷新）。② 前端重写总览页：顶部状态栏（可点击跳巡检/展开运行任务）+ 快捷操作（新建项目/触发全局巡检/刷新集群状态）+ 运行中任务表（点行跳 `/jobs?task=`）+ ECharts 核数圆环（按项目着色、90% 橙 / 100% 红闪烁）+ 集群健康（节点灯/队列拥堵/存储告警）+ 风险预警 + 项目四象限气泡 + 最近任务明细；引入 **echarts 6.1.0（按需注册，独立 vendor chunk）**、`useCountUp` 数字滚动、30 分钟自动刷新。③ 修掉 4 个原有总览问题：逾期项目显示「已完成」、进度分母含隐藏续算目录、删除按钮换行破版（网格 4 列 5 元素）、趋势图 MOCK 假数据。④ 清理死代码：`TrendChart.tsx`、`src/data/mock/projects.ts`、`fetchDashboardMeta/fetchWeeklyTrend`。⑤ 配置：`servers.json` 新增 5 个可覆盖查询命令，`settings.json` 新增 `dashboard_cache_seconds`。
 
@@ -197,6 +197,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - **核数/运行中任务趋势无法回溯**：`data/dashboard/core_history.json` 从 v0.6.0 起累积，页面会显示「自 X 起累积」；只有「提交作业数」来自 audit 日志可回溯 7 天。
 - **前端新增依赖 echarts 6**：只被总览页使用，按需注册在 `components/dashboard/useEcharts.ts`；`vite.config.ts` 单独拆 `echarts-vendor` chunk（581KB / gzip 198KB）。若以后其它页面要用图表，复用该 hook 而不是再引入图表库。
 - **总览「未登记任务」**：如果作业在集群上跑但 `job_id` 与任务表对不上（且作业名也匹配不上），会归到「未登记任务」项目分组，不会静默丢弃。
+- **改完前端别忘 `npm run build`**：生产模式（后端 3001 托管 `dist/`）读的是构建产物，只改 `src/` 不重建的话页面仍是旧包（v0.6.1 就踩过：5173 dev 已是「单独巡检」，3001 仍显示旧的 `check`）；dev 5173 有 HMR，容易造成「改了却看不到」的错觉。
 - **生产模式静态资源**：后端只自动挂载 `dist/assets`；新增 `public/` 下的目录（如 `3dmol`）必须在 `backend/main.py` 显式 `app.mount`，否则会被 SPA 兜底路由当成 index.html 返回（浏览器拿到 HTML 当 JS 执行，`$3Dmol` 未定义、组件静默空白）。
 - **batch_check.py 例外**：每次巡检自动上传远端，改它无需重启后端；但下次巡检前远端副本可能是旧版。
 - **前端默认参数生效条件**：改 `src/data/mock/incar.ts` 后要刷新页面；且任务本地已有 `files/INCAR` 时，打开任务会**自动读取文件覆盖默认值**（精度切自定义）。

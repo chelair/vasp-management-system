@@ -745,7 +745,7 @@ export default function Inspection() {
               disabled={triggering || detailLoading}
               onClick={() => detail && runSingle(detail, true)}
             >
-              check
+              单独巡检
             </Button>
           </div>
         }

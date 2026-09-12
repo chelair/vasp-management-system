@@ -142,11 +142,13 @@ def _remote_script(server: str, script: str, timeout: int = 180) -> str:
 
 
 def _script_slice(out: str, start: str, end: str) -> str:
-    """取输出中 start 与 end 两个标记之间的文本。"""
+    """取输出中 start 与 end 两个标记之间的文本（跳过标记行后的换行）。"""
     s = out.find(start)
     if s < 0:
         return ""
     s += len(start)
+    if s < len(out) and out[s] == "\n":
+        s += 1
     e = out.find(end, s)
     return out[s:] if e < 0 else out[s:e]
 
@@ -221,13 +223,25 @@ ls -1 "$NEW"
 """
 
 
-def _neb_continuation_script(server: str, remote_dir: str) -> str:
+def _neb_continuation_script(
+    server: str, remote_dir: str, task: Dict[str, Any]
+) -> str:
     """NEB 续算单次远程脚本：源目录取最新续算目录（conN 优先，无则主目录），
     共享文件复制、端点 POSCAR 固定并带上端点 OUTCAR（00/NN）、
-    中间映像 CONTCAR→POSCAR。
+    中间映像 CONTCAR→POSCAR；各映像（含端点/中间态）存在 WAVECAR 时随续算移动。
+    有活跃作业时只回传状态并直接退出，不创建目录、不移动任何文件。
     """
+    servers = load_servers()
+    profile = str(
+        servers.get(server, {}).get(
+            "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
+        )
+    )
+    db_job = str(task.get("job_id") or "")
     return f"""set -e
 RD="{remote_dir}"
+DBJOB="{db_job}"
+source {profile} >/dev/null 2>&1 || true
 MAX=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/con||' | sort -n | tail -1)
 N=$((${{MAX:-0}} + 1))
 while [ -d "$RD/con$N" ]; do N=$((N+1)); done
@@ -235,11 +249,24 @@ CON="con$N"
 LATEST=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/||' | sort -V | tail -1)
 if [ -n "$LATEST" ]; then SRC="$RD/$LATEST"; else SRC="$RD"; fi
 NEW="$RD/$CON"
+RUNJOB=""
+if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then
+  RUNJOB="$DBJOB"
+else
+  for j in $(bjobs -o 'jobid exec_cwd' 2>/dev/null | awk -v d="$SRC" 'NR>1 && ($2==d || index($2, d"/")==1) {{print $1}}'); do
+    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
+  done
+fi
 echo "===STATE==="
 echo "CON=$CON"
 echo "LATEST=$LATEST"
 echo "SRC=$SRC"
+echo "RUNJOB=$RUNJOB"
 echo "===STATE_END==="
+if [ -n "$RUNJOB" ]; then
+  echo "===SKIP==="
+  exit 0
+fi
 mkdir "$NEW"
 for f in INCAR KPOINTS POTCAR vasp.lsf submit.sh; do
   [ -f "$SRC/$f" ] && cp "$SRC/$f" "$NEW/$f" || true
@@ -260,6 +287,7 @@ for d in "$SRC"/[0-9]*; do
       cp "$SRC/$img/POSCAR" "$NEW/$img/POSCAR"
     fi
   fi
+  if [ -f "$SRC/$img/WAVECAR" ] && [ ! -e "$NEW/$img/WAVECAR" ]; then mv "$SRC/$img/WAVECAR" "$NEW/$img/WAVECAR"; fi
 done
 [ -f "$NEW/INCAR" ] && cat "$NEW/INCAR" || true
 echo "===FILES==="
@@ -289,12 +317,22 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
 
     if task_type == "neb":
         out = _remote_script(
-            server, _neb_continuation_script(server, remote_dir), timeout=180
+            server, _neb_continuation_script(server, remote_dir, task), timeout=180
         )
         state = _script_slice(out, "===STATE===", "===STATE_END===")
         con = _state_value(state, "CON")
         latest = _state_value(state, "LATEST")
+        running_job = _state_value(state, "RUNJOB")
         source_dir = _state_value(state, "SRC") or remote_dir
+        if running_job:
+            return {
+                "action": "running",
+                "current_dir": source_dir,
+                "latest_dir": latest or None,
+                "job_id": running_job,
+                "message": f"当前目录有任务正在运行（作业 {running_job}），请等待完成后再续算",
+                "warnings": [],
+            }
         new_dir = f"{remote_dir}/{con}"
         incar_text = _script_slice(out, "===STATE_END===", "===FILES===")
         copied = [

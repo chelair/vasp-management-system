@@ -6,6 +6,15 @@
 
 ## 当前进度概览
 
+**已完成（v0.5.1，2026-09-13）**
+
+- [x] NEB 续算活跃作业保护：`bjobs` 命中 RUN/SSUSP/PSUSP/USUSP 时只回传 `action="running"`，
+      不建 conN、不移动 WAVECAR（此前 NEB 路径无拦截，与 opt 不一致）
+- [x] NEB 续算各映像（含端点 00/NN 与中间态）WAVECAR 随续算 mv 移动（目标已有不覆盖）
+- [x] `modify_incar` 清理源文本头部空行（兼容 LF / CRLF / 纯空白行）
+- [x] `_script_slice` 跳过标记行换行，修复续算 `===FILES===` 解析出空字符串首项
+- [x] `GET /api/health`：`uptime` 改为后端进程运行秒数 + 新增 `startedAt`（原值为系统开机时长，易误判）
+
 **已完成（v0.3.0 计算流程组重构，2026-08-25）**
 
 - [x] 任务类型收敛为四种：opt / frac / neb / ele（ele 带 subtype：pdos/bader/diff_charge/work_function）
@@ -62,11 +71,12 @@
       NEB 组节点为「初态 IS / 末态 FS / NEB 映像」合并页面，ele 任务显示 subtype
 - [x] 全量迁移：Ag_20260830 / Co_0830 本地与远程目录、DB dir_path/remote_dir/structure_label 全部更新
 
-**待开发（报告解析与前端图表）**
+**待开发（报告解析与前端图表，2026-09-13 核对）**
 
+- [x] 报告页接入组数据：自由能台阶图（PathStepChart / PathSummaryModal）、NEB 能垒图（nebef.pl 散点连线）——v0.4.1 / v0.4.5 已完成
 - [ ] frac 频率输出解析（ZPE / 自由能矫正），回填组数据 `frac.zpe / correction`
-- [ ] NEB 映像 POSCAR 线性插值（初末态 CONTCAR 生成 00..n+1）
-- [ ] 报告页接入组数据：自由能台阶图、NEB 能垒图（前端图表组件）
+      （当前矫正值来自 vaspkit 501 单点调用，未解析频率输出文件）—— **下一个优先项**
+- [ ] NEB 映像 POSCAR 线性插值（初末态 CONTCAR 生成 00..n+1，现依赖 nebmake.pl）
 
 **已完成（前端框架）**
 
@@ -123,9 +133,9 @@
 - [x] 定后端技术栈：Python + FastAPI + Paramiko（`backend/`，`python backend/run.py` 运行）
 - [x] 新增项目 API：`POST /api/projects`（校验 → 优先级计算 → 本地目录 → 可选远程同步 → 原子写库 + 备份）
 - [x] 基础接口：`GET /api/projects`、`GET /api/servers`、`GET /api/task-types`、`GET /api/health`
-- [ ] 设计其余 REST 接口清单（任务 / 巡检 / 报告 / SSH）
-- [ ] 真实 SSH 连接服务（握手、保活、断线重连；当前 Paramiko 仅支持远程 mkdir，前端测试仍为模拟）
-- [ ] 替换前端 `src/api/ssh.ts` 的三个函数：
+- [x] 设计其余 REST 接口清单（任务 / 巡检 / 报告 / SSH）——已随各模块落地
+- [x] 真实 SSH 连接服务：连接池 + 30s keepalive + 60s 应用层保活 + 空闲回收 + 断线重连（v0.4.5 / v0.5.0）
+- [x] 替换前端 `src/api/ssh.ts` 的三个函数：
   - `fetchServerConfigs` → `GET /api/ssh/config`
   - `persistServerConfigs` → `PUT /api/ssh/config`
   - `testRemoteConnection` → `POST /api/ssh/test`（真实握手）
@@ -137,7 +147,7 @@
 - [x] 创建 `data/` 目录结构：`data/projects.json` + `data/config/` + `data/projects/` + `data/backups/`
 - [x] 原子写入 + 自动备份机制（保留 20 份，对齐 `project_db.py`）
 - [x] 首次启动自动生成 `data/config/`（servers.json / settings.json / task_registry.json）；**不再写入示例项目**
-- [ ] `data/checks/`（巡检结果，对应 `check_results_*.json`）
+- [x] `data/checks/`（巡检结果 `check_results_*.json` + `runs.json`）
 - [ ] `data/reports/`（生成报告）
 - [x] 前端 SSH 配置页改由后端读写 `data/config/servers.json`（连接/延迟等 UI 状态仍留 localStorage）
 
@@ -280,12 +290,14 @@
 
 ---
 
-## 已知限制（当前演示版）
+## 已知限制（2026-09-13 更新）
 
-- SSH「测试连接」为前端模拟握手，未建立真实连接
-- 服务器配置保存在浏览器 localStorage，多浏览器/多设备不共享，正式版需迁移到 `data/config/servers.json`
-- 作业管理的「续算」「新子项创建」为前端会话级交互；POSCAR/INCAR/KPOINTS/submit.sh
-  已可真实读写本地目录；POTCAR 仍为占位，节点状态已接真实 bhosts（SSH 失败时回退模拟）
+- SSH 连接、测试握手、保活延迟均已是真实后端行为（连接池 + `/api/ssh/status`），不再是前端模拟
+- 服务器配置已落到 `data/config/servers.json`（探测/连接等 UI 状态仍在浏览器 localStorage）
+- 续算、提交、停止、频率矫正输入构建、NEB 输入构建、ele 输入构建均已真实落库 + 远端执行；
+  POSCAR/INCAR/KPOINTS/submit.sh 可真实读写；**POTCAR 仍为占位**
+- 节点/队列状态已接真实 `bhosts`/`bqueues`（SSH 失败时回退模拟，60s 缓存）
+- 报告模块（智能报告页）仍为前端 Mock：未接大模型 API、未落盘 `data/reports/`
 - 无用户认证，公网穿透暴露时存在安全风险，仅建议临时演示
 
 ---

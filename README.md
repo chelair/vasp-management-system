@@ -2,8 +2,12 @@
 
 基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
 
-当前版本（v0.2.0）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面已具备完整界面；
-**「新增项目」「巡检中心」已接入真实后端**（Python + FastAPI，流程对齐参考实现 `add_project.py` / `check_remote.py`），其余模块仍使用 Mock 数据。
+当前版本（v0.5.1）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
+**项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池与结构 3D 视图均已接入真实后端**
+（Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
+仅智能报告（大模型生成）仍为前端 Mock。
+
+> 跨窗口交接看 `process.md`（版本、改动记录、已知坑、待办）；`TODO.md` 为历史清单，个别条目已过时。
 
 > 注意：本项目放在 `D:\Skill\vasp-project-manager-web`。旧项目 `vasp-project-manager` 仅作为**功能迁移参考**，
 > **运行时不依赖旧项目目录**——真实数据（项目库、配置、本地项目目录、备份、巡检结果）已全部迁入本项目
@@ -23,7 +27,7 @@
 | 后端 | Python + FastAPI（Uvicorn 运行，端口 3001，自带 Swagger 文档 `/docs`） |
 | SSH | Paramiko（密钥认证远程目录同步） |
 | 存储 | 文件型 JSON：`data/projects.json` + 本地目录 + 自动备份（不用数据库） |
-| 数据 | 项目接口走真实后端；巡检/报告仍为 Mock（`src/data/mock/`） |
+| 数据 | 项目 / 巡检 / 作业 / SSH 走真实后端（`data/` 文件型 JSON）；仅智能报告为 Mock（`src/data/mock/`） |
 
 ## 开发约定
 
@@ -209,12 +213,12 @@ vasp-project-manager-web/
     ├── utils/format.ts
     ├── hooks/              # useClock（顶栏时钟）
     ├── context/SSHContext.tsx  # SSH 全局状态（连接/测试/配置，供顶栏实时联动）
-    ├── api/                # ★ 数据访问层：项目接口已接真实后端，其余为 Mock
+    ├── api/                # ★ 数据访问层：项目/巡检/作业/SSH 走真实后端，仅报告为 Mock
     │   ├── client.ts       #   统一延迟/请求封装位置
     │   ├── projects.ts
     │   ├── inspections.ts
     │   ├── reports.ts
-    │   └── ssh.ts          #   SSH 服务器配置 + 模拟握手
+    │   └── ssh.ts          #   SSH 服务器配置 + 真实握手测试（POST /api/ssh/test）
     ├── data/mock/          # ★ Mock 数据（项目/巡检/报告/VASP 输入文件/SSH 服务器）
     ├── components/
     │   ├── layout/         # 侧边栏、顶栏、整体布局、Logo
@@ -227,7 +231,7 @@ vasp-project-manager-web/
         └── SSH.tsx         # SSH 连接配置
 ```
 
-## 模块说明（当前均为演示）
+## 模块说明
 
 ### 总览 Dashboard
 - 统计卡片：项目总数 / 运行中任务 / 今日完成 / 异常警告项
@@ -252,9 +256,10 @@ vasp-project-manager-web/
 ### 作业管理 Jobs
 - 左侧项目列表（进度、子任务数、剩余时间），右侧子任务表格
 - 每项展示本地路径 / 远程路径 / 作业号 / 最近能量 / 状态
-- 「输入文件」弹窗（INCAR/POSCAR/KPOINTS/POTCAR 生成流程演示）
+- 右侧标签页：概览 / POSCAR / INCAR / KPOINTS / 提交脚本（真实读写本地 `files/`；POTCAR 仍占位）
+- INCAR 编辑器（分类表单 + 自定义参数 + 低/中/高精度 + 上传远端）、KPOINTS 生成、提交脚本与队列拥堵可视化
 - 「续算」确认操作（占位）
-- 输入文件预览区（Tabs + 深色代码块，演示内容）
+- 续算（opt/NEB，真实创建 conN）、create-frac、创建 NEB 文件、ele 输入构建
 
 ### 智能报告 Report
 - 报告模板展示区：标题 / 摘要 / 风险列表（高/中/低标签）/ 改进建议
@@ -266,7 +271,7 @@ vasp-project-manager-web/
 - 服务器列表：连接状态指示、主机/端口/用户名、认证方式、延迟、测试/连接/编辑/删除
 - 新建 / 编辑弹窗：主机、端口、用户名、认证方式（密钥文件 / 密码）、队列系统、
   **项目远程根目录**（后续新增项目都建在此根目录下）、高级设置（用户主目录）
-- 「测试连接」：模拟 SSH 握手（约 1.1s），返回延迟并写入最近测试时间
+- 「测试连接」：真实 SSH 握手（`POST /api/ssh/test`），返回实测延迟并写入最近测试时间
 - 「连接 / 断开」：同一时间仅一个服务器处于连接状态，顶部状态栏实时联动
 - 配置（含项目远程根目录）**实时同步到后端** `data/config/servers.json`；连接/延迟等 UI 状态保存在浏览器
 
@@ -284,7 +289,7 @@ vasp-project-manager-web/
 
 **其余模块接入方式**
 
-1. 巡检 / 报告 / 作业管理：替换 `src/api/` 下对应函数为 `fetch('/api/...')`，页面组件无需改动。
+1. 巡检 / 作业管理已接入真实接口（见上）；智能报告仍是 Mock，替换 `src/api/reports.ts` 即可，页面组件无需改动。
 2. **SSH 状态**：`src/context/SSHContext.tsx` 已把连接状态做成全局状态，顶部状态栏实时联动；
    接入后端时替换 `src/api/ssh.ts` 中的 `fetchServerConfigs` / `persistServerConfigs` / `testRemoteConnection`
    为 `GET/PUT /api/ssh/config`、`POST /api/ssh/test` 即可，页面与顶栏无需改动。
@@ -319,7 +324,8 @@ vasp-project-manager-web/
 
 ### 优先级计算（与参考实现 `priority.py` 一致）
 
-- 工作量 = 任务权重之和（structure_opt=1 / neb=5 / electronic_structure=0.4 / **free_energy=1.2** / frequency=1）
+- 工作量 = 任务权重之和，取自 `data/config/task_registry.json` 的 `workload_weight`：
+  `opt=1` / `frac=1` / `neb=5` / `ele=0.4`（自由能由 opt + frac 组合而成，不再单独计权）
 - 工作量 ≥ 20 为 `large`，否则 `small`；剩余天数 < 15 为 `urgent`，否则 `not_urgent`
 - 优先级象限 = `<urgency>_<workload>`（如 `urgent_large`）
 
@@ -343,9 +349,10 @@ vasp-project-manager-web/
 6. 富化（prev_status / observed_changed / analysis_needed）归档到 `data/checks/check_results_*.json`，
    轮次摘要记录到 `runs.json`。
 
-**结构分析范围（analysis_needed）**：仅当任务类型为结构优化、且两次巡检之间状态发生变化
-（如 running→completed / running→zombied）时才标记为需结构分析；此时才会下载并校验
-POSCAR/CONTCAR，避免对未变化任务重复下载。
+**结构分析范围（analysis_needed，v0.5.0 起）**：仅结构优化任务；按离子步每 25 步一桶
+（0-24→桶 0、25-49→桶 1…），同一输出目录需桶号比上次更大才触发，输出目录变化则重置计数。
+触发时下载 POSCAR/CONTCAR 并生成 CIF（`scripts/vasp2cif.py`）供前端 3Dmol 结构视图渲染，
+避免对未变化的任务重复下载。
 
 **结果保留策略**：同一子项只保留一条最新结果（按 task_id 合并，不删除历史行）；
 新一次巡检更新状态 / 能量 / 检查时间，但若本次未下载检查（无新标记 / 力历史），

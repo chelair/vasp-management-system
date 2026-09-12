@@ -6,15 +6,27 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from config import load_servers, load_task_registry
+from dates import now_iso
 from dependencies import INSTALL_HINT, check_dependencies
 from envelope import fail, ok
 
 router = APIRouter(tags=["meta"])
 
+# 进程启动时刻：Windows 上 time.monotonic() 是系统开机时长而非进程运行时长，
+# 早期实现直接返回它，排查问题时会误判后端是否为新进程。
+_STARTED_AT = time.time()
+_STARTED_AT_ISO = now_iso()
+
 
 @router.get("/health")
 def health():
-    return ok("ok", {"uptime": time.monotonic()})
+    return ok(
+        "ok",
+        {
+            "uptime": round(time.time() - _STARTED_AT, 1),
+            "startedAt": _STARTED_AT_ISO,
+        },
+    )
 
 
 @router.get("/servers")

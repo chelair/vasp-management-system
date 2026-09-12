@@ -1,9 +1,10 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-08-31 · 当前版本：v0.5.0（commit 见 §7，已推送 origin/main）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.5.1（commit 见 §7，已推送 origin/main）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
-> 维护：本文档由开发助手持续维护，随每次版本提交同步更新（版本号、改动记录、待办状态）。
+> 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
+> 版本号、改动记录（§7）、待办状态（§9）与数据现状（§2）。发现文档与代码不一致时，以代码为准并立即回来改文档。
 
 ---
 
@@ -41,7 +42,7 @@ data/
 ├── aux_molecules/             # 辅助分子全局目录（opt|frac）
 └── config/
     ├── servers.json           # 远程服务器配置（server1，见下）
-    ├── settings.json          # 阈值/VESTA 路径等
+    ├── settings.json          # 力收敛阈值、同步开关等运行设置
     ├── task_registry.json     # 各任务类型 default_incar / 权重 / 续算规则（后端模板）
     ├── path_mapping.json      # local_root ↔ remote_root（根目录迁移核心）
     └── check_registry.json    # 巡检力收敛阈值（0.02 / 0.01）
@@ -54,7 +55,16 @@ data/
 - batch_check 部署路径：`/data/gpfs03/mdye/tools/vasp_skill/batch_check.py`（**每次巡检自动上传覆盖**）。
 - LSF profile：`/opt/ibm/lsfsuite/lsf/conf/profile.lsf`（bsub/bjobs/bkill 前需 source）。
 - VTST 脚本：`/data/gpfs03/mdye/VTST/vtstscripts/nebef.pl`（NEB 能垒分析）。
-- 当前项目：Ag_20260830（三条自由能路径 PATH1-3 + NEB）、Co_260902、Co_0830 等（以 projects.json 为准）。
+
+### 项目盘点（2026-09-13，均 server1 / HS 根下，以 projects.json 为准）
+
+| 项目 | 任务数 | 构成 | 状态与备注 |
+| --- | --- | --- | --- |
+| Ag_20260830 | 127 | opt 59 / neb 47 / frac 21 | 三条自由能路径 PATH1-3（含 NEB）；completed 47 / pending 74 / queued 5 / zombied 1 |
+| Co_260902 | 53 | opt 22 / neb 18 / frac 12 / ele 1 | completed 30 / pending 23 |
+| TMDZYX | 34 | opt 34 | 7 个过渡金属（Zn/Al/Co/Ti/Cu/Fe/Ni）各一条 opt + con1..con4 续算子任务；completed 1 / unconverged 3 / zombied 3 / pending 27。**v0.5.0 之后新增，本项目尚未在其中任何目录做过破坏性测试** |
+
+TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不占顶层展示，但参与提交/巡检定位。
 
 ---
 
@@ -82,7 +92,7 @@ data/
 | `batch_check.py` | **远端巡检脚本**（自动上传部署）：定位最新输出、bjobs 状态（抗折行解析）、OUTCAR 解析（能量/力历史/收敛）、NEB 映像状态判定、nebef.pl 能垒 |
 | `inspection_runner.py` | 巡检编排：筛选 → 上传脚本 → 远端批量执行 → 结果回填（job_id/current_output/状态）→ 归档；结构同步按「离子步每 25 步一桶 + 目录变化重置」触发（见 §6.2b），触发时下载 POSCAR/CONTCAR 并调 `scripts/vasp2cif.py` 生成 CIF（reports/structure/） |
 | `checks_store.py` | 巡检归档合并（最新条目 + 旧 force_history 沿用）、列表行组装（has_inspection 等） |
-| `continuation.py` | **续算与文件构建核心**：opt/NEB 续算（单次 base64 远程脚本 + 池化 SFTP 上传）、`create_frac_files`（opt→frac）、`build_ele_inputs`（ele 输入构建）、`create_neb_files`（IS/FS→NEB 映像 + nebmake.pl）、矫正项 vaspkit 501 |
+| `continuation.py` | **续算与文件构建核心**：opt/NEB 续算（单次 base64 远程脚本 + 池化 SFTP 上传 + 活跃作业保护）、`create_frac_files`（opt→frac）、`build_ele_inputs`（ele 输入构建）、`create_neb_files`（IS/FS→NEB 映像 + nebmake.pl）、矫正项 vaspkit 501 |
 | `incar.py` | `modify_incar` 统一 INCAR 参数修改（大小写/空格/布尔兼容、重复合并、缺失追加） |
 | `cluster_status.py` | bhost/bqueues/节点分组快照 |
 | `structure_analysis.py` | 结构对比（晶格/原子位移）；`vesta_render.py` 已停用（不再被调用，VESTA PNG 渲染由 3Dmol 替代） |
@@ -122,7 +132,9 @@ data/
 1. **SSH 连接**：统一走 `ssh.py` 连接池；每条 exec 有 ~1.3-2s 远端 shell 启动开销（HPC 负载高时 3-4s），**多步操作必须合并成单次 base64 bash 脚本**（参考 continuation `_remote_script` + `===STATE===/===FILES===` 标记分段）。
 2. **巡检**：全局 `POST /api/inspections/run`、单任务 `run-single/{task_id}`（任意状态可巡检，跳过筛选）；batch_check 自动上传远端；结果归档 data/checks 并按 task_id 合并；运行中任务也回传 last_energy + force_history。
 2b. **结构分析触发（analysis_needed，v0.4.6 起）**：仅 opt 任务；离子步每 25 步一桶（0-24→桶0、25-49→桶1、50-74→桶2…）。同一输出目录：桶 ≥1 且比上次触发桶更大才触发（25-49 触发后，再次巡检仍在 25-49 不触发，直到 50-74 及以后）；输出目录变化：视为新目录重置计数，重复按桶触发。触发时下载 POSCAR/CONTCAR → `scripts/vasp2cif.py` 生成 `reports/structure/{POSCAR,CONTCAR}.cif`（新结果覆盖旧 CIF），任务持久化 `last_analysis_bucket` / `last_analysis_dir`。**CIF 使用规则**：详情接口有本地 CIF 直接用；没有 CIF 但本地有 POSCAR/CONTCAR 时用脚本现场转换补缺（只补缺不覆盖）；转换先写临时文件成功后再原子替换，失败保留上一次结果。前端 Structure3DViewer 用 3Dmol 渲染（VESTA PNG 方案已移除）。
-3. **续算**：`POST /jobs/tasks/{id}/continuation`。opt：最新目录 OUTCAR/CONTCAR 均非空 → 创建 con(N+1)，复制 CONTCAR→POSCAR/POTCAR/KPOINTS/INCAR/提交脚本、**WAVECAR 用 mv**，INCAR 改 ISTART=1/ICHARG=0；未完成 → 分流提示（input_complete_but_not_finished / input_incomplete）；运行中 → 提示等待。NEB：从最新续算目录复制共享文件 + 端点 POSCAR 固定并**带上 00/NN OUTCAR**、中间映像 CONTCAR→POSCAR。续算在 DB 登记隐藏子任务（不展示，供后台定位）。
+3. **续算**：`POST /jobs/tasks/{id}/continuation`。opt：最新目录 OUTCAR/CONTCAR 均非空 → 创建 con(N+1)，复制 CONTCAR→POSCAR/POTCAR/KPOINTS/INCAR/提交脚本、**WAVECAR 用 mv**，INCAR 改 ISTART=1/ICHARG=0；未完成 → 分流提示（input_complete_but_not_finished / input_incomplete）；运行中 → 提示等待。NEB：从最新续算目录复制共享文件 + 端点 POSCAR 固定并**带上 00/NN OUTCAR**、中间映像 CONTCAR→POSCAR、**各映像（含端点/中间态）存在 WAVECAR 时随续算 mv 移动**（目标已有不覆盖）。续算在 DB 登记隐藏子任务（不展示，供后台定位）。
+   - **活跃作业保护（v0.5.1）**：opt/NEB 续算脚本都在创建目录**之前**用 `bjobs -l`（含 `bjobs -o 'jobid exec_cwd'` 按源目录/映像子目录二次匹配）判定是否有 RUN/SSUSP/PSUSP/USUSP 作业，命中则只回传状态、返回 `action="running"`，**不建目录、不移动文件**。opt 自 v0.4.5 起如此，NEB 在 v0.5.1 补齐（此前 NEB 续算对运行中作业没有拦截）。
+   - **WAVECAR 是移动语义**：续算成功后源目录不再保留 WAVECAR（opt 与 NEB 一致，目标已存在则不覆盖）。NEB 连端点 00/NN 的 WAVECAR 也一并移动，端点 POSCAR/OUTCAR 是复制。
 4. **提交/停止**：提交 = 定位最新 con → 检查 vasp.lsf → `bsub < vasp.lsf`，成功后**立即写库 job_id**；停止 = bkill，输出 `Job has already finished` 也按成功处理（状态→pending，job_id 保留为历史）。
 5. **文件构建**：`create_frac_files`（opt 最新输出 → frac，默认 ISYM=0/SIGMA=0.05/NSW=1/IBRION=5/**NFREE=2**/POTIM=0.015）；`create_neb_files`（**以 IS INCAR 为基底只改 NEB 参数**：IBRION=3/POTIM=0/IOPT=3/LCLIMB/IMAGES/ICHAIN/SPRING=-5/MAXMOVE=0.2）；`build_ele_inputs`（NSW=-1/IBRION=-1 + 各类型参数，冲突抛错）。
 6. **矫正项**：frac 巡检完成后自动尝试 vaspkit 501；前端矫正项框有值也可点击重算（联动：frac 未完成先单独巡检）。
@@ -130,7 +142,9 @@ data/
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.5.0）
+## 7. 近期重要改动记录（v0.4.1 → v0.5.1）
+
+- v0.5.1（commit 见 `git log --oneline -1`，已推送 origin/main）：① **NEB 续算活跃作业保护**——NEB 续算脚本补齐与 opt 一致的 `bjobs` 检查，运行中作业只回传 `action="running"`，不建 conN、不移动 WAVECAR（此前 NEB 路径无拦截，运行中任务可能被搬走 WAVECAR）。② NEB 续算各映像（含端点 00/NN 与中间态）存在 WAVECAR 时随续算 `mv` 移动（目标已有不覆盖），与 opt 语义一致。③ `modify_incar` 清理源文本头部空行（兼容 LF/CRLF/纯空白行；续算标记切片曾带入前导换行）。④ `_script_slice` 跳过标记行后的换行，修复 `===FILES===` 解析出空字符串首项。⑤ `GET /api/health` 的 `uptime` 改为后端进程运行秒数并新增 `startedAt`（原实现返回 `time.monotonic()`，在 Windows 上是**系统开机时长**，易误判后端是否已重启）。⑥ 文档：登记 TMDZYX 项目，明确交接文档由助手维护。
 
 - v0.4.5（commit `02c167c`，已推送）：续算合并单脚本 + 连接池化上传/下载/建目录（opt/NEB 10-15s→3.5s）；巡检修复（作业停止感知——bjobs 折行解析、NEB 按映像 OUTCAR 判定、运行中回传 last_energy）；NEB 创建文件以 IS INCAR 为基底、续算带端点 OUTCAR；停止作业 already-finished 按成功；SSH 真实延迟测试接口；INCAR 编辑器（自定义参数/生成到本地/分类分组空行/NFREE 仅 frac/MAGMOM 留空/POTIM 0.2/KPOINTS 纯 ASCII）；默认参数同步 task_registry.json（LWAVE/LCHARG=.FALSE.、NCORE=1、POTIM=0.2）；矫正项可点击重算。
 - v0.5.0（commit 见 `git log --oneline -1`，本次推送）：① **结构 3D 化**——结构分析触发条件改为「离子步每 25 步一桶 + 目录变化重置」（§6.2b）；新增 `scripts/vasp2cif.py`（经典 vasp2cif Python 3 移植，零第三方依赖）+ `backend/cif_convert.py`（原子写入：有 CIF 用 CIF、缺 CIF 现场转、失败保留旧结果）；详情接口返回 `poscar_cif/contcar_cif`（vesta_render 停用）；前端 Structure3DViewer + structure3d.ts + public/3dmol/3Dmol-min.js（backend/main.py 挂载 `/3dmol`），StructurePanel 以 3Dmol 结构视图替代 VESTA 三轴 PNG。② NEB 续算端点 OUTCAR 复制修复（find 仅匹配纯数字目录）。③ 组创建/加结构/独立任务改用服务器 remote_root 拼项目名（不再信任旧 remote_base）。④ 巡检列表 NEB 组按「项目+组名」自然排序相邻、组内 IS→FS→neb。⑤ SSH 保活延迟回传（后台 60s 保活实测延迟，`/api/ssh/status` 增 `latencyMs/latencyAt`，顶栏/SSH 页实时刷新）。⑥ 新增 DEPENDENCIES.md 依赖文档。数据侧修复（data/ 已 gitignore，不入库）：Ag_20260830.remote_base 已改回 HS 根、误建 test 下 PATH1_TS2 已删（本地移入 data/trash）、Ag PATH2/neb con6 已手动补 04/OUTCAR。
@@ -142,7 +156,7 @@ data/
 
 ## 8. 已知注意事项 / 坑
 
-- **后端无热重载**：改 `backend/*.py`（如 continuation.py / jobs.py）必须重启后端（当前进程可能仍是旧代码）。
+- **后端无热重载**：改 `backend/*.py`（如 continuation.py / jobs.py）必须重启后端（当前进程可能仍是旧代码）。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.1 起）；**不要**再用 `uptime` 数值推断——v0.5.1 之前它返回的是系统开机时长。
 - **生产模式静态资源**：后端只自动挂载 `dist/assets`；新增 `public/` 下的目录（如 `3dmol`）必须在 `backend/main.py` 显式 `app.mount`，否则会被 SPA 兜底路由当成 index.html 返回（浏览器拿到 HTML 当 JS 执行，`$3Dmol` 未定义、组件静默空白）。
 - **batch_check.py 例外**：每次巡检自动上传远端，改它无需重启后端；但下次巡检前远端副本可能是旧版。
 - **前端默认参数生效条件**：改 `src/data/mock/incar.ts` 后要刷新页面；且任务本地已有 `files/INCAR` 时，打开任务会**自动读取文件覆盖默认值**（精度切自定义）。
@@ -158,19 +172,25 @@ data/
 
 ## 9. 待办 / 开放事项
 
-- TODO.md 中未勾选项仍有效（报告页接入组数据图表、frac 频率输出解析等，部分已由巡检/看板覆盖，接续时先核对）。
-- 电子结构分析链路：PDOS（vaspkit 111/113/115）已有弹窗入口，Bader/COHP/功函数/差分电荷为占位；PDOS 文件生成与回传待完善。
-- 常驻 shell 命令网关（可选提速，需专门设计）。
-- 后端“精度档”（低/中/高）机制未实现，仅前端概念。
-- 提交/巡检等路径的进一步合并 exec 优化（提交已 3 次调用，可压到 1 次）。
-- 自由能路径汇总表（`free_energy_path_summary`）为需求设计，当前用巡检归档实时聚合，未落独立表。
+按优先级（2026-09-13 核对 TODO.md 后重排）：
+
+1. **frac 频率输出解析**（ZPE / 自由能矫正回填组数据 `frac.zpe / correction`）：目前自由能台阶图的矫正值来自 vaspkit 501 单点调用，未解析 OUTCAR/频率结果文件。
+2. **NEB 映像 POSCAR 线性插值**：`create_neb_files` 依赖 nebmake.pl，尚未内置线性插值兜底。
+3. **电子结构链路**：PDOS（vaspkit 111/113/115）有弹窗入口，文件生成与回传待完善；Bader / COHP / 功函数 / 差分电荷为占位。
+4. **POTCAR 生成**：后端按 POSCAR 元素拼接伪势（pymatgen）仍为占位
+5. 后端定时巡检（APScheduler 每 2 小时）只有配置与展示，未真正调度。
+6. 提交/巡检路径的进一步合并 exec 优化（提交已 3 次调用，可压到 1 次）。
+7. 常驻 shell 命令网关（可选提速，需专门设计）；后端“精度档”（低/中/高）机制未实现，仅前端概念；自由能路径汇总表（`free_energy_path_summary`）未落独立表，当前用巡检归档实时聚合。
+
+TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 
 ---
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.4.5；工作区现状以 §7「待提交」为准（提交后更新本文档对应小节）。
+1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.5.1；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。
 5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 package.json version 后 `git add -A && git commit && git push origin main`。
+6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。

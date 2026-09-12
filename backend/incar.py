@@ -62,7 +62,11 @@ def modify_incar(content: str, changes: Dict[str, Any]) -> Tuple[str, List[str]]
     if not changes:
         return content, warnings
 
+    # 清理源文本头部累积的空行（续算标记切片/历史文件可能带前导换行，
+    # 兼容 CRLF 与仅含空白的行）
     lines = content.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
     matches: Dict[str, List[Tuple[int, str]]] = {}
     for idx, line in enumerate(lines):
         stripped = line.lstrip()

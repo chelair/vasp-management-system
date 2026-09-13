@@ -20,6 +20,7 @@ DEFAULT_CONFIG_FILES = (
     "settings.json",
     "task_registry.json",
     "path_mapping.json",
+    "report_rules.json",
 )
 
 

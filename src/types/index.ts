@@ -267,20 +267,54 @@ export interface InspectionDetail {
 
 export type ReportStatus = 'completed' | 'generating' | 'failed';
 
+/* ---------------- 项目报告（v0.7.0 重构） ---------------- */
+
+/** 报告列表项（后端 index.json 的一条） */
+export interface ProjectReportMeta {
+  report_id: string;
+  project_id: string;
+  project_name: string;
+  generated_at: string;
+  time_window: { start?: string; end?: string; label?: string };
+  schema_version: string;
+  project_status: 'normal' | 'warning' | 'critical';
+  summary: string;
+  risk_summary: { high?: number; medium?: number; low?: number; total?: number };
+  completion_percent: number | null;
+  chart_count: number;
+  json_path: string;
+  markdown_path: string;
+  directory: string;
+}
+
+/** 报告章节（key + 标题 + 该章 Markdown） */
+export interface ProjectReportSection {
+  key: string;
+  title: string;
+  markdown: string;
+}
+
+export interface ProjectReportDetail {
+  meta: ProjectReportMeta;
+  schema_version: string;
+  markdown: string;
+  markdown_sections: ProjectReportSection[];
+  sections: { key: string; title: string }[];
+  charts: { name?: string; path: string }[] | string[];
+  /** 结构化数据（字段随 schema 版本演进，前端按需读取） */
+  structured: Record<string, unknown>;
+}
+
+export interface ProjectReportGenerateResult {
+  reports: ProjectReportMeta[];
+  failed: { project: string; error: string }[];
+}
+
 export interface RiskItem {
   level: 'high' | 'medium' | 'low';
   content: string;
 }
 
-export interface ReportRecord {
-  id: string;
-  title: string;
-  generated_at: string;
-  status: ReportStatus;
-  summary: string;
-  risks: RiskItem[];
-  suggestions: string[];
-}
 
 /* ---------------- 总览（Dashboard 重构版） ---------------- */
 

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.14（NEB 视图只留一个滑杆，画面倍率固定 2.5）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.7.0（智能报告重构：分项目报告生成）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -113,6 +113,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `inspection_runner.py` | 巡检编排：筛选 → 上传脚本 → 远端批量执行 → 结果回填（job_id/current_output/状态）→ 归档；结构同步按「离子步每 25 步一桶 + 目录变化重置」触发（见 §6.2b）：opt 下载 POSCAR/CONTCAR，NEB（v0.6.9）单次远端脚本取各映像 CONTCAR/POSCAR，均调 `scripts/vasp2cif.py` 生成 CIF（opt → reports/structure/，NEB → reports/structure/images/） |
 | `inspection_scheduler.py` | **自动巡检调度**（v0.6.2）：后台线程每 60s 检查一次，`auto_inspection_enabled` 打开且「距上次巡检 ≥ `inspection_interval_hours`」时触发一轮全局巡检；提供 `scheduler_status()` 与 `update_schedule()`（写入 settings.json） |
 | `checks_store.py` | 巡检归档合并（最新条目 + 旧 force_history 沿用）、列表行组装（has_inspection 等） |
+| `report_builder.py` / `report_charts.py` / `report_rules.py` / `report_store.py` / `report_schema.py` / `report_export.py` | **分项目报告（v0.7.0）**：数据收集（任务元数据 + 巡检归档 + 集群快照 + 审计日志）→ 11 章结构化对象 → Markdown → 纯 Python SVG 图表；风险规则外置可配；按项目分目录存储 + 索引；自包含 HTML 导出（可选章节、图表内联） |
 | `dashboard.py` | **总览聚合**：单次 SSH 合并查询（bjobs/blimits/df/bhosts/bqueues）+ 解析 + 5 分钟缓存（`dashboard_cache_seconds`）+ 集群采样历史 + 运行作业↔任务映射 + 核数按项目聚合 + 风险预警 + 项目进度 + 近 7 天趋势 |
 | `continuation.py` | **续算与文件构建核心**：opt/NEB 续算（单次 base64 远程脚本 + 池化 SFTP 上传 + 活跃作业保护）、`create_frac_files`（opt→frac）、`build_ele_inputs`（ele 输入构建）、`create_neb_files`（IS/FS→NEB 映像 + nebmake.pl）、矫正项 vaspkit 501 |
 | `incar.py` | `modify_incar` 统一 INCAR 参数修改（大小写/空格/布尔兼容、重复合并、缺失追加） |
@@ -146,6 +147,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `components/dashboard/`：RunningTasksPanel（bjobs 实时作业表，点行跳 `/jobs?task=`）、CoresUsagePanel（ECharts 圆环 + 项目着色 + 90%/100% 阈值）、ClusterHealthPanel（节点灯 / 队列拥堵 / 存储进度）、RiskAlertsPanel（未收敛+Zombie+巡检异常，点条目跳转）、TrendPanel（近 7 天核数/运行任务/提交数）、ProjectProgressPanel（四象限气泡 + 项目进度列表 + **已关闭项目折叠区**，样式为胶囊按钮 + 虚线分隔）、`useEcharts.ts`（**ECharts 按需注册**：Pie/Line/Bar/Scatter + Grid/Tooltip/Legend/Title/MarkLine + Canvas）。
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
+- `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`（v0.7.0）：分项目报告页——按项目生成 / 批量生成、报告历史（按项目分组）、章节导航、**导出范围勾选**、Markdown 渲染（自写轻量渲染器，无第三方依赖）/ 结构化数据视图、下载 MD/JSON、导出 HTML 与 PDF（浏览器打印）。
 - `components/jobs/`：IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、SubmitScriptPanel、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
@@ -183,7 +185,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.14）
+## 7. 近期重要改动记录（v0.4.1 → v0.7.0）
+
+- v0.7.0（commit 见 `git log --oneline -1`）：**智能报告模块重构——分项目报告生成**（后端 7 个新文件 + 前端报告页重写）。① 报告产物三件套：`report.json`（结构化数据，schema 1.0.0，字段/枚举/单位/时间格式统一，可直接作为大模型输入）+ `report.md`（章节与结构化字段一一对应的 Markdown）+ `charts/*.svg`；按项目分目录存 `data/reports/<项目>/<报告ID>/`，索引 `data/reports/index.json`（原子写 + 锁）。② 11 个章节：元数据 / 执行摘要 / 进度总览 / 任务状态详情 / 科学结果分析 / 巡检与异常 / 资源与集群 / 风险分析 / 行动清单 / 大模型上下文 / 附录。③ **图表纯 Python 生成 SVG**（`report_charts.py`，零依赖；本机无 matplotlib 且不引入）：能量-离子步、力-离子步（含 0.02 阈值线）、自由能台阶、NEB 能垒、核数圆环、存储进度条；数值同时以数组写入结构化数据（图片与数据分离）。④ **风险规则外置**（`report_rules.py` + `defaults/report_rules.json`，可覆盖到 `data/config/`）：声明式 `when`（all/any + field/op/value）+ 严重程度 + 建议模板，13 条规则；`closed` 闸门避免已关闭项目误报逾期/队列。⑤ 接口挂在 `/api/reports/project/...`（避免与既有 `/api/reports/groups` 冲突）：schema / generate（单个或 `all=true` 批量）/ list / detail / structured / markdown / **export.html（按 `sections` 勾选范围导出，图表内联成自包含 HTML，`print=1` 直接调起打印→另存 PDF）** / files/{name} / DELETE。⑥ 前端报告页重写：项目下拉 + 生成报告 + 一键生成所有项目、报告历史按项目分组、章节导航、**导出范围勾选**、Markdown/结构化数据视图切换、下载 MD/JSON/复制 JSON、导出 HTML/PDF。⑦ 统计口径修正：完成率分母为**未关闭任务**，已关闭（归档）任务单独计数且不参与风险判定；全归档项目完成度记 100%。⑧ 实测：Ag 报告 5.2s 生成（要求 <15s）、27 张图、10 条风险；按 `sections=risks,actions` 导出的 HTML 只含这两章（5.6KB），全量导出 103KB 且含 25 个内联 SVG。
 
 - v0.6.14（commit `29c329f`，已推送 origin/main）：**NEB 映像视图只保留一个滑杆**。按需求收敛控制项：① 界面只留「**原子缩放**」滑杆（默认 0.35、范围 0.15–0.85）；② **画面整体倍率改为固定 2.5**（常量 `VIEW_ZOOM`，不暴露控制），初始渲染 `zoomTo()` 自适应后 `zoom(2.5)`，「重置视角」也按 0.35 + 2.5 复位；③ 删除 v0.6.13 新增的「画面缩放」滑杆及其状态与副作用。实测：控件为 球棍/空间填充 + 原子缩放 + 自动旋转 + 重置视角；五个映像面板在倍率 2.5 下渲染面积约 15KB（对比 1.35 时约 8KB），面板头部 34px、画布 y 坐标一致、仍为单行横排。
 

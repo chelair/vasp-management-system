@@ -1,197 +1,477 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
   Card,
+  Checkbox,
   Empty,
-  Form,
   Input,
-  Modal,
+  Popconfirm,
+  Segmented,
   Select,
-  Spin,
+  Skeleton,
+  Tag,
+  Tooltip,
 } from 'antd';
 import {
-  ApiOutlined,
-  CheckCircleOutlined,
-  RobotOutlined,
+  CopyOutlined,
+  FileMarkdownOutlined,
+  FileTextOutlined,
+  FileZipOutlined,
+  PrinterOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
-import { fetchReports, generateReport } from '../api/reports';
+import {
+  deleteProjectReport,
+  fetchProjectReport,
+  fetchProjectReports,
+  generateProjectReports,
+  reportChartUrl,
+  reportHtmlUrl,
+  reportMarkdownUrl,
+} from '../api/reports';
+import { fetchProjects } from '../api/projects';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
-import StatusTag from '../components/common/StatusTag';
-import type { ReportRecord, RiskItem } from '../types';
+import type { Project, ProjectReportDetail, ProjectReportMeta } from '../types';
+import { renderMarkdown } from '../utils/markdown';
 
-const LEVEL_META: Record<RiskItem['level'], { label: string; color: string; bg: string }> = {
-  high: { label: '高风险', color: '#D9535B', bg: '#FDECED' },
-  medium: { label: '中风险', color: '#D18A2B', bg: '#FEF3E0' },
-  low: { label: '低风险', color: '#4A7BDD', bg: '#EAF1FF' },
+const STATUS_META: Record<string, { label: string; color: string }> = {
+  normal: { label: '正常', color: 'success' },
+  warning: { label: '警告', color: 'warning' },
+  critical: { label: '异常', color: 'error' },
 };
 
+/**
+ * 智能报告（v0.7.0 重构）：以**单个项目**为报告单位。
+ *
+ * 后端生成结构化数据（report.json，schema 版本化，可直接喂大模型）+ Markdown +
+ * SVG 图表；本页负责：按项目生成 / 列表 / 渲染 Markdown / 查看结构化数据 /
+ * 按章节范围导出 HTML 与 PDF（浏览器打印）/ 下载 Markdown 与 JSON。
+ */
 export default function Report() {
   const { message } = App.useApp();
-  const [history, setHistory] = useState<ReportRecord[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [reports, setReports] = useState<ProjectReportMeta[]>([]);
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ProjectReportDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
-  const [configForm] = Form.useForm();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [generating, setGenerating] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'markdown' | 'structured'>('markdown');
+  const [selectedSections, setSelectedSections] = useState<string[]>([]);
+  const [keyword, setKeyword] = useState('');
 
-  useEffect(() => {
-    fetchReports().then((rs) => {
-      setHistory(rs);
-      setSelectedId(rs[0]?.id ?? null);
-    }).finally(() => setLoading(false));
+  const loadReports = useCallback(async () => {
+    const list = await fetchProjectReports();
+    setReports(list);
+    return list;
   }, []);
 
-  const selected = useMemo(
-    () => history.find((r) => r.id === selectedId) ?? null,
-    [history, selectedId],
+  useEffect(() => {
+    Promise.all([fetchProjects(), loadReports()])
+      .then(([ps, list]) => {
+        setProjects(ps);
+        setSelectedProject(ps[0]?.id ?? null);
+        setSelectedReportId((prev) => prev ?? list[0]?.report_id ?? null);
+      })
+      .finally(() => setLoading(false));
+  }, [loadReports]);
+
+  useEffect(() => {
+    if (!selectedReportId) {
+      setDetail(null);
+      return;
+    }
+    setDetailLoading(true);
+    fetchProjectReport(selectedReportId)
+      .then((data) => {
+        setDetail(data);
+        setSelectedSections((data.sections ?? []).map((s) => s.key));
+      })
+      .catch((err) => message.error(err instanceof Error ? err.message : '读取报告失败'))
+      .finally(() => setDetailLoading(false));
+  }, [selectedReportId, message]);
+
+  const handleGenerate = async (scope: { project_id?: string; all?: boolean }) => {
+    const key = scope.all ? 'all' : scope.project_id ?? '';
+    setGenerating(key);
+    try {
+      const result = await generateProjectReports({ ...scope, window_days: 7 });
+      message.success(
+        `已生成 ${result.reports.length} 份报告` +
+          (result.failed.length ? `，失败 ${result.failed.length} 份` : ''),
+      );
+      if (result.failed.length) {
+        message.warning(`${result.failed[0].project}：${result.failed[0].error}`);
+      }
+      const list = await loadReports();
+      const fresh = result.reports[0] ?? list[0];
+      if (fresh) setSelectedReportId(fresh.report_id);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '生成报告失败');
+    } finally {
+      setGenerating(null);
+    }
+  };
+
+  const handleDelete = async (reportId: string) => {
+    try {
+      await deleteProjectReport(reportId);
+      message.success('报告已删除');
+      const list = await loadReports();
+      if (selectedReportId === reportId) setSelectedReportId(list[0]?.report_id ?? null);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '删除报告失败');
+    }
+  };
+
+  const downloadJson = async () => {
+    if (!detail) return;
+    const blob = new Blob([JSON.stringify(detail.structured, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${detail.meta.report_id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /** 导出 HTML / PDF（PDF 走浏览器打印，按勾选章节导出） */
+  const exportHtml = (print: boolean) => {
+    if (!detail) return;
+    if (selectedSections.length === 0) {
+      message.warning('请至少勾选一个章节');
+      return;
+    }
+    const url = reportHtmlUrl(detail.meta.report_id, selectedSections, print);
+    window.open(url, '_blank', 'noopener');
+    if (print) message.info('已打开打印视图，选择「另存为 PDF」即可导出');
+  };
+
+  const projectsWithReports = useMemo(() => {
+    const grouped = new Map<string, ProjectReportMeta[]>();
+    reports.forEach((r) => {
+      const list = grouped.get(r.project_name) ?? [];
+      list.push(r);
+      grouped.set(r.project_name, list);
+    });
+    return [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+  }, [reports]);
+
+  const filteredGroups = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    if (!kw) return projectsWithReports;
+    return projectsWithReports
+      .map(([name, items]) => [
+        name,
+        items.filter(
+          (i) =>
+            name.toLowerCase().includes(kw) ||
+            i.report_id.toLowerCase().includes(kw) ||
+            (i.summary ?? '').toLowerCase().includes(kw),
+        ),
+      ] as [string, ProjectReportMeta[]])
+      .filter(([, items]) => items.length > 0);
+  }, [projectsWithReports, keyword]);
+
+  const visibleSections = useMemo(
+    () => (detail?.markdown_sections ?? []).filter((s) => selectedSections.includes(s.key)),
+    [detail, selectedSections],
   );
 
-  const handleGenerate = async () => {
-    setGenerating(true);
-    const record = await generateReport();
-    setHistory((prev) => [record, ...prev]);
-    setSelectedId(record.id);
-    setGenerating(false);
-    message.success('报告生成完成（演示数据）');
-  };
-
-  const saveConfig = async () => {
-    await configForm.validateFields();
-    setConfigOpen(false);
-    message.info('API 配置已保存（演示，仅前端占位，不会真正调用大模型）');
-  };
+  const renderedSections = useMemo(
+    () =>
+      visibleSections.map((section) => ({
+        ...section,
+        html: renderMarkdown(section.markdown, {
+          chartResolver: (path) =>
+            detail ? reportChartUrl(detail.meta.report_id, path) : path,
+        }),
+      })),
+    [visibleSections, detail],
+  );
 
   return (
     <PageTransition>
       <PageHeader
         title="智能报告"
-        subtitle="将项目进度、巡检结果与作业信息作为输入，生成固定格式的风险与建议报告"
+        subtitle="以项目为单位生成结构化报告：结构化数据（可喂大模型）+ Markdown + 图表，支持按章节导出 HTML / PDF"
         extra={
-          <div className="header-actions">
-            <Button icon={<ApiOutlined />} onClick={() => setConfigOpen(true)}>
-              API 配置
-            </Button>
+          <div className="report-actions">
+            <Select
+              value={selectedProject}
+              onChange={setSelectedProject}
+              style={{ width: 190 }}
+              options={projects.map((p) => ({ value: p.id, label: p.name }))}
+              placeholder="选择项目"
+            />
             <Button
               type="primary"
-              icon={<RobotOutlined />}
-              loading={generating}
-              onClick={handleGenerate}
+              icon={<ThunderboltOutlined />}
+              loading={generating === selectedProject}
+              disabled={!selectedProject}
+              onClick={() => selectedProject && handleGenerate({ project_id: selectedProject })}
             >
               生成报告
+            </Button>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={generating === 'all'}
+              onClick={() => handleGenerate({ all: true })}
+            >
+              生成所有项目
             </Button>
           </div>
         }
       />
 
       <div className="report-grid">
-        <Card title="历史记录" loading={loading}>
-          <div className="history-list">
-            {history.map((r) => (
-              <div
-                key={r.id}
-                className={`history-item${r.id === selectedId ? ' active' : ''}`}
-                onClick={() => setSelectedId(r.id)}
-              >
-                <div className="history-item__title">{r.title}</div>
-                <div className="history-item__meta">
-                  <span>{r.generated_at}</span>
-                  <StatusTag status={r.status} kind="report" />
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        <Card title="报告模板预览">
-          <Spin spinning={generating} tip="正在生成报告...">
-            {selected ? (
-              <div className="report-template">
-                <div className="report-template__title">{selected.title}</div>
-                <div className="report-template__meta">
-                  生成时间：{selected.generated_at} · 数据来源：项目进度 / 巡检结果 / 作业信息
-                </div>
-
-                <section className="report-section">
-                  <h3>摘要</h3>
-                  <p>{selected.summary}</p>
-                </section>
-
-                <section className="report-section">
-                  <h3>风险项（{selected.risks.length}）</h3>
-                  {selected.risks.map((risk, i) => {
-                    const meta = LEVEL_META[risk.level];
+        <Card
+          className="report-list-card"
+          title="报告历史"
+          extra={
+            <Input
+              allowClear
+              size="small"
+              placeholder="搜索项目 / 报告 ID"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              style={{ width: 170 }}
+            />
+          }
+        >
+          {loading ? (
+            <Skeleton active paragraph={{ rows: 6 }} />
+          ) : filteredGroups.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="还没有报告，先点右上角「生成报告」"
+            />
+          ) : (
+            <div className="report-list">
+              {filteredGroups.map(([projectName, items]) => (
+                <div key={projectName} className="report-group">
+                  <div className="report-group__head">
+                    {projectName}
+                    <span className="report-group__count">{items.length}</span>
+                  </div>
+                  {items.map((item) => {
+                    const meta = STATUS_META[item.project_status] ?? STATUS_META.normal;
                     return (
-                      <div className="risk-item" key={i}>
-                        <span className="level-tag" style={{ color: meta.color, background: meta.bg }}>
-                          {meta.label}
+                      <button
+                        type="button"
+                        key={item.report_id}
+                        className={`report-item${selectedReportId === item.report_id ? ' is-active' : ''}`}
+                        onClick={() => setSelectedReportId(item.report_id)}
+                      >
+                        <span className="report-item__top">
+                          <Tag color={meta.color} bordered={false}>
+                            {meta.label}
+                          </Tag>
+                          <span className="report-item__time">
+                            {item.generated_at.replace('T', ' ').slice(5, 16)}
+                          </span>
                         </span>
-                        <span>{risk.content}</span>
-                      </div>
+                        <span className="report-item__summary">{item.summary}</span>
+                        <span className="report-item__stats">
+                          <span>完成度 {item.completion_percent ?? '—'}%</span>
+                          <span>图表 {item.chart_count}</span>
+                          <span className="report-item__risk">
+                            风险 {item.risk_summary?.high ?? 0}/{item.risk_summary?.medium ?? 0}/
+                            {item.risk_summary?.low ?? 0}
+                          </span>
+                        </span>
+                        <span className="report-item__footer">
+                          <span className="path-cell">{item.report_id}</span>
+                          <Popconfirm
+                            title="删除该报告？"
+                            okText="删除"
+                            okButtonProps={{ danger: true }}
+                            cancelText="取消"
+                            onConfirm={() => handleDelete(item.report_id)}
+                          >
+                            <span
+                              className="report-item__delete"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              删除
+                            </span>
+                          </Popconfirm>
+                        </span>
+                      </button>
                     );
                   })}
-                </section>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
 
-                <section className="report-section">
-                  <h3>改进建议（{selected.suggestions.length}）</h3>
-                  {selected.suggestions.map((s, i) => (
-                    <div className="suggest-item" key={i}>
-                      <CheckCircleOutlined />
-                      <span>{s}</span>
-                    </div>
-                  ))}
-                </section>
-
-                <div className="report-template__footer">
-                  本报告由 AI 助手根据项目数据自动生成 · 当前为前端演示模板
+        <Card className="report-detail-card" title="报告内容">
+          {detailLoading ? (
+            <Skeleton active paragraph={{ rows: 10 }} />
+          ) : !detail ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="请选择左侧报告，或先生成一份新报告"
+            />
+          ) : (
+            <div className="report-detail">
+              <div className="report-detail__head">
+                <div className="report-detail__title">
+                  {detail.meta.project_name}
+                  <Tag
+                    color={STATUS_META[detail.meta.project_status]?.color ?? 'default'}
+                    bordered={false}
+                  >
+                    {STATUS_META[detail.meta.project_status]?.label ?? detail.meta.project_status}
+                  </Tag>
+                </div>
+                <div className="report-detail__meta">
+                  <span className="path-cell">{detail.meta.report_id}</span>
+                  <span>{detail.meta.generated_at.replace('T', ' ')}</span>
+                  <span>schema {detail.schema_version}</span>
+                  <span>完成度 {detail.meta.completion_percent ?? '—'}%</span>
+                  <span>
+                    风险 高 {detail.meta.risk_summary?.high ?? 0} / 中{' '}
+                    {detail.meta.risk_summary?.medium ?? 0} / 低{' '}
+                    {detail.meta.risk_summary?.low ?? 0}
+                  </span>
                 </div>
               </div>
-            ) : (
-              <Empty description="暂无报告，点击右上角「生成报告」" />
-            )}
-          </Spin>
+
+              <div className="report-toolbar">
+                <Segmented
+                  size="small"
+                  value={viewMode}
+                  onChange={(v) => setViewMode(v as 'markdown' | 'structured')}
+                  options={[
+                    { label: 'Markdown', value: 'markdown' },
+                    { label: '结构化数据', value: 'structured' },
+                  ]}
+                />
+                <span className="report-toolbar__label">导出范围</span>
+                <Checkbox
+                  checked={selectedSections.length === (detail.sections?.length ?? 0)}
+                  indeterminate={
+                    selectedSections.length > 0 &&
+                    selectedSections.length < (detail.sections?.length ?? 0)
+                  }
+                  onChange={(e) =>
+                    setSelectedSections(
+                      e.target.checked ? (detail.sections ?? []).map((s) => s.key) : [],
+                    )
+                  }
+                >
+                  全选
+                </Checkbox>
+                <div className="report-toolbar__sections">
+                  {(detail.sections ?? []).map((s) => (
+                    <Checkbox
+                      key={s.key}
+                      checked={selectedSections.includes(s.key)}
+                      onChange={(e) =>
+                        setSelectedSections((prev) =>
+                          e.target.checked
+                            ? [...prev, s.key]
+                            : prev.filter((k) => k !== s.key),
+                        )
+                      }
+                    >
+                      {s.title}
+                    </Checkbox>
+                  ))}
+                </div>
+                <div className="report-toolbar__export">
+                  <Tooltip title="下载 Markdown 全文">
+                    <Button
+                      size="small"
+                      icon={<FileMarkdownOutlined />}
+                      onClick={() => window.open(reportMarkdownUrl(detail.meta.report_id), '_blank')}
+                    >
+                      MD
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title="下载结构化数据（JSON，可直接作为大模型输入）">
+                    <Button size="small" icon={<FileZipOutlined />} onClick={downloadJson}>
+                      JSON
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title="按勾选章节导出为自包含 HTML（图表内联）">
+                    <Button
+                      size="small"
+                      icon={<FileTextOutlined />}
+                      onClick={() => exportHtml(false)}
+                    >
+                      导出 HTML
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title="打开打印视图，选择「另存为 PDF」">
+                    <Button
+                      size="small"
+                      type="primary"
+                      ghost
+                      icon={<PrinterOutlined />}
+                      onClick={() => exportHtml(true)}
+                    >
+                      导出 PDF
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title="复制结构化数据到剪贴板">
+                    <Button
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(
+                          JSON.stringify(detail.structured, null, 2),
+                        );
+                        message.success('结构化数据已复制');
+                      }}
+                    >
+                      复制 JSON
+                    </Button>
+                  </Tooltip>
+                </div>
+              </div>
+
+              {viewMode === 'markdown' ? (
+                <div className="report-body">
+                  <nav className="report-toc">
+                    {renderedSections.map((s) => (
+                      <a key={s.key} href={`#report-${s.key}`}>
+                        {s.title}
+                      </a>
+                    ))}
+                  </nav>
+                  <div className="report-content">
+                    {renderedSections.map((s) => (
+                      <section key={s.key} id={`report-${s.key}`}>
+                        <h2 className="report-section-title">{s.title}</h2>
+                        <div
+                          className="report-markdown"
+                          dangerouslySetInnerHTML={{ __html: s.html }}
+                        />
+                      </section>
+                    ))}
+                    {renderedSections.length === 0 && (
+                      <Empty description="未勾选任何章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <pre className="report-structured">
+                  {JSON.stringify(detail.structured, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
         </Card>
       </div>
-
-      <Modal
-        title="大模型 API 配置"
-        open={configOpen}
-        onOk={saveConfig}
-        onCancel={() => setConfigOpen(false)}
-        okText="保存"
-        cancelText="取消"
-      >
-        <Form form={configForm} layout="vertical" style={{ marginTop: 12 }}>
-          <Form.Item
-            label="模型服务"
-            name="provider"
-            initialValue="gpt-4"
-            rules={[{ required: true, message: '请选择模型服务' }]}
-          >
-            <Select
-              options={[
-                { value: 'gpt-4', label: 'OpenAI GPT-4' },
-                { value: 'claude', label: 'Anthropic Claude' },
-                { value: 'deepseek', label: 'DeepSeek' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item
-            label="API Key"
-            name="apiKey"
-            rules={[{ required: true, message: '请输入 API Key' }]}
-          >
-            <Input.Password placeholder="sk-..." />
-          </Form.Item>
-          <Form.Item label="Base URL（可选）" name="baseUrl">
-            <Input placeholder="https://api.openai.com/v1" />
-          </Form.Item>
-        </Form>
-        <div style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.7 }}>
-          演示阶段仅保存到前端状态，不会发起真实请求；正式版将把项目进度、巡检结果、作业信息组装为 Prompt 后调用。
-        </div>
-      </Modal>
     </PageTransition>
   );
 }

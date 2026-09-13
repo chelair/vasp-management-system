@@ -20,6 +20,7 @@ from routers import (
     jobs,
     meta,
     paths,
+    project_reports,
     projects,
     reports,
     settings,
@@ -129,6 +130,7 @@ app.include_router(free_energy.router, prefix="/api")
 app.include_router(paths.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
+app.include_router(project_reports.router, prefix="/api")
 app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
 

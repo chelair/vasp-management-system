@@ -1,0 +1,305 @@
+{
+  "schema_version": "1.0.0",
+  "note": "报告风险规则（声明式，可在 data/config/report_rules.json 覆盖）。scope=task 时逐任务匹配、scope=project 时逐项目匹配；when.op 支持 in / not_in / eq / ne / gt / gte / lt / lte / is_true / is_false / exists；description / advice 里可用 {字段名} 占位（取被匹配对象的事实字段）。",
+  "rules": [
+    {
+      "rule_id": "R_TASK_UNCONVERGED",
+      "risk_type": "convergence",
+      "severity": "high",
+      "scope": "task",
+      "when": {
+        "field": "status",
+        "op": "in",
+        "value": [
+          "unconverged"
+        ]
+      },
+      "description": "任务 {task_name}（{task_type_label}）计算完成但力未收敛（max {force_max} eV/A）",
+      "advice": "对该任务执行续算：按最新 CONTCAR 创建 conN 并重新提交",
+      "max_items": 20
+    },
+    {
+      "rule_id": "R_TASK_ZOMBIED",
+      "risk_type": "convergence",
+      "severity": "high",
+      "scope": "task",
+      "when": {
+        "field": "status",
+        "op": "in",
+        "value": [
+          "zombied"
+        ]
+      },
+      "description": "任务 {task_name}（{task_type_label}）异常中断（无正常结束标志）",
+      "advice": "检查 OUTCAR 报错后重新提交，或按已有 CONTCAR 续算",
+      "max_items": 20
+    },
+    {
+      "rule_id": "R_TASK_CONTINUATION_MANY",
+      "risk_type": "convergence",
+      "severity": "medium",
+      "scope": "task",
+      "when": {
+        "field": "continuation_count",
+        "op": "gte",
+        "value": 3
+      },
+      "description": "任务 {task_name} 已续算 {continuation_count} 次，仍未收敛",
+      "advice": "复核 INCAR 收敛设置（EDIFF/EDIFFG/NSW/ISIF）与结构合理性，避免无效续算",
+      "max_items": 10
+    },
+    {
+      "rule_id": "R_TASK_OUTPUT_MISSING",
+      "risk_type": "file",
+      "severity": "high",
+      "scope": "task",
+      "when": {
+        "all": [
+          {
+            "field": "status",
+            "op": "in",
+            "value": [
+              "completed",
+              "unconverged"
+            ]
+          },
+          {
+            "field": "has_output",
+            "op": "is_false"
+          }
+        ]
+      },
+      "description": "任务 {task_name} 状态为 {status_label}，但未定位到有效输出文件",
+      "advice": "核对远程目录（{remote_dir}）下 OUTCAR/CONTCAR 是否被清理或路径变更",
+      "max_items": 10
+    },
+    {
+      "rule_id": "R_FRAC_MISSING",
+      "risk_type": "analysis",
+      "severity": "medium",
+      "scope": "task",
+      "when": {
+        "all": [
+          {
+            "field": "task_type",
+            "op": "eq",
+            "value": "frac"
+          },
+          {
+            "field": "corrected",
+            "op": "is_false"
+          },
+          {
+            "field": "status",
+            "op": "in",
+            "value": [
+              "completed",
+              "unconverged"
+            ]
+          }
+        ]
+      },
+      "description": "频率矫正任务 {task_name} 已完成但缺少自由能矫正值（ZPE/热校正）",
+      "advice": "重新巡检该任务以触发 vaspkit 501 计算矫正项，或在结构详情里手动重算",
+      "max_items": 20
+    },
+    {
+      "rule_id": "R_FRAC_NOT_STARTED",
+      "risk_type": "analysis",
+      "severity": "low",
+      "scope": "task",
+      "when": {
+        "all": [
+          {
+            "field": "task_type",
+            "op": "eq",
+            "value": "frac"
+          },
+          {
+            "field": "status",
+            "op": "in",
+            "value": [
+              "pending",
+              "queued"
+            ]
+          }
+        ]
+      },
+      "description": "频率矫正任务 {task_name} 尚未完成（当前 {status_label}）",
+      "advice": "结构优化收敛后提交频率矫正，用于后续自由能矫正",
+      "max_items": 20
+    },
+    {
+      "rule_id": "R_ELE_NOT_ANALYZED",
+      "risk_type": "analysis",
+      "severity": "low",
+      "scope": "task",
+      "when": {
+        "all": [
+          {
+            "field": "task_type",
+            "op": "eq",
+            "value": "ele"
+          },
+          {
+            "field": "status",
+            "op": "in",
+            "value": [
+              "completed"
+            ]
+          },
+          {
+            "field": "analyzed",
+            "op": "is_false"
+          }
+        ]
+      },
+      "description": "电子结构任务 {task_name}（{subtype_label}）已完成但后处理分析未执行",
+      "advice": "在任务详情中运行对应分析（PDOS/Bader/功函数/差分电荷）",
+      "max_items": 10
+    },
+    {
+      "rule_id": "R_PROJECT_OVERDUE",
+      "risk_type": "progress",
+      "severity": "high",
+      "scope": "project",
+      "when": {
+        "all": [
+          {
+            "field": "closed",
+            "op": "is_false"
+          },
+          {
+            "field": "overdue",
+            "op": "is_true"
+          },
+          {
+            "field": "progress_percent",
+            "op": "lt",
+            "value": 100
+          }
+        ]
+      },
+      "description": "项目已逾期 {overdue_days} 天（截止 {deadline}），当前完成度 {progress_percent}%",
+      "advice": "重新评估剩余任务工作量与截止日期，必要时调整优先级或拆分交付",
+      "max_items": 1
+    },
+    {
+      "rule_id": "R_PROJECT_PROGRESS_BEHIND",
+      "risk_type": "progress",
+      "severity": "medium",
+      "scope": "project",
+      "when": {
+        "all": [
+          {
+            "field": "closed",
+            "op": "is_false"
+          },
+          {
+            "field": "overdue",
+            "op": "is_false"
+          },
+          {
+            "field": "progress_gap",
+            "op": "gte",
+            "value": 20
+          }
+        ]
+      },
+      "description": "项目进度落后计划 {progress_gap} 个百分点（时间进度 {time_progress_percent}%，完成度 {progress_percent}%）",
+      "advice": "核查阻塞任务（未收敛/排队）并优先处理，必要时调整计划",
+      "max_items": 1
+    },
+    {
+      "rule_id": "R_STORAGE_LOW",
+      "risk_type": "storage",
+      "severity": "high",
+      "scope": "project",
+      "when": {
+        "all": [
+          {
+            "field": "closed",
+            "op": "is_false"
+          },
+          {
+            "field": "storage_used_percent",
+            "op": "gte",
+            "value": 85
+          }
+        ]
+      },
+      "description": "项目根所在文件系统使用率 {storage_used_percent}%（剩余 {storage_available}）",
+      "advice": "清理中间文件（WAVECAR/CHGCAR/旧 conN 目录）或申请扩容",
+      "max_items": 1
+    },
+    {
+      "rule_id": "R_CORES_HIGH",
+      "risk_type": "resource",
+      "severity": "medium",
+      "scope": "project",
+      "when": {
+        "all": [
+          {
+            "field": "closed",
+            "op": "is_false"
+          },
+          {
+            "field": "cores_used_percent",
+            "op": "gte",
+            "value": 90
+          }
+        ]
+      },
+      "description": "核数占用已达 {cores_used}/{cores_total}（{cores_used_percent}%），接近配额上限",
+      "advice": "暂缓新任务提交，或等待队列中的作业完成后释放配额",
+      "max_items": 1
+    },
+    {
+      "rule_id": "R_QUEUE_LONG",
+      "risk_type": "queue",
+      "severity": "medium",
+      "scope": "project",
+      "when": {
+        "all": [
+          {
+            "field": "closed",
+            "op": "is_false"
+          },
+          {
+            "field": "max_queue_pending",
+            "op": "gte",
+            "value": 1000
+          }
+        ]
+      },
+      "description": "集群队列 {busiest_queue} 排队 {max_queue_pending} 个作业，本任务可能长时间排队",
+      "advice": "考虑更换空闲队列（如 1 天队列 / ocean 队列）或错峰提交",
+      "max_items": 1
+    },
+    {
+      "rule_id": "R_DEPENDENCY_FAILED",
+      "risk_type": "dependency",
+      "severity": "medium",
+      "scope": "task",
+      "when": {
+        "all": [
+          {
+            "field": "dependency_status",
+            "op": "exists"
+          },
+          {
+            "field": "dependency_status",
+            "op": "not_in",
+            "value": [
+              "completed",
+              "archived"
+            ]
+          }
+        ]
+      },
+      "description": "任务 {task_name} 依赖的 {dependency_name} 当前为 {dependency_status_label}，暂不具备继续条件",
+      "advice": "先完成依赖任务（初末态优化/主结构优化），再继续当前任务",
+      "max_items": 10
+    }
+  ]
+}

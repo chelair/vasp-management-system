@@ -109,7 +109,9 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
         ? chartResolver(img[2])
         : img[2];
       html.push(
-        `<figure class="${figureClass}"><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="lazy"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
+      // 报告页一屏内会挂十几张图，用 eager + async 解码：既不会出现"滚到才加载"的空白，
+      // 也不会阻塞正文渲染（lazy 在部分内嵌浏览器里会一直不加载）
+      `<figure class="${figureClass}"><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="eager" decoding="async"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
       );
       i += 1;
       continue;

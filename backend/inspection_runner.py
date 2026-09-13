@@ -378,7 +378,12 @@ def _apply_result(
     task_id = task["task_id"]
     old_status = task.get("status")
     new_status = result.get("status", old_status)
-    server_status = new_status
+    # 「低精度收敛」是巡检判定的细分结论：数据库里仍按 completed 记
+    # （进度/看板口径不变），但归档结果与巡检列表保留这个更细的状态
+    db_status = "completed" if new_status == "low_precision" else new_status
+    # 未读红点/状态变化用落库口径比较：低精度收敛每轮都会重新判定，
+    # 但数据库状态仍是 completed，不该每轮都算"状态变化"
+    server_status = db_status
     observed_changed = server_status != old_status
     energy = result.get("last_energy")
     queue_status = result.get("queue_status")
@@ -396,7 +401,7 @@ def _apply_result(
     )
     latest_changed = (old_latest or "") != (latest_dir or "")
     notes_markers: List[str] = [str(m) for m in result.get("error_messages", []) or []]
-    if not (task.get("job_id") or result.get("job_id")) and new_status != "completed":
+    if not (task.get("job_id") or result.get("job_id")) and db_status != "completed":
         notes_markers.append("未见有效完成日志")
 
     # 结构分析触发条件（替换原“状态变化或最新输出目录变化”）：
@@ -447,9 +452,9 @@ def _apply_result(
         extra_fields["current_output"] = current_output
     try:
         update_task_status(
-            db, project["name"], task_id, new_status, extra_fields or None
+            db, project["name"], task_id, db_status, extra_fields or None
         )
-        status_changed = new_status != old_status
+        status_changed = db_status != old_status
     except ValueError as e:
         rejected = str(e)
         new_status = old_status

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from checks_store import collect_results, list_runs, to_frontend_rows
 from cif_convert import read_neb_image_cifs, read_or_convert_cif
-from config import DATA_DIR, load_servers, load_task_registry
+from config import DATA_DIR, load_servers, load_settings, load_task_registry
 from dashboard import build_cluster_health, build_cores_usage, cluster_snapshot
 from dates import now_iso
 from report_charts import (
@@ -63,6 +63,7 @@ STATUS_LABELS = {
     "unconverged": "未收敛",
     "zombied": "异常中断",
     "archived": "已关闭",
+    "low_precision": "低精度收敛",
 }
 SUBTYPE_LABELS = {
     "pdos": "PDOS",
@@ -73,11 +74,22 @@ SUBTYPE_LABELS = {
 ANOMALY_CATEGORIES = ("convergence", "resource", "file", "ssh", "queue")
 
 MAX_STRUCTURE_TASKS = 6  # 单项目正文最多展示多少个结构优化任务（其余只进结构化数据），控制篇幅
+CHART_WIDTH = 1000  # 报告里所有图表统一宽度（页面按 1:1 展示，排版与字号才一致）
+OPT_VIEW_PANEL = 146  # 三视图单格边长（3 格 = 438）
+OPT_CURVE_W = 538  # 面板里右侧能量/力曲线宽度（4+438+16+538+4 = 1000）
+OPT_CURVE_H = 250
 
 # 任务类别（与巡检列表 / 前端任务树同口径）
 CATEGORY_ORDER = ("结构优化", "自由能路径", "NEB 过渡态", "电子结构")
 STATUS_DONE = ("completed", "archived")
 DEFAULT_WORKLOAD_WEIGHT = 1.0
+
+# 当量 → 核时 → 工期（2026-09-13 用户口径）
+#   1 当量 ≈ 600 核时；服务器最大算力 200 核 × 24 h；实际可用按 70% 折算
+DEFAULT_CORE_HOURS_PER_WEIGHT = 600.0
+DEFAULT_CLUSTER_MAX_CORES = 200.0
+DEFAULT_CLUSTER_UTILIZATION = 0.7
+CAPACITY_KEYS = ("core_hours_per_weight", "cluster_max_cores", "cluster_utilization")
 
 
 def _task_category(fact: Dict[str, Any]) -> str:
@@ -110,10 +122,7 @@ def _workload_weight(task_type: str, registry: Dict[str, Any]) -> float:
 
 def _progress_segments(facts: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
     """按任务类型分段统计进度：块宽 = 该类型当量占比，主进度 = 当量加权完成率。"""
-    try:
-        registry = load_task_registry()
-    except Exception:  # noqa: BLE001 - 配置缺失不阻塞报告
-        registry = {}
+    registry = _registry()
     buckets: Dict[str, Dict[str, float]] = {}
     for fact in facts:
         category = _task_category(fact)
@@ -146,6 +155,75 @@ def _progress_segments(facts: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
         )
     main_percent = round(sum(b["done_weight"] for b in buckets.values()) / total_weight * 100, 1)
     return segments, main_percent
+
+
+def _registry() -> Dict[str, Any]:
+    try:
+        return load_task_registry()
+    except Exception:  # noqa: BLE001 - 配置缺失不阻塞报告
+        return {}
+
+
+def _capacity() -> Dict[str, float]:
+    """算力口径（settings.json 可改）：1 当量 = 600 核时，200 核 × 24h × 70%。"""
+    try:
+        settings = load_settings()
+    except Exception:  # noqa: BLE001
+        settings = {}
+
+    def _num(key: str, default: float) -> float:
+        try:
+            return float(settings.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    per_unit = _num("core_hours_per_weight", DEFAULT_CORE_HOURS_PER_WEIGHT)
+    max_cores = _num("cluster_max_cores", DEFAULT_CLUSTER_MAX_CORES)
+    utilization = _num("cluster_utilization", DEFAULT_CLUSTER_UTILIZATION)
+    per_day = max_cores * 24 * utilization
+    return {
+        "core_hours_per_weight": per_unit,
+        "max_cores": max_cores,
+        "utilization": utilization,
+        "core_hours_per_day": per_day,
+    }
+
+
+def _workload_plan(facts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """按当量折算核时并给出工期：剩余核时 ÷ 有效产能（核时/天）。"""
+    registry = _registry()
+    capacity = _capacity()
+    per_unit = capacity["core_hours_per_weight"]
+    total_units = 0.0
+    done_units = 0.0
+    for fact in facts:
+        weight = _workload_weight(str(fact.get("task_type") or ""), registry)
+        total_units += weight
+        if fact.get("status") in STATUS_DONE:
+            done_units += weight
+    remaining_units = max(total_units - done_units, 0.0)
+    total_hours = total_units * per_unit
+    done_hours = done_units * per_unit
+    remaining_hours = remaining_units * per_unit
+    per_day = capacity["core_hours_per_day"]
+    eta_days = round(remaining_hours / per_day, 2) if per_day > 0 else None
+    eta_at = (
+        (datetime.now() + timedelta(days=eta_days)).strftime("%Y-%m-%d") if eta_days is not None else None
+    )
+    return {
+        "total_units": round(total_units, 2),
+        "done_units": round(done_units, 2),
+        "remaining_units": round(remaining_units, 2),
+        "core_hours_total": round(total_hours, 1),
+        "core_hours_done": round(done_hours, 1),
+        "core_hours_remaining": round(remaining_hours, 1),
+        "core_hours_per_weight": per_unit,
+        "core_hours_per_day": round(per_day, 1),
+        "max_cores": capacity["max_cores"],
+        "utilization": capacity["utilization"],
+        "eta_days": eta_days,
+        "eta_at": eta_at,
+    }
 
 
 # --------------------------------------------------------------------- 工具
@@ -331,6 +409,11 @@ def _task_facts(
                 else "—",
                 "errors": [str(x) for x in (entry.get("error_messages") or [])],
                 "markers": [str(x) for x in (entry.get("markers") or [])],
+                # 精度检查（batch_check 按 INCAR/KPOINTS 判定，见 §6.2 巡检性能与精度）
+                "precision": entry.get("precision") or None,
+                "precision_ok": (entry.get("precision") or {}).get("ok"),
+                "convergence": entry.get("status"),
+                "incar_snapshot": entry.get("incar") or None,
                 "notes": str(entry.get("notes") or ""),
                 "last_check_time": task.get("last_check_time"),
                 "force_history": force_history if isinstance(force_history, list) else [],
@@ -590,7 +673,15 @@ def _sections_markdown(report, charts):
     sections = {}
     info = report["basic_info"]
     summary = info["task_summary"]
+    workload = info.get("workload") or {}
     status_icon = {"normal": "🟢", "warning": "🟠", "critical": "🔴"}[info["project_status"]]
+    eta_text = (
+        f"**{workload['eta_at']}**（还需 {workload['eta_days']:.1f} 天"
+        f"：剩余 {workload['core_hours_remaining']:,.0f} 核时 ÷ 有效算力 "
+        f"{workload['core_hours_per_day']:,.0f} 核时/天）"
+        if workload.get("eta_days") is not None and workload.get("core_hours_remaining", 0) > 0
+        else "**已收尾**（剩余工作量为 0）"
+    )
     sections["basic_info"] = "\n".join(
         [
             f"- **项目**：{info['project_name']}",
@@ -598,6 +689,11 @@ def _sections_markdown(report, charts):
             f"- **整体状态**：{status_icon} **{info['project_status_label']}** —— {info['status_reason']}",
             f"- **项目进度**：**{info.get('weighted_progress_percent', info['progress_percent'])}%**"
             f"（按任务当量加权；{summary}）",
+            f"- **工作量**：{workload.get('total_units', 0):.1f} 当量 ≈ "
+            f"{workload.get('core_hours_total', 0):,.0f} 核时（1 当量 "
+            f"{workload.get('core_hours_per_weight', 0):.0f} 核时），已完成 "
+            f"{workload.get('core_hours_done', 0):,.0f} 核时",
+            f"- **预计完成**：{eta_text}",
             f"- **时间窗口**：{info['time_window_label']}",
             "",
             f"![项目进度](charts/progress.svg)",
@@ -612,16 +708,16 @@ def _sections_markdown(report, charts):
         blocks.append(
             f"共 {science.get('opt_total') or len(opt_items)} 个结构优化任务有收敛数据，"
             f"下列展示其中 {len(opt_items)} 个，其余仅保留在报告数据中。每条包含结构三视图与能量/力曲线。"
-            "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n"
+            "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n\n"
         )
         entries: List[str] = []
         for item in opt_items:
             converge = "✅ 已收敛" if item["converged"] else "⚠️ 未收敛"
             lines = [
-                f"**{item['task_name']}** · {converge} · 最终能量 "
-                f"**{_fmt(item['final_energy_ev'])} eV** · "
-                f"最终最大力 **{_fmt(item['force_max_ev_per_a'])} eV/Å** · "
-                f"离子步 {_fmt(item['ionic_steps'], 0)}"
+                f"#### {item['task_name']}",
+                f"{converge} · 最终能量 **{_fmt(item['final_energy_ev'])} eV** · "
+                f"最大力 **{_fmt(item['force_max_ev_per_a'])} eV/Å** · "
+                f"离子步 {_fmt(item['ionic_steps'], 0)}",
             ]
             panel = item["charts"].get("panel") or item["charts"].get("energy_force")
             if panel:
@@ -631,15 +727,25 @@ def _sections_markdown(report, charts):
         blocks.append("\n\n---\n\n".join(entries) + "\n")
     paths = science.get("free_energy") or []
     if paths:
-        blocks.append("### 自由能路径\n")
+        blocks.append("### 自由能路径\n\n")
         entries = []
         for path in paths:
-            lines = []
-            if path.get("chart"):
-                lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
             structures = path["structures"]
             with_energy = [s for s in structures if s.get("free_energy_ev") is not None]
             ref = float(with_energy[0]["free_energy_ev"]) if with_energy else None
+            rels = [
+                float(s["free_energy_ev"]) - ref
+                for s in with_energy
+                if ref is not None
+            ]
+            corrected = sum(1 for s in structures if s.get("corrected"))
+            lines = [
+                f"#### {path['group_name']}",
+                f"{path['structure_count']} 个中间体 · {corrected} 个已矫正"
+                + (f" · 最高相对能 {max(rels):+.3f} eV" if rels else ""),
+            ]
+            if path.get("chart"):
+                lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
             lines.append(
                 _md_table(
                     ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
@@ -665,10 +771,15 @@ def _sections_markdown(report, charts):
         blocks.append("\n\n---\n\n".join(entries) + "\n")
     nebs = science.get("neb") or []
     if nebs:
-        blocks.append("### NEB 过渡态\n")
+        blocks.append("### NEB 过渡态\n\n")
         entries = []
         for item in nebs:
-            lines = []
+            lines = [
+                f"#### {item['task_name']}",
+                f"能垒 **{_fmt(item['barrier_ev'])} eV** · "
+                f"过渡态映像 {item['transition_state_image'] or '—'} · "
+                f"{item['image_count']} 个映像",
+            ]
             if item.get("chart"):
                 lines.append(f"![{item['task_name']} NEB 能垒看板]({item['chart']})")
             images = item.get("images") or []
@@ -854,24 +965,6 @@ def _current_stage(facts: List[Dict[str, Any]], counter: Counter) -> str:
     return "准备阶段"
 
 
-def _estimated_completion(project: Dict[str, Any], facts: List[Dict[str, Any]]) -> Optional[str]:
-    """基于已完成任务的平均耗时估算剩余任务完成时间（数据不足时返回 None）。"""
-    durations: List[float] = []
-    for task in project.get("tasks", []):
-        if task.get("status") != "completed":
-            continue
-        created = _parse_time(task.get("created_at"))
-        checked = _parse_time(task.get("last_check_time"))
-        if created and checked and checked > created:
-            durations.append((checked - created).total_seconds() / 3600)
-    remaining = len([f for f in facts if f["status"] not in ("completed", "archived")])
-    if not durations or remaining == 0:
-        return None
-    avg_hours = sum(durations) / len(durations)
-    finish = datetime.now() + timedelta(hours=avg_hours * remaining / 3)
-    return finish.strftime("%Y-%m-%dT%H:%M:%S")
-
-
 def _storage_gb(size: str) -> Optional[float]:
     """把 df -h 的 '514T' 之类转换为 GB。"""
     if not size:
@@ -955,7 +1048,12 @@ def build_report(
             for p in history
         ]
         chart_refs: Dict[str, str] = {}
-        curve_svg = energy_force_chart(points, title=f"{fact['task_name']} 能量与最大力")
+        curve_svg = energy_force_chart(
+            points,
+            title=f"{fact['task_name']} 能量与最大力",
+            width=OPT_CURVE_W,
+            height=OPT_CURVE_H,
+        )
         # 最终结构三视图（导出用；前端另有 3Dmol 交互视图）
         poscar_cif = contcar_cif = None
         try:
@@ -971,13 +1069,16 @@ def build_report(
         if view_cif:
             vname = f"{fact['task_id']}_views.svg"
             views_svg = structure_views(
-                view_cif, title="", labels=["a-b 视图", "b-c 视图", "a-c 视图"]
+                view_cif,
+                panel=OPT_VIEW_PANEL,
+                title="",
+                labels=["a-b 视图", "b-c 视图", "a-c 视图"],
             )
             charts[vname] = views_svg
             chart_refs["views"] = f"charts/{vname}"
             # 三视图 + 曲线横向拼成一张面板图（前端与导出所见即所得）
             pname = f"{fact['task_id']}_panel.svg"
-            charts[pname] = task_panel(views_svg, curve_svg)
+            charts[pname] = task_panel(views_svg, curve_svg, gap=16)
             chart_refs["panel"] = f"charts/{pname}"
         else:
             ename = f"{fact['task_id']}_energy_force.svg"
@@ -1037,7 +1138,9 @@ def build_report(
                 ]
                 mname = f"{item['task_id']}_images.svg"
                 charts[mname] = structure_matrix(
-                    matrix_items, title=f"{item['task_name']} 映像结构对比"
+                    matrix_items,
+                    panel=max(120, min(240, CHART_WIDTH // max(len(matrix_items), 1))),
+                    title=f"{item['task_name']} 映像结构对比",
                 )
                 item["matrix_chart"] = f"charts/{mname}"
             else:
@@ -1051,6 +1154,7 @@ def build_report(
     )
     # 项目进度：按任务类型分块（块宽 = 当量占比）+ 当量加权主进度
     progress_segments, weighted_percent = _progress_segments(facts)
+    plan = _workload_plan(facts)
     charts["progress.svg"] = segmented_progress_chart(
         progress_segments,
         main_percent=weighted_percent,
@@ -1058,6 +1162,18 @@ def build_report(
             f"当量加权主进度 · 任务 {stats['completed']}/{stats['total']} 已完成"
             + (f"，{stats['archived']} 个已关闭" if stats["archived"] else "")
         ),
+        notes=[
+            f"工作量 {plan['total_units']:.1f} 当量 ≈ {plan['core_hours_total']:,.0f} 核时"
+            f"（1 当量 {plan['core_hours_per_weight']:.0f} 核时）· "
+            f"已完成 {plan['core_hours_done']:,.0f} · 剩余 {plan['core_hours_remaining']:,.0f} 核时",
+            f"有效算力 {plan['core_hours_per_day']:,.0f} 核时/天"
+            f"（{plan['max_cores']:.0f} 核 × 24h × {plan['utilization'] * 100:.0f}%）"
+            + (
+                f" → 预计还需 {plan['eta_days']:.1f} 天，{plan['eta_at']} 完成"
+                if plan["eta_days"] is not None and plan["core_hours_remaining"] > 0
+                else " → 剩余工作量为 0，项目已收尾"
+            ),
+        ],
         title="项目进度",
     )
     charts["cores_donut.svg"] = donut_chart(
@@ -1245,6 +1361,22 @@ def build_report(
                 "rule_id": "inspection",
             }
         )
+    # 低精度收敛：按 INCAR 的 EDIFFG 判定收敛，但三项精度要求没达标
+    for fact in [f for f in active_facts if (f.get("precision") or {}).get("ok") is False][:3]:
+        if any(i["task_id"] == fact["task_id"] for i in issue_items):
+            continue
+        precision = fact.get("precision") or {}
+        issue_items.append(
+            {
+                "level": "medium",
+                "level_icon": "🟡",
+                "task_id": fact["task_id"],
+                "task_name": fact["task_name"],
+                "text": "低精度收敛：" + "；".join(str(x) for x in precision.get("issues") or []),
+                "suggestion": "结果可用但精度偏低；如需更可靠的数据，建议收紧 INCAR（EDIFFG / EDIFF）或加密 k 网格后重算",
+                "rule_id": "precision",
+            }
+        )
     issue_items = issue_items[:6]
 
     report: Dict[str, Any] = {
@@ -1262,6 +1394,7 @@ def build_report(
             "progress_percent": stats["completion_percent"],
             "weighted_progress_percent": weighted_percent,
             "progress_segments": progress_segments,
+            "workload": plan,
             "task_summary": task_summary_text,
             "current_stage": stage,
             "progress_chart": "charts/progress.svg",
@@ -1316,11 +1449,14 @@ def build_report(
             "progress_percent": stats["completion_percent"],
             "weighted_progress_percent": weighted_percent,
             "progress_segments": progress_segments,
+            "workload": plan,
             "time_progress_percent": time_progress,
             "days_left": deadline_days,
             "deadline": str(project.get("deadline") or ""),
             "current_stage": _current_stage(active_facts, counter),
-            "estimated_completion": _estimated_completion(project, active_facts),
+            # 预估完成时间：剩余当量 × 600 核时 ÷（200 核 × 24h × 70%）
+            "estimated_completion": plan["eta_at"],
+            "eta_days": plan["eta_days"],
             "stage_breakdown": [
                 {
                     "task_type": task_type,

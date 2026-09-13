@@ -33,9 +33,22 @@ python -m pip install -r requirements.txt
 | 包 | 用途 | 体积/风险 |
 | --- | --- | --- |
 | pymatgen | 未来 POTCAR 拼接等（`scripts/vasp2cif.py` 已改用自包含脚本，不再依赖它） | ⚠️ 最重，拉入完整科学计算栈，见 §4 |
-| ase | 原子模拟工具（当前未使用） | 中等 |
+| ase | **报告结构图渲染（计划中，2026-09-13 决定）**：读 POSCAR/CONTCAR/CIF 搭场景交给 POV-Ray 渲染，替换现在效果差的纯 Python 正交投影三视图（当前尚未接入） | 中等 |
 | apscheduler | 自动巡检定时调度（当前未启用） | 小 |
 | openai | 智能报告大模型接入（当前未实现） | 小 |
+
+### 3a. POV-Ray（计划中的外部二进制，非 pip 包）
+
+用途：与 ASE 配合做后端结构图渲染（高质量三视图 / 3D 结构图），
+替换 `backend/report_charts.structure_views()` 的纯 Python 正交投影（用户 2026-09-13
+反馈效果太差，**暂搁置**）。
+
+- **不是 Python 包**：POV-Ray 是独立可执行程序，需要单独安装（Windows / Linux 各有安装包），
+  或在部署时随项目分发；`ase.io.pov` 通过子进程调用它，因此要保证 `povray` 在 PATH 中或配置绝对路径。
+- 体积/风险：安装包几十 MB；跨平台部署、服务器上缺少渲染环境都会让该功能静默失败，
+  接入时必须做**可降级**（渲染失败就退回现有 SVG 或跳过结构图，不能阻塞报告生成）。
+- 实现要点：ASE 读结构 → 生成 .pov 场景 → POV-Ray 渲染 PNG/SVG → 按 CIF 哈希缓存到本地，
+  避免批量生成报告时重复渲染。
 
 ## 4. pymatgen 专项说明
 

@@ -7,5 +7,8 @@
   "energy_precision": 8,
   "sync_remote_dirs": false,
   "auto_inspection_enabled": true,
-  "inspection_interval_hours": 2
+  "inspection_interval_hours": 2,
+  "core_hours_per_weight": 600,
+  "cluster_max_cores": 200,
+  "cluster_utilization": 0.7
 }

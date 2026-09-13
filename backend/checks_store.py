@@ -210,7 +210,7 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         check_status = "archived"
     elif status == "zombied":
         check_status = "error"
-    elif status == "unconverged":
+    elif status in ("unconverged", "low_precision"):
         check_status = "warning"
     elif errors:
         check_status = "error"
@@ -241,6 +241,10 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         message = all_msgs[0] if all_msgs else "任务状态异常"
     elif check_status == "archived":
         message = "任务已关闭（归档）"
+    elif status == "low_precision":
+        precision = entry.get("precision") or {}
+        issues = "；".join(str(x) for x in precision.get("issues") or [])
+        message = f"低精度收敛 · 能量 {energy_text}" + (f" · {issues}" if issues else "")
     elif status == "completed":
         message = f"计算完成 · 能量 {energy_text}"
         if entry.get("force_converged") is False:
@@ -262,6 +266,21 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         message = f"状态：{status}"
 
     detail_parts: List[str] = []
+    precision = entry.get("precision") or {}
+    if precision and precision.get("ok") is False:
+        detail_parts.append(
+            "精度检查未达标：" + "；".join(str(x) for x in precision.get("issues") or [])
+        )
+    elif precision and precision.get("undetermined"):
+        detail_parts.append(
+            "精度检查部分无法判定："
+            + "；".join(str(x) for x in precision.get("undetermined") or [])
+        )
+    thresholds = entry.get("force_thresholds") or {}
+    if thresholds.get("source"):
+        detail_parts.append(
+            f"力收敛阈值 {thresholds.get('max_force_threshold')} eV/A（来源 {thresholds['source']}）"
+        )
     if notes:
         detail_parts.append(notes)
     detail_parts.extend(all_msgs)

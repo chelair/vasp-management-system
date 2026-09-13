@@ -13,11 +13,13 @@ import {
   Tag,
 } from 'antd';
 import {
+  DownOutlined,
   ExportOutlined,
   FileMarkdownOutlined,
   FileTextOutlined,
   PrinterOutlined,
   ReloadOutlined,
+  RightOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
@@ -41,6 +43,22 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   critical: { label: '异常', color: 'error' },
 };
 
+/** 工作量与工期（后端按「1 当量 = 600 核时、200 核 × 24h × 70% 产能」折算） */
+interface ReportWorkload {
+  total_units: number;
+  done_units: number;
+  remaining_units: number;
+  core_hours_total: number;
+  core_hours_done: number;
+  core_hours_remaining: number;
+  core_hours_per_weight: number;
+  core_hours_per_day: number;
+  max_cores: number;
+  utilization: number;
+  eta_days: number | null;
+  eta_at: string | null;
+}
+
 /**
  * 智能报告（v0.7.0 重构）：以**单个项目**为报告单位。
  *
@@ -61,6 +79,7 @@ export default function Report() {
   const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
+  const [showClosedReports, setShowClosedReports] = useState(false);
 
   const loadReports = useCallback(async () => {
     const list = await fetchProjectReports();
@@ -73,7 +92,10 @@ export default function Report() {
       .then(([ps, list]) => {
         setProjects(ps);
         setSelectedProject(ps[0]?.id ?? null);
-        setSelectedReportId((prev) => prev ?? list[0]?.report_id ?? null);
+        // 默认选中**未关闭项目**的第一份报告，已关闭项目默认折叠、不主动抢焦点
+        const closedNames = new Set(ps.filter((p) => p.closed).map((p) => p.name));
+        const preferred = list.find((r) => !closedNames.has(r.project_name)) ?? list[0];
+        setSelectedReportId((prev) => prev ?? preferred?.report_id ?? null);
       })
       .finally(() => setLoading(false));
   }, [loadReports]);
@@ -164,6 +186,30 @@ export default function Report() {
       .filter(([, items]) => items.length > 0);
   }, [projectsWithReports, keyword]);
 
+  /** 已关闭项目（全部可见任务归档后关闭）的报告折叠成一块，排在最后 */
+  const closedProjectNames = useMemo(
+    () => new Set(projects.filter((p) => p.closed).map((p) => p.name)),
+    [projects],
+  );
+  const { activeGroups, closedGroups } = useMemo(() => {
+    const active: [string, ProjectReportMeta[]][] = [];
+    const closed: [string, ProjectReportMeta[]][] = [];
+    filteredGroups.forEach((group) => {
+      (closedProjectNames.has(group[0]) ? closed : active).push(group);
+    });
+    return { activeGroups: active, closedGroups: closed };
+  }, [filteredGroups, closedProjectNames]);
+
+  // 选中的报告属于已关闭项目时，自动展开折叠区，避免"选中了却看不见"
+  const selectedIsClosed = useMemo(() => {
+    if (!selectedReportId) return false;
+    const report = reports.find((r) => r.report_id === selectedReportId);
+    return !!report && closedProjectNames.has(report.project_name);
+  }, [selectedReportId, reports, closedProjectNames]);
+  useEffect(() => {
+    if (selectedIsClosed) setShowClosedReports(true);
+  }, [selectedIsClosed]);
+
   const visibleSections = useMemo(
     () => (detail?.markdown_sections ?? []).filter((s) => selectedSections.includes(s.key)),
     [detail, selectedSections],
@@ -179,6 +225,77 @@ export default function Report() {
         }),
       })),
     [visibleSections, detail],
+  );
+
+  /** 当量 → 核时 → 工期（后端 basic_info.workload，口径见 process.md §6） */
+  const detailBasic = useMemo(() => {
+    return (
+      (detail?.structured as
+        | { basic_info?: { workload?: ReportWorkload; weighted_progress_percent?: number } }
+        | undefined)?.basic_info ?? null
+    );
+  }, [detail]);
+  const detailWorkload = detailBasic?.workload ?? null;
+  const detailWeightedPercent = detailBasic?.weighted_progress_percent ?? null;
+
+  /** 单个项目分组（已关闭项目的分组灰显） */
+  const renderReportGroup = (
+    [projectName, items]: [string, ProjectReportMeta[]],
+    closed = false,
+  ) => (
+    <div
+      key={projectName}
+      className={`report-group${closed ? ' report-group--closed' : ''}`}
+    >
+      <div className="report-group__head">
+        {projectName}
+        <span className="report-group__count">{items.length}</span>
+        {closed && <span className="report-group__closed">已关闭</span>}
+      </div>
+      {items.map((item) => {
+        const meta = STATUS_META[item.project_status] ?? STATUS_META.normal;
+        return (
+          <button
+            type="button"
+            key={item.report_id}
+            className={`report-item${selectedReportId === item.report_id ? ' is-active' : ''}`}
+            onClick={() => setSelectedReportId(item.report_id)}
+          >
+            <span className="report-item__top">
+              <Tag color={meta.color} bordered={false}>
+                {meta.label}
+              </Tag>
+              <span className="report-item__time">
+                {item.generated_at.replace('T', ' ').slice(5, 16)}
+              </span>
+            </span>
+            <span className="report-item__summary">{item.summary}</span>
+            <span className="report-item__stats">
+              <span>完成度 {item.completion_percent ?? '—'}%</span>
+              <span>图表 {item.chart_count}</span>
+              <span className="report-item__risk">
+                风险 {item.risk_summary?.high ?? 0}/{item.risk_summary?.medium ?? 0}/
+                {item.risk_summary?.low ?? 0}
+              </span>
+            </span>
+            <span className="report-item__footer">
+              <span className="path-cell">{item.report_id}</span>
+              <Popconfirm
+                title="删除该报告？"
+                okText="删除"
+                okButtonProps={{ danger: true }}
+                cancelText="取消"
+                onConfirm={() => handleDelete(item.report_id)}
+              >
+                <span className="report-item__delete" onClick={(e) => e.stopPropagation()}>
+                  删除
+                </span>
+              </Popconfirm>
+            </span>
+          </button>
+        );
+      })}
+    </div>
   );
 
   return (
@@ -239,60 +356,24 @@ export default function Report() {
             />
           ) : (
             <div className="report-list">
-              {filteredGroups.map(([projectName, items]) => (
-                <div key={projectName} className="report-group">
-                  <div className="report-group__head">
-                    {projectName}
-                    <span className="report-group__count">{items.length}</span>
-                  </div>
-                  {items.map((item) => {
-                    const meta = STATUS_META[item.project_status] ?? STATUS_META.normal;
-                    return (
-                      <button
-                        type="button"
-                        key={item.report_id}
-                        className={`report-item${selectedReportId === item.report_id ? ' is-active' : ''}`}
-                        onClick={() => setSelectedReportId(item.report_id)}
-                      >
-                        <span className="report-item__top">
-                          <Tag color={meta.color} bordered={false}>
-                            {meta.label}
-                          </Tag>
-                          <span className="report-item__time">
-                            {item.generated_at.replace('T', ' ').slice(5, 16)}
-                          </span>
-                        </span>
-                        <span className="report-item__summary">{item.summary}</span>
-                        <span className="report-item__stats">
-                          <span>完成度 {item.completion_percent ?? '—'}%</span>
-                          <span>图表 {item.chart_count}</span>
-                          <span className="report-item__risk">
-                            风险 {item.risk_summary?.high ?? 0}/{item.risk_summary?.medium ?? 0}/
-                            {item.risk_summary?.low ?? 0}
-                          </span>
-                        </span>
-                        <span className="report-item__footer">
-                          <span className="path-cell">{item.report_id}</span>
-                          <Popconfirm
-                            title="删除该报告？"
-                            okText="删除"
-                            okButtonProps={{ danger: true }}
-                            cancelText="取消"
-                            onConfirm={() => handleDelete(item.report_id)}
-                          >
-                            <span
-                              className="report-item__delete"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              删除
-                            </span>
-                          </Popconfirm>
-                        </span>
-                      </button>
-                    );
-                  })}
+              {activeGroups.map((group) => renderReportGroup(group))}
+              {closedGroups.length > 0 && (
+                <div className="project-closed-block">
+                  <button
+                    type="button"
+                    className="project-closed-toggle"
+                    onClick={() => setShowClosedReports((v) => !v)}
+                  >
+                    {showClosedReports ? <DownOutlined /> : <RightOutlined />}
+                    已关闭项目（{closedGroups.length}）
+                  </button>
+                  {showClosedReports && (
+                    <div className="project-closed-list">
+                      {closedGroups.map((group) => renderReportGroup(group, true))}
+                    </div>
+                  )}
                 </div>
-              ))}
+              )}
             </div>
           )}
         </Card>
@@ -406,7 +487,26 @@ export default function Report() {
                   <span className="path-cell">{detail.meta.report_id}</span>
                   <span>{detail.meta.generated_at.replace('T', ' ')}</span>
                   <span>schema {detail.schema_version}</span>
-                  <span>完成度 {detail.meta.completion_percent ?? '—'}%</span>
+                  <span>
+                    进度{' '}
+                    {detailWeightedPercent != null
+                      ? `${detailWeightedPercent}%（当量）`
+                      : `${detail.meta.completion_percent ?? '—'}%`}
+                    （任务 {detail.meta.completion_percent ?? '—'}%）
+                  </span>
+                  {detailWorkload ? (
+                    <span>
+                      工作量 {detailWorkload.total_units?.toFixed(1)} 当量 ≈{' '}
+                      {Math.round(detailWorkload.core_hours_total).toLocaleString()} 核时
+                    </span>
+                  ) : null}
+                  {detailWorkload ? (
+                    <span className="report-detail__eta">
+                      {detailWorkload.core_hours_remaining > 0 && detailWorkload.eta_at
+                        ? `预计完成 ${detailWorkload.eta_at}（还需 ${detailWorkload.eta_days?.toFixed(1)} 天 · 有效算力 ${Math.round(detailWorkload.core_hours_per_day).toLocaleString()} 核时/天）`
+                        : '已收尾（剩余工作量 0）'}
+                    </span>
+                  ) : null}
                   <span>
                     风险 高 {detail.meta.risk_summary?.high ?? 0} / 中{' '}
                     {detail.meta.risk_summary?.medium ?? 0} / 低{' '}

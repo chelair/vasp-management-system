@@ -6,5 +6,13 @@
       "max_force_threshold": 0.02,
       "rms_force_threshold": 0.01
     }
+  },
+  "precision": {
+    "description": "结构优化精度检查（任一项不满足即判定为低精度收敛）",
+    "enabled": true,
+    "kmesh_min_product": 20,
+    "ediifg_max": -0.02,
+    "ediff_max": 1e-05,
+    "treat_missing_as_default": true
   }
 }

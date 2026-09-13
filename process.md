@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.7.4（报告任务之间加虚线分隔）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.8.0（报告排版重构 + 当量/核时工期 + 巡检提速 + INCAR 精度检查）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -178,17 +178,28 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
    - **巡检后刷新集群**：全局巡检成功后（无失败批次）调用 `dashboard.invalidate_cluster_cache(servers, prewarm=True)`，作废快照缓存并后台预热，用户切到总览即是最新数据。
    - **归档 / 关闭**：任务可「关闭（归档）」→ `status=archived`（记 `archived_at` / `archived_from`，`/api/projects` 会把这两个字段一并返回，供"重新打开"显示恢复目标）；**自由能结构优化主任务归档时，连同其 `<结构目录>/frac` 频率矫正子任务一起归档**，重新打开时也成对恢复（`archived_siblings` / `reopened_siblings` 回传，前端提示连带关系；主任务归档时若 frac 未完成会弹窗警告）。项目下**可见任务全部归档**后可「关闭项目」→ `project.closed=true`，在总览、巡检中心、作业管理里统一排到最后、灰显、默认折叠。归档/关闭都不动本地与远端文件。
    - **归档任务不可巡检（v0.6.5）**：单任务巡检遇到 `archived` 任务直接返回 400「任务已关闭（归档），请先重新打开再巡检」，避免巡检回填把归档状态覆盖回 completed/zombied；全局巡检本来就跳过 archived。巡检列表中归档任务状态列显示 **「关闭」**（`CheckStatus` 新增 `archived`），信息列写「任务已关闭（归档）」，且不计入项目块头部的「未检」计数，操作列的「单独巡检」按钮置灰并提示先重新打开。
+   - **巡检性能（2026-09-13 优化，`batch_check.py`）**：① **bjobs 每轮只查 2 次**——`main()` 先取一次 `bjobs -o "jobid exec_cwd"` 全量表（`_bjobs_cwd_table()`），再把「库里 job_id ∪ 该表的 job_id」用 `bjobs -l id1 id2 …` 批量查明细（`prefetch_bjobs_details()`，40 个一组），`run_bjobs` / `match_job_id_by_cwd` 全部命中缓存；**不要再改回逐任务起子进程**（登录节点上每次 50-500ms，60 个任务就是几十秒，实测 45 任务 × 0.2s：115 次 → 3 次，24.8s → 1.3s）。② **不再整文件读 OUTCAR**：`resolve_latest_output` 改为「尾部 8KB 判正常结束 + 分块计数（`_count_marker(cap=…)` 超阈值即返回）」，NEB 每映像从「读全文判结束 + 再扫一遍数块」合并成一次 `_scan_outcar()`；`_count_marker` 加了跨块重叠避免漏计。实测同一批任务输出结果**逐字段完全一致**，纯 I/O 部分快约 1.2×、含 bjobs 开销快 6–20×。
+
+   - **INCAR 读取 + 精度检查（2026-09-13，思路 A）**：`batch_check.py` 在**已经在读**的最新输出目录里顺手读一次 `INCAR` / `KPOINTS` / `POSCAR`（1KB 级文本，**不新增任何 exec / SFTP**），随结果回传 `incar`（键值快照）/ `kpoints.mesh` / `lattice_abc` / `force_thresholds` / `precision`。① **结构优化的力收敛阈值改由 INCAR 的 `EDIFFG` 决定**（负值＝力判据 eV/Å；RMS 阈值取 |EDIFFG|/2，与旧的 registry 0.02/0.01 比例一致，`EDIFFG=-0.02` 时与旧行为完全相同；`EDIFFG` 缺失或为正值时退回 `check_registry.json`），`force_thresholds.source` 会写明取值来源。② **精度检查**（要求写在 `check_registry.json` 的 `precision` 段，可改）：k 网格密度系数 = k × 晶格常数 **> 20**（三个方向都要满足；Auto/0 0 0 记「无法判定」不算不达标）、力收敛精度 `EDIFFG ≤ -0.02`、电子步收敛 `EDIFF ≤ 1E-5`（未设置时按 VASP 默认 1E-4 判）；任一项不满足 → 该结构优化任务判定为 **低精度收敛**。③ **低精度收敛的落法**：巡检归档里状态是 `low_precision`（巡检列表显示「低精度收敛」、走 warning 色，详情里列出未达标项与阈值来源），**数据库任务状态仍写 `completed`**（`inspection_runner._apply_result` 里做映射），所以进度/看板/作业管理的口径不受影响；报告「异常与关注项」会把它列为 medium 关注项。④ 想宽松些：把 `precision.treat_missing_as_default` 设为 false（INCAR 未写 EDIFF/EDIFFG 就只记「无法判定」，不判不达标）。
 
 9. **总览数据流（v0.6.0）**：`GET /api/dashboard/overview` 一次返回整页（顶部统计 + 运行作业 + 核数 + 集群 + 风险 + 项目进度 + 趋势 + 最近任务）。
    - 集群部分来自**一次 exec** 的 `@@@` 分段输出（bjobs/blimits/df/bhosts/bqueues），服务端缓存 5 分钟（`settings.json: dashboard_cache_seconds`），前端每 30 分钟自动刷新一次；`?refresh=1` 强制查询（约 2-4s）。
    - 本地聚合（风险/趋势/项目进度/完成统计）缓存 60 秒：巡检归档有数百个结果文件，逐个读取约 1-2 秒。
    - **口径**：①「运行中任务」取 LSF 实时 `RUN` 作业数（不是任务表状态，任务状态要等巡检回填）；②「核数占用」优先用 `blimits` 的 SLOTS 已用/上限（按队列组），`settings.json: dashboard_total_cores` 可手动覆盖上限，两者都没有时退回 bjobs 汇总；③「项目进度」分母为**可见任务**（不含 conN 续算目录），与作业管理页口径一致；④「今日完成」= 当天巡检观察到 completed 且前一天未完成的任务；⑤「节点满载」按 RUN≥MAX 判定（LSF 常把跑满节点置为 closed）。
-   - 每次成功查询把 `{ts, usedCores, runningTasks, pendingTasks} `追加到 `data/dashboard/core_history.json`（10 分钟内不重复采样，最多 4000 条），趋势图按天取峰值；**历史从 v0.6.0 上线那天开始累积**，之前不可回溯；「提交作业数」由 `data/audit_submit.log` 回溯统计，是完整历史。
+  - 每次成功查询把 `{ts, usedCores, runningTasks, pendingTasks} `追加到 `data/dashboard/core_history.json`（10 分钟内不重复采样，最多 4000 条），趋势图按天取峰值；**历史从 v0.6.0 上线那天开始累积**，之前不可回溯；「提交作业数」由 `data/audit_submit.log` 回溯统计，是完整历史。
+
+10. **报告的工作量 / 工期口径（2026-09-13 定，用户要求）**：一切都按**任务当量**折算——
+    - 当量 = `task_registry.workload_weight` 按类别累加（结构优化 1 · 频率矫正 1 · NEB 5 · 电子结构 0.4；自由能路径的中间体与 frac 各计 1）；**归档/已完成都算已完成当量**。
+    - **1 当量 ≈ 600 核时**（`settings.json: core_hours_per_weight`）。
+    - **有效算力 = 200 核 × 24h × 70% = 3,360 核时/天**（`cluster_max_cores` / `cluster_utilization`）。
+    - 主进度 = 已完成当量 / 总当量；**预计完成 = 今天 + 剩余核时 ÷ 有效算力**；剩余为 0 时记"已收尾"。
+    - 落地位置：`report_builder._workload_plan()` → 结构化的 `basic_info.workload` / `progress.workload` / `progress.eta_days`，进度图 `report_panels.segmented_progress_chart(notes=...)` 与报告头 meta 都会显示（Ag 实测：87 当量 = 52,200 核时，已完成 31,800，剩余 20,400 → 还需 6.1 天）。
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.7.4）
+## 7. 近期重要改动记录（v0.4.1 → v0.8.0）
 
+- v0.8.0（本次）：**报告排版重构 + 当量/核时工期 + 巡检提速 + INCAR 精度检查**（五件事一起发版）。① **报告页排版重构**（用户："改得一塌糊涂，按你的想法重排"）：报告列表 340→268px、目录从左侧竖排改成顶部胶囊 chips、正文栏 728→950px（最大 1080 居中）；**所有图表统一 1000px 宽**（opt 面板 = 三视图 438 + 曲线 538、自由能/NEB 看板、进度条、NEB 映像矩阵按列均分），页面按 ~0.95 等比展示，字号终于一致；每个任务变成「左侧蓝竖条任务标题 + 一行灰色关键数据 + 图 + 表」的块，块间保留分隔线；基本信息 5 条字段改成两列信息卡；表格加斑马纹、数值列右对齐等宽数字；异常项/建议改左侧色条行；**图片从 `loading="lazy"` 改为 eager + 异步解码**（懒加载会让报告页十几张图不加载）；导出 HTML 的 CSS 同步（h2 竖条 / h5 任务标题 / 表格 / hr / figure）。② **报告工作量与工期按当量折算**（用户口径）：1 当量 = 600 核时、有效算力 = 200 核 × 24h × 70% = 3,360 核时/天；主进度 = 完成当量 / 总当量，**预计完成 = 今天 + 剩余核时 ÷ 有效算力**；落地在 `report_builder._workload_plan()` → `basic_info.workload` / `progress.workload`，进度图多两行说明、报告头 meta 直接显示（Ag 实测：87 当量 = 52,200 核时，已完成 31,800 / 剩余 20,400 → 还需 6.1 天）。③ **已关闭项目的报告折叠成一块**（与总览/巡检/作业管理一致）：列表底部「已关闭项目（N）」胶囊默认折叠，展开后组名灰显 + 「已关闭」标签；默认选中第一个未关闭项目的报告；搜索过滤掉全部已关闭项时整块隐藏。④ **巡检提速**（详见 §6.8 性能条）：bjobs 从每任务 2-3 次子进程降到每轮 2-3 次（cwd 全量表 + `bjobs -l id1 id2 …` 批量明细），OUTCAR 不再整文件读（`resolve_latest_output` 尾部 8KB + 分块计数带 cap；NEB 每映像合并成一次 `_scan_outcar`）；实测 45 任务场景 115→3 次调用、24.8s→1.3s，**输出逐字段完全一致**。⑤ **INCAR 读取 + 精度检查 + 低精度收敛**（思路 A，零额外 SSH）：远端顺手读 INCAR/KPOINTS/POSCAR 回传快照；**结构优化的力收敛阈值改由 INCAR 的 EDIFFG 决定**（RMS 取一半，-0.02 时与旧行为相同，缺失/正值退回 registry）；新增「精度检查」——k 网格密度系数 > 20、EDIFFG ≤ -0.02、EDIFF ≤ 1E-5（要求写在 `check_registry.json` 的 `precision` 段），任一项不满足判定为**低精度收敛**（归档状态 `low_precision`，巡检列表 warning 色显示「低精度收敛」，数据库状态仍写 `completed` 以免影响进度口径，报告「异常与关注项」列为 medium）。⑥ 文档：把「Python 正交投影三视图效果差 → 后续改用 ASE + POV-Ray」登记进 TODO.md §10 / process.md §9 / DEPENDENCIES.md §3a（POV-Ray 是外部二进制，接入时必须可降级）。
 - v0.7.4（commit `2b24330`，已推送 origin/main）：**报告里不同任务之间加分隔线**。结构优化 / 自由能路径 / NEB 三节现在都是「一个任务一个区块」，区块之间插入 Markdown `---`（渲染成 `<hr>`，前端 `.report-markdown hr` 与导出 HTML 的 `hr` 都是浅虚线 + 20-22px 上下留白），首尾不加；实测 Ag 报告 9 条分隔线（3 个 opt 之间 2 条 + 3 条自由能路径之间 2 条 + 6 个 NEB 组之间 5 条），前端与导出 HTML 都是 9 条。
 - v0.7.3（commit `6a099a2`，已推送 origin/main）：**报告看板与巡检详情页同版式 + 结构优化口径修正**。① 新增 `backend/report_panels.py`：把「统计卡 + 图例 + 图」的看板版式按前端巡检详情页（`PathStepChart` / `NebBarrierPanel` / `.fe-*`）的几何、配色、字号原样实现成纯 Python SVG——自由能路径看板（中间体数量 / 矫正项完成度 / 结构优化收敛 / 最高相对能 + 相对能台阶图，青=收敛且已矫正、琥珀=未收敛或未矫正、灰虚线=无数据，台阶间虚线连接、下方结构 chip）、NEB 能垒看板（映像数量 / 能垒 Ea / 最大受力 / 末态相对能 + 紫渐变面积能垒曲线，鞍点红虚线 + Ea 药丸标注、端点/中间点半径区分、映像轴标签）。② **项目进度改为分块长条**（`segmented_progress_chart`，1040px 宽）：块宽 = 该任务类型的**当量占比**（`task_registry.workload_weight`：结构优化 1 · 频率矫正 1 · NEB 5 · 电子结构 0.4），块内按该类型自身完成比例填充，另给一条**当量加权主进度**大数字 + 主进度条，下方图例逐类型列出「完成数 / 百分比 / 当量（占整体 %）」；`basic_info.progress_segments` 与 `basic_info.weighted_progress_percent` 同步写入结构化数据。③ **结构优化章节口径修正**：只统计**独立结构优化任务**（`group_type` 既不是 free_energy 也不是 neb），自由能路径的中间体与 NEB 初/末态优化一律不在该章节出现——Ag 项目从错误的「28 个」回到真实的 **3 个**（Ag@Al2O3 / Ag24@Al2O3 / Ag111）。④ 自由能 `converged` 改用巡检结果 `force_converged`（归档任务也保留该结果），不再因为「已关闭」被误判为未收敛；Markdown 表格改为与详情页一致的列（中间体 / DFT 能量 / 矫正项 / 自由能 / 相对 ΔE / 状态），NEB 增加映像明细表（相对能垒 / 绝对能量 / 最大受力 / 角色）。⑤ 删除 `report_charts.py` 里被取代的旧 `step_chart` / `neb_barrier_chart` / `progress_bar_percent`（避免「报告和详情页各画一套」）。⑥ 实测：Ag 报告图表 24 张、生成 4-6s；三个项目（Ag / Co / TMDZYX）批量生成 4.1s，Co 的四类型分段进度（结构优化 7.2% · 自由能 58% · NEB 33.8% · 电子结构 1%）与 TMDZYX 的单类型满宽进度均正确。
 - v0.7.2（commit `15cb551`，已推送 origin/main）：**报告 11 项修正**。① **去掉附录章节**——`REPORT_SECTIONS` 只剩 `basic_info / science / issues / actions` 四章，附录数据仍留在 `report.json` 里供大模型消费，只是不再作为正文章节（正文里"其余见附录"改为"其余仅保留在报告数据中"）。② **opt 任务三视图与能量/力曲线横向排版成一张图**——新增 `report_charts.task_panel(views_svg, curve_svg)`：左侧 a/b/c 三视图（3×150px）+ 右侧双轴曲线（620×260px）拼成同一张 SVG，共用同一基线、上下对齐，正文每个任务只出一张 `*_panel.svg`（无 CIF 时退回 `*_energy_force.svg`）。③ **修掉项目进度图不显示**——`_sections_markdown` 里误写成 `charts.get('progress.svg')`，而 `charts` 是 `{文件名: SVG 文本}` 字典，取到的是整段 SVG 源码，图片 `src` 就变成 SVG 文本；改为固定路径 `charts/progress.svg`。④ **修掉自由能台阶图没数据**——`step_chart` 读 `free_energy` 而报告结构里字段叫 `free_energy_ev`（NEB 同理：`neb_barrier_chart` 读 `relative`、结构里是 `relative_energy_ev`），在调用处做键映射后 3 张台阶图与 6 张能垒图全部有数据。⑤ **能量与力曲线按巡检 `LineChart` 风格重画并合并**——同边距（66/62/24/34）、`#E7ECF3` 网格、`#9CA3AF` 坐标轴、`#374151` 标题 13px、`#6B7A90` 刻度 10px、蓝色 `#5B8DEF` 能量 + 橙色 `#E8A33D` 力 + 红色 `#D9535B` 力阈值虚线（标注"阈值 0.020"）、旋转纵轴单位、底部"离子步"、图内标注最终能量/最终力。⑥ **前端只显示图片**——删掉 v0.7.1 加的交互式 `Structure3DViewer` / `NebImages3DViewer` 折叠区块与 `interactiveStructures`，报告页只剩 Markdown 里的静态 SVG。⑦ **去掉 Markdown / 结构化数据切换**——删 `Segmented` / `viewMode` / 结构化 `<pre>` / 下载 JSON / 复制 JSON 按钮。⑧ **导出范围改为点击后展开**（Popover 挂在「报告内容」标题行的 `extra` 里，不再常驻显示勾选项）。⑨ **同项目新报告直接覆盖旧报告**——`report_id` 稳定化为 `rpt_<project_id>`，`report_store.save_report` 同项目下 `shutil.rmtree` 旧目录并只保留索引一条，报告列表标题改为「项目报告」。⑩ 实测：正文 Markdown 约 5.3KB、章节 `['basic_info','science','issues','actions']`、Ag 报告 3.8–7.1s 生成、按 `sections=science,actions` 导出的 HTML 确认不含基本信息与异常章节。⑪ 待向用户澄清：`public/3dmol/3Dmol-min.js` 是**浏览器端 JS 库**，Python 后端没有 3Dmol，静态三视图是纯 Python 正交投影 SVG；要做真实静态 3D 渲染得引入 headless 浏览器（用户此前明确不加依赖）。
@@ -239,6 +250,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - **报告图表函数的参数键必须与结构化字段名对齐**（v0.7.2 踩坑）：`report_builder.py` 传给 `report_charts` 的字典键必须与图表函数读取的键一致，否则图表静默画出空图（不出数据、不报错）。已修两处：`free_energy_ev`（`step_chart` 原读 `free_energy`）、`relative_energy_ev`（`neb_barrier_chart` 原读 `relative`）。另外 `build_report()` 的 `charts` 是 `{文件名: SVG 文本}` 字典——**引用图片要用 `"charts/<名字>.svg"` 字符串**，不要写成 `charts.get('x.svg')`，否则会把整段 SVG 文本当成路径写进 Markdown。
 - **报告看板要与巡检详情页同版式**（v0.7.3）：报告里的自由能台阶图 / NEB 能垒图 / 项目进度都在 `backend/report_panels.py`，几何与配色是照抄前端 `PathStepChart` / `NebBarrierPanel` / `.fe-*` 的常量（`STEP_W/H/M`、`NEB_W/H/M`、`FE_OK/FE_WARN`、`NEB_LINE/NEB_LINE_SOFT/NEB_SADDLE`、`SEGMENT_COLORS`）。**改详情页视觉时同步改这里**，否则又会出现"报告和详情页各画一套"的返工。另外同一份导出 HTML 会内联多张 SVG——所有渐变 `id` 必须用 `_uid()` 加前缀，否则多个图会互相抢渐变定义。
 - **报告口径的两个坑**（v0.7.3）：① 「结构优化」章节只能统计**独立** opt 任务（`group.group_type` 既非 `free_energy` 也非 `neb`），否则一条 7 中间体的自由能路径会被算成 7 个结构优化任务（Ag 曾把 28 个中间体/端点误报成结构优化）；② 自由能中间体的 `converged` 要用巡检的 `force_converged`，**不能**用 `status == "completed"`——任务归档（archived）后状态不再是 completed，会整片显示"未收敛"。
+- **报告里的"三视图"是临时方案**（2026-09-13 用户确认搁置）：`report_charts.structure_views()` 用纯 Python 做正交投影（元素着色 + 晶胞框），只是"能看"的水平，用户明确反馈效果差。**不要再在这上面投入打磨**——后续统一换成 **ASE + POV-Ray** 后端渲染（见 §9 第 9 条），届时 `structure_views` / `structure_matrix` 一起替换。
 - **后端无热重载（踩过坑，务必照做）**：改完 `backend/*.py` **必须重启后端进程**，否则页面行为还是旧逻辑。v0.6.4 就踩过：归档连带频率矫正的代码写完了，但 3001 上还是 01:30 启动的旧进程，用户在页面上归档时 frac 不会跟着归档。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.5 起）；**不要**再用 `uptime` 数值推断——v0.5.5 之前它返回的是系统开机时长。
 - **总览的集群命令只在 LSF 环境验证过**：`bjobs -o "jobid stat queue job_name slots exec_host" -noheader`、`blimits` 的 SLOTS 列、`bhosts`/`bqueues` 表头都按 IBM LSF 实测解析；换 Slurm 需改 `servers.json` 的 5 个命令键并同步改 `dashboard.py` 的解析函数（`parse_jobs/parse_blimits/parse_bhosts/parse_bqueues/parse_df`）。
 - **blimits 配额是“按队列组”的**：同一用户可能有多行（不同队列组各自限制），当前取各行的最大值作为上限；`usedCores` 优先用它的已用值，与 bjobs 汇总通常一致（实测 144 = 144）。
@@ -276,6 +288,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 6. 提交/巡检路径的进一步合并 exec 优化（提交已 3 次调用，可压到 1 次）。
 7. 常驻 shell 命令网关（可选提速，需专门设计）；后端“精度档”（低/中/高）机制未实现，仅前端概念；自由能路径汇总表（`free_energy_path_summary`）未落独立表，当前用巡检归档实时聚合。
 8. **总览可选增强**（v0.6.0 已交付主体，剩余为锦上添花）：队列预计等待时间估算、趋势图核数历史回溯（需要外部数据源）、集群健康按队列筛选、总览卡片自定义排序。
+9. **报告结构图渲染改用 ASE + POV-Ray**（2026-09-13 用户决策，**暂时搁置**）：当前 `report_charts.structure_views()` 是纯 Python 正交投影 SVG，效果差；后续用 ASE 读 POSCAR/CONTCAR/CIF + POV-Ray 渲染高质量结构图，替换报告里的 `structure_views` / `structure_matrix`。依赖 `ase`（pip 可选）+ **POV-Ray 二进制**（非 pip，需单独安装或随包分发），落地时要考虑渲染耗时与按 CIF 哈希缓存。**在换掉之前不要在这套 Python 投影图上继续投入**。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 
@@ -283,7 +296,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.7.4；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
+1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.8.0；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。

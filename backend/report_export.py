@@ -27,28 +27,42 @@ body {
 }
 h1 { font-size: 24px; margin: 0 0 6px; }
 h2 {
-  font-size: 18px; margin: 28px 0 12px; padding-bottom: 6px;
-  border-bottom: 2px solid #5B8DEF; page-break-after: avoid;
+  font-size: 17px; margin: 26px 0 10px; padding: 0 0 6px 11px; position: relative;
+  border-bottom: 2px solid #EEF3FA; page-break-after: avoid;
 }
-h3 { font-size: 15px; margin: 18px 0 8px; page-break-after: avoid; }
+h2::before {
+  content: ''; position: absolute; left: 0; top: 3px;
+  width: 4px; height: 16px; border-radius: 3px; background: #3F6FE0;
+}
+h3, h4 { font-size: 14px; margin: 20px 0 6px; color: #233043; page-break-after: avoid; }
+/* 任务标题（#### → h5）：左侧竖条，把每个任务切成一块 */
+h5 {
+  font-size: 15px; margin: 26px 0 4px; padding-left: 10px; line-height: 1.4;
+  border-left: 3px solid #5B8DEF; color: #233043; page-break-after: avoid;
+}
+h5 + p { margin: 0 0 10px; padding-left: 13px; font-size: 12.5px; color: #8A98AC; }
 .report-meta { color: #8A98AC; font-size: 12px; margin-bottom: 18px; }
 table {
-  border-collapse: collapse; width: 100%; margin: 10px 0 16px;
+  border-collapse: collapse; width: 100%; margin: 8px 0 14px;
   font-size: 12.5px; page-break-inside: avoid;
 }
-th, td { border: 1px solid #E3E9F2; padding: 6px 9px; text-align: left; vertical-align: top; }
+th, td { border: 1px solid #E3E9F2; padding: 6px 10px; text-align: left; vertical-align: top; }
 th { background: #F4F7FB; font-weight: 600; }
-tr:nth-child(even) td { background: #FBFCFE; }
+th:not(:first-child):not(:last-child), td:not(:first-child):not(:last-child) {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+tbody tr:nth-child(even) td, tr:nth-child(even) td { background: #FBFCFE; }
+td:first-child { color: #3F68B8; font-weight: 500; }
 code {
   background: #F4F7FB; border-radius: 4px; padding: 1px 5px;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 12px;
 }
 ul { margin: 6px 0 14px; padding-left: 20px; }
 li { margin: 3px 0; }
-figure { margin: 12px 0 18px; page-break-inside: avoid; text-align: center; }
+figure { margin: 8px 0 4px; page-break-inside: avoid; text-align: center; }
 figure svg { max-width: 100%; height: auto; }
 figcaption { font-size: 11.5px; color: #8A98AC; margin-top: 4px; }
-hr { border: none; border-top: 1px dashed #DCE3EC; margin: 22px 0; }
+hr { border: none; border-top: 1px dashed #DCE3EC; margin: 22px 0 0; }
 img { max-width: 100%; }
 a { color: #3F68B8; text-decoration: none; }
 .footer { margin-top: 28px; padding-top: 10px; border-top: 1px dashed #E3E9F2;

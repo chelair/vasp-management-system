@@ -163,9 +163,9 @@ def legend_row(
 
 # ------------------------------------------------------------------ 自由能台阶
 
-STEP_W = 720
-STEP_H = 300
-STEP_M = {"left": 68, "right": 24, "top": 34, "bottom": 60}
+STEP_W = 968
+STEP_H = 320
+STEP_M = {"left": 72, "right": 28, "top": 36, "bottom": 62}
 STEP_GAP_RATIO = 0.45
 
 
@@ -320,9 +320,9 @@ def step_chart(
 
 # -------------------------------------------------------------------- NEB 能垒
 
-NEB_W = 820
-NEB_H = 320
-NEB_M = {"left": 66, "right": 26, "top": 38, "bottom": 54}
+NEB_W = 968
+NEB_H = 340
+NEB_M = {"left": 72, "right": 30, "top": 40, "bottom": 56}
 
 
 def neb_barrier_chart(
@@ -656,12 +656,14 @@ def segmented_progress_chart(
     *,
     main_percent: float,
     main_detail: str = "",
+    notes: Sequence[str] = (),
     title: str = "项目进度",
-    width: int = 1040,
+    width: int = 1000,
 ) -> str:
     """项目进度：**按任务类型分成数块**（块宽 = 该类型任务当量占比）＋一条主进度。
 
     每块内部按该类型自身的完成比例填充；块下方给出该类型的完成数、百分比与当量占比。
+    `notes` 用来放工作量（当量→核时）与工期估算这类补充说明。
     """
     uid = _uid("progress" + title)
     pad = 26
@@ -743,7 +745,14 @@ def segmented_progress_chart(
             f"{FONT}>{_escape(text)}</text>"
         )
         cursor += item_w
-    foot_y = line_y + 22
+    note_y = line_y + 20
+    for text in notes:
+        body.append(
+            f'<text x="{pad}" y="{note_y}" font-size="11.5" fill="{COLOR_TEXT}" {FONT}>'
+            f"{_escape(text)}</text>"
+        )
+        note_y += 17
+    foot_y = note_y + 4
     body.append(
         f'<text x="{pad}" y="{foot_y}" font-size="11" fill="{COLOR_MUTED}" {FONT}>'
         "块宽 = 该类型的任务当量占比；当量按任务类型权重折算"

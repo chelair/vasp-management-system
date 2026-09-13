@@ -28,12 +28,13 @@ force_rms / force_converged / force_history / error_messages。
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 def _force_utf8_stdio() -> None:
@@ -52,6 +53,10 @@ DEFAULT_THRESHOLDS = {
     "max_force_threshold": 0.02,
     "rms_force_threshold": 0.01,
 }
+# bjobs 结果缓存（同一轮巡检内复用，避免逐任务起子进程）
+_BJOBS_DETAIL_CACHE: Dict[str, str] = {}
+_BJOBS_CWD_TABLE: Optional[Dict[str, str]] = None
+_PRECISION_REQUIREMENTS: Optional[Dict[str, Any]] = None
 SUCCESS_MARKERS = (
     "General timing and accounting informations for this job",
     "reached required accuracy",
@@ -61,6 +66,18 @@ ENDED_STATUS_TOKENS = ("DONE", "EXIT", "COMPLETED", "FAILED", "CANCELLED")
 FORCE_HEADER = "TOTAL-FORCE (eV/Angst)"
 CON_DIR_RE = re.compile(r"^con(\d+)$")
 MIN_IONIC_STEPS = 5
+
+# 精度检查默认要求（可被 check_registry.json 的 precision 段覆盖）
+DEFAULT_PRECISION = {
+    "enabled": True,
+    "kmesh_min_product": 20.0,  # k 网格密度系数：k × 晶格常数 > 20
+    "ediifg_max": -0.02,  # 力收敛精度：EDIFFG ≤ -0.02
+    "ediff_max": 1e-5,  # 电子步收敛：EDIFF ≤ 1E-5
+    # INCAR 未写 EDIFF/EDIFFG 时按 VASP 默认值（1E-4 / 能量判据）判定为不达标；
+    # 设为 false 则视作"无法判定"，不计入不满足
+    "treat_missing_as_default": True,
+}
+VASP_DEFAULT_EDIFF = 1e-4
 NEBEF_PL = "/data/gpfs03/mdye/VTST/vtstscripts/nebef.pl"
 
 
@@ -101,6 +118,40 @@ def load_thresholds() -> Dict[str, float]:
     return dict(DEFAULT_THRESHOLDS)
 
 
+def load_precision_requirements() -> Dict[str, Any]:
+    """读取精度检查要求（check_registry.json 的 precision 段，缺省用默认要求）。"""
+    candidates = [
+        os.environ.get("VASP_CHECK_REGISTRY"),
+        str(Path(__file__).resolve().parent / "check_registry.json"),
+    ]
+    requirements = dict(DEFAULT_PRECISION)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - 配置损坏时回退默认要求
+            continue
+        section = data.get("precision") or {}
+        if isinstance(section, dict):
+            for key in DEFAULT_PRECISION:
+                if key in section:
+                    requirements[key] = section[key]
+        break
+    return requirements
+
+
+def _precision_requirements() -> Dict[str, Any]:
+    """精度要求（同一轮巡检只读一次配置）。"""
+    global _PRECISION_REQUIREMENTS
+    if _PRECISION_REQUIREMENTS is None:
+        _PRECISION_REQUIREMENTS = load_precision_requirements()
+    return _PRECISION_REQUIREMENTS
+
+
 def resolve_latest_output(remote_dir: str):
     """定位最新**有运行结果**的输出目录（续算 conN）。
 
@@ -123,15 +174,15 @@ def resolve_latest_output(remote_dir: str):
         outcar = con / "OUTCAR"
         if not outcar.is_file() or outcar.stat().st_size == 0:
             continue
-        try:
-            text = outcar.read_text(encoding="utf-8", errors="replace")
-        except Exception:  # noqa: BLE001 - 单个目录读取失败继续检查
+        # 只读尾部 8KB 判正常结束；块数用分块扫描（OUTCAR 常上百 MB，整文件读太贵）
+        tail = _read_tail(outcar, 8192)
+        if tail is None:
             continue
         # 结构优化已收敛（正常结束标志）：直接采用该目录，无需等待离子步数超过阈值
-        if any(marker in text[-8192:] for marker in SUCCESS_MARKERS):
+        if any(marker in tail for marker in SUCCESS_MARKERS):
             return con.name, ""
         # 运行中但已有足够离子步（未收敛时要求步数超过 MIN_IONIC_STEPS）
-        if text.count(FORCE_HEADER) > MIN_IONIC_STEPS:
+        if _count_marker(outcar, FORCE_HEADER.encode(), cap=MIN_IONIC_STEPS) > MIN_IONIC_STEPS:
             return con.name, ""
     return "", ""
 
@@ -202,8 +253,8 @@ def _neb_latest_output_dir(remote_dir: str) -> str:
 # 队列查询
 # ---------------------------------------------------------------------------
 
-def run_bjobs(job_id: str) -> str:
-    """执行 bjobs -l，返回归一化的队列状态标记。
+def _parse_bjobs_detail(output: str, returncode: int) -> str:
+    """把 `bjobs -l`（单个作业，或批量输出里的一段）解析为归一化状态标记。
 
     标记取值：PEND / RUN / SSUSP（含 PSUSP、USUSP，统一按挂起处理）/
     DONE / EXIT / COMPLETED / FAILED / CANCELLED / NOT_FOUND / UNKNOWN。
@@ -212,18 +263,6 @@ def run_bjobs(job_id: str) -> str:
     "Status <RU\\n                     N>"，因此解析前先把输出压缩为单行，
     再提取 Status <> 字段（避免 \bRUN\b 因折行匹配不到）。
     """
-    if os.environ.get("VASP_BATCH_NO_BJOBS"):
-        return "UNKNOWN"
-    try:
-        proc = subprocess.run(
-            ["bjobs", "-l", job_id],
-            capture_output=True,
-            text=True,
-            timeout=BJOB_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        return "UNKNOWN"
-    output = proc.stdout + proc.stderr
     compact = re.sub(r"\s+", " ", output)
     m = re.search(r"Status\s*<\s*([^>]+?)\s*>", compact)
     if m:
@@ -246,9 +285,78 @@ def run_bjobs(job_id: str) -> str:
     for token in ENDED_STATUS_TOKENS:
         if token in compact:
             return token
-    if proc.returncode != 0 or "not found" in output.lower():
+    if returncode != 0 or "not found" in output.lower():
         return "NOT_FOUND"
     return "UNKNOWN"
+
+
+def _split_bjobs_detail(output: str) -> Dict[str, str]:
+    """把多个作业的 `bjobs -l` 输出按 `Job <id>` 切成 {job_id: 该作业段落}。"""
+    blocks: Dict[str, str] = {}
+    matches = list(re.finditer(r"(?m)^Job <(\d+)>", output))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+        blocks[match.group(1)] = output[match.start() : end]
+    return blocks
+
+
+def prefetch_bjobs_details(job_ids: Iterable[str]) -> None:
+    """一次性把多个作业的 `bjobs -l` 明细查回来（避免每任务一次子进程）。
+
+    登录节点上每次 `bjobs` 子进程 + 调度器查询 50-500ms，几十个任务就是几十秒。
+    这里按批（40 个一组）查询并缓存，`run_bjobs` 优先命中缓存，
+    未命中的 job_id 仍走原来的单次查询逻辑，行为不变。
+    """
+    if os.environ.get("VASP_BATCH_NO_BJOBS"):
+        return
+    pending: List[str] = []
+    for job_id in job_ids:
+        text = str(job_id or "")
+        if text and text not in _BJOBS_DETAIL_CACHE and text not in pending:
+            pending.append(text)
+    if not pending:
+        return
+    for start in range(0, len(pending), 40):
+        batch = pending[start : start + 40]
+        try:
+            proc = subprocess.run(
+                ["bjobs", "-l", *batch],
+                capture_output=True,
+                text=True,
+                timeout=BJOB_TIMEOUT * 4,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return
+        output = (proc.stdout or "") + (proc.stderr or "")
+        blocks = _split_bjobs_detail(output)
+        if not blocks:
+            # 批量查询不可用（命令不存在/输出异常）：留给单次查询兜底
+            return
+        _BJOBS_DETAIL_CACHE.update(blocks)
+        for job_id in batch:
+            # 批量输出里没有的 job_id 说明调度器已查不到该作业
+            _BJOBS_DETAIL_CACHE.setdefault(job_id, "")
+
+
+def run_bjobs(job_id: str) -> str:
+    """执行 bjobs -l，返回归一化的队列状态标记（优先用预取缓存）。"""
+    if os.environ.get("VASP_BATCH_NO_BJOBS"):
+        return "UNKNOWN"
+    cached = _BJOBS_DETAIL_CACHE.get(str(job_id))
+    if cached is not None:
+        return _parse_bjobs_detail(cached, 1 if cached == "" else 0)
+    try:
+        proc = subprocess.run(
+            ["bjobs", "-l", job_id],
+            capture_output=True,
+            text=True,
+            timeout=BJOB_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return "UNKNOWN"
+    output = proc.stdout + proc.stderr
+    _BJOBS_DETAIL_CACHE[str(job_id)] = output
+    return _parse_bjobs_detail(output, proc.returncode)
 
 
 def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> Tuple[str, bool]:
@@ -259,10 +367,27 @@ def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> Tuple[str, bool]:
 
     返回 (job_id, bjobs_ok)：bjobs_ok=False 表示 bjobs 不可用/超时（离线模拟），
     此时无法判断作业是否仍在运行，OUTCAR 已有离子步时维持 running。
+
+    `bjobs -o jobid exec_cwd` 全量列表在同一轮巡检内只查一次（_bjobs_cwd_table），
+    原来每个任务都跑一次子进程，几十个任务就是几十秒。
     """
     if os.environ.get("VASP_BATCH_NO_BJOBS"):
         return "", False
-    candidates = {str(work_dir).rstrip("/")}
+    table = _bjobs_cwd_table()
+    if table is None:
+        return "", False
+    job_id = table.get(str(work_dir).rstrip("/"))
+    return (job_id or "", True)
+
+
+def _bjobs_cwd_table() -> Optional[Dict[str, str]]:
+    """`bjobs -o "jobid exec_cwd"` 全量列表 → {exec_cwd: job_id}（只查一次）。
+
+    返回 None 表示 bjobs 不可用/超时（与原来的 bjobs_ok=False 等价）。
+    """
+    global _BJOBS_CWD_TABLE
+    if _BJOBS_CWD_TABLE is not None:
+        return _BJOBS_CWD_TABLE or None
     try:
         proc = subprocess.run(
             ["bjobs", "-o", "jobid exec_cwd"],
@@ -270,26 +395,212 @@ def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> Tuple[str, bool]:
             text=True,
             timeout=BJOB_TIMEOUT,
         )
-    except subprocess.TimeoutExpired:
-        return "", False
+    except (subprocess.TimeoutExpired, OSError):
+        _BJOBS_CWD_TABLE = {}
+        return None
     if proc.returncode != 0:
-        return "", False
-    lines = (proc.stdout or "").splitlines()
-    for line in lines[1:]:
+        _BJOBS_CWD_TABLE = {}
+        return None
+    table: Dict[str, str] = {}
+    for line in (proc.stdout or "").splitlines()[1:]:
         if not line.strip():
             continue
         parts = line.split(None, 1)
         if len(parts) < 2:
             continue
-        cwd = parts[1].strip().rstrip("/")
-        if cwd in candidates:
-            return parts[0].strip(), True
-    return "", True
+        table[parts[1].strip().rstrip("/")] = parts[0].strip()
+    _BJOBS_CWD_TABLE = table
+    return table
 
 
 # ---------------------------------------------------------------------------
 # OUTCAR 解析
 # ---------------------------------------------------------------------------
+
+
+def parse_incar(path: Path) -> Dict[str, str]:
+    """解析 INCAR 为 {KEY: 首个取值}（跳过注释；键统一大写）。
+
+    只做"搬运"：判定规则不放远端。INCAR 就在我们已经在读的最新输出目录里，
+    1KB 文本，读它不增加任何 exec / SFTP 往返。
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    values: Dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].split("!", 1)[0].strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().upper()
+        token = value.strip().split()[0] if value.strip() else ""
+        if key:
+            values[key] = token
+    return values
+
+
+def _to_float(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    token = str(value).strip().strip("'\"").rstrip(".")
+    if not token:
+        return None
+    for candidate in (token, token.replace("D", "E").replace("d", "e")):
+        try:
+            return float(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_kpoints_mesh(path: Path) -> Tuple[Optional[List[int]], str]:
+    """从 KPOINTS 读取显式 k 网格；Auto/不可判定时返回 (None, 说明)。"""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, "KPOINTS 缺失"
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith(("#", "!"))
+    ]
+    if len(lines) < 4:
+        return None, "KPOINTS 格式不完整"
+    mode = lines[2]
+    parts = lines[3].split()
+    if len(parts) < 3:
+        return None, f"KPOINTS 网格行无法解析（{mode}）"
+    try:
+        mesh = [int(float(p)) for p in parts[:3]]
+    except ValueError:
+        return None, f"KPOINTS 不是自动网格（{mode}）"
+    if all(m > 0 for m in mesh):
+        return mesh, mode
+    return None, f"KPOINTS 自动网格 0 0 0（{mode}，由 KSPACING 决定，无法直接判定）"
+
+
+def parse_lattice_abc(path: Path) -> Optional[List[float]]:
+    """从 POSCAR 读三个晶格常数（Å，已乘缩放系数）。"""
+    try:
+        lines = [line for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return None
+    if len(lines) < 5:
+        return None
+    try:
+        scale = float(lines[1].split()[0])
+        vectors = [[float(x) for x in lines[2 + i].split()[:3]] for i in range(3)]
+    except (ValueError, IndexError):
+        return None
+    if any(len(v) < 3 for v in vectors):
+        return None
+    return [round(abs(scale) * math.sqrt(sum(c * c for c in v)), 4) for v in vectors]
+
+
+def precision_check(
+    incar: Dict[str, str],
+    mesh: Optional[List[int]],
+    lattice_abc: Optional[List[float]],
+    mesh_note: str,
+    requirements: Dict[str, Any],
+) -> Dict[str, Any]:
+    """按「k 网格密度 / 力收敛精度 / 电子步收敛」三项判精度高低。
+
+    默认要求：k × 晶格常数 > 20、EDIFFG ≤ -0.02、EDIFF ≤ 1E-5；
+    任一项不满足即 precision.ok=False（收敛判定降级为「低精度收敛」）。
+    无法判定的项（如 Auto k 网格）记入 `undetermined`，不作为不满足处理。
+    """
+    if not requirements.get("enabled", True):
+        return {"ok": True, "level": "ok", "issues": [], "undetermined": [], "values": {}}
+    min_product = float(requirements["kmesh_min_product"])
+    ediifg_max = float(requirements["ediifg_max"])
+    ediff_max = float(requirements["ediff_max"])
+    issues: List[str] = []
+    undetermined: List[str] = []
+    values: Dict[str, Any] = {}
+
+    # ① k 网格密度系数 = k × 晶格常数（三个方向都要满足）
+    if mesh and lattice_abc and len(mesh) == 3 and len(lattice_abc) == 3:
+        products = [round(k * a, 2) for k, a in zip(mesh, lattice_abc)]
+        values["kmesh_product"] = products
+        values["kmesh"] = mesh
+        values["lattice_abc"] = lattice_abc
+        worst = min(products)
+        if worst <= min_product:
+            issues.append(
+                f"k 网格密度系数 {worst:g} ≤ {min_product:g}"
+                f"（k×晶格常数 {mesh[0]}×{lattice_abc[0]:g}…，要求 > {min_product:g}）"
+            )
+    else:
+        undetermined.append(f"k 网格密度系数（{mesh_note or 'KPOINTS 未给显式网格'}）")
+
+    # ② 力收敛精度：EDIFFG ≤ -0.02（负值才是力判据）
+    treat_missing = bool(requirements.get("treat_missing_as_default", True))
+    ediifg = _to_float(incar.get("EDIFFG"))
+    values["ediifg"] = ediifg
+    if ediifg is None:
+        text = f"未设置 EDIFFG（VASP 默认按能量判据），不满足力收敛精度 ≤ {ediifg_max:g}"
+        (issues if treat_missing else undetermined).append(text)
+    elif ediifg > ediifg_max:
+        issues.append(
+            f"力收敛精度 EDIFFG={ediifg:g} 未达 {ediifg_max:g}"
+            + ("（正值＝按能量判据）" if ediifg > 0 else "")
+        )
+
+    # ③ 电子步收敛：EDIFF ≤ 1E-5（未设置时按 VASP 默认 1E-4 计）
+    ediff = _to_float(incar.get("EDIFF"))
+    values["ediff"] = ediff if ediff is not None else VASP_DEFAULT_EDIFF
+    values["ediff_from_default"] = ediff is None
+    if values["ediff"] > ediff_max:
+        text = (
+            f"电子步收敛 EDIFF={values['ediff']:g}"
+            + ("（未设置，按 VASP 默认 1E-4）" if ediff is None else "")
+            + f" 未达 {ediff_max:g}"
+        )
+        if ediff is None and not treat_missing:
+            undetermined.append(text)
+        else:
+            issues.append(text)
+
+    return {
+        "ok": not issues,
+        "level": "ok" if not issues else "low",
+        "issues": issues,
+        "undetermined": undetermined,
+        "values": values,
+        "requirements": {
+            "kmesh_min_product": min_product,
+            "ediifg_max": ediifg_max,
+            "ediff_max": ediff_max,
+        },
+    }
+
+
+def force_thresholds_from_incar(
+    incar: Dict[str, str], base: Dict[str, float]
+) -> Tuple[Dict[str, float], str]:
+    """结构优化的力收敛阈值来自 INCAR 的 EDIFFG（负值＝力判据，eV/Å）。
+
+    VASP 的判定是「所有力分量 < |EDIFFG|」；本系统还额外看 RMS（历史口径），
+    这里取 |EDIFFG|/2 作为 RMS 阈值，与原来 registry(0.02 / 0.01) 的比例一致，
+    EDIFFG=-0.02 时与旧行为完全相同。EDIFFG 缺失或为正值（能量判据）时退回 registry。
+    """
+    ediifg = _to_float(incar.get("EDIFFG"))
+    if ediifg is not None and ediifg < 0:
+        value = abs(ediifg)
+        return (
+            {"max_force_threshold": value, "rms_force_threshold": value / 2},
+            "incar:EDIFFG",
+        )
+    return (
+        {
+            "max_force_threshold": float(base.get("max_force_threshold", 0.02)),
+            "rms_force_threshold": float(base.get("rms_force_threshold", 0.01)),
+        },
+        "registry",
+    )
 
 def extract_toten(text: str) -> Optional[float]:
     """提取所有 TOTEN 能量行中的最后一个值。"""
@@ -446,6 +757,12 @@ def _new_result(task: Dict[str, Any]) -> Dict[str, Any]:
         "neb_band_steps": None,
         "error_messages": [],
         "current_output": None,
+        # INCAR / K 网格 / 晶格常数快照（思路 A：远端只搬运，不判定业务规则）
+        "incar": None,
+        "kpoints": None,
+        "lattice_abc": None,
+        "force_thresholds": None,
+        "precision": None,
     }
 
 
@@ -557,19 +874,68 @@ def _parse_forces(
     )
 
 
-def _count_marker(path: Path, marker: bytes = b"TOTAL-FORCE") -> int:
-    """分块统计文件中标记出现次数（OUTCAR 可能上百 MB，避免整体读入内存）。"""
+def _count_marker(path: Path, marker: bytes = b"TOTAL-FORCE", cap: Optional[int] = None) -> int:
+    """分块统计文件中标记出现次数（OUTCAR 可能上百 MB，避免整体读入内存）。
+
+    `cap` 给定时，超过该值立即返回（用于"是否达到 N 步"这类只关心阈值的判断，
+    避免为一个大文件做完整扫描）；跨块边界用尾部重叠保证不漏计。
+    """
     total = 0
+    overlap = max(len(marker) - 1, 0)
     try:
         with path.open("rb") as fh:
+            carry = b""
             while True:
                 chunk = fh.read(1 << 20)
                 if not chunk:
                     break
-                total += chunk.count(marker)
+                data = carry + chunk
+                total += data.count(marker)
+                if cap is not None and total > cap:
+                    return total
+                carry = data[-overlap:] if overlap else b""
     except OSError:
         return 0
     return total
+
+
+def _read_tail(path: Path, size: int = 8192) -> Optional[str]:
+    """只读文件尾部 `size` 字节（判正常结束标志用）；失败返回 None。"""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            length = fh.tell()
+            fh.seek(max(0, length - size))
+            return fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _scan_outcar(path: Path) -> Optional[Tuple[int, bool]]:
+    """单次分块扫描 OUTCAR：返回 (TOTAL-FORCE 块数, 是否含正常结束标志)。
+
+    NEB 判定原来对每个映像"整文件读一次判结束 + 再扫一次数块"，这里合并成一遍，
+    语义不变（结束标志仍是全文匹配，只是改为按块匹配）；读取失败返回 None。
+    """
+    marker = FORCE_HEADER.encode()
+    overlap = max(len(marker), max(len(m) for m in SUCCESS_MARKERS)) - 1
+    count = 0
+    success = False
+    try:
+        with path.open("rb") as fh:
+            carry = b""
+            while True:
+                chunk = fh.read(1 << 20)
+                if not chunk:
+                    break
+                data = carry + chunk
+                count += data.count(marker)
+                if not success:
+                    success = any(m.encode() in data for m in SUCCESS_MARKERS)
+                carry = data[-overlap:]
+    except OSError:
+        return None
+    return count, success
 
 
 def _count_neb_band_steps(remote_dir: str) -> int:
@@ -631,13 +997,14 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
         if not outcar.is_file() or outcar.stat().st_size == 0:
             missing.append(img)
             continue
-        try:
-            text = outcar.read_text(encoding="utf-8", errors="replace")
-        except Exception:  # noqa: BLE001 - 单个映像读取失败按缺失处理
+        # 一次分块扫描同时拿到「块数」与「是否有正常结束标志」，不再整文件读入
+        scanned = _scan_outcar(outcar)
+        if scanned is None:
             missing.append(img)
             continue
-        band_steps = max(band_steps, _count_marker(outcar))
-        if not any(marker in text for marker in SUCCESS_MARKERS):
+        blocks, finished = scanned
+        band_steps = max(band_steps, blocks)
+        if not finished:
             unfinished.append(img)
     result["neb_band_steps"] = band_steps
     if not missing and not unfinished:
@@ -699,6 +1066,31 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                 }
         outcar_path = Path(work_dir) / "OUTCAR"
 
+        # INCAR / KPOINTS / POSCAR 本来就在最新输出目录里（1KB 级文本），顺手读：
+        # ① 结构优化的力收敛阈值改由 INCAR 的 EDIFFG 决定；
+        # ② 做精度检查（k 网格密度 / EDIFFG / EDIFF）。
+        # 全部复用同一次 exec，不新增任何 SSH 往返。
+        incar = parse_incar(Path(work_dir) / "INCAR") or parse_incar(Path(remote_dir) / "INCAR")
+        result["incar"] = incar or None
+        used_thresholds = thresholds
+        if task_type == "opt":
+            used_thresholds, threshold_source = force_thresholds_from_incar(incar, thresholds)
+            result["force_thresholds"] = {**used_thresholds, "source": threshold_source}
+            mesh, mesh_note = parse_kpoints_mesh(Path(work_dir) / "KPOINTS")
+            if mesh is None:
+                mesh, mesh_note = parse_kpoints_mesh(Path(remote_dir) / "KPOINTS")
+            lattice_abc = parse_lattice_abc(Path(work_dir) / "POSCAR") or parse_lattice_abc(
+                Path(remote_dir) / "POSCAR"
+            )
+            result["kpoints"] = {"mesh": mesh, "note": mesh_note}
+            result["lattice_abc"] = lattice_abc
+            result["precision"] = precision_check(
+                incar, mesh, lattice_abc, mesh_note, _precision_requirements()
+            )
+        else:
+            # 其他任务类型只留 INCAR 快照，不改判定逻辑
+            result["force_thresholds"] = {**thresholds, "source": "registry"}
+
         # 以最新续算目录为准匹配作业（续算推进到新 conN 后，作业在新目录提交）
         job_id, bjobs_ok = match_job_id_by_cwd(remote_dir, con_dir)
         if job_id:
@@ -735,7 +1127,7 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                         result,
                         con_dir,
                         task_type,
-                        thresholds,
+                        used_thresholds,
                         poscar_dir=con_dir,
                         allow_running=not bjobs_ok,
                     )
@@ -755,7 +1147,7 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                     except Exception:  # noqa: BLE001 - 解析失败不影响状态
                         text = ""
                     result["last_energy"] = extract_toten(text)
-                    _parse_forces(result, work_dir, text, thresholds)
+                    _parse_forces(result, work_dir, text, used_thresholds)
             elif queue_status == "SSUSP":
                 # 作业被挂起：仍在 LSF 中存活，按运行中处理（队列状态显示“挂起”）
                 result["status"] = "running"
@@ -765,7 +1157,7 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                     except Exception:  # noqa: BLE001
                         text = ""
                     result["last_energy"] = extract_toten(text)
-                    _parse_forces(result, work_dir, text, thresholds)
+                    _parse_forces(result, work_dir, text, used_thresholds)
             else:
                 if task_type == "neb":
                     # NEB：作业已结束，按映像 OUTCAR 判定完成状态
@@ -775,7 +1167,7 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                         result,
                         work_dir,
                         task_type,
-                        thresholds,
+                        used_thresholds,
                         poscar_dir=work_dir,
                         allow_running=False,
                     )
@@ -822,6 +1214,13 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         result["error_messages"].append(f"unexpected error: {e}")
         if result["status"] in ("pending",) and result["queue_status"] == "UNKNOWN":
             result["status"] = "zombied"
+
+    # 精度检查：结构优化已（按 INCAR 的 EDIFFG）收敛，但精度不达标 -> 低精度收敛
+    if result.get("task_type") == "opt" and result.get("status") == "completed":
+        precision = result.get("precision") or {}
+        if precision and precision.get("ok") is False:
+            result["status"] = "low_precision"
+            result["convergence"] = "low_precision"
     return result
 
 
@@ -848,6 +1247,13 @@ def main() -> int:
         return 1
 
     thresholds = load_thresholds()
+    # 预取作业信息：先拿一次「cwd → job_id」全量表，再把库里的 job_id 与该表的
+    # job_id 一起批量查明细（`bjobs -l id1 id2 ...`），避免每个任务各起一个子进程
+    cwd_table = _bjobs_cwd_table() or {}
+    prefetch_bjobs_details(
+        [str(task.get("job_id") or "") for task in tasks if isinstance(task, dict)]
+        + list(cwd_table.values())
+    )
     results = [check_task(task, thresholds) for task in tasks]
     output_path.write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"

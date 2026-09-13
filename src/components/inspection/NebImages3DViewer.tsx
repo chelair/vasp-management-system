@@ -20,6 +20,13 @@ const ROLE_LABEL: Record<NebImage['role'], string> = {
   middle: '中间态',
 };
 
+/** 原子球尺寸默认值（球棍模型） */
+const DEFAULT_ATOM_SCALE = 0.35;
+/** 画面整体缩放倍率默认值（3Dmol zoom(k)：k>1 为拉近） */
+const DEFAULT_VIEW_ZOOM = 1.35;
+const MIN_VIEW_ZOOM = 0.6;
+const MAX_VIEW_ZOOM = 2.2;
+
 /**
  * NEB 映像结构横向对比（v0.6.9，3Dmol.js）
  *
@@ -31,8 +38,11 @@ const ROLE_LABEL: Record<NebImage['role'], string> = {
 export default function NebImages3DViewer({ images }: Props) {
   const [ballStick, setBallStick] = useState(true);
   const [spin, setSpin] = useState(false);
-  // 初始放大倍率：原子尺寸默认 0.5（原 0.35 偏小），配合下方相机再放大 15%
-  const [scale, setScale] = useState(0.5);
+  // 两套缩放相互独立：
+  //   scale     —— 原子球（球棍模型）大小，0.35 为默认；
+  //   viewZoom  —— 画面整体缩放倍率（相机拉近），默认 1.35 让结构占满视野
+  const [scale, setScale] = useState(DEFAULT_ATOM_SCALE);
+  const [viewZoom, setViewZoom] = useState(DEFAULT_VIEW_ZOOM);
   /** 3Dmol.js 不可用时的降级标记（避免直接抛错导致整个详情白屏） */
   const [engineMissing, setEngineMissing] = useState(false);
 
@@ -42,8 +52,10 @@ export default function NebImages3DViewer({ images }: Props) {
   const listenersRef = useRef<Array<() => void>>([]);
   const ballRef = useRef(ballStick);
   const scaleRef = useRef(scale);
+  const viewZoomRef = useRef(viewZoom);
   ballRef.current = ballStick;
   scaleRef.current = scale;
+  viewZoomRef.current = viewZoom;
 
   const structures = useMemo(
     () =>
@@ -175,8 +187,8 @@ export default function NebImages3DViewer({ images }: Props) {
         styleFor(viewer, structure, ballRef.current, scaleRef.current);
         drawCell(viewer, structure);
         viewer.zoomTo();
-        // 初始观感再放大一点（zoom(k) 为 k 倍，>1 为拉近）
-        viewer.zoom(1.15);
+        // 画面整体放大（在 zoomTo 自适应之后再按倍率拉近）
+        viewer.zoom(viewZoomRef.current);
         if (i > 0 && viewerRefs.current[0]) viewer.setView(viewerRefs.current[0].getView());
         viewer.resize();
         viewer.render();
@@ -219,6 +231,18 @@ export default function NebImages3DViewer({ images }: Props) {
     });
   }, [ballStick, scale, structures]);
 
+  // 画面缩放倍率变化：先 zoomTo 复位到自适应，再按倍率拉近（避免倍数叠加）
+  useEffect(() => {
+    viewerRefs.current.forEach((v) => {
+      if (!v) return;
+      v.zoomTo();
+      v.zoom(viewZoom);
+      v.resize();
+      v.render();
+    });
+    if (viewerRefs.current[0]) syncFrom(viewerRefs.current[0]);
+  }, [viewZoom]);
+
   // 自动旋转（联动旋转所有面板）
   useEffect(() => {
     if (!spin) return undefined;
@@ -233,9 +257,11 @@ export default function NebImages3DViewer({ images }: Props) {
   }, [spin]);
 
   const resetView = () => {
+    setViewZoom(DEFAULT_VIEW_ZOOM);
     viewerRefs.current.forEach((v) => {
       if (!v) return;
       v.zoomTo();
+      v.zoom(DEFAULT_VIEW_ZOOM);
       v.render();
     });
     syncFrom(viewerRefs.current[0]);
@@ -270,13 +296,24 @@ export default function NebImages3DViewer({ images }: Props) {
           ]}
         />
         <span className="neb3d__scale">
-          缩放
+          原子尺寸
           <Slider
-            min={0.25}
-            max={1}
+            min={0.15}
+            max={0.85}
             step={0.05}
             value={scale}
             onChange={setScale}
+            style={{ width: 110, margin: '0 6px' }}
+          />
+        </span>
+        <span className="neb3d__scale">
+          画面缩放
+          <Slider
+            min={MIN_VIEW_ZOOM}
+            max={MAX_VIEW_ZOOM}
+            step={0.05}
+            value={viewZoom}
+            onChange={setViewZoom}
             style={{ width: 110, margin: '0 6px' }}
           />
         </span>

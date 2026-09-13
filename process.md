@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.9（NEB 映像结构分析：IS → 中间态 → FS 3D 横向对比）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.10（修复 NEB 详情白屏 / 3D 画布遮挡）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -183,7 +183,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.9）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.10）
+
+- v0.6.10（commit 见 `git log --oneline -1`）：**修复 v0.6.9 引入的两个前端缺陷**。① **部分 NEB 任务点开详情白屏**：v0.6.9 给 NEB 返回了专属 `analysis`（只有 `neb_images` / `steps` / `skipped`），但详情抽屉的渲染分支在"没有 `neb_images`"时会落到 `StructurePanel`，而后者会访问 `analysis.warnings.map()` / `analysis.files.poscar` → 未定义字段抛错 → React 整页白屏。修法：`Inspection.tsx` 里 NEB **单独分支**（有映像 → 映像视图；无映像 → 带说明的 Empty 占位，文案取 `analysis.skipped`），永不再落到 `StructurePanel`；同时给 `StructurePanel` 加 `(analysis.warnings ?? [])` 与 `analysis.files?.poscar` 兜底。② **左上角一块白色遮挡 / 3D 显示异常**：3Dmol 会在容器内插入**绝对定位**的 canvas，而新增的 `.neb3d__canvas` 没有定位上下文，画布相对页面定位跑到左上角形成白色遮挡。修法：`.neb3d__canvas` 加 `position: relative; overflow: hidden`（与 opt 的 `.s3d-canvas` 一致）。③ 顺带加固 `NebImages3DViewer`：`window.$3Dmol` 缺失时给降级提示而不是抛错、单个映像渲染失败只 `console.warn` 不影响其他映像、创建后补 `viewer.resize()`。
 
 - v0.6.9（commit `b0e37c8`，已推送 origin/main）：**NEB 映像结构分析**（对应 opt 的结构 3D 对比）。① 触发条件与 opt 相同：25 离子步一桶 + 目录变化重置；NEB 的「步数」取**中间映像 OUTCAR 的 TOTAL-FORCE 块最大值**（VTST 各映像同步推进，端点伪结果不计入），由 batch_check 新增 `neb_band_steps` 回传——**运行中的 NEB 也会统计**（此前只有作业结束走 `_analyze_neb_status` 才有数，导致运行期永远拿不到步数）。② 同步：`inspection_runner._sync_neb_image_structures()` 用**单次远端 bash 脚本**把各映像结构 base64 回传（避免 N 次 SSH 往返），每个映像取 CONTCAR（优化后几何）、缺失时退回 POSCAR；原始文件写 `files/neb_images/<label>`，CIF 写 `reports/structure/images/<label>.cif`（覆盖旧结果、失败保留旧文件）。③ 详情接口新增 `analysis.neb_images`（label / role（is|middle|fs）/ CIF 文本 / 相对能垒 / 最大受力），标签按数值归一化与 nebef.pl 的 0..N 对齐（目录名是 00/01…，nebef 是 0/1…）。④ 前端新增 `NebImages3DViewer`：IS → 中间态 → FS **横向 3D 对比**，拖动/滚轮联动所有面板视角、球棍/空间填充、自动旋转、缩放、重置视角、元素配色图例，**鞍点面板高亮边框**，每格显示 ΔE 与最大受力；NEB 详情弹窗自动加宽到 1200px 以容纳整条路径。⑤ 实现过程中修掉两个坑：`inspection_runner` 漏 `import base64`（NameError 被 except 吞成「解码失败」）、`routers/inspections.py` 用 `Any` 未导入（详情接口 500）。
 
@@ -212,6 +214,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 8. 已知注意事项 / 坑
 
+- **3Dmol 视图的两个硬性要求**（v0.6.10 踩坑）：① 承载 3Dmol 的容器必须有 `position: relative`（+ `overflow: hidden`），否则画布绝对定位到页面左上角、盖出一块白色遮挡（opt 的 `.s3d-canvas`、NEB 的 `.neb3d__canvas` 都已遵守）；② 给某类任务新增专属 `analysis` 载荷时，**必须同时给它一个独立的渲染分支**——不能让它落到 `StructurePanel`（它按 opt 字段访问 `files/poscar/warnings`，字段缺失会抛错白屏）。新增任务类型分析时请照此处理。
 - **后端无热重载（踩过坑，务必照做）**：改完 `backend/*.py` **必须重启后端进程**，否则页面行为还是旧逻辑。v0.6.4 就踩过：归档连带频率矫正的代码写完了，但 3001 上还是 01:30 启动的旧进程，用户在页面上归档时 frac 不会跟着归档。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.5 起）；**不要**再用 `uptime` 数值推断——v0.5.5 之前它返回的是系统开机时长。
 - **总览的集群命令只在 LSF 环境验证过**：`bjobs -o "jobid stat queue job_name slots exec_host" -noheader`、`blimits` 的 SLOTS 列、`bhosts`/`bqueues` 表头都按 IBM LSF 实测解析；换 Slurm 需改 `servers.json` 的 5 个命令键并同步改 `dashboard.py` 的解析函数（`parse_jobs/parse_blimits/parse_bhosts/parse_bqueues/parse_df`）。
 - **blimits 配额是“按队列组”的**：同一用户可能有多行（不同队列组各自限制），当前取各行的最大值作为上限；`usedCores` 优先用它的已用值，与 bjobs 汇总通常一致（实测 144 = 144）。

@@ -32,6 +32,8 @@ export default function NebImages3DViewer({ images }: Props) {
   const [ballStick, setBallStick] = useState(true);
   const [spin, setSpin] = useState(false);
   const [scale, setScale] = useState(0.35);
+  /** 3Dmol.js 不可用时的降级标记（避免直接抛错导致整个详情白屏） */
+  const [engineMissing, setEngineMissing] = useState(false);
 
   const containerRefs = useRef<(HTMLDivElement | null)[]>([]);
   const viewerRefs = useRef<any[]>([]);
@@ -149,26 +151,40 @@ export default function NebImages3DViewer({ images }: Props) {
     viewerRefs.current = [];
     modelRefs.current = [];
 
+    if (!window.$3Dmol) {
+      setEngineMissing(true);
+      return undefined;
+    }
+    setEngineMissing(false);
+
     images.forEach((img, i) => {
       const container = containerRefs.current[i];
       const structure = structures[i];
-      if (!container || !structure || !window.$3Dmol) return;
-      container.innerHTML = '';
-      container.style.width = '100%';
-      container.style.height = '240px';
-      const viewer = window.$3Dmol.createViewer(container, {
-        backgroundColor: '#f7f9fc',
-      });
-      viewer.setProjection('orthographic');
-      const model = viewer.addModel(img.cif, 'cif');
-      styleFor(viewer, structure, ballRef.current, scaleRef.current);
-      drawCell(viewer, structure);
-      viewer.zoomTo();
-      if (i === 0) viewer.setView({});
-      else viewer.setView(viewerRefs.current[0].getView());
-      viewer.render();
-      viewerRefs.current[i] = viewer;
-      modelRefs.current[i] = model;
+      if (!container || !structure) return;
+      let viewer: any = null;
+      try {
+        container.innerHTML = '';
+        container.style.width = '100%';
+        container.style.height = '240px';
+        viewer = window.$3Dmol.createViewer(container, {
+          backgroundColor: '#f7f9fc',
+        });
+        viewer.setProjection('orthographic');
+        const model = viewer.addModel(img.cif, 'cif');
+        styleFor(viewer, structure, ballRef.current, scaleRef.current);
+        drawCell(viewer, structure);
+        viewer.zoomTo();
+        if (i > 0 && viewerRefs.current[0]) viewer.setView(viewerRefs.current[0].getView());
+        viewer.resize();
+        viewer.render();
+        viewerRefs.current[i] = viewer;
+        modelRefs.current[i] = model;
+      } catch (err) {
+        // 单个映像渲染失败不影响其他映像（也避免整个详情弹窗崩掉）
+        console.warn('[neb3d] 映像渲染失败：', img.label, err);
+        return;
+      }
+      if (!viewer) return;
 
       const onDrag = (e: MouseEvent) => {
         if (e.buttons !== 0) syncFrom(viewer);
@@ -224,6 +240,15 @@ export default function NebImages3DViewer({ images }: Props) {
 
   if (images.length === 0) {
     return <div className="analysis-chart-empty">暂无 NEB 映像结构</div>;
+  }
+
+  if (engineMissing) {
+    return (
+      <div className="analysis-chart-empty">
+        3D 渲染库（3Dmol）未加载，无法显示映像结构；请刷新页面重试
+        （生产模式下 public/3dmol 需要由后端挂载到 /3dmol）。
+      </div>
+    );
   }
 
   const has3d = structures.some(Boolean);

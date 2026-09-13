@@ -156,7 +156,7 @@ export default function StructurePanel({
       {analysis.skipped && (
         <Alert type="warning" showIcon message={analysis.skipped} style={{ marginBottom: 12 }} />
       )}
-      {analysis.warnings.map((w, i) => (
+      {(analysis.warnings ?? []).map((w, i) => (
         <div key={i} className="structure-panel__warning">
           <WarningOutlined /> {w}
         </div>
@@ -222,7 +222,7 @@ export default function StructurePanel({
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={
-            analysis.files.poscar || analysis.files.contcar
+            analysis.files?.poscar || analysis.files?.contcar
               ? '结构文件解析失败'
               : '结构文件未同步，无法分析'
           }

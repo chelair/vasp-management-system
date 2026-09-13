@@ -6,6 +6,14 @@
 
 ## 当前进度概览
 
+**已完成（v0.6.10，2026-09-13 · 修复 v0.6.9 的两个前端缺陷）**
+
+- [x] 部分 NEB 任务详情白屏：NEB 专属 `analysis` 不再落到 `StructurePanel`（改为独立分支，
+      无映像时显示带说明的占位）；`StructurePanel` 对 `warnings` / `files` 加可选链兜底
+- [x] 左上角白色遮挡：`.neb3d__canvas` 补 `position: relative; overflow: hidden`
+      （3Dmol canvas 是绝对定位，容器缺定位上下文会逃到页面左上角）
+- [x] `NebImages3DViewer` 加固：3Dmol 缺失降级提示、单映像渲染失败不影响其他、补 `resize()`
+
 **已完成（v0.6.9，2026-09-13）**
 
 - [x] NEB 映像结构分析：IS → 中间态 → FS 横向 3D 对比（`NebImages3DViewer`，只展示优化后结构）

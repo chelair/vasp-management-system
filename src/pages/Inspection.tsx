@@ -1165,17 +1165,28 @@ export default function Inspection() {
               <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
               {detailData.task_type === 'ele' ? (
                 <EleAnalysisPanel detail={detailData} />
-              ) : detailData.task_type === 'neb' &&
+              ) : detailData.task_type === 'neb' ? (
+                // NEB 专属分析：只走映像结构视图，**不要**落到 StructurePanel
+                // （StructurePanel 期望 opt 的 files/poscar/warnings 字段，NEB 载荷没有会白屏）
                 detailData.analysis?.neb_images?.length ? (
-                <>
-                  <div className="fe-footnote" style={{ marginTop: 0, marginBottom: 8 }}>
-                    已同步 {detailData.analysis.neb_images.length} 个映像的优化后结构
-                    {detailData.analysis.steps != null
-                      ? `（NEB 推进约 ${detailData.analysis.steps} 离子步）`
-                      : ''}
-                  </div>
-                  <NebImages3DViewer images={detailData.analysis.neb_images} />
-                </>
+                  <>
+                    <div className="fe-footnote" style={{ marginTop: 0, marginBottom: 8 }}>
+                      已同步 {detailData.analysis.neb_images.length} 个映像的优化后结构
+                      {detailData.analysis.steps != null
+                        ? `（NEB 推进约 ${detailData.analysis.steps} 离子步）`
+                        : ''}
+                    </div>
+                    <NebImages3DViewer images={detailData.analysis.neb_images} />
+                  </>
+                ) : (
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description={
+                      detailData.analysis?.skipped ??
+                      '尚未同步 NEB 映像结构：需要巡检推进到 25 离子步桶后自动抓取各映像 CONTCAR'
+                    }
+                  />
+                )
               ) : detailData.analysis ? (
                 <StructurePanel
                   analysis={detailData.analysis}

@@ -2808,6 +2808,10 @@ p {
 .neb3d__canvas {
   width: 100%;
   height: 240px;
+  /* 关键：3Dmol 会在容器内插入绝对定位的 canvas，容器必须定位，
+     否则画布会相对页面定位、在左上角盖出一块白色遮挡 */
+  position: relative;
+  overflow: hidden;
 }
 
 @media (max-width: 640px) {

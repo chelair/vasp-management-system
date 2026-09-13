@@ -31,7 +31,8 @@ const ROLE_LABEL: Record<NebImage['role'], string> = {
 export default function NebImages3DViewer({ images }: Props) {
   const [ballStick, setBallStick] = useState(true);
   const [spin, setSpin] = useState(false);
-  const [scale, setScale] = useState(0.35);
+  // 初始放大倍率：原子尺寸默认 0.5（原 0.35 偏小），配合下方相机再放大 15%
+  const [scale, setScale] = useState(0.5);
   /** 3Dmol.js 不可用时的降级标记（避免直接抛错导致整个详情白屏） */
   const [engineMissing, setEngineMissing] = useState(false);
 
@@ -174,6 +175,8 @@ export default function NebImages3DViewer({ images }: Props) {
         styleFor(viewer, structure, ballRef.current, scaleRef.current);
         drawCell(viewer, structure);
         viewer.zoomTo();
+        // 初始观感再放大一点（zoom(k) 为 k 倍，>1 为拉近）
+        viewer.zoom(1.15);
         if (i > 0 && viewerRefs.current[0]) viewer.setView(viewerRefs.current[0].getView());
         viewer.resize();
         viewer.render();
@@ -269,8 +272,8 @@ export default function NebImages3DViewer({ images }: Props) {
         <span className="neb3d__scale">
           缩放
           <Slider
-            min={0.15}
-            max={0.85}
+            min={0.25}
+            max={1}
             step={0.05}
             value={scale}
             onChange={setScale}

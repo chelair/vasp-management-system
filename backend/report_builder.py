@@ -17,19 +17,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from checks_store import collect_results, list_runs, to_frontend_rows
 from cif_convert import read_neb_image_cifs, read_or_convert_cif
-from config import DATA_DIR, load_servers
+from config import DATA_DIR, load_servers, load_task_registry
 from dashboard import build_cluster_health, build_cores_usage, cluster_snapshot
 from dates import now_iso
 from report_charts import (
     donut_chart,
     energy_force_chart,
-    neb_barrier_chart,
     progress_bar,
-    progress_bar_percent,
-    step_chart,
     structure_matrix,
     structure_views,
     task_panel,
+)
+from report_panels import (
+    COLOR_PRIMARY,
+    SEGMENT_COLORS,
+    free_energy_panel,
+    neb_panel,
+    segmented_progress_chart,
 )
 from report_rules import evaluate as evaluate_rules
 from report_rules import load_rules, priority_for, rules_meta
@@ -69,6 +73,79 @@ SUBTYPE_LABELS = {
 ANOMALY_CATEGORIES = ("convergence", "resource", "file", "ssh", "queue")
 
 MAX_STRUCTURE_TASKS = 6  # 单项目正文最多展示多少个结构优化任务（其余只进结构化数据），控制篇幅
+
+# 任务类别（与巡检列表 / 前端任务树同口径）
+CATEGORY_ORDER = ("结构优化", "自由能路径", "NEB 过渡态", "电子结构")
+STATUS_DONE = ("completed", "archived")
+DEFAULT_WORKLOAD_WEIGHT = 1.0
+
+
+def _task_category(fact: Dict[str, Any]) -> str:
+    """按任务分组判定类别（口径同 `checks_store._task_category`）。
+
+    自由能路径的中间体结构优化（group_type=free_energy）与 NEB 的初/末态优化
+    （group_type=neb）**不算独立的结构优化任务**——否则一条 7 个中间体的自由能
+    路径会被误记成 7 个结构优化任务（v0.7.3 修正）。
+    """
+    group = fact.get("group") or {}
+    gtype = group.get("group_type")
+    task_type = str(fact.get("task_type") or "")
+    if gtype == "free_energy" or (task_type == "frac" and not gtype):
+        return "自由能路径"
+    if gtype == "neb" or task_type == "neb":
+        return "NEB 过渡态"
+    if task_type == "ele":
+        return "电子结构"
+    return "结构优化"
+
+
+def _workload_weight(task_type: str, registry: Dict[str, Any]) -> float:
+    """任务当量：`task_registry.json` 的 workload_weight（opt/frac 1、neb 5、ele 0.4）。"""
+    entry = registry.get(task_type) or {}
+    try:
+        return float(entry.get("workload_weight", DEFAULT_WORKLOAD_WEIGHT))
+    except (TypeError, ValueError):
+        return DEFAULT_WORKLOAD_WEIGHT
+
+
+def _progress_segments(facts: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
+    """按任务类型分段统计进度：块宽 = 该类型当量占比，主进度 = 当量加权完成率。"""
+    try:
+        registry = load_task_registry()
+    except Exception:  # noqa: BLE001 - 配置缺失不阻塞报告
+        registry = {}
+    buckets: Dict[str, Dict[str, float]] = {}
+    for fact in facts:
+        category = _task_category(fact)
+        weight = _workload_weight(str(fact.get("task_type") or ""), registry)
+        bucket = buckets.setdefault(
+            category, {"count": 0.0, "done": 0.0, "weight": 0.0, "done_weight": 0.0}
+        )
+        bucket["count"] += 1
+        bucket["weight"] += weight
+        if fact.get("status") in STATUS_DONE:
+            bucket["done"] += 1
+            bucket["done_weight"] += weight
+    total_weight = sum(b["weight"] for b in buckets.values()) or 1.0
+    segments: List[Dict[str, Any]] = []
+    for category in CATEGORY_ORDER:
+        bucket = buckets.get(category)
+        if not bucket or not bucket["count"]:
+            continue
+        segments.append(
+            {
+                "label": category,
+                "color": SEGMENT_COLORS.get(category, COLOR_PRIMARY),
+                "count": int(bucket["count"]),
+                "done": int(bucket["done"]),
+                "weight": round(bucket["weight"], 2),
+                "done_weight": round(bucket["done_weight"], 2),
+                "percent": round(bucket["done_weight"] / (bucket["weight"] or 1.0) * 100, 1),
+                "share": round(bucket["weight"] / total_weight * 100, 1),
+            }
+        )
+    main_percent = round(sum(b["done_weight"] for b in buckets.values()) / total_weight * 100, 1)
+    return segments, main_percent
 
 
 # --------------------------------------------------------------------- 工具
@@ -345,7 +422,13 @@ def _free_energy_paths(
                     "zpe_ev": None,  # 频率输出解析待接入（TODO）
                     "correction_ev": correction,
                     "free_energy_ev": free,
-                    "converged": opt["status"] == "completed",
+                    # 收敛判定优先用巡检结果（force_converged），归档任务也保留该结果；
+                    # 没有巡检数据时退回状态判断（已完成 / 已关闭都算收尾）
+                    "converged": (
+                        bool(opt["converged"])
+                        if opt.get("converged") is not None
+                        else opt["status"] in STATUS_DONE
+                    ),
                     "corrected": correction is not None,
                 }
             )
@@ -493,7 +576,7 @@ def _fmt(value: Any, digits: int = 4) -> str:
 
 def _one_line_summary(facts, stats, stage):
     return (
-        f"{stats['total']} 个任务，已完成 {stats['completed']} 个"
+        f"未关闭任务 {stats['total']} 个，已完成 {stats['completed']} 个"
         + (f"、{stats['running']} 个运行中" if stats["running"] else "")
         + (f"、{stats['queued']} 个排队中" if stats["queued"] else "")
         + (f"、{stats['failed'] + stats['unconverged']} 个异常" if stats["failed"] + stats["unconverged"] else "")
@@ -513,7 +596,8 @@ def _sections_markdown(report, charts):
             f"- **项目**：{info['project_name']}",
             f"- **报告生成时间**：{info['generated_at']}",
             f"- **整体状态**：{status_icon} **{info['project_status_label']}** —— {info['status_reason']}",
-            f"- **项目进度**：**{info['progress_percent']}%**（{summary}）",
+            f"- **项目进度**：**{info.get('weighted_progress_percent', info['progress_percent'])}%**"
+            f"（按任务当量加权；{summary}）",
             f"- **时间窗口**：{info['time_window_label']}",
             "",
             f"![项目进度](charts/progress.svg)",
@@ -527,7 +611,8 @@ def _sections_markdown(report, charts):
         blocks.append("### 结构优化\n")
         blocks.append(
             f"共 {science.get('opt_total') or len(opt_items)} 个结构优化任务有收敛数据，"
-            f"下列展示其中 {len(opt_items)} 个，其余仅保留在报告数据中。每条包含结构三视图与能量/力曲线。\n"
+            f"下列展示其中 {len(opt_items)} 个，其余仅保留在报告数据中。每条包含结构三视图与能量/力曲线。"
+            "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n"
         )
         for item in opt_items:
             converge = "✅ 已收敛" if item["converged"] else "⚠️ 未收敛"
@@ -545,44 +630,80 @@ def _sections_markdown(report, charts):
     if paths:
         blocks.append("### 自由能路径\n")
         for path in paths:
-            corrections = path.get("corrected_count", 0)
-            blocks.append(
-                f"**{path['group_name']}** · {path['structure_count']} 个中间体"
-                + (f"（{corrections} 个已矫正）" if corrections else "（尚未矫正）")
-                + "\n"
-            )
             if path.get("chart"):
-                blocks.append(f"![{path['group_name']} 自由能台阶图]({path['chart']})\n")
+                blocks.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})\n")
+            structures = path["structures"]
+            with_energy = [s for s in structures if s.get("free_energy_ev") is not None]
+            ref = float(with_energy[0]["free_energy_ev"]) if with_energy else None
             blocks.append(
                 _md_table(
-                    ["中间体", "DFT 能量 (eV)", "ZPE 矫正 (eV)", "自由能 (eV)", "收敛", "矫正"],
+                    ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
                     [
                         [
                             f"结构 {s['structure_label']}",
                             _fmt(s["dft_energy_ev"]),
-                            _fmt(s["correction_ev"]),
+                            ("—" if s["correction_ev"] is None else f"{float(s['correction_ev']):+.4f}"),
                             _fmt(s["free_energy_ev"]),
-                            "是" if s["converged"] else "否",
-                            "是" if s["corrected"] else "否",
+                            (
+                                "—"
+                                if ref is None or s["free_energy_ev"] is None
+                                else f"{float(s['free_energy_ev']) - ref:+.4f}"
+                            ),
+                            f"{'已收敛' if s['converged'] else '未收敛'} · "
+                            f"{'已矫正' if s['corrected'] else '未矫正'}",
                         ]
-                        for s in path["structures"]
+                        for s in structures
                     ],
                 )
             )
+            blocks.append("\n")
     nebs = science.get("neb") or []
     if nebs:
         blocks.append("### NEB 过渡态\n")
         for item in nebs:
-            blocks.append(
-                f"**{item['task_name']}** · 能垒 **{_fmt(item['barrier_ev'])} eV** · "
-                f"过渡态映像 {item['transition_state_image'] or '—'} · 映像数 {item['image_count']}\n"
-            )
             if item.get("chart"):
-                blocks.append(f"![{item['task_name']} 能垒图]({item['chart']})\n")
+                blocks.append(f"![{item['task_name']} NEB 能垒看板]({item['chart']})\n")
+            images = item.get("images") or []
+            if images:
+                saddle_label = item.get("transition_state_image")
+                max_force_label = None
+                force_values = [
+                    (img.get("max_force_ev_per_a"), img.get("label")) for img in images
+                ]
+                force_values = [x for x in force_values if x[0] is not None]
+                if force_values:
+                    max_force_label = max(force_values)[1]
+                roles = []
+                for index, img in enumerate(images):
+                    if index == 0:
+                        roles.append("初态")
+                    elif index == len(images) - 1:
+                        roles.append("末态")
+                    elif img.get("label") == saddle_label:
+                        roles.append("鞍点")
+                    else:
+                        roles.append("中间态")
+                blocks.append(
+                    _md_table(
+                        ["映像", "相对能垒 (eV)", "绝对能量 (eV)", "最大受力 (eV/Å)", "角色"],
+                        [
+                            [
+                                f"映像 {img['label']}",
+                                _fmt(img["relative_energy_ev"], 4),
+                                _fmt(img["energy_ev"], 4),
+                                _fmt(img["max_force_ev_per_a"], 4)
+                                + (" ⬆" if img.get("label") == max_force_label else ""),
+                                roles[index] + (" · 受力最大" if img.get("label") == max_force_label else ""),
+                            ]
+                            for index, img in enumerate(images)
+                        ],
+                    )
+                )
             if item.get("matrix_chart"):
                 blocks.append(
                     f"![{item['task_name']} 映像结构对比]({item['matrix_chart']})\n"
                 )
+            blocks.append("\n")
     if not blocks:
         blocks.append("_本项目暂无可展示的科学结果（需任务产出 OUTCAR/CONTCAR 后自动生成）_\n")
     else:
@@ -811,8 +932,10 @@ def build_report(
     # ---------------- 图表
     charts: Dict[str, str] = {}
     opt_science: List[Dict[str, Any]] = []
-    opt_total = len([f for f in facts if f["task_type"] == "opt" and f.get("force_history")])
-    for fact in facts:
+    # 只把**独立**结构优化任务（不含自由能路径中间体 / NEB 初末态优化）计入本节
+    opt_facts = [f for f in facts if f["task_type"] == "opt" and _task_category(f) == "结构优化"]
+    opt_total = len([f for f in opt_facts if f.get("force_history")])
+    for fact in opt_facts:
         history = fact.get("force_history") or []
         if not history or len(opt_science) >= MAX_STRUCTURE_TASKS:
             continue
@@ -863,7 +986,7 @@ def build_report(
                 "force_max_ev_per_a": fact["force_max"],
                 "converged": bool(fact["converged"])
                 if fact["converged"] is not None
-                else fact["status"] == "completed",
+                else fact["status"] in STATUS_DONE,
                 "ionic_steps": fact["steps"],
                 "energy_force_series": points,
                 "structure": {
@@ -879,18 +1002,8 @@ def build_report(
         if not any(s.get("free_energy_ev") is not None for s in path["structures"]):
             continue
         name = f"{path['group_id']}_step.svg"
-        charts[name] = step_chart(
-            [
-                {
-                    **s,
-                    "free_energy": s.get("free_energy_ev"),
-                    "converged": s.get("converged"),
-                    "corrected": s.get("corrected"),
-                }
-                for s in path["structures"]
-            ],
-            title=f"{path['group_name']} 自由能台阶图",
-        )
+        # 与巡检详情页的自由能路径看板同版式：统计卡 + 台阶图
+        charts[name] = free_energy_panel(path, title=f"{path['group_name']} 自由能路径看板")
         path["chart"] = f"charts/{name}"
 
     neb_science = _neb_details(facts)
@@ -898,17 +1011,8 @@ def build_report(
         if not item["images"]:
             continue
         name = f"{item['task_id']}_barrier.svg"
-        charts[name] = neb_barrier_chart(
-            [
-                {
-                    **img,
-                    "relative": img.get("relative_energy_ev"),
-                    "energy": img.get("energy_ev"),
-                }
-                for img in item["images"]
-            ],
-            title=f"{item['task_name']} 能垒曲线",
-        )
+        # 与巡检详情页的 NEB 能垒看板同版式：统计卡 + 能垒曲线
+        charts[name] = neb_panel(item, title=f"{item['task_name']} NEB 能垒看板")
         item["chart"] = f"charts/{name}"
         # 映像结构对比矩阵（行 = a-b / b-c / a-c 视图，列 = 映像 IS → FS）
         try:
@@ -938,8 +1042,16 @@ def build_report(
         (g["cores"] for g in (cores.get("byProject") or []) if g["project_name"] == project_name),
         0,
     )
-    charts["progress.svg"] = progress_bar_percent(
-        stats["completion_percent"], title="项目进度", detail=f"完成 {stats['completed']}/{stats['total']}"
+    # 项目进度：按任务类型分块（块宽 = 当量占比）+ 当量加权主进度
+    progress_segments, weighted_percent = _progress_segments(facts)
+    charts["progress.svg"] = segmented_progress_chart(
+        progress_segments,
+        main_percent=weighted_percent,
+        main_detail=(
+            f"当量加权主进度 · 任务 {stats['completed']}/{stats['total']} 已完成"
+            + (f"，{stats['archived']} 个已关闭" if stats["archived"] else "")
+        ),
+        title="项目进度",
     )
     charts["cores_donut.svg"] = donut_chart(
         cores.get("usedCores"), cores.get("totalCores"), title="集群核数占用"
@@ -1141,6 +1253,8 @@ def build_report(
             ],
             "status_reason": status_reasons[project_status],
             "progress_percent": stats["completion_percent"],
+            "weighted_progress_percent": weighted_percent,
+            "progress_segments": progress_segments,
             "task_summary": task_summary_text,
             "current_stage": stage,
             "progress_chart": "charts/progress.svg",
@@ -1193,6 +1307,8 @@ def build_report(
         },
         "progress": {
             "progress_percent": stats["completion_percent"],
+            "weighted_progress_percent": weighted_percent,
+            "progress_segments": progress_segments,
             "time_progress_percent": time_progress,
             "days_left": deadline_days,
             "deadline": str(project.get("deadline") or ""),

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.7.0（智能报告重构：分项目报告生成）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.7.1（报告改为以总结为核心 + 每天自动生成）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -185,7 +185,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.7.0）
+## 7. 近期重要改动记录（v0.4.1 → v0.7.1）
+
+- v0.7.1（commit 见 `git log --oneline -1`）：**报告改为「以总结为核心」+ 每天自动生成**。① 章节精简为 5 章：**基本信息**（项目 / 生成时间 / 整体状态色标 / 进度条 + 一句话任务概览）/ **重点科学结果分析**（opt 每任务：结构三视图 + **能量与最大力同图（双纵轴，力带 0.02 阈值线）** + 一行关键数据；自由能按路径：台阶图 + 中间体表（含 ZPE 矫正列）；NEB 按组：能垒图 + **映像结构对比矩阵**（行 a-b/b-c/a-c，列 IS→FS）；电子结构占位说明）/ **异常与关注项**（模板生成，最多 6 条，含建议）/ **下一步建议**（最多 5 条）/ **附录**（任务清单 + 生成参数）。正文 Markdown 从约 25KB 降到 **8KB**（结构优化任务上限 6 个，其余只进附录），其余数据（tasks/resources/risks/llm_context）仍保留在结构化数据里供大模型消费。② 新增图表：`energy_force_chart`（双纵轴）、`structure_views`（纯 Python 正交投影三视图，元素着色 + 晶胞框）、`structure_matrix`（NEB 映像矩阵）、`progress_bar_percent`。③ **每天自动生成**：复用巡检调度线程，新增 `auto_report_enabled`（默认开）+ `report_interval_hours`（默认 24），到期为每个项目各生成一份报告（单项目失败不影响其他）；`/api/inspections/meta` 的 scheduler 字段新增 `report_enabled / report_interval_hours / report_running / last_report_at / next_report_at`，`PUT /api/inspections/auto` 可改这两项。④ 前端报告页在「重点科学结果分析」上方提供**交互式结构视图**（opt 用 3Dmol 的 Structure3DViewer、NEB 用映像对比 NebImages3DViewer，折叠展开）；导出 HTML/PDF 仍用静态三视图与对比矩阵。
 
 - v0.7.0（commit `d8bfb75`，已推送 origin/main）：**智能报告模块重构——分项目报告生成**（后端 7 个新文件 + 前端报告页重写）。① 报告产物三件套：`report.json`（结构化数据，schema 1.0.0，字段/枚举/单位/时间格式统一，可直接作为大模型输入）+ `report.md`（章节与结构化字段一一对应的 Markdown）+ `charts/*.svg`；按项目分目录存 `data/reports/<项目>/<报告ID>/`，索引 `data/reports/index.json`（原子写 + 锁）。② 11 个章节：元数据 / 执行摘要 / 进度总览 / 任务状态详情 / 科学结果分析 / 巡检与异常 / 资源与集群 / 风险分析 / 行动清单 / 大模型上下文 / 附录。③ **图表纯 Python 生成 SVG**（`report_charts.py`，零依赖；本机无 matplotlib 且不引入）：能量-离子步、力-离子步（含 0.02 阈值线）、自由能台阶、NEB 能垒、核数圆环、存储进度条；数值同时以数组写入结构化数据（图片与数据分离）。④ **风险规则外置**（`report_rules.py` + `defaults/report_rules.json`，可覆盖到 `data/config/`）：声明式 `when`（all/any + field/op/value）+ 严重程度 + 建议模板，13 条规则；`closed` 闸门避免已关闭项目误报逾期/队列。⑤ 接口挂在 `/api/reports/project/...`（避免与既有 `/api/reports/groups` 冲突）：schema / generate（单个或 `all=true` 批量）/ list / detail / structured / markdown / **export.html（按 `sections` 勾选范围导出，图表内联成自包含 HTML，`print=1` 直接调起打印→另存 PDF）** / files/{name} / DELETE。⑥ 前端报告页重写：项目下拉 + 生成报告 + 一键生成所有项目、报告历史按项目分组、章节导航、**导出范围勾选**、Markdown/结构化数据视图切换、下载 MD/JSON/复制 JSON、导出 HTML/PDF。⑦ 统计口径修正：完成率分母为**未关闭任务**，已关闭（归档）任务单独计数且不参与风险判定；全归档项目完成度记 100%。⑧ 实测：Ag 报告 5.2s 生成（要求 <15s）、27 张图、10 条风险；按 `sections=risks,actions` 导出的 HTML 只含这两章（5.6KB），全量导出 103KB 且含 25 个内联 SVG。
 

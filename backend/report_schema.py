@@ -14,9 +14,14 @@
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 SCHEMA_CHANGELOG: List[Dict[str, str]] = [
+    {
+        "version": "1.1.0",
+        "date": "2026-09-13",
+        "changes": "以总结为核心重做章节：基本信息 / 重点科学结果分析（opt 每任务三视图+能量力同图、自由能按路径、NEB 按组含映像结构对比、电子结构占位）/ 异常与关注项 / 下一步建议 / 附录；数据章节仍保留在结构化数据中供大模型消费，但不再逐字段堆砌进正文",
+    },
     {
         "version": "1.0.0",
         "date": "2026-09-13",
@@ -73,17 +78,11 @@ RISK_SEVERITY_BY_TYPE = {
 
 # 章节定义：(key, 标题)——报告 Markdown 与前端导出范围都以此为准
 REPORT_SECTIONS: List[Tuple[str, str]] = [
-    ("metadata", "报告元数据"),
-    ("executive_summary", "项目执行摘要"),
-    ("progress", "项目进度总览"),
-    ("tasks", "任务状态详情"),
-    ("science", "科学结果分析"),
-    ("inspection", "巡检结果与异常汇总"),
-    ("resources", "资源使用与集群健康"),
-    ("risks", "风险分析"),
-    ("actions", "下一步行动清单"),
-    ("llm_context", "面向大模型的上下文"),
-    ("appendix", "附录"),
+    ("basic_info", "基本信息"),
+    ("science", "重点科学结果分析"),
+    ("issues", "异常与关注项"),
+    ("actions", "下一步建议"),
+    ("appendix", "附录（任务清单与生成参数）"),
 ]
 
 SECTION_KEYS: Tuple[str, ...] = tuple(key for key, _ in REPORT_SECTIONS)

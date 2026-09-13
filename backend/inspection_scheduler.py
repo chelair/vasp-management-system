@@ -23,9 +23,12 @@ from config import load_settings, save_settings
 CHECK_INTERVAL_SECONDS = 60  # 调度器轮询间隔
 _state: Dict[str, Any] = {
     "running": False,
+    "report_running": False,
     "last_error": None,
     "last_finished_at": None,
     "last_triggered_at": None,
+    "last_report_at": None,
+    "last_report_error": None,
     "started": False,
 }
 _lock = threading.Lock()
@@ -77,6 +80,58 @@ def _run_auto_inspection() -> None:
         _state["last_finished_at"] = datetime.now().isoformat(timespec="seconds")
 
 
+def _report_due() -> bool:
+    """报告是否到期：开启且距上次生成 ≥ report_interval_hours（默认 24 小时）。"""
+    settings = load_settings()
+    if not settings.get("auto_report_enabled", True):
+        return False
+    try:
+        interval = float(settings.get("report_interval_hours", 24) or 24)
+    except (TypeError, ValueError):
+        interval = 24.0
+    try:
+        from report_store import list_reports
+
+        reports = list_reports()
+    except Exception:  # noqa: BLE001 - 报告模块不可用时不触发
+        return False
+    if not reports:
+        return True  # 从未生成过：先来一轮
+    last = _parse_ts(reports[0].get("generated_at"))
+    if last is None:
+        return True
+    return datetime.now() - last >= timedelta(hours=interval)
+
+
+def _run_auto_reports() -> None:
+    """为每个项目生成一份日报（单个项目失败不影响其他项目）。"""
+    from report_builder import build_report
+    from report_store import save_report
+    from storage import load_db
+
+    try:
+        db = load_db()
+        created, failed = 0, []
+        for project in db.get("projects", []):
+            ref = str(project.get("project_id") or project.get("name") or "")
+            if not ref:
+                continue
+            try:
+                result = build_report(ref, window_days=7)
+                save_report(result["report"], result["markdown"], result["charts"])
+                created += 1
+            except Exception as e:  # noqa: BLE001
+                failed.append(f"{project.get('name')}: {e}")
+        _state["last_report_at"] = datetime.now().isoformat(timespec="seconds")
+        _state["last_report_error"] = failed[0] if failed else None
+        print(f"[auto-report] 生成 {created} 份项目报告（失败 {len(failed)}）")
+    except Exception as e:  # noqa: BLE001
+        _state["last_report_error"] = str(e)
+        print(f"[auto-report] 失败：{e}")
+    finally:
+        _state["report_running"] = False
+
+
 def _loop() -> None:
     while True:
         try:
@@ -84,6 +139,10 @@ def _loop() -> None:
                 _state["running"] = True
                 _state["last_triggered_at"] = datetime.now().isoformat(timespec="seconds")
                 threading.Thread(target=_run_auto_inspection, daemon=True).start()
+            # 报告自动生成：与巡检共用同一个调度线程，默认每 24 小时一轮
+            if not _state["report_running"] and _report_due():
+                _state["report_running"] = True
+                threading.Thread(target=_run_auto_reports, daemon=True).start()
         except Exception as e:  # noqa: BLE001 - 调度器自身不能挂
             _state["last_error"] = str(e)
         time.sleep(CHECK_INTERVAL_SECONDS)
@@ -111,6 +170,24 @@ def scheduler_status() -> Dict[str, Any]:
     next_run = None
     if last is not None:
         next_run = (last + timedelta(hours=interval)).strftime("%Y-%m-%d %H:%M")
+    report_enabled = bool(settings.get("auto_report_enabled", True))
+    try:
+        report_interval = float(settings.get("report_interval_hours", 24) or 24)
+    except (TypeError, ValueError):
+        report_interval = 24.0
+    try:
+        from report_store import list_reports
+
+        reports = list_reports()
+        last_report = reports[0].get("generated_at") if reports else None
+    except Exception:  # noqa: BLE001
+        last_report = None
+    next_report = None
+    last_report_dt = _parse_ts(last_report)
+    if last_report_dt is not None:
+        next_report = (last_report_dt + timedelta(hours=report_interval)).strftime(
+            "%Y-%m-%d %H:%M"
+        )
     return {
         "enabled": enabled,
         "interval_hours": interval,
@@ -121,6 +198,12 @@ def scheduler_status() -> Dict[str, Any]:
         "last_triggered_at": _state["last_triggered_at"],
         "last_finished_at": _state["last_finished_at"],
         "last_error": _state["last_error"],
+        "report_enabled": report_enabled,
+        "report_interval_hours": report_interval,
+        "report_running": bool(_state["report_running"]),
+        "last_report_at": last_report,
+        "next_report_at": next_report,
+        "last_report_error": _state["last_report_error"],
     }
 
 
@@ -137,6 +220,16 @@ def update_schedule(payload: Dict[str, Any]) -> Dict[str, Any]:
         if hours < 0.1 or hours > 168:
             raise ValueError("interval_hours 需在 0.1 ~ 168 之间")
         patch["inspection_interval_hours"] = hours
+    if "report_enabled" in payload and payload.get("report_enabled") is not None:
+        patch["auto_report_enabled"] = bool(payload.get("report_enabled"))
+    if payload.get("report_interval_hours") is not None:
+        try:
+            report_hours = float(payload["report_interval_hours"])
+        except (TypeError, ValueError):
+            raise ValueError("report_interval_hours 必须是数字")
+        if report_hours < 1 or report_hours > 720:
+            raise ValueError("report_interval_hours 需在 1 ~ 720 之间")
+        patch["report_interval_hours"] = report_hours
     if patch:
         save_settings(patch)
     return scheduler_status()

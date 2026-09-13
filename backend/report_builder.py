@@ -16,10 +16,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from checks_store import collect_results, list_runs, to_frontend_rows
+from cif_convert import read_neb_image_cifs, read_or_convert_cif
 from config import DATA_DIR, load_servers
 from dashboard import build_cluster_health, build_cores_usage, cluster_snapshot
 from dates import now_iso
-from report_charts import donut_chart, line_chart, neb_barrier_chart, progress_bar, step_chart
+from report_charts import (
+    donut_chart,
+    energy_force_chart,
+    neb_barrier_chart,
+    progress_bar,
+    progress_bar_percent,
+    step_chart,
+    structure_matrix,
+    structure_views,
+)
 from report_rules import evaluate as evaluate_rules
 from report_rules import load_rules, priority_for, rules_meta
 from report_schema import (
@@ -57,7 +67,7 @@ SUBTYPE_LABELS = {
 }
 ANOMALY_CATEGORIES = ("convergence", "resource", "file", "ssh", "queue")
 
-MAX_CHART_TASKS = 8  # 单项目最多为多少个任务画曲线，控制生成时间
+MAX_STRUCTURE_TASKS = 6  # 单项目正文最多展示多少个结构优化任务（其余只进附录），控制篇幅
 
 
 # --------------------------------------------------------------------- 工具
@@ -480,173 +490,72 @@ def _fmt(value: Any, digits: int = 4) -> str:
     return str(value)
 
 
-def _sections_markdown(
-    report: Dict[str, Any], charts: Dict[str, str]
-) -> List[Dict[str, str]]:
-    """把结构化字段渲染为各章 Markdown（内容与结构化数据一一对应）。"""
-    sections: Dict[str, str] = {}
-    severity_labels = {"high": "高", "medium": "中", "low": "低"}
-
-    meta = report["metadata"]
-    sections["metadata"] = "\n".join(
-        [
-            f"- 报告 ID：`{meta['report_id']}`",
-            f"- 项目：{meta['project_name']}（`{meta['project_id']}`）",
-            f"- 生成时间：{meta['generated_at']}",
-            f"- 时间窗口：{meta['time_window']['start']} ~ {meta['time_window']['end']}"
-            f"（{meta['time_window']['label']}）",
-            f"- 数据来源：{'、'.join(meta['data_sources'])}",
-            f"- Schema 版本：{report['schema_version']}",
-        ]
-    ) + "\n"
-
-    summary = report["executive_summary"]
-    stats = summary["task_stats"]
-    sections["executive_summary"] = "\n".join(
-        [
-            f"**整体状态：{summary['project_status_label']}** —— {summary['status_reason']}",
-            "",
-            summary["summary_text"],
-            "",
-            _md_table(
-                ["指标", "数值"],
-                [
-                    ["任务总数", stats["total"]],
-                    ["已完成", stats["completed"]],
-                    ["运行中", stats["running"]],
-                    ["排队中", stats["queued"]],
-                    ["异常中断", stats["failed"]],
-                    ["未收敛", stats["unconverged"]],
-                    ["待处理", stats["pending"]],
-                    ["完成率", f"{stats['completion_percent']}%"],
-                    [
-                        "核数占用",
-                        f"{summary['resources']['cores_used']} / "
-                        f"{summary['resources']['cores_total'] or '—'}"
-                        f"（{_fmt(summary['resources']['cores_used_percent'], 1)}%）",
-                    ],
-                    [
-                        "存储使用",
-                        f"{_fmt(summary['resources']['storage_used_percent'], 1)}%"
-                        f"（剩余 {summary['resources']['storage_available'] or '—'}）",
-                    ],
-                ],
-            ),
-        ]
+def _one_line_summary(facts, stats, stage):
+    return (
+        f"{stats['total']} 个任务，已完成 {stats['completed']} 个"
+        + (f"、{stats['running']} 个运行中" if stats["running"] else "")
+        + (f"、{stats['queued']} 个排队中" if stats["queued"] else "")
+        + (f"、{stats['failed'] + stats['unconverged']} 个异常" if stats["failed"] + stats["unconverged"] else "")
+        + (f"、{stats['pending']} 个待处理" if stats["pending"] else "")
+        + f"；当前阶段：{stage}"
     )
 
-    progress = report["progress"]
-    tree_rows = []
-    for group in progress["task_tree"]:
-        for task in group["tasks"]:
-            tree_rows.append([group["task_type_label"], task["task_name"], task["status_label"]])
-    sections["progress"] = "\n".join(
-        [
-            f"- 完成度：{progress['progress_percent']}%（时间进度 "
-            f"{_fmt(progress['time_progress_percent'], 1)}%，剩余 {_fmt(progress['days_left'], 0)} 天）",
-            f"- 当前阶段：{progress['current_stage']}",
-            f"- 预计完成时间：{progress['estimated_completion'] or '—（历史耗时数据不足）'}",
-            "",
-            "**按任务类型的阶段分布**",
-            "",
-            _md_table(
-                ["任务类型", "总数", "已完成", "进行中", "异常"],
-                [
-                    [
-                        row["task_type_label"],
-                        row["total"],
-                        row["completed"],
-                        row["running"],
-                        row["anomalies"],
-                    ]
-                    for row in progress["stage_breakdown"]
-                ],
-            ),
-            "**任务树摘要**",
-            "",
-            _md_table(["类型", "任务", "状态"], tree_rows),
-        ]
-    )
 
+def _sections_markdown(report, charts):
+    """把结构化字段渲染为各章 Markdown（以总结为核心，不堆砌字段）。"""
+    sections = {}
+    info = report["basic_info"]
+    summary = info["task_summary"]
+    status_icon = {"normal": "🟢", "warning": "🟠", "critical": "🔴"}[info["project_status"]]
+    sections["basic_info"] = "\n".join(
+        [
+            f"- **项目**：{info['project_name']}",
+            f"- **报告生成时间**：{info['generated_at']}",
+            f"- **整体状态**：{status_icon} **{info['project_status_label']}** —— {info['status_reason']}",
+            f"- **项目进度**：**{info['progress_percent']}%**（{summary}）",
+            f"- **时间窗口**：{info['time_window_label']}",
+            "",
+            f"![项目进度]({charts.get('progress.svg', '')})".rstrip(),
+        ]
+    ).strip() + "\n"
+
+    science = report["science"]
     blocks = []
-    for group in report["tasks"]["groups"]:
-        rows = [
-            [
-                t["task_name"],
-                t["status_label"],
-                _fmt(t["last_energy_ev"]),
-                _fmt(t["force_max_ev_per_a"]),
-                _fmt(t["ionic_steps"], 0),
-                t["continuation_count"],
-                t["job_id"] or "—",
-                t["queue"] or "—",
-                t["cores"] if t["cores"] is not None else "—",
-                f"{t['runtime_hours']:.1f}" if t["runtime_hours"] is not None else "—",
-            ]
-            for t in group["tasks"]
-        ]
-        blocks.append(f"**{group['task_type_label']}（{group['total']} 项）**\n")
-        blocks.append(
-            _md_table(
-                [
-                    "任务",
-                    "状态",
-                    "能量 (eV)",
-                    "最大力 (eV/Å)",
-                    "离子步",
-                    "续算",
-                    "作业号",
-                    "队列",
-                    "核数",
-                    "运行 (h)",
-                ],
-                rows,
-            )
-        )
-        errors = [
-            (t["task_name"], "；".join(t["errors"])) for t in group["tasks"] if t["errors"]
-        ]
-        if errors:
-            blocks.append("异常信息：\n")
-            blocks.extend(f"- {name}：{msg}\n" for name, msg in errors)
-        blocks.append("\n")
-    sections["tasks"] = "".join(blocks).strip() + "\n"
-
-    science_blocks: List[str] = []
-    opt_items = report["science"]["opt"]
+    opt_items = science.get("opt") or []
     if opt_items:
-        science_blocks.append("**结构优化**\n")
+        blocks.append("### 结构优化\n")
+        blocks.append(
+            f"共 {science.get('opt_total') or len(opt_items)} 个结构优化任务有收敛数据，"
+            f"下列展示其中 {len(opt_items)} 个（其余见附录）。每条包含结构三视图与能量/力曲线。\n"
+        )
         for item in opt_items:
-            science_blocks.append(
-                f"- {item['task_name']}：最终能量 {_fmt(item['final_energy_ev'])} eV，"
-                f"最大力 {_fmt(item['force_max_ev_per_a'])} eV/Å，"
-                f"离子步 {_fmt(item['ionic_steps'], 0)}，"
-                f"{'已收敛' if item['converged'] else '未收敛'}"
-                + (
-                    f"，晶格变化 a/b/c：{_fmt(item['structure_change']['a_percent'], 3)}%/"
-                    f"{_fmt(item['structure_change']['b_percent'], 3)}%/"
-                    f"{_fmt(item['structure_change']['c_percent'], 3)}%，"
-                    f"最大原子位移 {_fmt(item['structure_change']['max_displacement_a'], 4)} Å"
-                    if item.get("structure_change")
-                    else ""
+            converge = "✅ 已收敛" if item["converged"] else "⚠️ 未收敛"
+            blocks.append(
+                f"**{item['task_name']}** · {converge} · 最终能量 **{_fmt(item['final_energy_ev'])} eV** · "
+                f"最终最大力 **{_fmt(item['force_max_ev_per_a'])} eV/Å** · 离子步 {_fmt(item['ionic_steps'], 0)}\n"
+            )
+            if item["charts"].get("views"):
+                blocks.append(f"![{item['task_name']} 结构三视图]({item['charts']['views']})\n")
+            if item["charts"].get("energy_force"):
+                blocks.append(
+                    f"![{item['task_name']} 能量与力曲线]({item['charts']['energy_force']})\n"
                 )
-            )
-            for kind, title in (("energy", "能量-离子步"), ("force", "力-离子步")):
-                chart = item["charts"].get(kind)
-                if chart:
-                    science_blocks.append(f"\n![{title}]({chart})\n")
-        science_blocks.append("\n")
-    paths = report["science"]["free_energy"]
+            blocks.append("\n")
+    paths = science.get("free_energy") or []
     if paths:
-        science_blocks.append("**自由能路径**\n")
+        blocks.append("### 自由能路径\n")
         for path in paths:
-            science_blocks.append(
-                f"*{path['group_name']}*（{path['structure_count']} 个中间体，"
-                f"已矫正 {path['corrected_count']} 个）\n"
+            corrections = path.get("corrected_count", 0)
+            blocks.append(
+                f"**{path['group_name']}** · {path['structure_count']} 个中间体"
+                + (f"（{corrections} 个已矫正）" if corrections else "（尚未矫正）")
+                + "\n"
             )
-            science_blocks.append(
+            if path.get("chart"):
+                blocks.append(f"![{path['group_name']} 自由能台阶图]({path['chart']})\n")
+            blocks.append(
                 _md_table(
-                    ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "收敛", "矫正"],
+                    ["中间体", "DFT 能量 (eV)", "ZPE 矫正 (eV)", "自由能 (eV)", "收敛", "矫正"],
                     [
                         [
                             f"结构 {s['structure_label']}",
@@ -660,187 +569,72 @@ def _sections_markdown(
                     ],
                 )
             )
-            if path.get("chart"):
-                science_blocks.append(f"\n![{path['group_name']} 自由能台阶图]({path['chart']})\n")
-        science_blocks.append("\n")
-    nebs = report["science"]["neb"]
+    nebs = science.get("neb") or []
     if nebs:
-        science_blocks.append("**NEB 过渡态**\n")
+        blocks.append("### NEB 过渡态\n")
         for item in nebs:
-            science_blocks.append(
-                f"- {item['task_name']}：能垒 {_fmt(item['barrier_ev'])} eV，"
-                f"过渡态映像 {item['transition_state_image'] or '—'}，"
-                f"映像数 {item['image_count']}，带推进 {_fmt(item['band_steps'], 0)} 步"
+            blocks.append(
+                f"**{item['task_name']}** · 能垒 **{_fmt(item['barrier_ev'])} eV** · "
+                f"过渡态映像 {item['transition_state_image'] or '—'} · 映像数 {item['image_count']}\n"
             )
             if item.get("chart"):
-                science_blocks.append(f"\n![{item['task_name']} 能垒图]({item['chart']})\n")
-            if item["images"]:
-                science_blocks.append(
-                    _md_table(
-                        ["映像", "相对能垒 (eV)", "绝对能量 (eV)", "最大受力 (eV/Å)"],
-                        [
-                            [
-                                img["label"],
-                                _fmt(img["relative_energy_ev"]),
-                                _fmt(img["energy_ev"]),
-                                _fmt(img["max_force_ev_per_a"]),
-                            ]
-                            for img in item["images"]
-                        ],
-                    )
+                blocks.append(f"![{item['task_name']} 能垒图]({item['chart']})\n")
+            if item.get("matrix_chart"):
+                blocks.append(
+                    f"![{item['task_name']} 映像结构对比]({item['matrix_chart']})\n"
                 )
-        science_blocks.append("\n")
-    eles = report["science"]["ele"]
-    if eles:
-        science_blocks.append("**电子结构**\n")
-        science_blocks.append(
-            _md_table(
-                ["任务", "子类型", "状态", "分析状态", "备注"],
-                [
-                    [e["task_name"], e["subtype_label"], e["status_label"], e["analysis_status"], e["notes"] or "—"]
-                    for e in eles
-                ],
+    if not blocks:
+        blocks.append("_本项目暂无可展示的科学结果（需任务产出 OUTCAR/CONTCAR 后自动生成）_\n")
+    else:
+        ele_note = science.get("ele") or {}
+        blocks.append(
+            "### 电子结构\n\n"
+            + (
+                f"待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"
             )
         )
-    fracs = report["science"]["frac"]
-    if fracs:
-        science_blocks.append("**频率矫正**\n")
-        science_blocks.append(
-            _md_table(
-                ["任务", "状态", "ZPE (eV)", "热校正 (eV)", "频率解析"],
-                [
-                    [
-                        f["task_name"],
-                        f["status_label"],
-                        _fmt(f["zpe_ev"]),
-                        _fmt(f["thermal_correction_ev"]),
-                        "已解析" if f["parsed"] else "待接入",
-                    ]
-                    for f in fracs
-                ],
-            )
+    sections["science"] = "".join(blocks).strip() + "\n"
+
+    issues = report["issues"]["items"]
+    sections["issues"] = (
+        "\n".join(
+            f"- {issue['level_icon']} **{issue['task_name']}**：{issue['text']}"
+            + (f" —— {issue['suggestion']}" if issue.get("suggestion") else "")
+            for issue in issues
         )
-    sections["science"] = "".join(science_blocks).strip() + "\n"
-
-    inspection = report["inspection"]
-    sections["inspection"] = "\n".join(
-        [
-            f"- 最近一次巡检：{inspection['last_inspection_at'] or '—'}",
-            f"- 覆盖任务数：{inspection['covered_tasks']}",
-            f"- 异常任务数：{len(inspection['anomalies'])}",
-            "",
-            _md_table(
-                ["异常类型", "数量"],
-                [[k, v] for k, v in inspection["category_counts"].items()],
-            ),
-            _md_table(
-                ["任务", "类型", "描述", "发现时间"],
-                [
-                    [a["task_name"], a["anomaly_type"], a["description"], a["detected_at"]]
-                    for a in inspection["anomalies"]
-                ],
-            ),
-            "近 7 天异常数量趋势："
-            + "，".join(f"{p['date']} {p['count']}" for p in inspection["trend_7d"]),
-        ]
-    ) + "\n"
-
-    res = report["resources"]
-    core_chart = charts.get("cores_donut.svg")
-    storage_chart = charts.get("storage_bar.svg")
-    sections["resources"] = "\n".join(
-        [
-            _md_table(
-                ["指标", "数值"],
-                [
-                    ["核数已用 / 配额", f"{res['cores']['used']} / {_fmt(res['cores']['total'], 0)}"],
-                    ["核数使用率", f"{_fmt(res['cores']['used_percent'], 1)}%"],
-                    ["本项目占用核数", res["cores"]["project_used"]],
-                    ["存储使用率", f"{_fmt(res['storage']['used_percent'], 1)}%"],
-                    ["存储已用 / 总量", f"{_fmt(res['storage']['used_gb'], 1)} / {_fmt(res['storage']['total_gb'], 1)} GB"],
-                    ["节点（总/正常/满载/宕机）", f"{res['nodes']['total']} / {res['nodes']['ok']} / {res['nodes']['full']} / {res['nodes']['down']}"],
-                ],
-            ),
-            _md_table(
-                ["队列", "排队", "运行"],
-                [[q["queue"], q["pending"], q["running"]] for q in res["queues"]],
-            ),
-            f"\n![核数占用]({core_chart})\n" if core_chart else "",
-            f"\n![存储使用]({storage_chart})\n" if storage_chart else "",
-        ]
-    ) + "\n"
-
-    risks = report["risks"]
-    risk_lines = [
-        f"- **[{severity_labels.get(r['severity'], r['severity'])}] {r['description']}**  \n"
-        f"  建议：{r['advice']}"
-        f"（规则 {r['rule_id']}）"
-        for r in risks["items"]
-    ]
-    sections["risks"] = "\n".join(
-        [
-            f"高风险 {risks['summary']['high']} 条 · 中风险 {risks['summary']['medium']} 条 · "
-            f"低风险 {risks['summary']['low']} 条（规则集 {risks['rules']['schema_version']}）",
-            "",
-            "\n".join(risk_lines) if risk_lines else "_未触发任何风险规则_",
-        ]
+        if issues
+        else "本次巡检未发现需要关注的异常，项目状态正常。"
     ) + "\n"
 
     actions = report["actions"]["items"]
     sections["actions"] = (
-        _md_table(
-            ["优先级", "任务", "建议操作", "原因", "预计耗时 (h)", "跳转"],
-            [
-                [
-                    a["priority"],
-                    a["task_name"] or "—",
-                    a["action"],
-                    a["reason"],
-                    _fmt(a["estimated_hours"], 1),
-                    a["link"] or "—",
-                ]
-                for a in actions
-            ],
+        "\n".join(
+            f"{index}. **[{action['priority']}]** {action['action']}"
+            + (f"（{action['task_name']}）" if action.get("task_name") else "")
+            + (f" —— {action['reason']}" if action.get("reason") else "")
+            for index, action in enumerate(actions, start=1)
         )
         if actions
-        else "_暂无待办行动_\n"
-    )
-
-    llm = report["llm_context"]
-    sections["llm_context"] = "\n".join(
-        [
-            f"**报告用途**：{llm['purpose']}",
-            "",
-            "**关键发现**",
-            "",
-            *[f"- {k}" for k in llm["key_findings"]],
-            "",
-            "**待回答问题**",
-            "",
-            *[f"- {q}" for q in llm["open_questions"]],
-            "",
-            f"**约束**：最多 {llm['constraints']['max_suggestions']} 条建议，"
-            f"语言 {llm['constraints']['language']}，输出格式 {llm['constraints']['output_format']}",
-            "",
-            "**原始数据引用**：" + "、".join(f"`{r}`" for r in llm["data_references"]),
-        ]
+        else "暂无待办建议：保持当前推进节奏即可。"
     ) + "\n"
 
     appendix = report["appendix"]
     sections["appendix"] = "\n".join(
         [
             _md_table(
-                ["任务", "类型", "状态", "远程目录"],
+                ["任务", "类型", "状态"],
                 [
-                    [t["task_name"], t["task_type_label"], t["status_label"], t["remote_dir"]]
+                    [t["task_name"], t["task_type_label"], t["status_label"]]
                     for t in appendix["all_tasks"]
                 ],
             ),
             f"生成参数：时间窗口 {appendix['generation_params']['window_days']} 天 · "
-            f"图表上限 {appendix['generation_params']['max_chart_tasks']} 个任务 · "
+            f"结构展示上限 {appendix['generation_params']['max_structure_tasks']} 个任务 · "
             f"schema {appendix['generation_params']['schema_version']}",
             "",
-            "数据时间戳：" + "；".join(f"{k}={v or '—'}" for k, v in appendix["data_timestamps"].items()),
+            "数据时间戳：" + "；".join(
+                f"{k}={v or '—'}" for k, v in appendix["data_timestamps"].items()
+            ),
         ]
     ) + "\n"
 
@@ -848,9 +642,6 @@ def _sections_markdown(
         {"key": key, "title": title, "markdown": (sections.get(key) or "_（本章节无数据）_").strip() + "\n"}
         for key, title in REPORT_SECTIONS
     ]
-
-
-# ------------------------------------------------------------- 趋势 / 聚合
 
 
 def _anomaly_trend(project_name: str, days: int = 7) -> List[Dict[str, Any]]:
@@ -1019,75 +810,60 @@ def build_report(
     # ---------------- 图表
     charts: Dict[str, str] = {}
     opt_science: List[Dict[str, Any]] = []
+    opt_total = len([f for f in facts if f["task_type"] == "opt" and f.get("force_history")])
     for fact in facts:
-        if len(charts) >= MAX_CHART_TASKS * 2:
-            break
         history = fact.get("force_history") or []
-        if not history:
+        if not history or len(opt_science) >= MAX_STRUCTURE_TASKS:
             continue
-        energy_points = [
-            {"step": p.get("step"), "energy": p.get("energy")}
+        points = [
+            {
+                "step": p.get("step"),
+                "energy": p.get("energy"),
+                "max_force": p.get("max_force"),
+            }
             for p in history
-            if p.get("energy") is not None
-        ]
-        force_points = [
-            {"step": p.get("step"), "max_force": p.get("max_force")}
-            for p in history
-            if p.get("max_force") is not None
         ]
         chart_refs: Dict[str, str] = {}
-        if energy_points:
-            name = f"{fact['task_id']}_energy.svg"
-            charts[name] = line_chart(
-                energy_points,
-                title=f"{fact['task_name']} 能量-离子步",
-                y_label="能量 (eV)",
-                y_key="energy",
+        name = f"{fact['task_id']}_energy_force.svg"
+        charts[name] = energy_force_chart(points, title=f"{fact['task_name']} 能量与最大力")
+        chart_refs["energy_force"] = f"charts/{name}"
+        # 最终结构三视图（导出用；前端另有 3Dmol 交互视图）
+        poscar_cif = contcar_cif = None
+        try:
+            task_obj = next(
+                (x for x in project.get("tasks", []) if str(x.get("task_id")) == fact["task_id"]),
+                {},
             )
-            chart_refs["energy"] = f"charts/{name}"
-        if force_points:
-            name = f"{fact['task_id']}_force.svg"
-            charts[name] = line_chart(
-                force_points,
-                title=f"{fact['task_name']} 最大力-离子步",
-                y_label="最大力 (eV/A)",
-                y_key="max_force",
-                threshold=0.02,
-                color="#E8A33D",
+            poscar_cif = read_or_convert_cif(project, task_obj, "POSCAR")
+            contcar_cif = read_or_convert_cif(project, task_obj, "CONTCAR")
+        except Exception as e:  # noqa: BLE001
+            collection_errors.append(f"{fact['task_name']} 结构 CIF 读取失败：{e}")
+        view_cif = contcar_cif or poscar_cif
+        if view_cif:
+            vname = f"{fact['task_id']}_views.svg"
+            charts[vname] = structure_views(
+                view_cif,
+                title="",
+                labels=["a-b 视图", "b-c 视图", "a-c 视图"],
             )
-            chart_refs["force"] = f"charts/{name}"
-        if not chart_refs:
-            continue
-        structure_change = None
-        if fact["task_type"] == "opt":
-            try:
-                analysis = analyze_structure(project, next(
-                    (t for t in project.get("tasks", []) if str(t.get("task_id")) == fact["task_id"]),
-                    {},
-                ))
-                deltas = analysis.get("deltas") or {}
-                displacements = analysis.get("displacements") or {}
-                if deltas or displacements:
-                    structure_change = {
-                        "a_percent": deltas.get("a_pct"),
-                        "b_percent": deltas.get("b_pct"),
-                        "c_percent": deltas.get("c_pct"),
-                        "max_displacement_a": displacements.get("max"),
-                        "rms_displacement_a": displacements.get("rms"),
-                    }
-            except Exception as e:  # noqa: BLE001
-                collection_errors.append(f"{fact['task_name']} 结构对比失败：{e}")
+            chart_refs["views"] = f"charts/{vname}"
         opt_science.append(
             {
                 "task_id": fact["task_id"],
                 "task_name": fact["task_name"],
-                "energy_curve": energy_points,
-                "force_curve": force_points,
+                "status": fact["status"],
+                "status_label": fact["status_label"],
                 "final_energy_ev": fact["last_energy"],
                 "force_max_ev_per_a": fact["force_max"],
-                "converged": bool(fact["converged"]) if fact["converged"] is not None else fact["status"] == "completed",
+                "converged": bool(fact["converged"])
+                if fact["converged"] is not None
+                else fact["status"] == "completed",
                 "ionic_steps": fact["steps"],
-                "structure_change": structure_change,
+                "energy_force_series": points,
+                "structure": {
+                    "poscar_cif": poscar_cif,
+                    "contcar_cif": contcar_cif,
+                },
                 "charts": chart_refs,
             }
         )
@@ -1107,10 +883,36 @@ def build_report(
         name = f"{item['task_id']}_barrier.svg"
         charts[name] = neb_barrier_chart(item["images"], title=f"{item['task_name']} 能垒曲线")
         item["chart"] = f"charts/{name}"
+        # 映像结构对比矩阵（行 = a-b / b-c / a-c 视图，列 = 映像 IS → FS）
+        try:
+            task_obj = next(
+                (x for x in project.get("tasks", []) if str(x.get("task_id")) == item["task_id"]),
+                {},
+            )
+            image_cifs = read_neb_image_cifs(project, task_obj)
+            if len(image_cifs) >= 2:
+                matrix_items = [
+                    {"label": label, "cif": cif} for label, cif in image_cifs.items()
+                ]
+                item["images_with_structure"] = [
+                    {"label": i["label"], "cif": image_cifs.get(i["label"])} for i in item["images"]
+                ]
+                mname = f"{item['task_id']}_images.svg"
+                charts[mname] = structure_matrix(
+                    matrix_items, title=f"{item['task_name']} 映像结构对比"
+                )
+                item["matrix_chart"] = f"charts/{mname}"
+            else:
+                item["note"] = "尚未同步映像结构（巡检推进到 25 离子步桶后自动抓取）"
+        except Exception as e:  # noqa: BLE001
+            collection_errors.append(f"{item['task_name']} 映像结构读取失败：{e}")
 
     project_cores = next(
         (g["cores"] for g in (cores.get("byProject") or []) if g["project_name"] == project_name),
         0,
+    )
+    charts["progress.svg"] = progress_bar_percent(
+        stats["completion_percent"], title="项目进度", detail=f"完成 {stats['completed']}/{stats['total']}"
     )
     charts["cores_donut.svg"] = donut_chart(
         cores.get("usedCores"), cores.get("totalCores"), title="集群核数占用"
@@ -1264,8 +1066,58 @@ def build_report(
     while len(key_findings) < 3:
         key_findings.append("暂无明显风险项，继续按计划推进即可")
 
+    stage = _current_stage(active_facts, counter)
+    task_summary_text = _one_line_summary(active_facts, stats, stage)
+    # 异常与关注项：模板生成（不走大模型），只保留最关键的几条
+    issue_items: List[Dict[str, Any]] = []
+    for risk in risks:
+        if risk["severity"] == "low":
+            continue
+        task = (risk["affected_tasks"] or [{}])[0]
+        issue_items.append(
+            {
+                "level": risk["severity"],
+                "level_icon": {"high": "🔴", "medium": "🟠"}.get(risk["severity"], "🟡"),
+                "task_id": task.get("task_id"),
+                "task_name": task.get("task_name") or risk["target"],
+                "text": risk["description"],
+                "suggestion": risk["advice"],
+                "rule_id": risk["rule_id"],
+            }
+        )
+    for anomaly in anomalies[:3]:
+        if any(i["task_id"] == anomaly["task_id"] for i in issue_items):
+            continue
+        issue_items.append(
+            {
+                "level": "medium" if anomaly["current_status"] == "warning" else "high",
+                "level_icon": "🟠" if anomaly["current_status"] == "warning" else "🔴",
+                "task_id": anomaly["task_id"],
+                "task_name": anomaly["task_name"],
+                "text": anomaly["description"],
+                "suggestion": "查看巡检详情并处理",
+                "rule_id": "inspection",
+            }
+        )
+    issue_items = issue_items[:6]
+
     report: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "basic_info": {
+            "project_name": project_name,
+            "project_id": project_id,
+            "generated_at": now,
+            "time_window_label": f"最近 {window_days} 天",
+            "project_status": project_status,
+            "project_status_label": {"normal": "正常", "warning": "警告", "critical": "异常"}[
+                project_status
+            ],
+            "status_reason": status_reasons[project_status],
+            "progress_percent": stats["completion_percent"],
+            "task_summary": task_summary_text,
+            "current_stage": stage,
+            "progress_chart": "charts/progress.svg",
+        },
         "report_type": "project_status",
         "metadata": {
             "report_id": report_id,
@@ -1380,9 +1232,13 @@ def build_report(
         },
         "science": {
             "opt": opt_science,
+            "opt_total": opt_total,
             "free_energy": free_paths,
             "neb": neb_science,
-            "ele": _ele_details(facts),
+            "ele": {
+                "note": "电子结构分析（PDOS / Bader / 功函数 / 差分电荷）待接入报告",
+                "tasks": _ele_details(facts),
+            },
             "frac": _frac_details(project, facts),
             "parsing_notes": [
                 "自由能 ZPE 与频率列表解析待接入（字段已占位）",
@@ -1442,7 +1298,15 @@ def build_report(
             },
             "rules": rules_meta(),
         },
-        "actions": {"items": action_items},
+        "issues": {
+            "items": issue_items,
+            "summary": {
+                "total": len(issue_items),
+                "high": len([i for i in issue_items if i["level"] == "high"]),
+                "medium": len([i for i in issue_items if i["level"] == "medium"]),
+            },
+        },
+        "actions": {"items": action_items[:5]},
         "llm_context": {
             "purpose": "供大模型进行项目风险分析、优先级排序与行动规划；数值以字段为准，图表仅作可视化",
             "key_findings": key_findings[:5],
@@ -1469,7 +1333,7 @@ def build_report(
             "all_tasks": [_task_detail_row(f) for f in facts],
             "generation_params": {
                 "window_days": window_days,
-                "max_chart_tasks": MAX_CHART_TASKS,
+                "max_structure_tasks": MAX_STRUCTURE_TASKS,
                 "schema_version": SCHEMA_VERSION,
                 "generated_at": now,
             },

@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Collapse,
   Empty,
   Input,
   Popconfirm,
@@ -34,6 +35,8 @@ import {
 import { fetchProjects } from '../api/projects';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
+import NebImages3DViewer from '../components/inspection/NebImages3DViewer';
+import Structure3DViewer from '../components/inspection/Structure3DViewer';
 import type { Project, ProjectReportDetail, ProjectReportMeta } from '../types';
 import { renderMarkdown } from '../utils/markdown';
 
@@ -195,6 +198,63 @@ export default function Report() {
       })),
     [visibleSections, detail],
   );
+
+  /** 科学结果里的交互式结构视图（前端 3Dmol；导出走静态三视图/对比矩阵） */
+  const interactiveStructures = useMemo(() => {
+    const science = (detail?.structured as Record<string, any> | undefined)?.science;
+    if (!science) return null;
+    const optItems: any[] = (science.opt ?? []).filter(
+      (item: any) => item.structure?.contcar_cif || item.structure?.poscar_cif,
+    );
+    const nebItems: any[] = (science.neb ?? []).filter(
+      (item: any) => (item.images_with_structure ?? []).some((i: any) => i.cif),
+    );
+    if (optItems.length === 0 && nebItems.length === 0) return null;
+    return (
+      <Collapse
+        ghost
+        className="report-3d"
+        defaultActiveKey={[]}
+        items={[
+          ...optItems.map((item) => ({
+            key: `opt-${item.task_id}`,
+            label: `${item.task_name} · ${item.converged ? '已收敛' : '未收敛'} · 交互结构（可旋转缩放）`,
+            children: (
+              <Structure3DViewer
+                poscarCif={item.structure?.poscar_cif ?? null}
+                contcarCif={item.structure?.contcar_cif ?? null}
+              />
+            ),
+          })),
+          ...nebItems.map((item) => ({
+            key: `neb-${item.task_id}`,
+            label: `${item.task_name} · ${item.image_count} 个映像结构（IS → 中间态 → FS）`,
+            children: (
+              <NebImages3DViewer
+                images={(item.images_with_structure ?? [])
+                  .filter((image: any) => image.cif)
+                  .map((image: any, index: number, list: any[]) => ({
+                    label: String(image.label ?? index),
+                    role:
+                      index === 0 ? 'is' : index === list.length - 1 ? 'fs' : 'middle',
+                    cif: image.cif,
+                    energy:
+                      (item.images ?? []).find((x: any) => x.label === image.label)?.energy_ev ??
+                      null,
+                    relative:
+                      (item.images ?? []).find((x: any) => x.label === image.label)
+                        ?.relative_energy_ev ?? null,
+                    max_force:
+                      (item.images ?? []).find((x: any) => x.label === image.label)
+                        ?.max_force_ev_per_a ?? null,
+                  }))}
+              />
+            ),
+          })),
+        ]}
+      />
+    );
+  }, [detail]);
 
   return (
     <PageTransition>
@@ -452,6 +512,7 @@ export default function Report() {
                     {renderedSections.map((s) => (
                       <section key={s.key} id={`report-${s.key}`}>
                         <h2 className="report-section-title">{s.title}</h2>
+                        {s.key === 'science' && interactiveStructures}
                         <div
                           className="report-markdown"
                           dangerouslySetInnerHTML={{ __html: s.html }}

@@ -376,3 +376,375 @@ def progress_bar(
         f"{value:.0f}%{(' · ' + _escape(detail)) if detail else ''}</text>"
     )
     return _svg(width, height, "".join(body), title)
+
+
+# ------------------------------------------------------- 能量 + 力（双纵轴）
+
+
+def energy_force_chart(
+    points: Sequence[Dict[str, Any]],
+    *,
+    title: str = "能量 / 最大力 - 离子步",
+    force_threshold: float = 0.02,
+    width: int = 620,
+    height: int = 260,
+) -> str:
+    """能量与最大力画在**同一张图**：左轴能量（蓝）、右轴最大力（橙），
+    并画力收敛阈值虚线。行内文字标注数值，用于导出静态图。"""
+    margin = {"left": 70, "right": 68, "top": 34, "bottom": 42}
+    data = [
+        (
+            float(p["step"]),
+            float(p["energy"]) if p.get("energy") is not None else None,
+            float(p["max_force"]) if p.get("max_force") is not None else None,
+        )
+        for p in points
+        if p.get("step") is not None
+    ]
+    body: List[str] = [
+        f'<text x="{margin["left"]}" y="20" font-size="13" fill="#374151" {FONT}>{_escape(title)}</text>',
+    ]
+    if not data:
+        body.append(
+            f'<text x="{width / 2}" y="{height / 2}" font-size="12" fill="{COLOR_MUTED}" '
+            f'text-anchor="middle" {FONT}>暂无数据</text>'
+        )
+        return _svg(width, height, "".join(body), title)
+
+    plot_w = width - margin["left"] - margin["right"]
+    plot_h = height - margin["top"] - margin["bottom"]
+    steps = [d[0] for d in data]
+    energies = [d[1] for d in data if d[1] is not None]
+    forces = [d[2] for d in data if d[2] is not None]
+    x_min, x_max = min(steps), max(steps)
+    if x_max <= x_min:
+        x_max = x_min + 1
+    e_min, e_max = (min(energies), max(energies)) if energies else (0.0, 1.0)
+    e_pad = (e_max - e_min) * 0.12 or 0.1
+    e_lo, e_hi = e_min - e_pad, e_max + e_pad
+    f_max = max(forces + [force_threshold]) if forces else force_threshold
+    f_hi = f_max * 1.18 or 0.1
+
+    def px(x: float) -> float:
+        return margin["left"] + (x - x_min) / (x_max - x_min) * plot_w
+
+    def py_e(y: float) -> float:
+        return margin["top"] + (1 - (y - e_lo) / (e_hi - e_lo)) * plot_h
+
+    def py_f(y: float) -> float:
+        return margin["top"] + (1 - y / f_hi) * plot_h
+
+    # 左轴（能量）
+    for value in _nice_ticks(e_lo, e_hi):
+        y = py_e(value)
+        body.append(
+            f'<line x1="{margin["left"]}" y1="{y:.1f}" x2="{width - margin["right"]}" '
+            f'y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-dasharray="3 5"/>'
+        )
+        body.append(
+            f'<text x="{margin["left"] - 8}" y="{y + 4:.1f}" font-size="10" fill="{COLOR_PRIMARY}" '
+            f'text-anchor="end" {FONT}>{value:.2f}</text>'
+        )
+    # 右轴（力）
+    for value in _nice_ticks(0, f_hi):
+        y = py_f(value)
+        body.append(
+            f'<text x="{width - margin["right"] + 8}" y="{y + 4:.1f}" font-size="10" '
+            f'fill="{COLOR_WARN}" text-anchor="start" {FONT}>{value:.3f}</text>'
+        )
+    # 力阈值
+    ty = py_f(force_threshold)
+    body.append(
+        f'<line x1="{margin["left"]}" y1="{ty:.1f}" x2="{width - margin["right"]}" y2="{ty:.1f}" '
+        f'stroke="{COLOR_DANGER}" stroke-width="1.2" stroke-dasharray="6 4"/>'
+    )
+    body.append(
+        f'<text x="{width - margin["right"]}" y="{ty - 5:.1f}" font-size="10" fill="{COLOR_DANGER}" '
+        f'text-anchor="end" {FONT}>力阈值 {force_threshold}</text>'
+    )
+
+    def path_for(index: int, mapper) -> str:
+        chunks: List[str] = []
+        pen = False
+        for point in data:
+            value = point[index]
+            if value is None:
+                pen = False
+                continue
+            chunks.append(
+                f'{"L" if pen else "M"}{px(point[0]):.1f},{mapper(value):.1f}'
+            )
+            pen = True
+        return " ".join(chunks)
+
+    if energies:
+        body.append(
+            f'<path d="{path_for(1, py_e)}" fill="none" stroke="{COLOR_PRIMARY}" stroke-width="2"/>'
+        )
+    if forces:
+        body.append(
+            f'<path d="{path_for(2, py_f)}" fill="none" stroke="{COLOR_WARN}" stroke-width="1.8" '
+            f'stroke-dasharray="0"/>'
+        )
+    body.append(
+        f'<text x="{margin["left"]}" y="{height - 22}" font-size="10" fill="{COLOR_PRIMARY}" {FONT}>'
+        f"━ 能量 (eV)</text>"
+    )
+    body.append(
+        f'<text x="{margin["left"] + 90}" y="{height - 22}" font-size="10" fill="{COLOR_WARN}" {FONT}>'
+        f"━ 最大力 (eV/A)</text>"
+    )
+    body.append(
+        f'<text x="{width / 2}" y="{height - 6}" font-size="11" fill="{COLOR_MUTED}" '
+        f'text-anchor="middle" {FONT}>离子步</text>'
+    )
+    if energies:
+        body.append(
+            f'<text x="{width - margin["right"]}" y="{height - 40}" font-size="10.5" fill="{COLOR_TEXT}" '
+            f'text-anchor="end" {FONT}>最终能量 {energies[-1]:.4f} eV</text>'
+        )
+    if forces:
+        body.append(
+            f'<text x="{width - margin["right"]}" y="{height - 26}" font-size="10.5" '
+            f'fill="{COLOR_WARN}" text-anchor="end" {FONT}>最终最大力 {forces[-1]:.4f} eV/A</text>'
+        )
+    return _svg(width, height, "".join(body), title)
+
+
+# ------------------------------------------------------------ 结构三视图
+
+
+def _parse_cif_atoms(cif_text: str) -> Optional[Dict[str, Any]]:
+    """从 CIF 提取晶胞与原子坐标（与前端 structure3d.ts 同口径，纯 Python）。
+
+    返回 {"lattice": [[...]], "atoms": [(element, x, y, z)]}，解析失败返回 None。
+    """
+    import math
+    import re
+
+    if not cif_text:
+        return None
+    lines = cif_text.splitlines()
+
+    def number(key: str) -> Optional[float]:
+        for line in lines:
+            m = re.match(rf"^{key}\s+([\d.]+)", line.strip())
+            if m:
+                return float(m.group(1))
+        return None
+
+    a, b, c = number("_cell_length_a"), number("_cell_length_b"), number("_cell_length_c")
+    if not (a and b and c):
+        return None
+    alpha = number("_cell_angle_alpha") or 90.0
+    beta = number("_cell_angle_beta") or 90.0
+    gamma = number("_cell_angle_gamma") or 90.0
+    rad = math.pi / 180
+    ca, cb, cg = math.cos(alpha * rad), math.cos(beta * rad), math.cos(gamma * rad)
+    sg = math.sin(gamma * rad) or 1e-9
+    cx = c * cb
+    cy = c * (ca - cb * cg) / sg
+    cz = math.sqrt(max(0.0, c * c - cx * cx - cy * cy))
+    lattice = [[a, 0.0, 0.0], [b * cg, b * sg, 0.0], [cx, cy, cz]]
+
+    cols: Dict[str, int] = {}
+    start = -1
+    for i, line in enumerate(lines):
+        if line.strip() != "loop_":
+            continue
+        names: List[str] = []
+        j = i + 1
+        while j < len(lines) and lines[j].strip().startswith("_"):
+            names.append(lines[j].strip())
+            j += 1
+        if "_atom_site_fract_x" in names:
+            cols = {name: k for k, name in enumerate(names)}
+            start = j
+            break
+    if start < 0:
+        return None
+    atoms: List[tuple] = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        parts = line.split()
+        try:
+            fx = float(parts[cols["_atom_site_fract_x"]])
+            fy = float(parts[cols["_atom_site_fract_y"]])
+            fz = float(parts[cols["_atom_site_fract_z"]])
+        except (KeyError, IndexError, ValueError):
+            break
+        element = parts[cols.get("_atom_site_type_symbol", 0)].strip()
+        x = lattice[0][0] * fx + lattice[1][0] * fy + lattice[2][0] * fz
+        y = lattice[0][1] * fx + lattice[1][1] * fy + lattice[2][1] * fz
+        z = lattice[0][2] * fx + lattice[1][2] * fy + lattice[2][2] * fz
+        atoms.append((element, x, y, z))
+    if not atoms:
+        return None
+    return {"lattice": lattice, "atoms": atoms}
+
+
+_ELEMENT_COLORS = {
+    "H": "#ffffff",
+    "C": "#909090",
+    "N": "#3050f8",
+    "O": "#ff0d0d",
+    "S": "#ffff30",
+    "P": "#ff8000",
+    "Al": "#bfa6a6",
+    "Ti": "#bfc2c7",
+    "Fe": "#e06633",
+    "Co": "#a0a0ff",
+    "Ni": "#50d050",
+    "Cu": "#c88033",
+    "Zn": "#7d80b0",
+    "Ag": "#c0c0c0",
+    "Au": "#ffd123",
+    "Pt": "#d0d0e0",
+    "Pd": "#006985",
+    "Li": "#cc80ff",
+    "Na": "#ab5cf2",
+}
+
+
+def structure_views(
+    cif_text: str,
+    *,
+    views: Sequence[str] = ("ab", "bc", "ac"),
+    panel: int = 150,
+    title: str = "",
+    labels: Optional[Sequence[str]] = None,
+) -> str:
+    """结构三视图（a-b / b-c / a-c 正交投影），元素着色 + 晶胞边框。
+
+    用于导出 HTML/PDF 的静态结构图（前端另有 3Dmol 交互视图）。
+    """
+    parsed = _parse_cif_atoms(cif_text)
+    labels = list(labels or views)
+    if parsed is None:
+        return _svg(
+            panel * len(views),
+            panel + 18,
+            f'<text x="8" y="{panel / 2}" font-size="11" fill="{COLOR_MUTED}" {FONT}>'
+            f"结构文件缺失或无法解析</text>",
+            title or "结构视图",
+        )
+    width = panel * len(views)
+    height = panel + 18
+    body: List[str] = []
+    axis = {"ab": (0, 1), "bc": (1, 2), "ac": (0, 2)}
+    lattice = parsed["lattice"]
+    corners = [
+        [
+            sa * lattice[0][k] + sb * lattice[1][k] + sc * lattice[2][k]
+            for k in range(3)
+        ]
+        for sa in (0, 1)
+        for sb in (0, 1)
+        for sc in (0, 1)
+    ]
+    for index, view in enumerate(views):
+        i, j = axis.get(view, (0, 1))
+        ox = index * panel
+        pts = [(atom[i + 1], atom[j + 1], atom[0]) for atom in parsed["atoms"]]
+        pts.extend((corner[i], corner[j], "cell") for corner in corners)
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        span_x = max(xs) - min(xs) or 1.0
+        span_y = max(ys) - min(ys) or 1.0
+        scale = (panel - 26) / max(span_x, span_y)
+
+        def sx(x: float) -> float:
+            return ox + 13 + (x - min(xs)) * scale
+
+        def sy(y: float) -> float:
+            return 13 + (max(ys) - y) * scale
+
+        # 晶胞投影外框（8 个角点的投影包围盒）
+        cell_x = [sx(c[i]) for c in corners]
+        cell_y = [sy(c[j]) for c in corners]
+        body.append(
+            f'<rect x="{min(cell_x):.1f}" y="{min(cell_y):.1f}" '
+            f'width="{max(cell_x) - min(cell_x):.1f}" height="{max(cell_y) - min(cell_y):.1f}" '
+            f'fill="none" stroke="{COLOR_AXIS}" stroke-dasharray="4 3"/>'
+        )
+        radius = max(2.6, min(4.4, scale * 1.1))
+        for atom in parsed["atoms"]:
+            element = atom[0]
+            color = _ELEMENT_COLORS.get(element, "#9aa7b8")
+            body.append(
+                f'<circle cx="{sx(atom[i + 1]):.1f}" cy="{sy(atom[j + 1]):.1f}" r="{radius:.1f}" '
+                f'fill="{color}" stroke="#5A6A80" stroke-width="0.6" opacity="0.92"/>'
+            )
+        body.append(
+            f'<text x="{ox + panel / 2:.1f}" y="{height - 4}" font-size="10.5" '
+            f'fill="{COLOR_TEXT}" text-anchor="middle" {FONT}>{_escape(labels[index])}</text>'
+        )
+        body.append(
+            f'<line x1="{ox}" y1="0" x2="{ox}" y2="{height}" stroke="{COLOR_GRID}"/>'
+        )
+    return _svg(width, height, "".join(body), title or "结构三视图")
+
+
+def structure_matrix(
+    items: Sequence[Dict[str, Any]],
+    *,
+    views: Sequence[str] = ("ab", "bc", "ac"),
+    panel: int = 120,
+    title: str = "NEB 映像结构对比",
+) -> str:
+    """NEB 结构对比矩阵：行 = 视图（a-b / b-c / a-c），列 = 映像（IS → FS）。"""
+    columns = [i for i in items if i.get("cif")]
+    if not columns:
+        return structure_views("", views=views, panel=panel, title=title)
+    width = panel * len(columns)
+    height = panel * len(views) + 20
+    body: List[str] = []
+    axis = {"ab": (0, 1), "bc": (1, 2), "ac": (0, 2)}
+    for col, item in enumerate(columns):
+        parsed = _parse_cif_atoms(item["cif"])
+        for row, view in enumerate(views):
+            ox, oy = col * panel, row * panel
+            if parsed is None:
+                body.append(
+                    f'<text x="{ox + panel / 2}" y="{oy + panel / 2}" font-size="10" '
+                    f'fill="{COLOR_MUTED}" text-anchor="middle" {FONT}>无结构</text>'
+                )
+                continue
+            i, j = axis.get(view, (0, 1))
+            pts = [(a[i + 1], a[j + 1]) for a in parsed["atoms"]]
+            xs = [p[0] for p in pts] or [0.0]
+            ys = [p[1] for p in pts] or [0.0]
+            span_x = max(xs) - min(xs) or 1.0
+            span_y = max(ys) - min(ys) or 1.0
+            scale = (panel - 22) / max(span_x, span_y)
+            for atom in parsed["atoms"]:
+                color = _ELEMENT_COLORS.get(atom[0], "#9aa7b8")
+                cx = ox + 11 + (atom[i + 1] - min(xs)) * scale
+                cy = oy + 11 + (max(ys) - atom[j + 1]) * scale
+                body.append(
+                    f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{max(2.0, min(3.4, scale)):.1f}" '
+                    f'fill="{color}" stroke="#5A6A80" stroke-width="0.5" opacity="0.92"/>'
+                )
+            body.append(
+                f'<rect x="{ox}" y="{oy}" width="{panel}" height="{panel}" fill="none" '
+                f'stroke="{COLOR_GRID}"/>'
+            )
+        body.append(
+            f'<text x="{col * panel + panel / 2:.1f}" y="{height - 6}" font-size="10" '
+            f'fill="{COLOR_TEXT}" text-anchor="middle" {FONT}>'
+            f"{_escape(str(item.get('label', col)))}</text>"
+        )
+    for row, view in enumerate(views):
+        body.append(
+            f'<text x="4" y="{row * panel + 12}" font-size="9.5" fill="{COLOR_MUTED}" {FONT}>'
+            f"{_escape(view)}</text>"
+        )
+    return _svg(width, height, "".join(body), title)
+
+
+def progress_bar_percent(
+    percent: float, *, title: str = "项目进度", detail: str = "", width: int = 420
+) -> str:
+    """项目进度条（基本信息模块用，静态 SVG）。"""
+    return progress_bar(percent, title=title, detail=detail, warn_at=101.0, width=width, height=104)

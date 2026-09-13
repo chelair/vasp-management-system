@@ -3173,3 +3173,25 @@ p {
     max-height: none;
   }
 }
+
+/* ---------- 报告：交互式结构区（v0.7.1） ---------- */
+
+.report-3d {
+  margin: 8px 0 4px;
+}
+
+.report-3d .ant-collapse-item {
+  border: 1px solid var(--color-border-soft) !important;
+  border-radius: 10px !important;
+  margin-bottom: 8px;
+  background: #fff;
+}
+
+.report-3d .ant-collapse-header {
+  font-size: 12.5px !important;
+  padding: 8px 12px !important;
+}
+
+.report-3d .ant-collapse-content-box {
+  padding: 8px 12px 12px !important;
+}

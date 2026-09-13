@@ -185,7 +185,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.6.12）
 
-- v0.6.12（commit 见 `git log --oneline -1`）：**NEB 映像面板对齐 + 恒定横排**。① 面板头部原来把「映像号 + 角色徽标 + ΔE + 最大受力」挤在一行，宽度不足时**部分面板换行成两行**（实测 01/02 头部 56px、其余 38px），导致各面板 3D 画布起点差 18px、看着错位并出现多余白边。修法：头部固定 `height: 34px` + `flex-wrap: nowrap`，ΔE / 最大受力移到画布**下方固定的 26px 页脚**，面板改 `display:flex; column` 保证结构一致（实测五个面板头部均为 34px、画布 y 坐标完全相同）。② 网格由 `repeat(auto-fit, minmax(160px,1fr))` 改为 `grid-auto-flow: column; grid-auto-columns: minmax(190px,1fr)` + `overflow-x: auto`：**整条路径恒定一排**，宽度不够时横向滚动，不再换行打断 IS→中间态→FS 的对比（实测 1500/1280/1100/900px 下始终 1 行，900px 时横向滚动）。
+- v0.6.12（commit `3bad80d`，已推送 origin/main）：**NEB 映像面板对齐 + 恒定横排**。① 面板头部原来把「映像号 + 角色徽标 + ΔE + 最大受力」挤在一行，宽度不足时**部分面板换行成两行**（实测 01/02 头部 56px、其余 38px），导致各面板 3D 画布起点差 18px、看着错位并出现多余白边。修法：头部固定 `height: 34px` + `flex-wrap: nowrap`，ΔE / 最大受力移到画布**下方固定的 26px 页脚**，面板改 `display:flex; column` 保证结构一致（实测五个面板头部均为 34px、画布 y 坐标完全相同）。② 网格由 `repeat(auto-fit, minmax(160px,1fr))` 改为 `grid-auto-flow: column; grid-auto-columns: minmax(190px,1fr)` + `overflow-x: auto`：**整条路径恒定一排**，宽度不够时横向滚动，不再换行打断 IS→中间态→FS 的对比（实测 1500/1280/1100/900px 下始终 1 行，900px 时横向滚动）。
 
 - v0.6.11（commit `330708f`，已推送 origin/main）：**NEB 映像 3D 视图初始放大倍率调高**。`NebImages3DViewer` 的原子尺寸默认值 0.35 → **0.5**，缩放滑杆范围放宽到 0.25–1.0（原先上限 0.85 偏紧）；`zoomTo()` 之后再调一次 `viewer.zoom(1.15)` 把相机拉近 15%（3Dmol 的 `zoom(k)` 即 k 倍，>1 为拉近）。实测 5 个映像面板的渲染面积整体增加约 15–17%，画布仍限制在各自面板内。
 

@@ -3195,3 +3195,41 @@ p {
 .report-3d .ant-collapse-content-box {
   padding: 8px 12px 12px !important;
 }
+
+/* ---------- 报告：导出弹层（v0.7.2） ---------- */
+
+.report-export-pop {
+  width: 320px;
+}
+
+.report-export-pop__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.report-export-pop__sections {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--color-border-soft);
+}
+
+.report-export-pop__sections .ant-checkbox-wrapper {
+  font-size: 12px;
+  margin-inline-start: 0;
+}
+
+.report-export-pop__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}

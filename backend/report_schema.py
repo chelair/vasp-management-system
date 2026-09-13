@@ -20,7 +20,7 @@ SCHEMA_CHANGELOG: List[Dict[str, str]] = [
     {
         "version": "1.1.0",
         "date": "2026-09-13",
-        "changes": "以总结为核心重做章节：基本信息 / 重点科学结果分析（opt 每任务三视图+能量力同图、自由能按路径、NEB 按组含映像结构对比、电子结构占位）/ 异常与关注项 / 下一步建议 / 附录；数据章节仍保留在结构化数据中供大模型消费，但不再逐字段堆砌进正文",
+        "changes": "以总结为核心重做章节：基本信息 / 重点科学结果分析（opt 每任务三视图+能量力同图、自由能按路径、NEB 按组含映像结构对比、电子结构占位）/ 异常与关注项 / 下一步建议（v0.7.2 起去掉附录章节）；数据章节仍保留在结构化数据中供大模型消费，但不再逐字段堆砌进正文",
     },
     {
         "version": "1.0.0",
@@ -82,7 +82,6 @@ REPORT_SECTIONS: List[Tuple[str, str]] = [
     ("science", "重点科学结果分析"),
     ("issues", "异常与关注项"),
     ("actions", "下一步建议"),
-    ("appendix", "附录（任务清单与生成参数）"),
 ]
 
 SECTION_KEYS: Tuple[str, ...] = tuple(key for key, _ in REPORT_SECTIONS)

@@ -100,9 +100,19 @@ def save_report(
         "directory": str(target),
     }
     with _lock:
-        items = [i for i in _read_index() if i.get("report_id") != report_id]
-        items.insert(0, entry)
-        _write_index(items)
+        # 同一个项目只保留最新一份报告：先清理该项目的历史报告目录
+        keep = []
+        for item in _read_index():
+            same_project = str(item.get("project_name")) == project_name
+            if same_project and item.get("report_id") != report_id:
+                old_dir = REPORTS_DIR / _safe_name(project_name) / str(item.get("report_id"))
+                if old_dir.exists() and old_dir != target:
+                    shutil.rmtree(old_dir, ignore_errors=True)
+                continue
+            if item.get("report_id") != report_id:
+                keep.append(item)
+        keep.insert(0, entry)
+        _write_index(keep)
     return entry
 
 

@@ -389,9 +389,15 @@ def energy_force_chart(
     width: int = 620,
     height: int = 260,
 ) -> str:
-    """能量与最大力画在**同一张图**：左轴能量（蓝）、右轴最大力（橙），
-    并画力收敛阈值虚线。行内文字标注数值，用于导出静态图。"""
-    margin = {"left": 70, "right": 68, "top": 34, "bottom": 42}
+    """能量与最大力合并在**同一张图**（双纵轴），风格与巡检详情里的 LineChart 一致：
+    相同的边距 / 网格 / 刻度 / 字体与蓝色（能量）、橙色（力）配色，另加力收敛阈值虚线。
+    """
+    M = {"left": 66, "right": 62, "top": 24, "bottom": 34}
+    plot_w = width - M["left"] - M["right"]
+    plot_h = height - M["top"] - M["bottom"]
+    body: List[str] = [
+        f'<text x="{M["left"]}" y="16" font-size="13" fill="#374151" {FONT}>{_escape(title)}</text>'
+    ]
     data = [
         (
             float(p["step"]),
@@ -401,9 +407,6 @@ def energy_force_chart(
         for p in points
         if p.get("step") is not None
     ]
-    body: List[str] = [
-        f'<text x="{margin["left"]}" y="20" font-size="13" fill="#374151" {FONT}>{_escape(title)}</text>',
-    ]
     if not data:
         body.append(
             f'<text x="{width / 2}" y="{height / 2}" font-size="12" fill="{COLOR_MUTED}" '
@@ -411,56 +414,67 @@ def energy_force_chart(
         )
         return _svg(width, height, "".join(body), title)
 
-    plot_w = width - margin["left"] - margin["right"]
-    plot_h = height - margin["top"] - margin["bottom"]
     steps = [d[0] for d in data]
     energies = [d[1] for d in data if d[1] is not None]
     forces = [d[2] for d in data if d[2] is not None]
     x_min, x_max = min(steps), max(steps)
     if x_max <= x_min:
         x_max = x_min + 1
-    e_min, e_max = (min(energies), max(energies)) if energies else (0.0, 1.0)
-    e_pad = (e_max - e_min) * 0.12 or 0.1
-    e_lo, e_hi = e_min - e_pad, e_max + e_pad
-    f_max = max(forces + [force_threshold]) if forces else force_threshold
-    f_hi = f_max * 1.18 or 0.1
+    if energies:
+        e_lo, e_hi = min(energies), max(energies)
+        if e_hi - e_lo < 1e-9:
+            e_hi = e_lo + 1.0
+    else:
+        e_lo, e_hi = 0.0, 1.0
+    f_hi = (max(forces + [force_threshold]) if forces else force_threshold) * 1.15
 
     def px(x: float) -> float:
-        return margin["left"] + (x - x_min) / (x_max - x_min) * plot_w
+        return M["left"] + (x - x_min) / (x_max - x_min) * plot_w
 
     def py_e(y: float) -> float:
-        return margin["top"] + (1 - (y - e_lo) / (e_hi - e_lo)) * plot_h
+        return M["top"] + (1 - (y - e_lo) / (e_hi - e_lo)) * plot_h
 
     def py_f(y: float) -> float:
-        return margin["top"] + (1 - y / f_hi) * plot_h
+        return M["top"] + (1 - y / f_hi) * plot_h
 
-    # 左轴（能量）
-    for value in _nice_ticks(e_lo, e_hi):
+    # 左侧能量刻度（与巡检折线图同款：4 档 + 浅灰网格）
+    for k in range(4):
+        value = e_lo + (e_hi - e_lo) * k / 3
         y = py_e(value)
         body.append(
-            f'<line x1="{margin["left"]}" y1="{y:.1f}" x2="{width - margin["right"]}" '
-            f'y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-dasharray="3 5"/>'
+            f'<line x1="{M["left"]}" y1="{y:.1f}" x2="{width - M["right"]}" y2="{y:.1f}" '
+            f'stroke="#E7ECF3" stroke-width="1"/>'
         )
         body.append(
-            f'<text x="{margin["left"] - 8}" y="{y + 4:.1f}" font-size="10" fill="{COLOR_PRIMARY}" '
-            f'text-anchor="end" {FONT}>{value:.2f}</text>'
+            f'<text x="{M["left"] - 6}" y="{y + 4:.1f}" font-size="10" fill="#6B7A90" '
+            f'text-anchor="end" {FONT}>{_tick(value)}</text>'
         )
-    # 右轴（力）
-    for value in _nice_ticks(0, f_hi):
+    # 右侧力刻度
+    for k in range(4):
+        value = f_hi * k / 3
         y = py_f(value)
         body.append(
-            f'<text x="{width - margin["right"] + 8}" y="{y + 4:.1f}" font-size="10" '
-            f'fill="{COLOR_WARN}" text-anchor="start" {FONT}>{value:.3f}</text>'
+            f'<text x="{width - M["right"] + 8}" y="{y + 4:.1f}" font-size="10" '
+            f'fill="{COLOR_WARN}" text-anchor="start" {FONT}>{_tick(value)}</text>'
         )
-    # 力阈值
-    ty = py_f(force_threshold)
+    # 坐标轴
     body.append(
-        f'<line x1="{margin["left"]}" y1="{ty:.1f}" x2="{width - margin["right"]}" y2="{ty:.1f}" '
-        f'stroke="{COLOR_DANGER}" stroke-width="1.2" stroke-dasharray="6 4"/>'
+        f'<line x1="{M["left"]}" y1="{M["top"]}" x2="{M["left"]}" y2="{M["top"] + plot_h}" '
+        f'stroke="#9CA3AF"/>'
     )
     body.append(
-        f'<text x="{width - margin["right"]}" y="{ty - 5:.1f}" font-size="10" fill="{COLOR_DANGER}" '
-        f'text-anchor="end" {FONT}>力阈值 {force_threshold}</text>'
+        f'<line x1="{M["left"]}" y1="{M["top"] + plot_h}" x2="{width - M["right"]}" '
+        f'y2="{M["top"] + plot_h}" stroke="#9CA3AF"/>'
+    )
+    # 力阈值（与巡检一致的红虚线 + 标注）
+    ty = py_f(force_threshold)
+    body.append(
+        f'<line x1="{M["left"]}" y1="{ty:.1f}" x2="{width - M["right"]}" y2="{ty:.1f}" '
+        f'stroke="#D9535B" stroke-width="1.5" stroke-dasharray="6,4"/>'
+    )
+    body.append(
+        f'<text x="{width - M["right"] - 4}" y="{ty - 5:.1f}" font-size="10" fill="#D9535B" '
+        f'text-anchor="end" {FONT}>阈值 {force_threshold:.3f}</text>'
     )
 
     def path_for(index: int, mapper) -> str:
@@ -471,44 +485,55 @@ def energy_force_chart(
             if value is None:
                 pen = False
                 continue
-            chunks.append(
-                f'{"L" if pen else "M"}{px(point[0]):.1f},{mapper(value):.1f}'
-            )
+            chunks.append(f'{"L" if pen else "M"}{px(point[0]):.1f},{mapper(value):.1f}')
             pen = True
         return " ".join(chunks)
 
-    if energies:
-        body.append(
-            f'<path d="{path_for(1, py_e)}" fill="none" stroke="{COLOR_PRIMARY}" stroke-width="2"/>'
-        )
     if forces:
         body.append(
-            f'<path d="{path_for(2, py_f)}" fill="none" stroke="{COLOR_WARN}" stroke-width="1.8" '
-            f'stroke-dasharray="0"/>'
+            f'<path d="{path_for(2, py_f)}" fill="none" stroke="{COLOR_WARN}" stroke-width="2" '
+            f'stroke-linejoin="round"/>'
         )
+    if energies:
+        body.append(
+            f'<path d="{path_for(1, py_e)}" fill="none" stroke="{COLOR_PRIMARY}" stroke-width="2" '
+            f'stroke-linejoin="round"/>'
+        )
+    # x 轴：首 / 中 / 末离子步
+    for idx in {0, len(data) // 2, len(data) - 1}:
+        body.append(
+            f'<text x="{px(data[idx][0]):.1f}" y="{height - 14}" font-size="10" fill="#6B7A90" '
+            f'text-anchor="middle" {FONT}>{int(data[idx][0])}</text>'
+        )
+    # 纵轴单位与横轴说明（与巡检图一致）
     body.append(
-        f'<text x="{margin["left"]}" y="{height - 22}" font-size="10" fill="{COLOR_PRIMARY}" {FONT}>'
-        f"━ 能量 (eV)</text>"
+        f'<text x="14" y="{M["top"] + plot_h / 2}" font-size="11" fill="#6B7A90" '
+        f'text-anchor="middle" transform="rotate(-90 14 {M["top"] + plot_h / 2})" {FONT}>能量 (eV)</text>'
     )
     body.append(
-        f'<text x="{margin["left"] + 90}" y="{height - 22}" font-size="10" fill="{COLOR_WARN}" {FONT}>'
-        f"━ 最大力 (eV/A)</text>"
+        f'<text x="{width - 12}" y="{M["top"] + plot_h / 2}" font-size="11" fill="{COLOR_WARN}" '
+        f'text-anchor="middle" transform="rotate(90 {width - 12} {M["top"] + plot_h / 2})" {FONT}>最大力 (eV/A)</text>'
     )
     body.append(
-        f'<text x="{width / 2}" y="{height - 6}" font-size="11" fill="{COLOR_MUTED}" '
+        f'<text x="{M["left"] + plot_w / 2}" y="{height - 2}" font-size="11" fill="#6B7A90" '
         f'text-anchor="middle" {FONT}>离子步</text>'
     )
+    # 图内一行结论（最终能量 / 最终力 / 是否收敛）
     if energies:
         body.append(
-            f'<text x="{width - margin["right"]}" y="{height - 40}" font-size="10.5" fill="{COLOR_TEXT}" '
-            f'text-anchor="end" {FONT}>最终能量 {energies[-1]:.4f} eV</text>'
+            f'<text x="{M["left"]}" y="{height - 20}" font-size="10.5" fill="#5A6A80" {FONT}>'
+            f"最终能量 {energies[-1]:.4f} eV</text>"
         )
     if forces:
         body.append(
-            f'<text x="{width - margin["right"]}" y="{height - 26}" font-size="10.5" '
-            f'fill="{COLOR_WARN}" text-anchor="end" {FONT}>最终最大力 {forces[-1]:.4f} eV/A</text>'
+            f'<text x="{M["left"] + 150}" y="{height - 20}" font-size="10.5" '
+            f'fill="{COLOR_WARN}" {FONT}>最终最大力 {forces[-1]:.4f} eV/A</text>'
         )
     return _svg(width, height, "".join(body), title)
+
+
+def _tick(value: float) -> str:
+    return f"{value:.4g}"
 
 
 # ------------------------------------------------------------ 结构三视图
@@ -617,7 +642,8 @@ def structure_views(
 ) -> str:
     """结构三视图（a-b / b-c / a-c 正交投影），元素着色 + 晶胞边框。
 
-    用于导出 HTML/PDF 的静态结构图（前端另有 3Dmol 交互视图）。
+    纯 Python 正交投影 SVG：前端展示与导出 HTML/PDF 用的是同一张图（v0.7.2 起报告页不再有交互式 3D）。
+    后端没有 3Dmol（浏览器端 JS 库），需要真实静态 3D 渲染得引入 headless 浏览器。
     """
     parsed = _parse_cif_atoms(cif_text)
     labels = list(labels or views)
@@ -748,3 +774,35 @@ def progress_bar_percent(
 ) -> str:
     """项目进度条（基本信息模块用，静态 SVG）。"""
     return progress_bar(percent, title=title, detail=detail, warn_at=101.0, width=width, height=104)
+
+
+def _inner(svg: str) -> str:
+    """取出 <svg ...> 内部内容（用于把多张图拼成一张）。"""
+    start = svg.find(">", svg.find("<svg"))
+    end = svg.rfind("</svg>")
+    return svg[start + 1 : end] if start >= 0 and end > start else ""
+
+
+def _size(svg: str) -> Tuple[int, int]:
+    import re
+
+    w = re.search(r'width="(\d+)"', svg)
+    h = re.search(r'height="(\d+)"', svg)
+    return (int(w.group(1)) if w else 400, int(h.group(1)) if h else 200)
+
+
+def task_panel(views_svg: str, curve_svg: str, *, gap: int = 22, padding: int = 4) -> str:
+    """结构优化任务面板：**左侧结构三视图 + 右侧能量/力曲线横向排列**（一张图内对齐）。
+
+    拼成单张 SVG 的好处：Markdown、前端与导出的 HTML/PDF 完全一致（所见即所得），
+    且两栏在同一基线上对齐。
+    """
+    vw, vh = _size(views_svg)
+    cw, ch = _size(curve_svg)
+    width = padding * 2 + vw + gap + cw
+    height = padding * 2 + max(vh, ch)
+    body = (
+        f'<g transform="translate({padding},{padding})">{_inner(views_svg)}</g>'
+        f'<g transform="translate({padding + vw + gap},{padding})">{_inner(curve_svg)}</g>'
+    )
+    return _svg(width, height, body, "结构优化任务面板")

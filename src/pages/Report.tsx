@@ -4,21 +4,18 @@ import {
   Button,
   Card,
   Checkbox,
-  Collapse,
   Empty,
   Input,
   Popconfirm,
-  Segmented,
+  Popover,
   Select,
   Skeleton,
   Tag,
-  Tooltip,
 } from 'antd';
 import {
-  CopyOutlined,
+  ExportOutlined,
   FileMarkdownOutlined,
   FileTextOutlined,
-  FileZipOutlined,
   PrinterOutlined,
   ReloadOutlined,
   ThunderboltOutlined,
@@ -35,8 +32,6 @@ import {
 import { fetchProjects } from '../api/projects';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
-import NebImages3DViewer from '../components/inspection/NebImages3DViewer';
-import Structure3DViewer from '../components/inspection/Structure3DViewer';
 import type { Project, ProjectReportDetail, ProjectReportMeta } from '../types';
 import { renderMarkdown } from '../utils/markdown';
 
@@ -63,8 +58,8 @@ export default function Report() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [generating, setGenerating] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'markdown' | 'structured'>('markdown');
   const [selectedSections, setSelectedSections] = useState<string[]>([]);
+  const [exportOpen, setExportOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
 
   const loadReports = useCallback(async () => {
@@ -131,19 +126,6 @@ export default function Report() {
     }
   };
 
-  const downloadJson = async () => {
-    if (!detail) return;
-    const blob = new Blob([JSON.stringify(detail.structured, null, 2)], {
-      type: 'application/json;charset=utf-8',
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${detail.meta.report_id}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   /** 导出 HTML / PDF（PDF 走浏览器打印，按勾选章节导出） */
   const exportHtml = (print: boolean) => {
     if (!detail) return;
@@ -199,63 +181,6 @@ export default function Report() {
     [visibleSections, detail],
   );
 
-  /** 科学结果里的交互式结构视图（前端 3Dmol；导出走静态三视图/对比矩阵） */
-  const interactiveStructures = useMemo(() => {
-    const science = (detail?.structured as Record<string, any> | undefined)?.science;
-    if (!science) return null;
-    const optItems: any[] = (science.opt ?? []).filter(
-      (item: any) => item.structure?.contcar_cif || item.structure?.poscar_cif,
-    );
-    const nebItems: any[] = (science.neb ?? []).filter(
-      (item: any) => (item.images_with_structure ?? []).some((i: any) => i.cif),
-    );
-    if (optItems.length === 0 && nebItems.length === 0) return null;
-    return (
-      <Collapse
-        ghost
-        className="report-3d"
-        defaultActiveKey={[]}
-        items={[
-          ...optItems.map((item) => ({
-            key: `opt-${item.task_id}`,
-            label: `${item.task_name} · ${item.converged ? '已收敛' : '未收敛'} · 交互结构（可旋转缩放）`,
-            children: (
-              <Structure3DViewer
-                poscarCif={item.structure?.poscar_cif ?? null}
-                contcarCif={item.structure?.contcar_cif ?? null}
-              />
-            ),
-          })),
-          ...nebItems.map((item) => ({
-            key: `neb-${item.task_id}`,
-            label: `${item.task_name} · ${item.image_count} 个映像结构（IS → 中间态 → FS）`,
-            children: (
-              <NebImages3DViewer
-                images={(item.images_with_structure ?? [])
-                  .filter((image: any) => image.cif)
-                  .map((image: any, index: number, list: any[]) => ({
-                    label: String(image.label ?? index),
-                    role:
-                      index === 0 ? 'is' : index === list.length - 1 ? 'fs' : 'middle',
-                    cif: image.cif,
-                    energy:
-                      (item.images ?? []).find((x: any) => x.label === image.label)?.energy_ev ??
-                      null,
-                    relative:
-                      (item.images ?? []).find((x: any) => x.label === image.label)
-                        ?.relative_energy_ev ?? null,
-                    max_force:
-                      (item.images ?? []).find((x: any) => x.label === image.label)
-                        ?.max_force_ev_per_a ?? null,
-                  }))}
-              />
-            ),
-          })),
-        ]}
-      />
-    );
-  }, [detail]);
-
   return (
     <PageTransition>
       <PageHeader
@@ -293,7 +218,7 @@ export default function Report() {
       <div className="report-grid">
         <Card
           className="report-list-card"
-          title="报告历史"
+          title="项目报告"
           extra={
             <Input
               allowClear
@@ -372,7 +297,92 @@ export default function Report() {
           )}
         </Card>
 
-        <Card className="report-detail-card" title="报告内容">
+        <Card
+          className="report-detail-card"
+          title="报告内容"
+          extra={
+            detail ? (
+              <Popover
+                trigger="click"
+                placement="bottomRight"
+                open={exportOpen}
+                onOpenChange={setExportOpen}
+                content={
+                  <div className="report-export-pop">
+                    <div className="report-export-pop__head">
+                      <span>导出范围</span>
+                      <Checkbox
+                        checked={selectedSections.length === (detail.sections?.length ?? 0)}
+                        indeterminate={
+                          selectedSections.length > 0 &&
+                          selectedSections.length < (detail.sections?.length ?? 0)
+                        }
+                        onChange={(e) =>
+                          setSelectedSections(
+                            e.target.checked
+                              ? (detail.sections ?? []).map((s) => s.key)
+                              : [],
+                          )
+                        }
+                      >
+                        全选
+                      </Checkbox>
+                    </div>
+                    <div className="report-export-pop__sections">
+                      {(detail.sections ?? []).map((s) => (
+                        <Checkbox
+                          key={s.key}
+                          checked={selectedSections.includes(s.key)}
+                          onChange={(e) =>
+                            setSelectedSections((prev) =>
+                              e.target.checked
+                                ? [...prev, s.key]
+                                : prev.filter((k) => k !== s.key),
+                            )
+                          }
+                        >
+                          {s.title}
+                        </Checkbox>
+                      ))}
+                    </div>
+                    <div className="report-export-pop__actions">
+                      <Button
+                        size="small"
+                        icon={<FileMarkdownOutlined />}
+                        onClick={() => {
+                          window.open(reportMarkdownUrl(detail.meta.report_id), '_blank');
+                          setExportOpen(false);
+                        }}
+                      >
+                        下载 Markdown
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<FileTextOutlined />}
+                        onClick={() => exportHtml(false)}
+                      >
+                        导出 HTML
+                      </Button>
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        icon={<PrinterOutlined />}
+                        onClick={() => exportHtml(true)}
+                      >
+                        导出 PDF
+                      </Button>
+                    </div>
+                  </div>
+                }
+              >
+                <Button size="small" type="primary" icon={<ExportOutlined />}>
+                  导出
+                </Button>
+              </Popover>
+            ) : null
+          }
+        >
           {detailLoading ? (
             <Skeleton active paragraph={{ rows: 10 }} />
           ) : !detail ? (
@@ -405,102 +415,7 @@ export default function Report() {
                 </div>
               </div>
 
-              <div className="report-toolbar">
-                <Segmented
-                  size="small"
-                  value={viewMode}
-                  onChange={(v) => setViewMode(v as 'markdown' | 'structured')}
-                  options={[
-                    { label: 'Markdown', value: 'markdown' },
-                    { label: '结构化数据', value: 'structured' },
-                  ]}
-                />
-                <span className="report-toolbar__label">导出范围</span>
-                <Checkbox
-                  checked={selectedSections.length === (detail.sections?.length ?? 0)}
-                  indeterminate={
-                    selectedSections.length > 0 &&
-                    selectedSections.length < (detail.sections?.length ?? 0)
-                  }
-                  onChange={(e) =>
-                    setSelectedSections(
-                      e.target.checked ? (detail.sections ?? []).map((s) => s.key) : [],
-                    )
-                  }
-                >
-                  全选
-                </Checkbox>
-                <div className="report-toolbar__sections">
-                  {(detail.sections ?? []).map((s) => (
-                    <Checkbox
-                      key={s.key}
-                      checked={selectedSections.includes(s.key)}
-                      onChange={(e) =>
-                        setSelectedSections((prev) =>
-                          e.target.checked
-                            ? [...prev, s.key]
-                            : prev.filter((k) => k !== s.key),
-                        )
-                      }
-                    >
-                      {s.title}
-                    </Checkbox>
-                  ))}
-                </div>
-                <div className="report-toolbar__export">
-                  <Tooltip title="下载 Markdown 全文">
-                    <Button
-                      size="small"
-                      icon={<FileMarkdownOutlined />}
-                      onClick={() => window.open(reportMarkdownUrl(detail.meta.report_id), '_blank')}
-                    >
-                      MD
-                    </Button>
-                  </Tooltip>
-                  <Tooltip title="下载结构化数据（JSON，可直接作为大模型输入）">
-                    <Button size="small" icon={<FileZipOutlined />} onClick={downloadJson}>
-                      JSON
-                    </Button>
-                  </Tooltip>
-                  <Tooltip title="按勾选章节导出为自包含 HTML（图表内联）">
-                    <Button
-                      size="small"
-                      icon={<FileTextOutlined />}
-                      onClick={() => exportHtml(false)}
-                    >
-                      导出 HTML
-                    </Button>
-                  </Tooltip>
-                  <Tooltip title="打开打印视图，选择「另存为 PDF」">
-                    <Button
-                      size="small"
-                      type="primary"
-                      ghost
-                      icon={<PrinterOutlined />}
-                      onClick={() => exportHtml(true)}
-                    >
-                      导出 PDF
-                    </Button>
-                  </Tooltip>
-                  <Tooltip title="复制结构化数据到剪贴板">
-                    <Button
-                      size="small"
-                      icon={<CopyOutlined />}
-                      onClick={async () => {
-                        await navigator.clipboard.writeText(
-                          JSON.stringify(detail.structured, null, 2),
-                        );
-                        message.success('结构化数据已复制');
-                      }}
-                    >
-                      复制 JSON
-                    </Button>
-                  </Tooltip>
-                </div>
-              </div>
-
-              {viewMode === 'markdown' ? (
-                <div className="report-body">
+              <div className="report-body">
                   <nav className="report-toc">
                     {renderedSections.map((s) => (
                       <a key={s.key} href={`#report-${s.key}`}>
@@ -512,7 +427,6 @@ export default function Report() {
                     {renderedSections.map((s) => (
                       <section key={s.key} id={`report-${s.key}`}>
                         <h2 className="report-section-title">{s.title}</h2>
-                        {s.key === 'science' && interactiveStructures}
                         <div
                           className="report-markdown"
                           dangerouslySetInnerHTML={{ __html: s.html }}
@@ -523,12 +437,7 @@ export default function Report() {
                       <Empty description="未勾选任何章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                     )}
                   </div>
-                </div>
-              ) : (
-                <pre className="report-structured">
-                  {JSON.stringify(detail.structured, null, 2)}
-                </pre>
-              )}
+              </div>
             </div>
           )}
         </Card>

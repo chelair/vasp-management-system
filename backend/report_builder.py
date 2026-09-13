@@ -29,6 +29,7 @@ from report_charts import (
     step_chart,
     structure_matrix,
     structure_views,
+    task_panel,
 )
 from report_rules import evaluate as evaluate_rules
 from report_rules import load_rules, priority_for, rules_meta
@@ -67,7 +68,7 @@ SUBTYPE_LABELS = {
 }
 ANOMALY_CATEGORIES = ("convergence", "resource", "file", "ssh", "queue")
 
-MAX_STRUCTURE_TASKS = 6  # 单项目正文最多展示多少个结构优化任务（其余只进附录），控制篇幅
+MAX_STRUCTURE_TASKS = 6  # 单项目正文最多展示多少个结构优化任务（其余只进结构化数据），控制篇幅
 
 
 # --------------------------------------------------------------------- 工具
@@ -515,7 +516,7 @@ def _sections_markdown(report, charts):
             f"- **项目进度**：**{info['progress_percent']}%**（{summary}）",
             f"- **时间窗口**：{info['time_window_label']}",
             "",
-            f"![项目进度]({charts.get('progress.svg', '')})".rstrip(),
+            f"![项目进度](charts/progress.svg)",
         ]
     ).strip() + "\n"
 
@@ -526,7 +527,7 @@ def _sections_markdown(report, charts):
         blocks.append("### 结构优化\n")
         blocks.append(
             f"共 {science.get('opt_total') or len(opt_items)} 个结构优化任务有收敛数据，"
-            f"下列展示其中 {len(opt_items)} 个（其余见附录）。每条包含结构三视图与能量/力曲线。\n"
+            f"下列展示其中 {len(opt_items)} 个，其余仅保留在报告数据中。每条包含结构三视图与能量/力曲线。\n"
         )
         for item in opt_items:
             converge = "✅ 已收敛" if item["converged"] else "⚠️ 未收敛"
@@ -534,11 +535,10 @@ def _sections_markdown(report, charts):
                 f"**{item['task_name']}** · {converge} · 最终能量 **{_fmt(item['final_energy_ev'])} eV** · "
                 f"最终最大力 **{_fmt(item['force_max_ev_per_a'])} eV/Å** · 离子步 {_fmt(item['ionic_steps'], 0)}\n"
             )
-            if item["charts"].get("views"):
-                blocks.append(f"![{item['task_name']} 结构三视图]({item['charts']['views']})\n")
-            if item["charts"].get("energy_force"):
+            panel = item["charts"].get("panel") or item["charts"].get("energy_force")
+            if panel:
                 blocks.append(
-                    f"![{item['task_name']} 能量与力曲线]({item['charts']['energy_force']})\n"
+                    f"![{item['task_name']} 结构三视图与能量/力曲线]({panel})\n"
                 )
             blocks.append("\n")
     paths = science.get("free_energy") or []
@@ -805,7 +805,8 @@ def build_report(
     stats = _stats(facts, archived_count)
     now = now_iso()
     if not report_id:
-        report_id = f"rpt_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{project_id[-4:] or '0000'}"
+        # 同一项目恒定使用一个报告 ID：重新生成即覆盖旧报告（报告历史 = 每项目一份最新）
+        report_id = f"rpt_{project_id or project_name}"
 
     # ---------------- 图表
     charts: Dict[str, str] = {}
@@ -824,9 +825,7 @@ def build_report(
             for p in history
         ]
         chart_refs: Dict[str, str] = {}
-        name = f"{fact['task_id']}_energy_force.svg"
-        charts[name] = energy_force_chart(points, title=f"{fact['task_name']} 能量与最大力")
-        chart_refs["energy_force"] = f"charts/{name}"
+        curve_svg = energy_force_chart(points, title=f"{fact['task_name']} 能量与最大力")
         # 最终结构三视图（导出用；前端另有 3Dmol 交互视图）
         poscar_cif = contcar_cif = None
         try:
@@ -841,12 +840,19 @@ def build_report(
         view_cif = contcar_cif or poscar_cif
         if view_cif:
             vname = f"{fact['task_id']}_views.svg"
-            charts[vname] = structure_views(
-                view_cif,
-                title="",
-                labels=["a-b 视图", "b-c 视图", "a-c 视图"],
+            views_svg = structure_views(
+                view_cif, title="", labels=["a-b 视图", "b-c 视图", "a-c 视图"]
             )
+            charts[vname] = views_svg
             chart_refs["views"] = f"charts/{vname}"
+            # 三视图 + 曲线横向拼成一张面板图（前端与导出所见即所得）
+            pname = f"{fact['task_id']}_panel.svg"
+            charts[pname] = task_panel(views_svg, curve_svg)
+            chart_refs["panel"] = f"charts/{pname}"
+        else:
+            ename = f"{fact['task_id']}_energy_force.svg"
+            charts[ename] = curve_svg
+            chart_refs["energy_force"] = f"charts/{ename}"
         opt_science.append(
             {
                 "task_id": fact["task_id"],
@@ -873,7 +879,18 @@ def build_report(
         if not any(s.get("free_energy_ev") is not None for s in path["structures"]):
             continue
         name = f"{path['group_id']}_step.svg"
-        charts[name] = step_chart(path["structures"], title=f"{path['group_name']} 自由能台阶图")
+        charts[name] = step_chart(
+            [
+                {
+                    **s,
+                    "free_energy": s.get("free_energy_ev"),
+                    "converged": s.get("converged"),
+                    "corrected": s.get("corrected"),
+                }
+                for s in path["structures"]
+            ],
+            title=f"{path['group_name']} 自由能台阶图",
+        )
         path["chart"] = f"charts/{name}"
 
     neb_science = _neb_details(facts)
@@ -881,7 +898,17 @@ def build_report(
         if not item["images"]:
             continue
         name = f"{item['task_id']}_barrier.svg"
-        charts[name] = neb_barrier_chart(item["images"], title=f"{item['task_name']} 能垒曲线")
+        charts[name] = neb_barrier_chart(
+            [
+                {
+                    **img,
+                    "relative": img.get("relative_energy_ev"),
+                    "energy": img.get("energy_ev"),
+                }
+                for img in item["images"]
+            ],
+            title=f"{item['task_name']} 能垒曲线",
+        )
         item["chart"] = f"charts/{name}"
         # 映像结构对比矩阵（行 = a-b / b-c / a-c 视图，列 = 映像 IS → FS）
         try:

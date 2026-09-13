@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.7.1（报告改为以总结为核心 + 每天自动生成）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.7.2（报告 11 项修正：去附录 / 面板图横向 / 巡检风格双轴曲线 / 进度图修复 / 台阶与能垒数据修复 / 仅图片所见即所得 / 导出弹层 / 同项目覆盖）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -40,12 +40,14 @@ data/
 ├── dashboard/
 │   └── core_history.json      # 总览集群采样历史（核数/运行中任务，v0.6.0 起累积）
 ├── projects/                  # 本地项目镜像目录（files/ 等）
+├── reports/                   # 分项目报告（v0.7.0 起）：<项目>/<报告ID>/{report.json,report.md,charts/*.svg} + index.json
 ├── trash/                     # 删除任务/项目的回收站
 ├── aux_molecules/             # 辅助分子全局目录（opt|frac）
 └── config/
     ├── servers.json           # 远程服务器配置（server1，见下）
     ├── settings.json          # 力收敛阈值、同步开关、dashboard_cache_seconds / dashboard_total_cores、
-    │                          # auto_inspection_enabled / inspection_interval_hours 等
+    │                          # auto_inspection_enabled / inspection_interval_hours /
+    │                          # auto_report_enabled / report_interval_hours 等
     ├── task_registry.json     # 各任务类型 default_incar / 权重 / 续算规则（后端模板）
     ├── path_mapping.json      # local_root ↔ remote_root（根目录迁移核心）
     └── check_registry.json    # 巡检力收敛阈值（0.02 / 0.01）
@@ -147,7 +149,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `components/dashboard/`：RunningTasksPanel（bjobs 实时作业表，点行跳 `/jobs?task=`）、CoresUsagePanel（ECharts 圆环 + 项目着色 + 90%/100% 阈值）、ClusterHealthPanel（节点灯 / 队列拥堵 / 存储进度）、RiskAlertsPanel（未收敛+Zombie+巡检异常，点条目跳转）、TrendPanel（近 7 天核数/运行任务/提交数）、ProjectProgressPanel（四象限气泡 + 项目进度列表 + **已关闭项目折叠区**，样式为胶囊按钮 + 虚线分隔）、`useEcharts.ts`（**ECharts 按需注册**：Pie/Line/Bar/Scatter + Grid/Tooltip/Legend/Title/MarkLine + Canvas）。
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
-- `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`（v0.7.0）：分项目报告页——按项目生成 / 批量生成、报告历史（按项目分组）、章节导航、**导出范围勾选**、Markdown 渲染（自写轻量渲染器，无第三方依赖）/ 结构化数据视图、下载 MD/JSON、导出 HTML 与 PDF（浏览器打印）。
+- `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`：分项目报告页——按项目生成 / 一键生成所有项目、**项目报告列表（每项目一份，同项目重生成直接覆盖）**、章节导航、Markdown 渲染（自写轻量渲染器，无第三方依赖，`chartResolver` 把 `charts/x.svg` 映射到 `/api/reports/project/{id}/files/x.svg`）；**正文只渲染图片，没有任何交互式组件或结构化数据视图**（v0.7.2 起"所见即所得"——前端看到的排版与导出 HTML/PDF 一致）；**导出按钮挂在「报告内容」标题行**，点击才展开章节勾选 Popover（下载 Markdown / 导出 HTML / 导出 PDF）。
 - `components/jobs/`：IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、SubmitScriptPanel、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
@@ -185,7 +187,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.7.1）
+## 7. 近期重要改动记录（v0.4.1 → v0.7.2）
+
+- v0.7.2（报告 11 项修正，本次）：① **去掉附录章节**——`REPORT_SECTIONS` 只剩 `basic_info / science / issues / actions` 四章，附录数据仍留在 `report.json` 里供大模型消费，只是不再作为正文章节（正文里"其余见附录"改为"其余仅保留在报告数据中"）。② **opt 任务三视图与能量/力曲线横向排版成一张图**——新增 `report_charts.task_panel(views_svg, curve_svg)`：左侧 a/b/c 三视图（3×150px）+ 右侧双轴曲线（620×260px）拼成同一张 SVG，共用同一基线、上下对齐，正文每个任务只出一张 `*_panel.svg`（无 CIF 时退回 `*_energy_force.svg`）。③ **修掉项目进度图不显示**——`_sections_markdown` 里误写成 `charts.get('progress.svg')`，而 `charts` 是 `{文件名: SVG 文本}` 字典，取到的是整段 SVG 源码，图片 `src` 就变成 SVG 文本；改为固定路径 `charts/progress.svg`。④ **修掉自由能台阶图没数据**——`step_chart` 读 `free_energy` 而报告结构里字段叫 `free_energy_ev`（NEB 同理：`neb_barrier_chart` 读 `relative`、结构里是 `relative_energy_ev`），在调用处做键映射后 3 张台阶图与 6 张能垒图全部有数据。⑤ **能量与力曲线按巡检 `LineChart` 风格重画并合并**——同边距（66/62/24/34）、`#E7ECF3` 网格、`#9CA3AF` 坐标轴、`#374151` 标题 13px、`#6B7A90` 刻度 10px、蓝色 `#5B8DEF` 能量 + 橙色 `#E8A33D` 力 + 红色 `#D9535B` 力阈值虚线（标注"阈值 0.020"）、旋转纵轴单位、底部"离子步"、图内标注最终能量/最终力。⑥ **前端只显示图片**——删掉 v0.7.1 加的交互式 `Structure3DViewer` / `NebImages3DViewer` 折叠区块与 `interactiveStructures`，报告页只剩 Markdown 里的静态 SVG。⑦ **去掉 Markdown / 结构化数据切换**——删 `Segmented` / `viewMode` / 结构化 `<pre>` / 下载 JSON / 复制 JSON 按钮。⑧ **导出范围改为点击后展开**（Popover 挂在「报告内容」标题行的 `extra` 里，不再常驻显示勾选项）。⑨ **同项目新报告直接覆盖旧报告**——`report_id` 稳定化为 `rpt_<project_id>`，`report_store.save_report` 同项目下 `shutil.rmtree` 旧目录并只保留索引一条，报告列表标题改为「项目报告」。⑩ 实测：正文 Markdown 约 5.3KB、章节 `['basic_info','science','issues','actions']`、Ag 报告 3.8–7.1s 生成、按 `sections=science,actions` 导出的 HTML 确认不含基本信息与异常章节。⑪ 待向用户澄清：`public/3dmol/3Dmol-min.js` 是**浏览器端 JS 库**，Python 后端没有 3Dmol，静态三视图是纯 Python 正交投影 SVG；要做真实静态 3D 渲染得引入 headless 浏览器（用户此前明确不加依赖）。
 
 - v0.7.1（commit `dc21220`，已推送 origin/main）：**报告改为「以总结为核心」+ 每天自动生成**。① 章节精简为 5 章：**基本信息**（项目 / 生成时间 / 整体状态色标 / 进度条 + 一句话任务概览）/ **重点科学结果分析**（opt 每任务：结构三视图 + **能量与最大力同图（双纵轴，力带 0.02 阈值线）** + 一行关键数据；自由能按路径：台阶图 + 中间体表（含 ZPE 矫正列）；NEB 按组：能垒图 + **映像结构对比矩阵**（行 a-b/b-c/a-c，列 IS→FS）；电子结构占位说明）/ **异常与关注项**（模板生成，最多 6 条，含建议）/ **下一步建议**（最多 5 条）/ **附录**（任务清单 + 生成参数）。正文 Markdown 从约 25KB 降到 **8KB**（结构优化任务上限 6 个，其余只进附录），其余数据（tasks/resources/risks/llm_context）仍保留在结构化数据里供大模型消费。② 新增图表：`energy_force_chart`（双纵轴）、`structure_views`（纯 Python 正交投影三视图，元素着色 + 晶胞框）、`structure_matrix`（NEB 映像矩阵）、`progress_bar_percent`。③ **每天自动生成**：复用巡检调度线程，新增 `auto_report_enabled`（默认开）+ `report_interval_hours`（默认 24），到期为每个项目各生成一份报告（单项目失败不影响其他）；`/api/inspections/meta` 的 scheduler 字段新增 `report_enabled / report_interval_hours / report_running / last_report_at / next_report_at`，`PUT /api/inspections/auto` 可改这两项。④ 前端报告页在「重点科学结果分析」上方提供**交互式结构视图**（opt 用 3Dmol 的 Structure3DViewer、NEB 用映像对比 NebImages3DViewer，折叠展开）；导出 HTML/PDF 仍用静态三视图与对比矩阵。
 
@@ -229,6 +233,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 ## 8. 已知注意事项 / 坑
 
 - **3Dmol 视图的两个硬性要求**（v0.6.10 踩坑）：① 承载 3Dmol 的容器必须有 `position: relative`（+ `overflow: hidden`），否则画布绝对定位到页面左上角、盖出一块白色遮挡（opt 的 `.s3d-canvas`、NEB 的 `.neb3d__canvas` 都已遵守）；② 给某类任务新增专属 `analysis` 载荷时，**必须同时给它一个独立的渲染分支**——不能让它落到 `StructurePanel`（它按 opt 字段访问 `files/poscar/warnings`，字段缺失会抛错白屏）。新增任务类型分析时请照此处理。
+- **后端没有 3Dmol（v0.7.2 澄清）**：`public/3dmol/3Dmol-min.js` 是**浏览器端 JS 库**（WebGL 渲染），Python 后端无法直接用；报告里的静态“三视图”是 `report_charts.structure_views()` 用纯 Python 做的正交投影 SVG。若要做真实静态 3D 渲染（带透视/材质），需要引入 headless 浏览器或 Node 端渲染，属于新增依赖，**动手前先问用户**。
+- **报告图表函数的参数键必须与结构化字段名对齐**（v0.7.2 踩坑）：`report_builder.py` 传给 `report_charts` 的字典键必须与图表函数读取的键一致，否则图表静默画出空图（不出数据、不报错）。已修两处：`free_energy_ev`（`step_chart` 原读 `free_energy`）、`relative_energy_ev`（`neb_barrier_chart` 原读 `relative`）。另外 `build_report()` 的 `charts` 是 `{文件名: SVG 文本}` 字典——**引用图片要用 `"charts/<名字>.svg"` 字符串**，不要写成 `charts.get('x.svg')`，否则会把整段 SVG 文本当成路径写进 Markdown。
 - **后端无热重载（踩过坑，务必照做）**：改完 `backend/*.py` **必须重启后端进程**，否则页面行为还是旧逻辑。v0.6.4 就踩过：归档连带频率矫正的代码写完了，但 3001 上还是 01:30 启动的旧进程，用户在页面上归档时 frac 不会跟着归档。判断当前进程是否为最新代码看 `GET /api/health` 的 `startedAt`（v0.5.5 起）；**不要**再用 `uptime` 数值推断——v0.5.5 之前它返回的是系统开机时长。
 - **总览的集群命令只在 LSF 环境验证过**：`bjobs -o "jobid stat queue job_name slots exec_host" -noheader`、`blimits` 的 SLOTS 列、`bhosts`/`bqueues` 表头都按 IBM LSF 实测解析；换 Slurm 需改 `servers.json` 的 5 个命令键并同步改 `dashboard.py` 的解析函数（`parse_jobs/parse_blimits/parse_bhosts/parse_bqueues/parse_df`）。
 - **blimits 配额是“按队列组”的**：同一用户可能有多行（不同队列组各自限制），当前取各行的最大值作为上限；`usedCores` 优先用它的已用值，与 bjobs 汇总通常一致（实测 144 = 144）。
@@ -273,7 +279,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.6.2；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
+1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.7.2；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。

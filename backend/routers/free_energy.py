@@ -38,6 +38,12 @@ def free_energy_summary(group_id: str):
             )
             dft = opt_task.get("last_energy")
             correction = frac_task.get("correction") if frac_task else None
+            # 归档（关闭）任务：以归档前状态判断是否收敛，否则看板会把已完成的路径标成未收敛
+            opt_status = str(opt_task.get("status") or "")
+            converged = opt_status == "completed" or (
+                opt_status == "archived"
+                and str(opt_task.get("archived_from") or "") == "completed"
+            )
             structures.append(
                 {
                     "task_id": opt_task.get("task_id"),
@@ -52,7 +58,7 @@ def free_energy_summary(group_id: str):
                         and isinstance(correction, (int, float))
                         else None
                     ),
-                    "converged": opt_task.get("status") == "completed",
+                    "converged": converged,
                     "corrected": correction is not None,
                 }
             )

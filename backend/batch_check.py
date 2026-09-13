@@ -442,6 +442,8 @@ def _new_result(task: Dict[str, Any]) -> Dict[str, Any]:
         "force_rms": None,
         "force_converged": None,
         "force_history": None,
+        # NEB：中间映像离子步最大值（用于与 opt 相同的 25 步结构分析触发）
+        "neb_band_steps": None,
         "error_messages": [],
         "current_output": None,
     }
@@ -555,6 +557,46 @@ def _parse_forces(
     )
 
 
+def _count_marker(path: Path, marker: bytes = b"TOTAL-FORCE") -> int:
+    """分块统计文件中标记出现次数（OUTCAR 可能上百 MB，避免整体读入内存）。"""
+    total = 0
+    try:
+        with path.open("rb") as fh:
+            while True:
+                chunk = fh.read(1 << 20)
+                if not chunk:
+                    break
+                total += chunk.count(marker)
+    except OSError:
+        return 0
+    return total
+
+
+def _count_neb_band_steps(remote_dir: str) -> int:
+    """NEB 带推进步数：中间映像 OUTCAR 中 TOTAL-FORCE 块数的最大值。
+
+    VTST 各映像同步推进，因此中间映像步数一致，取最大值即可代表整条带。
+    端点是 IS/FS 的伪结果（复制自各自 opt），不计入。
+    运行中的作业也会统计（结构分析要按 25 步桶定期抓映像结构）。
+    """
+    neb_dir = _neb_latest_output_dir(remote_dir)
+    if not neb_dir:
+        return 0
+    base = Path(neb_dir)
+    names = sorted(
+        (p.name for p in base.iterdir() if p.is_dir() and p.name.isdigit()),
+        key=int,
+    )
+    if len(names) < 3:
+        return 0
+    best = 0
+    for img in names[1:-1]:
+        outcar = base / img / "OUTCAR"
+        if outcar.is_file() and outcar.stat().st_size > 0:
+            best = max(best, _count_marker(outcar))
+    return best
+
+
 def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
     """NEB 任务结束后的状态判定：按映像 OUTCAR 判断，而不是主目录 OUTCAR。
 
@@ -581,6 +623,9 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
     middle = [n for n in names if lo < n < hi]
     missing: List[str] = []
     unfinished: List[str] = []
+    # 中间映像的离子步：取各映像 OUTCAR 的 TOTAL-FORCE 块数最大值，
+    # 作为「NEB 带推进了多少步」的度量（端点 OUTCAR 是 IS/FS 的伪结果，不计入）
+    band_steps = 0
     for img in middle:
         outcar = base / img / "OUTCAR"
         if not outcar.is_file() or outcar.stat().st_size == 0:
@@ -591,8 +636,10 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
         except Exception:  # noqa: BLE001 - 单个映像读取失败按缺失处理
             missing.append(img)
             continue
+        band_steps = max(band_steps, _count_marker(outcar))
         if not any(marker in text for marker in SUCCESS_MARKERS):
             unfinished.append(img)
+    result["neb_band_steps"] = band_steps
     if not missing and not unfinished:
         result["status"] = "completed"
         try:
@@ -735,6 +782,9 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
 
         # NEB 过渡态：运行 nebef.pl 解析各映像受力/能量/相对能垒
         if task_type == "neb":
+            # 无论作业是否在跑都统计「带推进步数」：巡检据此按 25 步桶同步映像结构
+            if result.get("neb_band_steps") is None:
+                result["neb_band_steps"] = _count_neb_band_steps(remote_dir)
             nebef_dir = _neb_latest_output_dir(remote_dir)
             if nebef_dir:
                 try:

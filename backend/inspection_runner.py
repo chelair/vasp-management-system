@@ -7,6 +7,7 @@ Web 化改造：
 - 状态回填复用 storage.update_task_status（与 project_db.py 一致的状态机）。
 """
 
+import base64
 import json
 import tempfile
 from datetime import datetime
@@ -25,10 +26,21 @@ from task_paths import task_dir, task_remote_dir
 
 SKIPPED_STATUSES = ("pending", "archived")
 STRUCTURE_OPT_TYPE = "opt"
+NEB_TYPE = "neb"
 
 
-def _ionic_steps(result: Dict[str, Any]) -> int:
-    """离子步数：巡检结果 force_history 的长度（与详情页展示口径一致）。"""
+def _ionic_steps(result: Dict[str, Any], task_type: str = "") -> int:
+    """离子步数（结构分析 25 步一桶的度量）。
+
+    - opt：巡检结果 force_history 的长度（与详情页展示口径一致）；
+    - neb：中间映像离子步的最大值（batch_check 回传的 neb_band_steps）。
+    """
+    if task_type == NEB_TYPE:
+        value = result.get("neb_band_steps")
+        try:
+            return int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            return 0
     history = result.get("force_history")
     return len(history) if isinstance(history, list) else 0
 
@@ -261,6 +273,101 @@ def _merge_notes(existing: Optional[str], markers: List[str]) -> str:
     return "；".join(parts)
 
 
+NEB_IMAGE_DIR = "images"
+
+
+def _sync_neb_image_structures(
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    latest_dir: str = "",
+) -> List[str]:
+    """同步 NEB 各映像的**优化后结构**（IS → 中间态 → FS），生成 CIF。
+
+    - 每个数字映像目录取 CONTCAR（优化后几何），没有 CONTCAR 时退回 POSCAR；
+    - 用**单次远端 bash 脚本**把各映像结构 base64 回传（避免 N 次 SSH 往返）；
+    - 原始结构写入 <任务>/files/neb_images/<label>，CIF 写入
+      <任务>/reports/structure/images/<label>.cif（覆盖旧结果，失败保留旧文件）。
+    """
+    markers: List[str] = []
+    server = project["server"]
+    remote_dir = task_remote_dir(server, task).rstrip("/")
+    con_dir = f"{remote_dir}/{latest_dir}" if latest_dir else remote_dir
+    if latest_dir:
+        markers.append(f"NEB 映像结构取自续算输出 {latest_dir}/")
+
+    script = "\n".join(
+        [
+            "set -e",
+            f'BASE="{con_dir}"',
+            'for d in "$BASE"/[0-9]*; do',
+            '  [ -d "$d" ] || continue',
+            '  img=$(basename "$d")',
+            '  f=""',
+            '  if [ -s "$d/CONTCAR" ]; then f="$d/CONTCAR"; else f="$d/POSCAR"; fi',
+            '  [ -s "$f" ] || continue',
+            '  echo "@@@IMG:$img:$(basename "$f")"',
+            '  base64 "$f" | tr -d "\\n"',
+            '  echo',
+            "done",
+        ]
+    )
+    result = ssh.run_remote(server, script, timeout=120)
+    if result.get("exit_code") != 0 or not result.get("stdout"):
+        raise RuntimeError(
+            (result.get("stderr") or result.get("stdout") or "远端读取映像结构失败").strip()[:200]
+        )
+
+    task_root = task_dir(project["name"], task)
+    raw_dir = task_root / "files" / "neb_images"
+    cif_dir = task_root / "reports" / "structure" / NEB_IMAGE_DIR
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    cif_dir.mkdir(parents=True, exist_ok=True)
+
+    labels: List[str] = []
+    current: Optional[str] = None
+    buffer: List[str] = []
+    sections: List[tuple] = []
+    for line in result["stdout"].splitlines():
+        if line.startswith("@@@IMG:"):
+            if current:
+                sections.append((current, "".join(buffer)))
+            parts = line.split(":")
+            current = parts[1] if len(parts) > 1 else ""
+            buffer = []
+            continue
+        if current:
+            buffer.append(line.strip())
+    if current:
+        sections.append((current, "".join(buffer)))
+
+    for label, payload in sections:
+        if not payload:
+            continue
+        try:
+            data = base64.b64decode(payload)
+        except Exception as e:  # noqa: BLE001 - 单个映像解码失败不影响其他映像
+            markers.append(f"映像 {label} 结构解码失败：{e}")
+            continue
+        raw_path = raw_dir / label
+        tmp_path = raw_dir / f"{label}.tmp"
+        tmp_path.write_bytes(data)
+        tmp_path.replace(raw_path)
+        out = cif_dir / f"{label}.cif"
+        if convert_structure_to_cif(raw_path, out, overwrite=True):
+            labels.append(label)
+        else:
+            markers.append(f"映像 {label} CIF 转换失败（保留上一次结果）")
+
+    if labels:
+        labels.sort(key=lambda x: int(x) if x.isdigit() else 999)
+        markers.append(
+            f"NEB 映像结构已同步：{labels[0]}–{labels[-1]}（共 {len(labels)} 个，取 CONTCAR/POSCAR）"
+        )
+    else:
+        markers.append("未取到任何 NEB 映像结构（目录为空或文件缺失）")
+    return markers
+
+
 def _apply_result(
     db: Dict[str, Any],
     project: Dict[str, Any],
@@ -298,17 +405,15 @@ def _apply_result(
     #   再次巡检仍在 25-49 不触发，直到 50-74 及以后）；
     # - 目录变化：视为新目录重新计数（有效上桶重置为 -1），重复上述规则；
     # - 其余筛选（opt 类型等）保持不变。
-    steps = _ionic_steps(result)
+    task_type = str(task.get("task_type") or "")
+    steps = _ionic_steps(result, task_type)
     bucket = _analysis_bucket(steps)
     prev_bucket = int(task.get("last_analysis_bucket") or -1)
     prev_dir = str(task.get("last_analysis_dir") or "")
     dir_changed = (latest_dir or "") != prev_dir
     effective_prev_bucket = -1 if dir_changed else prev_bucket
-    should_analyze = (
-        task.get("task_type") == STRUCTURE_OPT_TYPE
-        and bucket >= 1
-        and bucket > effective_prev_bucket
-    )
+    # 结构分析触发条件（opt 与 neb 相同）：25 步一桶、桶号推进才触发、目录变化重置
+    should_analyze = task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and bucket >= 1 and bucket > effective_prev_bucket
 
     markers: List[str] = []
     structure_synced = False
@@ -316,7 +421,10 @@ def _apply_result(
     if should_analyze:
         structure_synced = True
         try:
-            markers = _sync_and_convert_structure(project, task, latest_dir)
+            if task_type == NEB_TYPE:
+                markers = _sync_neb_image_structures(project, task, latest_dir)
+            else:
+                markers = _sync_and_convert_structure(project, task, latest_dir)
         except Exception as e:  # noqa: BLE001 - 结构同步异常不阻塞巡检
             markers.append(f"结构文件同步异常：{e}")
         extra_fields["last_analysis_bucket"] = bucket

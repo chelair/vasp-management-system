@@ -46,6 +46,7 @@ import EleAnalysisPanel from '../components/inspection/EleAnalysisPanel';
 import PathSummaryModal from '../components/inspection/PathSummaryModal';
 import StructurePanel from '../components/inspection/StructurePanel';
 import NebBarrierPanel from '../components/inspection/NebBarrierPanel';
+import NebImages3DViewer from '../components/inspection/NebImages3DViewer';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import StatusTag from '../components/common/StatusTag';
@@ -1017,7 +1018,11 @@ export default function Inspection() {
             </Tooltip>
           </div>
         }
-        width="min(1000px, calc(100vw - 32px))"
+        width={
+          detailData?.analysis?.neb_images?.length
+            ? 'min(1200px, calc(100vw - 32px))'
+            : 'min(1000px, calc(100vw - 32px))'
+        }
         destroyOnClose
         styles={{ body: { maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' } }}
       >
@@ -1160,6 +1165,17 @@ export default function Inspection() {
               <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
               {detailData.task_type === 'ele' ? (
                 <EleAnalysisPanel detail={detailData} />
+              ) : detailData.task_type === 'neb' &&
+                detailData.analysis?.neb_images?.length ? (
+                <>
+                  <div className="fe-footnote" style={{ marginTop: 0, marginBottom: 8 }}>
+                    已同步 {detailData.analysis.neb_images.length} 个映像的优化后结构
+                    {detailData.analysis.steps != null
+                      ? `（NEB 推进约 ${detailData.analysis.steps} 离子步）`
+                      : ''}
+                  </div>
+                  <NebImages3DViewer images={detailData.analysis.neb_images} />
+                </>
               ) : detailData.analysis ? (
                 <StructurePanel
                   analysis={detailData.analysis}

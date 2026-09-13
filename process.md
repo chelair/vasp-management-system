@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.8（NEB 能垒看板视觉/动画重做）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.9（NEB 映像结构分析：IS → 中间态 → FS 3D 横向对比）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -110,7 +110,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `task_paths.py` | 任务目录推导、`is_continuation_task`、类型→顶层分类目录 |
 | `storage.py` | 文件型 DB：原子写 + 备份 + `update_task_status`（无流转白名单） |
 | `batch_check.py` | **远端巡检脚本**（自动上传部署）：定位最新输出、bjobs 状态（抗折行解析）、OUTCAR 解析（能量/力历史/收敛）、NEB 映像状态判定、nebef.pl 能垒 |
-| `inspection_runner.py` | 巡检编排：筛选 → 上传脚本 → 远端批量执行 → 结果回填（job_id/current_output/状态）→ 归档；结构同步按「离子步每 25 步一桶 + 目录变化重置」触发（见 §6.2b），触发时下载 POSCAR/CONTCAR 并调 `scripts/vasp2cif.py` 生成 CIF（reports/structure/） |
+| `inspection_runner.py` | 巡检编排：筛选 → 上传脚本 → 远端批量执行 → 结果回填（job_id/current_output/状态）→ 归档；结构同步按「离子步每 25 步一桶 + 目录变化重置」触发（见 §6.2b）：opt 下载 POSCAR/CONTCAR，NEB（v0.6.9）单次远端脚本取各映像 CONTCAR/POSCAR，均调 `scripts/vasp2cif.py` 生成 CIF（opt → reports/structure/，NEB → reports/structure/images/） |
 | `inspection_scheduler.py` | **自动巡检调度**（v0.6.2）：后台线程每 60s 检查一次，`auto_inspection_enabled` 打开且「距上次巡检 ≥ `inspection_interval_hours`」时触发一轮全局巡检；提供 `scheduler_status()` 与 `update_schedule()`（写入 settings.json） |
 | `checks_store.py` | 巡检归档合并（最新条目 + 旧 force_history 沿用）、列表行组装（has_inspection 等） |
 | `dashboard.py` | **总览聚合**：单次 SSH 合并查询（bjobs/blimits/df/bhosts/bqueues）+ 解析 + 5 分钟缓存（`dashboard_cache_seconds`）+ 集群采样历史 + 运行作业↔任务映射 + 核数按项目聚合 + 风险预警 + 项目进度 + 近 7 天趋势 |
@@ -147,7 +147,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `components/jobs/`：IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、SubmitScriptPanel、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
-- `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
+- `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
 - `utils/structure3d.ts`：3Dmol 数据工具（CIF 解析、VESTA 元素配色、共价半径算键）；3Dmol 库本地化于 `public/3dmol/3Dmol-min.js`（index.html 全局引入，无 npm 依赖）。
 - `data/mock/incar.ts`：**编辑器默认参数定义**（INCAR_CATEGORIES 的 defaultValue / PRECISION_PRESETS 低中高 / TASK_TYPE_INCAR 类型覆盖 / buildDefaultParams / buildIncarText 分组空行 / parseCustomIncar）。
@@ -159,7 +159,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 1. **SSH 连接**：统一走 `ssh.py` 连接池；每条 exec 有 ~1.3-2s 远端 shell 启动开销（HPC 负载高时 3-4s），**多步操作必须合并成单次 base64 bash 脚本**（参考 continuation `_remote_script` + `===STATE===/===FILES===` 标记分段）。
 2. **巡检**：全局 `POST /api/inspections/run`、单任务 `run-single/{task_id}`（任意状态可巡检，跳过筛选）；batch_check 自动上传远端；结果归档 data/checks 并按 task_id 合并；运行中任务也回传 last_energy + force_history。
-2b. **结构分析触发（analysis_needed，v0.4.6 起）**：仅 opt 任务；离子步每 25 步一桶（0-24→桶0、25-49→桶1、50-74→桶2…）。同一输出目录：桶 ≥1 且比上次触发桶更大才触发（25-49 触发后，再次巡检仍在 25-49 不触发，直到 50-74 及以后）；输出目录变化：视为新目录重置计数，重复按桶触发。触发时下载 POSCAR/CONTCAR → `scripts/vasp2cif.py` 生成 `reports/structure/{POSCAR,CONTCAR}.cif`（新结果覆盖旧 CIF），任务持久化 `last_analysis_bucket` / `last_analysis_dir`。**CIF 使用规则**：详情接口有本地 CIF 直接用；没有 CIF 但本地有 POSCAR/CONTCAR 时用脚本现场转换补缺（只补缺不覆盖）；转换先写临时文件成功后再原子替换，失败保留上一次结果。前端 Structure3DViewer 用 3Dmol 渲染（VESTA PNG 方案已移除）。
+2b. **结构分析触发（analysis_needed，v0.4.6 起；v0.6.9 起 opt + neb 同规则）**：opt 与 neb 任务都适用；离子步每 25 步一桶（0-24→桶0、25-49→桶1、50-74→桶2…）。同一输出目录：桶 ≥1 且比上次触发桶更大才触发（25-49 触发后，再次巡检仍在 25-49 不触发，直到 50-74 及以后）；输出目录变化：视为新目录重置计数，重复按桶触发。触发时下载 POSCAR/CONTCAR → `scripts/vasp2cif.py` 生成 `reports/structure/{POSCAR,CONTCAR}.cif`（新结果覆盖旧 CIF）；**NEB 任务**（v0.6.9）步数取中间映像 OUTCAR 的 TOTAL-FORCE 块最大值，触发时用单次远端脚本把各映像 CONTCAR（缺则 POSCAR）base64 回传，生成 `reports/structure/images/<label>.cif`（IS → 中间态 → FS，详情页做 3D 横向对比），任务持久化 `last_analysis_bucket` / `last_analysis_dir`。**CIF 使用规则**：详情接口有本地 CIF 直接用；没有 CIF 但本地有 POSCAR/CONTCAR 时用脚本现场转换补缺（只补缺不覆盖）；转换先写临时文件成功后再原子替换，失败保留上一次结果。前端 Structure3DViewer 用 3Dmol 渲染（VESTA PNG 方案已移除）。
 3. **续算**：`POST /jobs/tasks/{id}/continuation`。opt：最新目录 OUTCAR/CONTCAR 均非空 → 创建 con(N+1)，复制 CONTCAR→POSCAR/POTCAR/KPOINTS/INCAR/提交脚本、**WAVECAR 用 mv**，INCAR 改 ISTART=1/ICHARG=0；未完成 → 分流提示（input_complete_but_not_finished / input_incomplete）；运行中 → 提示等待。NEB：从最新续算目录复制共享文件 + 端点 POSCAR 固定并**带上 00/NN OUTCAR**、中间映像 CONTCAR→POSCAR、**各映像（含端点/中间态）存在 WAVECAR 时随续算 mv 移动**（目标已有不覆盖）。续算在 DB 登记隐藏子任务（不展示，供后台定位）。
    - **活跃作业保护（v0.5.5）**：opt/NEB 续算脚本都在创建目录**之前**用 `bjobs -l`（含 `bjobs -o 'jobid exec_cwd'` 按源目录/映像子目录二次匹配）判定是否有 RUN/SSUSP/PSUSP/USUSP 作业，命中则只回传状态、返回 `action="running"`，**不建目录、不移动文件**。opt 自 v0.4.5 起如此，NEB 在 v0.5.5 补齐（此前 NEB 续算对运行中作业没有拦截）。
    - **WAVECAR 是移动语义**：续算成功后源目录不再保留 WAVECAR（opt 与 NEB 一致，目标已存在则不覆盖）。NEB 连端点 00/NN 的 WAVECAR 也一并移动，端点 POSCAR/OUTCAR 是复制。
@@ -183,7 +183,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.8）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.9）
+
+- v0.6.9（commit 见 `git log --oneline -1`）：**NEB 映像结构分析**（对应 opt 的结构 3D 对比）。① 触发条件与 opt 相同：25 离子步一桶 + 目录变化重置；NEB 的「步数」取**中间映像 OUTCAR 的 TOTAL-FORCE 块最大值**（VTST 各映像同步推进，端点伪结果不计入），由 batch_check 新增 `neb_band_steps` 回传——**运行中的 NEB 也会统计**（此前只有作业结束走 `_analyze_neb_status` 才有数，导致运行期永远拿不到步数）。② 同步：`inspection_runner._sync_neb_image_structures()` 用**单次远端 bash 脚本**把各映像结构 base64 回传（避免 N 次 SSH 往返），每个映像取 CONTCAR（优化后几何）、缺失时退回 POSCAR；原始文件写 `files/neb_images/<label>`，CIF 写 `reports/structure/images/<label>.cif`（覆盖旧结果、失败保留旧文件）。③ 详情接口新增 `analysis.neb_images`（label / role（is|middle|fs）/ CIF 文本 / 相对能垒 / 最大受力），标签按数值归一化与 nebef.pl 的 0..N 对齐（目录名是 00/01…，nebef 是 0/1…）。④ 前端新增 `NebImages3DViewer`：IS → 中间态 → FS **横向 3D 对比**，拖动/滚轮联动所有面板视角、球棍/空间填充、自动旋转、缩放、重置视角、元素配色图例，**鞍点面板高亮边框**，每格显示 ΔE 与最大受力；NEB 详情弹窗自动加宽到 1200px 以容纳整条路径。⑤ 实现过程中修掉两个坑：`inspection_runner` 漏 `import base64`（NameError 被 except 吞成「解码失败」）、`routers/inspections.py` 用 `Any` 未导入（详情接口 500）。
 
 - v0.6.8（commit `b6653fd`，已推送 origin/main）：**NEB 能垒看板视觉/动画重做**（新增 `NebBarrierPanel`，替换原「通用折线图 + antd 表格」拼版，样式复用 `.fe-*` 版式）。① 顶部四张统计卡：映像数量（端点 2 + 中间 N-2）、能垒 Ea（最高相对能 + 对应映像）、最大受力（含映像号）、末态相对能（判断反应是否回到初态）。② 能垒曲线：相对能垒直线连接（**不做插值**，如实反映各映像）、渐变面积、鞍点红色虚线 + Ea = +x.xxx eV 标注、端点/鞍点数据点区分大小与配色；悬停出竖线 + 放大点 + 信息卡（映像号 + 初态/末态/鞍点角色 + 相对能垒/绝对能量/最大受力）。③ 明细列表改为自绘行（映像 chip / 相对能垒 / 绝对能量 / 受力（最大受力行橙色）/ 角色徽标），悬停行与曲线联动高亮。④ 动画：曲线从左向右绘制（pathLength 归一化 + dashoffset）、数据点依次弹出、面积与鞍点标注随后淡入、列表行错峰上浮；`prefers-reduced-motion` 下全部关闭。⑤ 删除已无用的 `.neb-barrier-layout` 样式。
 

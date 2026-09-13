@@ -6,6 +6,15 @@
 
 ## 当前进度概览
 
+**已完成（v0.6.9，2026-09-13）**
+
+- [x] NEB 映像结构分析：IS → 中间态 → FS 横向 3D 对比（`NebImages3DViewer`，只展示优化后结构）
+- [x] 触发条件与结构优化一致（25 离子步一桶 + 目录变化重置）：batch_check 新增 `neb_band_steps`
+      （中间映像 OUTCAR 的 TOTAL-FORCE 最大块数，**运行中的 NEB 也统计**）
+- [x] 同步用单次远端脚本 base64 回传各映像 CONTCAR（缺则 POSCAR）→ CIF 写入 `reports/structure/images/`
+- [x] 详情接口返回 `analysis.neb_images`（role / CIF / ΔE / 最大受力，标签按数值与 nebef 对齐）
+- [x] 视角联动、球棍/空间填充、自动旋转、缩放、重置、元素图例；鞍点面板高亮；弹窗自动加宽
+
 **已完成（v0.6.8，2026-09-13）**
 
 - [x] NEB 能垒看板重做（新增 `NebBarrierPanel`）：统计卡（映像数 / Ea / 最大受力 / 末态相对能）

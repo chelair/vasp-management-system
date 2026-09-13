@@ -2,13 +2,13 @@
 
 import re
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from checks_store import collect_results, list_runs, to_frontend_rows
-from cif_convert import read_or_convert_cif
+from cif_convert import read_neb_image_cifs, read_or_convert_cif
 from config import load_settings, load_servers
 from continuation import _remote_latest_con
 from envelope import fail, ok
@@ -146,7 +146,55 @@ def _build_analysis(project: dict, task: dict, entry: dict, history: list):
             "skipped": skipped,
             "warnings": struct["warnings"],
         }
-    # TODO(frac/neb/ele): 后续按任务类型补充专属分析数据
+    if task_type == "neb":
+        # NEB 映像分析（v0.6.9）：展示优化后的 IS → 中间态 → FS 结构横向对比。
+        # 结构由巡检按与 opt 相同的 25 步桶规则同步到本地上表（reports/structure/images/）。
+        cifs = read_neb_image_cifs(project, task)
+        barrier = entry.get("neb_barrier") or {}
+        # nebef.pl 的映像号是 0/1/2…，目录名是 00/01/02…：按数值归一化后再匹配
+        def _norm_label(value) -> Any:
+            text = str(value).strip()
+            return int(text) if text.isdigit() else text
+
+        by_label = {
+            _norm_label(item.get("label")): item
+            for item in (barrier.get("images") or [])
+        }
+        labels = sorted(
+            cifs.keys(), key=lambda x: int(x) if str(x).isdigit() else 999
+        )
+        images = []
+        for index, label in enumerate(labels):
+            info = by_label.get(_norm_label(label)) or {}
+            images.append(
+                {
+                    "label": str(label),
+                    "role": (
+                        "is"
+                        if index == 0
+                        else "fs"
+                        if index == len(labels) - 1
+                        else "middle"
+                    ),
+                    "cif": cifs[label],
+                    "energy": info.get("energy"),
+                    "relative": info.get("relative"),
+                    "max_force": info.get("max_force"),
+                }
+            )
+        band_steps = entry.get("neb_band_steps")
+        return {
+            "in_scope": bool(entry.get("analysis_needed", False)),
+            "steps": band_steps if isinstance(band_steps, int) else None,
+            "neb_images": images,
+            "skipped": (
+                None
+                if images
+                else "尚未同步 NEB 映像结构：需要巡检推进到 25 离子步桶后自动抓取各映像 CONTCAR"
+            ),
+            "warnings": [],
+        }
+    # TODO(frac/ele): 后续按任务类型补充专属分析数据
     return None
 
 

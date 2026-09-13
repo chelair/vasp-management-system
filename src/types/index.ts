@@ -213,6 +213,16 @@ export interface StructureAnalysis {
   /** vasp2cif 生成的结构 CIF 文本（3Dmol 结构视图用），未生成时为 null */
   poscar_cif?: string | null;
   contcar_cif?: string | null;
+  /** NEB 映像分析（v0.6.9）：优化后的 IS → 中间态 → FS 结构（各映像一张 CIF） */
+  neb_images?: {
+    label: string;
+    /** is = 初态、fs = 末态、middle = 中间态 */
+    role: 'is' | 'fs' | 'middle';
+    cif: string;
+    energy: number | null;
+    relative: number | null;
+    max_force: number | null;
+  }[];
   skipped: string | null;
   warnings: string[];
 }

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.7（自由能路径看板视觉/动画重做）
+> 生成时间：2026-08-29 · 最近更新：2026-09-13 · 当前版本：v0.6.8（NEB 能垒看板视觉/动画重做）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -147,7 +147,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `components/jobs/`：IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、SubmitScriptPanel、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
-- `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
+- `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
 - `utils/structure3d.ts`：3Dmol 数据工具（CIF 解析、VESTA 元素配色、共价半径算键）；3Dmol 库本地化于 `public/3dmol/3Dmol-min.js`（index.html 全局引入，无 npm 依赖）。
 - `data/mock/incar.ts`：**编辑器默认参数定义**（INCAR_CATEGORIES 的 defaultValue / PRECISION_PRESETS 低中高 / TASK_TYPE_INCAR 类型覆盖 / buildDefaultParams / buildIncarText 分组空行 / parseCustomIncar）。
@@ -183,7 +183,10 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.6.7）
+## 7. 近期重要改动记录（v0.4.1 → v0.6.8）
+
+- v0.6.8（commit 见 `git log --oneline -1`）：**NEB 能垒看板视觉/动画重做**（新增 `NebBarrierPanel`，替换原「通用折线图 + antd 表格」拼版，样式复用 `.fe-*` 版式）。① 顶部四张统计卡：映像数量（端点 2 + 中间 N-2）、能垒 Ea（最高相对能 + 对应映像）、最大受力（含映像号）、末态相对能（判断反应是否回到初态）。② 能垒曲线：相对能垒直线连接（**不做插值**，如实反映各映像）、渐变面积、鞍点红色虚线 + Ea = +x.xxx eV 标注、端点/鞍点数据点区分大小与配色；悬停出竖线 + 放大点 + 信息卡（映像号 + 初态/末态/鞍点角色 + 相对能垒/绝对能量/最大受力）。③ 明细列表改为自绘行（映像 chip / 相对能垒 / 绝对能量 / 受力（最大受力行橙色）/ 角色徽标），悬停行与曲线联动高亮。④ 动画：曲线从左向右绘制（pathLength 归一化 + dashoffset）、数据点依次弹出、面积与鞍点标注随后淡入、列表行错峰上浮；`prefers-reduced-motion` 下全部关闭。⑤ 删除已无用的 `.neb-barrier-layout` 样式。
+
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
 

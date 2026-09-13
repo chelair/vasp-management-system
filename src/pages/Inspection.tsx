@@ -41,11 +41,11 @@ import {
 } from '../api/inspections';
 import type { InspectionMeta } from '../api/inspections';
 import { archiveTask, calculateCorrection, unarchiveTask } from '../api/jobs';
-import LineChart from '../components/inspection/LineChart';
 import ForceHistoryCharts from '../components/inspection/ForceHistoryCharts';
 import EleAnalysisPanel from '../components/inspection/EleAnalysisPanel';
 import PathSummaryModal from '../components/inspection/PathSummaryModal';
 import StructurePanel from '../components/inspection/StructurePanel';
+import NebBarrierPanel from '../components/inspection/NebBarrierPanel';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import StatusTag from '../components/common/StatusTag';
@@ -1152,53 +1152,7 @@ export default function Inspection() {
               detailData.neb_barrier.images.length > 0 && (
                 <div className="inspection-detail__section">
                   <h3>NEB 过渡态能垒</h3>
-                  <div className="neb-barrier-layout">
-                    <LineChart
-                      title="相对能垒（nebef.pl）"
-                      series={detailData.neb_barrier.images.map((x) => x.relative)}
-                      color="#7B61D6"
-                      unit="相对能量 (eV)"
-                      valueLabel="相对能垒"
-                      points={detailData.neb_barrier.images.map((x) => ({
-                        step: Number(x.label) + 1,
-                        energy: x.relative,
-                        max_force: null,
-                      }))}
-                    />
-                    <Table
-                      rowKey="label"
-                      size="small"
-                      pagination={false}
-                      dataSource={detailData.neb_barrier.images}
-                      style={{ minWidth: 300 }}
-                      columns={[
-                        {
-                          title: '映像',
-                          dataIndex: 'label',
-                          width: 60,
-                          render: (v) => Number(v) + 1,
-                        },
-                        {
-                          title: '能量 (eV)',
-                          dataIndex: 'energy',
-                          align: 'right',
-                          render: (v) => (v != null ? v.toFixed(4) : '—'),
-                        },
-                        {
-                          title: '受力 (eV/Å)',
-                          dataIndex: 'max_force',
-                          align: 'right',
-                          render: (v) => (v != null ? v.toFixed(4) : '—'),
-                        },
-                        {
-                          title: '相对能垒 (eV)',
-                          dataIndex: 'relative',
-                          align: 'right',
-                          render: (v) => (v != null ? v.toFixed(4) : '—'),
-                        },
-                      ]}
-                    />
-                  </div>
+                  <NebBarrierPanel images={detailData.neb_barrier.images} />
                 </div>
               )}
 

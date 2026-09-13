@@ -310,19 +310,6 @@ export default function NebImages3DViewer({ images }: Props) {
               <span className={`fe-badge${i === saddleIndex ? ' is-warn' : ''}`}>
                 {i === saddleIndex ? '鞍点' : ROLE_LABEL[img.role]}
               </span>
-              <span className="neb3d__metrics">
-                {img.relative != null && (
-                  <span className="fe-num fe-num--pos">
-                    ΔE {img.relative >= 0 ? '+' : ''}
-                    {img.relative.toFixed(3)}
-                  </span>
-                )}
-                {img.max_force != null && (
-                  <span className="fe-num">
-                    F {img.max_force.toFixed(3)}
-                  </span>
-                )}
-              </span>
             </div>
             <div
               className="neb3d__canvas"
@@ -330,6 +317,17 @@ export default function NebImages3DViewer({ images }: Props) {
                 containerRefs.current[i] = el;
               }}
             />
+            <div className="neb3d__foot">
+              {img.relative != null && (
+                <span className="fe-num fe-num--pos">
+                  ΔE {img.relative >= 0 ? '+' : ''}
+                  {img.relative.toFixed(3)}
+                </span>
+              )}
+              {img.max_force != null && (
+                <span className="fe-num">F {img.max_force.toFixed(3)}</span>
+              )}
+            </div>
           </div>
         ))}
       </div>

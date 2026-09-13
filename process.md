@@ -185,7 +185,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.6.11）
 
-- v0.6.11（commit 见 `git log --oneline -1`）：**NEB 映像 3D 视图初始放大倍率调高**。`NebImages3DViewer` 的原子尺寸默认值 0.35 → **0.5**，缩放滑杆范围放宽到 0.25–1.0（原先上限 0.85 偏紧）；`zoomTo()` 之后再调一次 `viewer.zoom(1.15)` 把相机拉近 15%（3Dmol 的 `zoom(k)` 即 k 倍，>1 为拉近）。实测 5 个映像面板的渲染面积整体增加约 15–17%，画布仍限制在各自面板内。
+- v0.6.11（commit `330708f`，已推送 origin/main）：**NEB 映像 3D 视图初始放大倍率调高**。`NebImages3DViewer` 的原子尺寸默认值 0.35 → **0.5**，缩放滑杆范围放宽到 0.25–1.0（原先上限 0.85 偏紧）；`zoomTo()` 之后再调一次 `viewer.zoom(1.15)` 把相机拉近 15%（3Dmol 的 `zoom(k)` 即 k 倍，>1 为拉近）。实测 5 个映像面板的渲染面积整体增加约 15–17%，画布仍限制在各自面板内。
 
 - v0.6.10（commit `7f41aa3`，已推送 origin/main）：**修复 v0.6.9 引入的两个前端缺陷**。① **部分 NEB 任务点开详情白屏**：v0.6.9 给 NEB 返回了专属 `analysis`（只有 `neb_images` / `steps` / `skipped`），但详情抽屉的渲染分支在"没有 `neb_images`"时会落到 `StructurePanel`，而后者会访问 `analysis.warnings.map()` / `analysis.files.poscar` → 未定义字段抛错 → React 整页白屏。修法：`Inspection.tsx` 里 NEB **单独分支**（有映像 → 映像视图；无映像 → 带说明的 Empty 占位，文案取 `analysis.skipped`），永不再落到 `StructurePanel`；同时给 `StructurePanel` 加 `(analysis.warnings ?? [])` 与 `analysis.files?.poscar` 兜底。② **左上角一块白色遮挡 / 3D 显示异常**：3Dmol 会在容器内插入**绝对定位**的 canvas，而新增的 `.neb3d__canvas` 没有定位上下文，画布相对页面定位跑到左上角形成白色遮挡。修法：`.neb3d__canvas` 加 `position: relative; overflow: hidden`（与 opt 的 `.s3d-canvas` 一致）。③ 顺带加固 `NebImages3DViewer`：`window.$3Dmol` 缺失时给降级提示而不是抛错、单个映像渲染失败只 `console.warn` 不影响其他映像、创建后补 `viewer.resize()`。
 

@@ -48,6 +48,7 @@ li { margin: 3px 0; }
 figure { margin: 12px 0 18px; page-break-inside: avoid; text-align: center; }
 figure svg { max-width: 100%; height: auto; }
 figcaption { font-size: 11.5px; color: #8A98AC; margin-top: 4px; }
+hr { border: none; border-top: 1px dashed #DCE3EC; margin: 22px 0; }
 img { max-width: 100%; }
 a { color: #3F68B8; text-decoration: none; }
 .footer { margin-top: 28px; padding-top: 10px; border-top: 1px dashed #E3E9F2;

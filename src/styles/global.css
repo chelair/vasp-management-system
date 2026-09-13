@@ -3128,6 +3128,13 @@ p {
   text-align: center;
 }
 
+/* 任务之间的分隔线（报告 Markdown 里的 ---）：浅虚线 + 上下留白 */
+.report-markdown hr {
+  border: none;
+  border-top: 1px dashed var(--color-border);
+  margin: 20px 0;
+}
+
 .report-figure img {
   max-width: 100%;
   border: 1px solid var(--color-border-soft);

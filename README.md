@@ -2,7 +2,7 @@
 
 基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
 
-当前版本（v0.7.3）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
+当前版本（v0.7.4）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
 **项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池、结构 3D 视图与分项目报告生成均已接入真实后端**
 （Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
 总览页已是集群实时视图（bjobs 作业、blimits 核数配额、bhosts/bqueues 节点队列、df 存储），
@@ -304,7 +304,7 @@ v0.6.0 按「状态 → 资源 → 趋势 → 明细」四层重构，数据全�
 - 「续算」确认操作（占位）
 - 续算（opt/NEB，真实创建 conN）、create-frac、创建 NEB 文件、ele 输入构建
 
-### 智能报告 Report（v0.7.3：看板与巡检详情同版式）
+### 智能报告 Report（v0.7.4：看板与巡检详情同版式）
 - **以单个项目为报告单位**，后端生成三份产物：结构化数据 `report.json`（schema 1.1.0，可直接喂大模型）
   + Markdown `report.md` + SVG 图表 `charts/*.svg`，按项目分目录存 `data/reports/`，索引 `data/reports/index.json`；
   **同项目重新生成直接覆盖旧报告**（报告 ID 稳定为 `rpt_<project_id>`，索引里只保留一条）

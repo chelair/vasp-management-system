@@ -614,28 +614,33 @@ def _sections_markdown(report, charts):
             f"下列展示其中 {len(opt_items)} 个，其余仅保留在报告数据中。每条包含结构三视图与能量/力曲线。"
             "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n"
         )
+        entries: List[str] = []
         for item in opt_items:
             converge = "✅ 已收敛" if item["converged"] else "⚠️ 未收敛"
-            blocks.append(
-                f"**{item['task_name']}** · {converge} · 最终能量 **{_fmt(item['final_energy_ev'])} eV** · "
-                f"最终最大力 **{_fmt(item['force_max_ev_per_a'])} eV/Å** · 离子步 {_fmt(item['ionic_steps'], 0)}\n"
-            )
+            lines = [
+                f"**{item['task_name']}** · {converge} · 最终能量 "
+                f"**{_fmt(item['final_energy_ev'])} eV** · "
+                f"最终最大力 **{_fmt(item['force_max_ev_per_a'])} eV/Å** · "
+                f"离子步 {_fmt(item['ionic_steps'], 0)}"
+            ]
             panel = item["charts"].get("panel") or item["charts"].get("energy_force")
             if panel:
-                blocks.append(
-                    f"![{item['task_name']} 结构三视图与能量/力曲线]({panel})\n"
-                )
-            blocks.append("\n")
+                lines.append(f"![{item['task_name']} 结构三视图与能量/力曲线]({panel})")
+            entries.append("\n\n".join(lines))
+        # 任务之间用分隔线隔开，避免上下两个任务的面板图糊成一片
+        blocks.append("\n\n---\n\n".join(entries) + "\n")
     paths = science.get("free_energy") or []
     if paths:
         blocks.append("### 自由能路径\n")
+        entries = []
         for path in paths:
+            lines = []
             if path.get("chart"):
-                blocks.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})\n")
+                lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
             structures = path["structures"]
             with_energy = [s for s in structures if s.get("free_energy_ev") is not None]
             ref = float(with_energy[0]["free_energy_ev"]) if with_energy else None
-            blocks.append(
+            lines.append(
                 _md_table(
                     ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
                     [
@@ -656,13 +661,16 @@ def _sections_markdown(report, charts):
                     ],
                 )
             )
-            blocks.append("\n")
+            entries.append("\n\n".join(lines))
+        blocks.append("\n\n---\n\n".join(entries) + "\n")
     nebs = science.get("neb") or []
     if nebs:
         blocks.append("### NEB 过渡态\n")
+        entries = []
         for item in nebs:
+            lines = []
             if item.get("chart"):
-                blocks.append(f"![{item['task_name']} NEB 能垒看板]({item['chart']})\n")
+                lines.append(f"![{item['task_name']} NEB 能垒看板]({item['chart']})")
             images = item.get("images") or []
             if images:
                 saddle_label = item.get("transition_state_image")
@@ -683,7 +691,7 @@ def _sections_markdown(report, charts):
                         roles.append("鞍点")
                     else:
                         roles.append("中间态")
-                blocks.append(
+                lines.append(
                     _md_table(
                         ["映像", "相对能垒 (eV)", "绝对能量 (eV)", "最大受力 (eV/Å)", "角色"],
                         [
@@ -700,10 +708,9 @@ def _sections_markdown(report, charts):
                     )
                 )
             if item.get("matrix_chart"):
-                blocks.append(
-                    f"![{item['task_name']} 映像结构对比]({item['matrix_chart']})\n"
-                )
-            blocks.append("\n")
+                lines.append(f"![{item['task_name']} 映像结构对比]({item['matrix_chart']})")
+            entries.append("\n\n".join(lines))
+        blocks.append("\n\n---\n\n".join(entries) + "\n")
     if not blocks:
         blocks.append("_本项目暂无可展示的科学结果（需任务产出 OUTCAR/CONTCAR 后自动生成）_\n")
     else:

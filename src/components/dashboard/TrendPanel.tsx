@@ -58,7 +58,8 @@ export default function TrendPanel({ trend, loading }: Props) {
         {
           name: '核数占用',
           type: 'line',
-          smooth: true,
+          // 折线（直线段连接各采样点），不做平滑：两点/三点时更贴近真实采样值
+          smooth: false,
           symbolSize: 7,
           connectNulls: false,
           yAxisIndex: 0,
@@ -82,7 +83,7 @@ export default function TrendPanel({ trend, loading }: Props) {
         {
           name: '运行中任务',
           type: 'line',
-          smooth: true,
+          smooth: false,
           symbolSize: 6,
           connectNulls: false,
           yAxisIndex: 1,

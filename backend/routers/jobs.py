@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,6 +42,20 @@ from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remo
 import ssh
 from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
 from task_paths import free_energy_frac_task, is_continuation_task, task_dir
+from input_state import (
+    build_snapshot,
+    has_pending,
+    merge_snapshot,
+    parse_incar_text,
+    parse_kpoints_mesh,
+    poscar_meta,
+    read_snapshot_cif,
+    read_snapshot_text,
+    revert_draft,
+    set_incar_draft,
+    set_kpoints_draft,
+)
+from cif_convert import read_or_convert_cif
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -742,6 +758,8 @@ def submit_task(task_id: str):
         _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")
 
     _audit_log(project["name"], task_id, remote_dir, command, f"OK job={new_job_id}")
+    # 提交成功后后台同步一次输入参数（远端 conN 的 INCAR/KPOINTS/POSCAR/CONTCAR）
+    _schedule_input_sync(str(project.get("name") or ""), task_id)
     return ok(
         f"作业 {new_job_id} 已提交到队列",
         {
@@ -968,6 +986,210 @@ def stop_task(task_id: str):
             "already_finished": already_finished,
         },
     )
+
+
+# ------------------------------------------------------------ 输入文件（v0.8.2）
+# 三层职责：远端 conN（运行真相）→ 本地快照 inputs/（同步副本）→ 草稿（下次续算生效）
+# 方案与口径见 process.md §6.11；同步成本 = 1 次 exec + 4 次 SFTP 小文件。
+
+
+def _find_task_in_db(db: Dict[str, Any], task_id: str) -> Dict[str, Any] | None:
+    for project in db.get("projects", []):
+        for task in project.get("tasks", []):
+            if task.get("task_id") == task_id:
+                return task
+    return None
+
+
+def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    """组装输入文件面板所需的全部数据：快照 + 草稿 + 变更台账 + 3D 用 CIF。"""
+    state = dict(task.get("input_state") or {})
+    files_meta = dict(state.get("files") or {})
+    files: Dict[str, Any] = {}
+    for name in ("INCAR", "KPOINTS", "POSCAR", "CONTCAR"):
+        text = read_snapshot_text(task, name)
+        if text is None:
+            continue
+        files[name] = {**files_meta.get(name, {}), "text": text, "local": False}
+
+    # 尚未同步过：退回本地 files/ 的文件（至少能看到当前草稿内容）
+    try:
+        local_files = _files_dir(_resolve_task_dir(str(task.get("task_id") or "")))
+    except Exception:  # noqa: BLE001 - 本地目录缺失不影响接口
+        local_files = None
+    if local_files is not None:
+        for name in ("INCAR", "KPOINTS", "POSCAR"):
+            path = local_files / name
+            if name in files or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            meta: Dict[str, Any] = {"local": True, "size": len(text)}
+            if name == "INCAR":
+                meta["params"] = parse_incar_text(text)
+            elif name == "KPOINTS":
+                mesh, note = parse_kpoints_mesh(text)
+                meta.update({"mesh": mesh, "mesh_note": note})
+            else:
+                meta.update(poscar_meta(text))
+            files[name] = {**meta, "text": text}
+
+    poscar_cif = read_snapshot_cif(task, "POSCAR")
+    if poscar_cif is None:
+        try:
+            poscar_cif = read_or_convert_cif(project, task, "POSCAR")
+        except Exception:  # noqa: BLE001 - 转换失败不阻塞面板
+            poscar_cif = None
+    contcar_cif = read_snapshot_cif(task, "CONTCAR")
+
+    return {
+        "task_id": str(task.get("task_id") or ""),
+        "source": state.get("source"),
+        "synced": bool(state.get("source")),
+        "files": files,
+        "draft": state.get("draft") or {},
+        "changes": state.get("changes") or [],
+        "last_applied": state.get("last_applied"),
+        "pending": has_pending(state),
+        "poscar_cif": poscar_cif,
+        "contcar_cif": contcar_cif,
+    }
+
+
+def _sync_input_now(project: Dict[str, Any], task: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    """同步一次远端输入并落库，返回更新后的 payload。"""
+    snapshot = build_snapshot(
+        str(project.get("server") or ""),
+        {**task, "project_name": project.get("name")},
+        kind=kind,
+    )
+    updated: Dict[str, Any] = {}
+    with db_transaction() as db:
+        current = _find_task_in_db(db, str(task.get("task_id") or ""))
+        if current is None:
+            raise LookupError(f"任务 {task.get('task_id')} 不存在")
+        current["input_state"] = merge_snapshot(current, snapshot)
+        updated = dict(current)
+    return _input_payload(project, updated)
+
+
+def _schedule_input_sync(project_name: str, task_id: str, delay: float = 2.0) -> None:
+    """提交作业成功后后台同步一次输入参数（不阻塞接口返回）。"""
+
+    def worker() -> None:
+        time.sleep(delay)
+        try:
+            db = load_db()
+            project = next(
+                (p for p in db.get("projects", []) if p.get("name") == project_name), None
+            )
+            task = next(
+                (
+                    t
+                    for t in (project or {}).get("tasks", [])
+                    if t.get("task_id") == task_id
+                ),
+                None,
+            )
+            if project is None or task is None:
+                return
+            payload = _sync_input_now(project, task, "submit")
+            _audit_log(
+                project_name,
+                task_id,
+                str(((payload.get("source") or {}).get("remote_dir")) or ""),
+                "input-sync",
+                f"OK kind=submit job={task.get('job_id')}",
+            )
+        except Exception as e:  # noqa: BLE001 - 后台同步失败只记审计
+            _audit_log(project_name, task_id, "", "input-sync", f"FAILED: {e}")
+
+    threading.Thread(target=worker, daemon=True, name=f"input-sync-{task_id}").start()
+
+
+@router.get("/tasks/{task_id}/input")
+def read_task_input(task_id: str):
+    """输入文件面板数据：远端快照（含参数）+ 草稿 + 变更台账 + 3D 用 CIF。"""
+    try:
+        project, task = _resolve_task(task_id)
+        return ok("查询成功", _input_payload(project, task))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"读取输入文件状态失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/input/sync")
+def sync_task_input(task_id: str, payload: dict = Body(default={})):
+    """同步远端最新计算目录的输入文件（1 次 exec + 4 次 SFTP 小文件下载）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        kind = str((payload or {}).get("kind") or "manual")
+        return ok("已同步远端最新参数", _sync_input_now(project, task, kind))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except (ValueError, RuntimeError) as e:
+        return JSONResponse(status_code=400, content=fail(f"同步失败：{e}"))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"同步输入文件失败：{e}"))
+
+
+@router.put("/tasks/{task_id}/input/draft")
+def update_task_input_draft(task_id: str, payload: dict = Body(default={})):
+    """写入参数草稿（不碰远端）：INCAR 按参数合并，KPOINTS 只改 k 网格。"""
+    try:
+        project, task = _resolve_task(task_id)
+        file_name = str((payload or {}).get("file") or "").upper()
+        if file_name not in ("INCAR", "KPOINTS"):
+            return JSONResponse(
+                status_code=400, content=fail("仅支持 file=INCAR / KPOINTS 的草稿")
+            )
+        updated: Dict[str, Any] = {}
+        with db_transaction() as db:
+            current = _find_task_in_db(db, task_id)
+            if current is None:
+                return JSONResponse(status_code=404, content=fail("任务不存在"))
+            state = dict(current.get("input_state") or {})
+            if file_name == "INCAR":
+                state = set_incar_draft(state, (payload or {}).get("params") or {})
+            else:
+                state = set_kpoints_draft(state, (payload or {}).get("mesh") or [])
+            current["input_state"] = state
+            updated = dict(current)
+        data = _input_payload(project, updated)
+        count = len([c for c in data["changes"] if not c.get("applied_at")])
+        return ok(
+            f"已记录参数修改（共 {count} 项待生效，将在下次续算时应用）", data
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"保存参数草稿失败：{e}"))
+
+
+@router.delete("/tasks/{task_id}/input/draft/{file_name}")
+def revert_task_input_draft(task_id: str, file_name: str):
+    """撤销某个文件的参数草稿。"""
+    try:
+        project, task = _resolve_task(task_id)
+        target = file_name.upper()
+        if target not in ("INCAR", "KPOINTS"):
+            return JSONResponse(status_code=400, content=fail("仅支持撤销 INCAR / KPOINTS"))
+        updated: Dict[str, Any] = {}
+        with db_transaction() as db:
+            current = _find_task_in_db(db, task_id)
+            if current is None:
+                return JSONResponse(status_code=404, content=fail("任务不存在"))
+            state = dict(current.get("input_state") or {})
+            current["input_state"] = revert_draft(state, target)
+            updated = dict(current)
+        return ok(f"已撤销 {target} 的参数修改", _input_payload(project, updated))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"撤销参数修改失败：{e}"))
 
 
 @router.post("/tasks/{task_id}/upload-incar")

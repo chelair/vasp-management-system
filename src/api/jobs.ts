@@ -238,6 +238,96 @@ export async function uploadKpoints(
   });
 }
 
+/* ============================================================
+   输入文件状态（v0.8.2）：远端快照 / 草稿 / 变更台账
+   ============================================================ */
+
+export interface TaskInputFileMeta {
+  hash?: string | null;
+  size?: number;
+  /** INCAR：解析出的参数 */
+  params?: Record<string, string>;
+  /** KPOINTS：k 网格与模式说明 */
+  mesh?: number[] | null;
+  mesh_note?: string;
+  /** POSCAR/CONTCAR：结构摘要 */
+  elements?: string[];
+  counts?: number[];
+  n_atoms?: number;
+  lengths?: { a: number; b: number; c: number };
+  /** 该文件来自本地 files/（尚未同步过远端） */
+  local?: boolean;
+}
+
+export interface TaskInputChange {
+  file: 'INCAR' | 'KPOINTS';
+  key: string;
+  from: string;
+  to: string;
+  at: string;
+  applied_at?: string | null;
+  applied_in?: string | null;
+}
+
+export interface TaskInputSource {
+  remote_dir?: string;
+  con?: string;
+  job_id?: string | null;
+  synced_at?: string;
+  kind?: string;
+}
+
+export interface TaskInputState {
+  task_id: string;
+  source: TaskInputSource | null;
+  synced: boolean;
+  files: Record<string, TaskInputFileMeta & { text: string }>;
+  draft: {
+    INCAR?: Record<string, string>;
+    KPOINTS?: { mesh: number[] };
+  };
+  changes: TaskInputChange[];
+  last_applied?: { con: string; at: string; items: TaskInputChange[] } | null;
+  pending: boolean;
+  poscar_cif: string | null;
+  contcar_cif: string | null;
+}
+
+/** 读取任务的输入文件状态（快照 + 草稿 + 变更台账） */
+export function fetchTaskInput(taskId: string): Promise<TaskInputState> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/input`);
+}
+
+/** 同步远端最新计算目录的输入文件（1 次 exec + 4 次小文件下载） */
+export function syncTaskInput(taskId: string, kind = 'manual'): Promise<TaskInputState> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/input/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind }),
+  });
+}
+
+/** 保存参数草稿（INCAR 参数 / KPOINTS 网格），下次续算时应用 */
+export function saveTaskInputDraft(
+  taskId: string,
+  payload:
+    | { file: 'INCAR'; params: Record<string, string> }
+    | { file: 'KPOINTS'; mesh: number[] },
+): Promise<TaskInputState> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/input/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 撤销某个文件的参数草稿 */
+export function revertTaskInputDraft(taskId: string, file: 'INCAR' | 'KPOINTS'): Promise<TaskInputState> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/input/draft/${file}`, {
+    method: 'DELETE',
+  });
+}
+
 /** PDOS 分析：远端 vaspkit 111/113/115 生成文件并回传本地 */
 export async function analyzePdos(
   taskId: string,

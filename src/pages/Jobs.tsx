@@ -25,8 +25,12 @@ import {
   createFracFiles,
   archiveTask,
   unarchiveTask,
+  fetchTaskInput,
+  revertTaskInputDraft,
+  saveTaskInputDraft,
+  syncTaskInput,
 } from '../api/jobs';
-import type { TaskFileEntry } from '../api/jobs';
+import type { TaskFileEntry, TaskInputState } from '../api/jobs';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import JobsTree from '../components/jobs/JobsTree';
@@ -41,6 +45,7 @@ import ContinuationModal from '../components/jobs/ContinuationModal';
 import EleInputModal from '../components/jobs/EleInputModal';
 import NebFilesModal from '../components/jobs/NebFilesModal';
 import GroupWizardModal from '../components/jobs/GroupWizardModal';
+import InputSourceBanner from '../components/jobs/InputSourceBanner';
 import StructureDetail from '../components/jobs/StructureDetail';
 import NebGroupDetail from '../components/jobs/NebGroupDetail';
 import AddProjectModal from '../components/projects/AddProjectModal';
@@ -113,6 +118,9 @@ export default function Jobs() {
   const [workspaces, setWorkspaces] = useState<Record<string, JobWorkspace>>({});
   const [taskFileList, setTaskFileList] = useState<Record<string, TaskFileEntry[]>>({});
   const [loadedDisk, setLoadedDisk] = useState<Record<string, boolean>>({});
+  /** 输入文件状态（远端快照 + 草稿 + 变更台账），按任务缓存 */
+  const [inputStates, setInputStates] = useState<Record<string, TaskInputState>>({});
+  const [inputSyncing, setInputSyncing] = useState<string | null>(null);
   const [clusterSnapshot, setClusterSnapshot] = useState<ClusterSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [submittingTaskId, setSubmittingTaskId] = useState<string | null>(null);
@@ -308,6 +316,10 @@ export default function Jobs() {
   useEffect(() => {
     for (const task of focusTasks) {
       const taskId = task.task_id;
+      // 输入文件状态（远端快照/草稿/台账）：只读本地缓存，不主动 SSH
+      if (!inputStates[taskId]) {
+        void loadInputState(task);
+      }
       if (loadedDisk[taskId]) continue;
       const names = new Set((taskFileList[taskId] ?? []).map((f) => f.name));
       if (!names.has('POSCAR') && !names.has('INCAR') && !names.has('KPOINTS')) continue;
@@ -356,6 +368,105 @@ export default function Jobs() {
       ...prev,
       [taskId]: { ...(prev[taskId] ?? makeWorkspace(defaultTaskFor(taskId))), ...patch },
     }));
+  };
+
+  /** 更新本地文件清单 + 文件就绪标志 */
+  /** 用输入文件状态（远端快照）回填编辑器：参数 = 默认值 + 本次计算实际参数 */
+  const applyInputState = useCallback((task: Task, state: TaskInputState) => {
+    setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
+    const snapshotParams = state.files?.INCAR?.params ?? {};
+    const kpointsText = state.files?.KPOINTS?.text ?? null;
+    const poscarText = state.files?.POSCAR?.text ?? null;
+    setWorkspaces((prev) => {
+      const base = prev[task.task_id] ?? makeWorkspace(task);
+      const hasSnapshotParams = !!state.files?.INCAR?.params;
+      return {
+        ...prev,
+        [task.task_id]: {
+          ...base,
+          snapshotParams,
+          // 有远端快照时**只显示本次计算真正用到的参数**（缺省值不掺进来，
+          // 否则会把"远端没写、编辑器有默认值"的参数误判成已修改）
+          incarParams: hasSnapshotParams
+            ? { ...snapshotParams }
+            : { ...buildDefaultParams(task.task_type as TaskType) },
+          kpointsContent: kpointsText ?? base.kpointsContent,
+          poscarContent: poscarText ?? base.poscarContent,
+          precision: 'custom',
+        },
+      };
+    });
+  }, []);
+
+  /** 拉取输入文件状态（首次选中任务时；不主动 SSH，只读本地已同步的快照） */
+  const loadInputState = useCallback(
+    async (task: Task, force = false) => {
+      if (!force && inputStates[task.task_id]) return inputStates[task.task_id];
+      try {
+        const state = await fetchTaskInput(task.task_id);
+        applyInputState(task, state);
+        return state;
+      } catch {
+        return null;
+      }
+    },
+    [applyInputState, inputStates],
+  );
+
+  /** 同步远端最新计算目录的参数（1 次 exec + 4 次小文件下载） */
+  const handleSyncInput = async (task: Task) => {
+    setInputSyncing(task.task_id);
+    try {
+      const state = await syncTaskInput(task.task_id);
+      applyInputState(task, state);
+      message.success(
+        `已同步 ${state.source?.con || '主目录'} 的输入参数（INCAR/KPOINTS/POSCAR/CONTCAR）`,
+      );
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '同步输入参数失败');
+    } finally {
+      setInputSyncing(null);
+    }
+  };
+
+  /** 确认参数修改：把与快照不同的参数写进草稿（下次续算生效） */
+  const handleConfirmParams = async (task: Task, params: Record<string, string>) => {
+    if (!inputStates[task.task_id]) {
+      message.warning('尚未同步本次计算参数，先点「同步最新参数」再改参数');
+      return;
+    }
+    try {
+      const state = await saveTaskInputDraft(task.task_id, { file: 'INCAR', params });
+      setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
+      const count = state.changes.filter((c) => !c.applied_at).length;
+      message.success(
+        count > 0
+          ? `已记录 ${count} 项参数修改，将在下次续算时写入新目录`
+          : '参数与本次计算一致，无需修改',
+      );
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '保存参数修改失败');
+    }
+  };
+
+  /** 取消编辑：回到本次计算的参数值 */
+  const handleResetParams = (task: Task) => {
+    const snapshotParams = inputStates[task.task_id]?.files?.INCAR?.params ?? {};
+    patchWorkspace(task.task_id, {
+      incarParams: { ...buildDefaultParams(task.task_type as TaskType), ...snapshotParams },
+    });
+  };
+
+  /** 撤销某个文件的待生效修改 */
+  const handleRevertDraft = async (task: Task, file: 'INCAR' | 'KPOINTS') => {
+    try {
+      const state = await revertTaskInputDraft(task.task_id, file);
+      setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
+      if (file === 'INCAR') handleResetParams(task);
+      message.success(`已撤销 ${file} 的参数修改`);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '撤销失败');
+    }
   };
 
   /** 更新本地文件清单 + 文件就绪标志 */
@@ -847,42 +958,89 @@ export default function Jobs() {
             key: 'poscar',
             label: 'POSCAR',
             children: (
-              <PoscarPanel
-                poscarContent={ws.poscarContent}
-                poscarPath={ws.poscarPath}
-                copyTargets={copyTargets}
-                onImport={(c) => handleImportPoscar(c, task)}
-                onCopyFromTask={(sid) => handleCopyPoscar(sid, task)}
-              />
+              <div className="job-panel">
+                <InputSourceBanner
+                  input={inputStates[task.task_id] ?? null}
+                  syncing={inputSyncing === task.task_id}
+                  onSync={() => void handleSyncInput(task)}
+                  onRevert={(file) => void handleRevertDraft(task, file)}
+                />
+                <PoscarPanel
+                  key={task.task_id}
+                  poscarContent={ws.poscarContent}
+                  poscarPath={ws.poscarPath}
+                  copyTargets={copyTargets}
+                  input={inputStates[task.task_id] ?? null}
+                  onImport={(c) => handleImportPoscar(c, task)}
+                  onCopyFromTask={(sid) => handleCopyPoscar(sid, task)}
+                />
+              </div>
             ),
           },
           {
             key: 'incar',
             label: 'INCAR',
             children: (
-              <IncarEditor
-                task={task}
-                workspace={ws}
-                presets={presets}
-                onParamsChange={(p, prec) => handleParamsChange(p, prec, task)}
-                onApplyPreset={(pr) => handleApplyPreset(pr, task)}
-                onSavePreset={(n) => handleSavePreset(n, task)}
-                onDeletePreset={handleDeletePreset}
-                onCopyToOthers={() => setCopyParamsOpen(true)}
-              />
+              <div className="job-panel">
+                <InputSourceBanner
+                  input={inputStates[task.task_id] ?? null}
+                  syncing={inputSyncing === task.task_id}
+                  onSync={() => void handleSyncInput(task)}
+                  onRevert={(file) => void handleRevertDraft(task, file)}
+                />
+                <IncarEditor
+                  key={task.task_id}
+                  task={task}
+                  workspace={ws}
+                  presets={presets}
+                  onParamsChange={(p, prec) => handleParamsChange(p, prec, task)}
+                  onApplyPreset={(pr) => handleApplyPreset(pr, task)}
+                  onSavePreset={(n) => handleSavePreset(n, task)}
+                  onDeletePreset={handleDeletePreset}
+                  onCopyToOthers={() => setCopyParamsOpen(true)}
+                  snapshotParams={ws.snapshotParams ?? {}}
+                  pendingKeys={Object.keys(inputStates[task.task_id]?.draft?.INCAR ?? {})}
+                  onConfirmParams={(p) => void handleConfirmParams(task, p)}
+                  onResetToSnapshot={() => handleResetParams(task)}
+                />
+              </div>
             ),
           },
           {
             key: 'kpoints',
             label: 'KPOINTS',
             children: (
-              <KpointsPanel
-                taskId={task.task_id}
-                taskName={task.model_name}
-                poscarContent={ws.poscarContent}
-                kpointsContent={ws.kpointsContent}
-                onGenerate={(c) => handleGenerateKpoints(c, task)}
-              />
+              <div className="job-panel">
+                <InputSourceBanner
+                  input={inputStates[task.task_id] ?? null}
+                  syncing={inputSyncing === task.task_id}
+                  onSync={() => void handleSyncInput(task)}
+                  onRevert={(file) => void handleRevertDraft(task, file)}
+                />
+                <KpointsPanel
+                  key={task.task_id}
+                  taskId={task.task_id}
+                  taskName={task.model_name}
+                  poscarContent={ws.poscarContent}
+                  kpointsContent={ws.kpointsContent}
+                  input={inputStates[task.task_id] ?? null}
+                  onGenerate={(c) => handleGenerateKpoints(c, task)}
+                  onConfirmMesh={async (mesh) => {
+                    try {
+                      const state = await saveTaskInputDraft(task.task_id, {
+                        file: 'KPOINTS',
+                        mesh,
+                      });
+                      setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
+                      message.success(
+                        `k 网格已记为待生效修改（${mesh.join(' × ')}），将在下次续算时应用`,
+                      );
+                    } catch (err) {
+                      message.error(err instanceof Error ? err.message : '保存 k 网格修改失败');
+                    }
+                  }}
+                />
+              </div>
             ),
           },
           {

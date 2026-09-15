@@ -1195,6 +1195,219 @@ p {
   align-items: start;
 }
 
+/* ---------- 输入文件参数：只读闸门 / 已修改高亮（v0.8.2） ---------- */
+
+.job-incar-field.is-changed .job-incar-field__control :deep(.ant-input),
+.job-incar-field.is-changed .ant-input,
+.job-incar-field.is-changed .ant-select-selector,
+.job-incar-field.is-changed .ant-input-number {
+  border-color: #e8a33d;
+  background: #fffaf2;
+}
+
+.job-incar-field.is-pending .ant-input,
+.job-incar-field.is-pending .ant-select-selector,
+.job-incar-field.is-pending .ant-input-number,
+.job-incar-extra__row.is-pending .ant-input {
+  border-color: #e8a33d;
+  background: #fff6e6;
+  font-weight: 600;
+}
+
+.job-incar-field__badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #fef3e0;
+  color: #b8761f;
+  font-size: 10.5px;
+  line-height: 16px;
+  font-family: var(--font-sans, inherit);
+}
+
+.job-incar-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.job-incar-extra__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-incar-extra__key {
+  max-width: 180px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.job-incar-extra__eq {
+  color: var(--color-text-muted);
+}
+
+/* 输入文件来源横幅 */
+.input-source {
+  margin-bottom: 14px;
+}
+
+.input-source__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.input-source__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.input-source__pending {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border-soft);
+}
+
+.input-source__pending-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #b8761f;
+  margin-bottom: 6px;
+}
+
+.input-source__change {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12.5px;
+}
+
+.input-source__change-key {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  min-width: 92px;
+}
+
+.input-source__change-val {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+.input-source__change-val--new {
+  color: #b8761f;
+  font-weight: 600;
+}
+
+.input-source__change-arrow {
+  color: var(--color-text-muted);
+}
+
+.input-source__applied {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* 结构 3D 编辑视图（POSCAR 页） */
+.s3d-editor__switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.s3d-editor__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 14px;
+  align-items: start;
+}
+
+.s3d-editor__main {
+  min-width: 0;
+}
+
+.s3d-editor__side {
+  min-width: 0;
+}
+
+.s3d-editor__data .ant-card-body {
+  padding: 10px 12px;
+}
+
+.s3d-editor__atoms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.s3d-editor {
+  position: relative;
+}
+
+.s3d-editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 10px 10px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.s3d-editor__label {
+  color: var(--color-text-muted);
+}
+
+.s3d-editor__stage {
+  position: relative;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f7f9fc;
+}
+
+.s3d-editor__canvas {
+  width: 100%;
+  position: relative;
+}
+
+.s3d-editor__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@media (max-width: 1100px) {
+  .s3d-editor__layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.job-kpoints-density {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.job-kpoints-field .ant-input-number.is-pending,
+.job-kpoints-field .is-pending {
+  border-color: #e8a33d;
+  background: #fff6e6;
+}
+
 .job-incar-field__label {
   font-size: 12.5px;
   color: var(--color-text-secondary);

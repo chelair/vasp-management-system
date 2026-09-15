@@ -22,6 +22,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import ssh
 from config import PROJECTS_DIR, load_servers
 from incar import modify_incar
+from input_state import (
+    applied_items,
+    audit_comment,
+    mark_applied,
+    pending_incar_params,
+    pending_kpoints_mesh,
+    set_kpoints_mesh,
+)
 from paths import resolve_local_path, to_local_rel, to_remote_rel
 from task_paths import task_remote_dir
 
@@ -346,8 +354,12 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
             if ln.strip().isdigit()
         ]
         warnings = [] if images else ["未发现映像子目录（00..NN），仅复制共享文件"]
-        updated, incar_warnings = modify_incar(incar_text, {"ISTART": 1, "ICHARG": 0})
+        updated, draft_warnings, applied = _apply_drafts_to_new_dir(
+            server, task, new_dir, con, incar_text
+        )
         _write_remote_file(server, f"{new_dir}/INCAR", updated)
+        if applied:
+            task["input_state"] = mark_applied(task.get("input_state") or {}, con)
         return {
             "task_type": "neb",
             "con": con,
@@ -357,7 +369,8 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
             "incar_changes": {"ISTART": "1", "ICHARG": "0"},
             "copied_files": copied,
             "images": images,
-            "warnings": warnings + incar_warnings,
+            "warnings": warnings + draft_warnings,
+            "applied_changes": applied,
             "action": "created",
             "current_dir": source_dir,
             "message": f"已创建续算目录 {con}",
@@ -412,8 +425,12 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
     new_dir = f"{remote_dir}/{con}"
     incar_text = _script_slice(out, "===STATE_END===", "===FILES===")
     copied = [ln for ln in _script_tail(out, "===FILES===").splitlines() if ln.strip()]
-    updated, incar_warnings = modify_incar(incar_text, {"ISTART": 1, "ICHARG": 0})
+    updated, draft_warnings, applied = _apply_drafts_to_new_dir(
+        server, task, new_dir, con, incar_text
+    )
     _write_remote_file(server, f"{new_dir}/INCAR", updated)
+    if applied:
+        task["input_state"] = mark_applied(task.get("input_state") or {}, con)
     return {
         "task_type": task_type,
         "con": con,
@@ -422,7 +439,8 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
         "latest_dir": latest or None,
         "incar_changes": {"ISTART": "1", "ICHARG": "0"},
         "copied_files": copied,
-        "warnings": incar_warnings,
+        "warnings": draft_warnings,
+        "applied_changes": applied,
         "action": "created",
         "current_dir": current_dir,
         "message": f"已创建续算目录 {con}",
@@ -449,6 +467,52 @@ def _source_files_cmds(src: str, dst: str) -> List[str]:
 def _merge_incar(incar_text: str, params: Dict[str, Any]) -> Tuple[str, List[str]]:
     """统一 INCAR 修改（大小写/空格/布尔兼容、重复合并、缺失追加）。"""
     return modify_incar(incar_text, params)
+
+
+def _apply_drafts_to_new_dir(
+    server: str,
+    task: Dict[str, Any],
+    new_dir: str,
+    con: str,
+    incar_text: str,
+) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    """把用户在系统里改的参数（input_state.draft）应用到续算目录。
+
+    - INCAR：草稿参数随后一起交给 `modify_incar`（续算必需的 ISTART=1/ICHARG=0 优先，
+      若用户也改了这两项则给出警告）；
+    - KPOINTS：只改 k 网格行（整体重写该文件，先取回再写回）；
+    - POSCAR：**不应用**（续算 POSCAR 来自 CONTCAR，用户改动只在台账里留痕）；
+    - 应用后在 INCAR 顶部写入审计注释，并返回应用记录供上层标记台账。
+    """
+    state = task.get("input_state") or {}
+    draft_incar = pending_incar_params(state)
+    mesh = pending_kpoints_mesh(state)
+    applied = applied_items(state)
+    warnings: List[str] = []
+    if not applied:
+        return incar_text, warnings, []
+
+    changes: Dict[str, Any] = {"ISTART": 1, "ICHARG": 0}
+    for key, value in draft_incar.items():
+        if key in changes and str(value) != str(changes[key]):
+            warnings.append(
+                f"续算需要 {key}={changes[key]}，已按续算要求覆盖你在系统里改的 {key}={value}"
+            )
+            continue
+        changes[key] = value
+    new_text, incar_warnings = modify_incar(incar_text, changes)
+    warnings.extend(incar_warnings)
+    comment = audit_comment(applied)
+    if comment and not new_text.lstrip().startswith(comment):
+        new_text = comment + "\n" + new_text
+
+    if mesh:
+        kpoints_text = _download_remote_text(server, f"{new_dir}/KPOINTS")
+        if kpoints_text:
+            _write_remote_file(server, f"{new_dir}/KPOINTS", set_kpoints_mesh(kpoints_text, mesh))
+        else:
+            warnings.append("KPOINTS 未取回，k 网格修改未应用")
+    return new_text, warnings, applied
 
 
 def _merge_ele_params(ele_types: List[str]) -> Tuple[Dict[str, Any], List[str]]:

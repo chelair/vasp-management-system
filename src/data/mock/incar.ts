@@ -287,6 +287,22 @@ export function buildDefaultParams(taskType: TaskType): Record<string, string> {
   return params;
 }
 
+/** 表单预设参数的键集合（用于把"其他参数"分出来） */
+export const PRESET_INCAR_KEYS: Set<string> = new Set(
+  INCAR_CATEGORIES.flatMap((cat) => cat.params.map((def) => def.key)),
+);
+
+/** 不在预设表单里的参数（"其他参数"区显示：来自本次计算的 INCAR 快照） */
+export function extraIncarParams(params: Record<string, string>): Record<string, string> {
+  const extra: Record<string, string> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (!PRESET_INCAR_KEYS.has(key) && String(value ?? '').trim() !== '') {
+      extra[key] = String(value);
+    }
+  }
+  return extra;
+}
+
 function formatRows(rows: { key: string; value: string }[]): string {
   const width = Math.max(...rows.map((r) => r.key.length));
   return rows.map((r) => `${r.key.padEnd(width + 2)}= ${r.value}`).join('\n');
@@ -323,10 +339,12 @@ export function buildIncarText(
   customText = '',
 ): string {
   const blocks: string[] = [];
+  const used = new Set<string>();
   for (const cat of categories) {
     const rows: { key: string; value: string }[] = [];
     for (const def of cat.params) {
       const raw = params[def.key];
+      used.add(def.key);
       if (raw == null || String(raw).trim() === '') continue;
       rows.push({ key: def.key, value: formatIncarValue(def, raw) });
     }
@@ -335,6 +353,13 @@ export function buildIncarText(
   const customRows = Object.entries(parseCustomIncar(customText)).map(
     ([key, value]) => ({ key, value }),
   );
+  // 不在预设表单里的参数（如从远端同步回来的其他参数）也要写进 INCAR
+  for (const [key, value] of Object.entries(params)) {
+    if (used.has(key)) continue;
+    if (value == null || String(value).trim() === '') continue;
+    if (customRows.some((row) => row.key.toUpperCase() === key.toUpperCase())) continue;
+    customRows.push({ key, value: String(value).trim() });
+  }
   if (customRows.length > 0) blocks.push(formatRows(customRows));
   return blocks.join('\n\n');
 }

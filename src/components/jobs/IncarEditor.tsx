@@ -15,10 +15,14 @@ import {
 } from 'antd';
 import {
   BookOutlined,
+  CheckOutlined,
+  CloseOutlined,
   CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
   EyeOutlined,
+  PlusOutlined,
   SaveOutlined,
   SendOutlined,
   UploadOutlined,
@@ -36,7 +40,7 @@ import {
   INCAR_CATEGORIES,
   PRECISION_PRESETS,
   buildIncarText,
-  parseCustomIncar,
+  extraIncarParams,
 } from '../../data/mock/incar';
 import { saveTaskFile, uploadIncar } from '../../api/jobs';
 import SciInput from './SciInput';
@@ -50,6 +54,14 @@ interface Props {
   onSavePreset: (name: string) => void;
   onDeletePreset: (id: string) => void;
   onCopyToOthers: () => void;
+  /** 本次计算（远端同步）到的参数，用于"已修改"对比与取消回滚 */
+  snapshotParams: Record<string, string>;
+  /** 已提交但未生效（下一次续算应用）的参数键 */
+  pendingKeys: string[];
+  /** 确认修改：把与快照不同的参数写入草稿（下次续算生效） */
+  onConfirmParams: (params: Record<string, string>) => void;
+  /** 取消修改：回到快照值 */
+  onResetToSnapshot: () => void;
 }
 
 const TRUE_SET = new Set(['1', 'true', 'TRUE', '.TRUE.', 'yes']);
@@ -63,20 +75,29 @@ export default function IncarEditor({
   onSavePreset,
   onDeletePreset,
   onCopyToOthers,
+  snapshotParams,
+  pendingKeys,
+  onConfirmParams,
+  onResetToSnapshot,
 }: Props) {
   const { message } = App.useApp();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [presetName, setPresetName] = useState('');
   const [loadValue, setLoadValue] = useState<string | undefined>(undefined);
-  const [customText, setCustomText] = useState('');
+  /** 参数编辑闸门：默认只读（灰色不可点），点「修改参数」后才可编辑 */
+  const [editing, setEditing] = useState(false);
 
   const params = workspace.incarParams;
   const precision = workspace.precision;
-  const incarText = useMemo(
-    () => buildIncarText(params, undefined, customText),
-    [params, customText],
-  );
+  const incarText = useMemo(() => buildIncarText(params), [params]);
+  const pendingSet = useMemo(() => new Set(pendingKeys), [pendingKeys]);
+  const extraParams = useMemo(() => extraIncarParams(params), [params]);
+  const isChanged = (key: string) => {
+    const base = String(snapshotParams[key] ?? '');
+    const now = String(params[key] ?? '');
+    return now !== base && (now !== '' || base !== '');
+  };
 
   const setParam = (key: string, value: string) => {
     // 手动修改任意参数后，自动切换为「自定义」
@@ -107,13 +128,12 @@ export default function IncarEditor({
 
   const handleUploadRemote = async () => {
     try {
-      // 以当前表单参数 + 自定义参数为基础，后端基于远端旧 INCAR 做统一修改
+      // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改
       // 留空（空字符串/仅空白）的参数不参与写入：与「生成 INCAR」一致
       const merged = Object.fromEntries(
-        Object.entries({
-          ...workspace.incarParams,
-          ...parseCustomIncar(customText),
-        }).filter(([, value]) => String(value ?? '').trim() !== ''),
+        Object.entries(workspace.incarParams).filter(
+          ([, value]) => String(value ?? '').trim() !== '',
+        ),
       );
       const r = await uploadIncar(task.task_id, { params: merged });
       message.success(
@@ -125,6 +145,28 @@ export default function IncarEditor({
     } catch (err) {
       message.error(err instanceof Error ? err.message : '上传 INCAR 失败');
     }
+  };
+
+  /** 其他参数（不在预设表单里的键）：改名 / 改值 / 新增 / 删除 */
+  const renameExtraParam = (oldKey: string, nextKey: string) => {
+    const next = { ...params };
+    const value = next[oldKey] ?? '';
+    delete next[oldKey];
+    const key = nextKey.trim().toUpperCase();
+    if (key) next[key] = value;
+    onParamsChange(next, 'custom');
+  };
+
+  const addExtraParam = () => {
+    let index = 1;
+    while (params[`NEW_PARAM_${index}`] !== undefined) index += 1;
+    onParamsChange({ ...params, [`NEW_PARAM_${index}`]: '' }, 'custom');
+  };
+
+  const removeExtraParam = (key: string) => {
+    const next = { ...params };
+    delete next[key];
+    onParamsChange(next, 'custom');
   };
 
   const handleSaveLocal = async () => {
@@ -180,6 +222,7 @@ export default function IncarEditor({
       return (
         <Checkbox
           checked={checked}
+          disabled={!editing}
           onChange={(e) => setParam(key, e.target.checked ? '.TRUE.' : '.FALSE.')}
         >
           {checked ? '.TRUE.' : '.FALSE.'}
@@ -194,6 +237,7 @@ export default function IncarEditor({
             size="middle"
             style={{ width: '100%' }}
             value={String(value)}
+            disabled={!editing}
             onChange={(v) => setParam(key, v)}
             options={def.options?.map((o) => ({ value: o.value, label: o.label }))}
           />
@@ -207,6 +251,7 @@ export default function IncarEditor({
           value={String(value)}
           suffix={def.unit}
           placeholder={def.placeholder ?? def.defaultValue}
+          disabled={!editing}
           onChange={(v) => setParam(key, v)}
         />
       );
@@ -215,6 +260,7 @@ export default function IncarEditor({
       <Input
         value={String(value)}
         placeholder={def.placeholder ?? def.defaultValue}
+        disabled={!editing}
         onChange={(e) => setParam(key, e.target.value)}
       />
     );
@@ -250,10 +296,11 @@ export default function IncarEditor({
             placeholder="加载预设"
             value={loadValue}
             onChange={applyPreset}
+            disabled={!editing}
             style={{ minWidth: 170 }}
             options={presetGroups}
           />
-          <Button icon={<SaveOutlined />} onClick={() => setSaveOpen(true)}>
+          <Button icon={<SaveOutlined />} disabled={!editing} onClick={() => setSaveOpen(true)}>
             保存为预设
           </Button>
           <Button icon={<SendOutlined />} onClick={onCopyToOthers}>
@@ -268,15 +315,52 @@ export default function IncarEditor({
           <Button icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
             上传到远端
           </Button>
+          {editing ? (
+            <>
+              <Button
+                type="primary"
+                icon={<CheckOutlined />}
+                onClick={() => {
+                  onConfirmParams(params);
+                  setEditing(false);
+                }}
+              >
+                确认修改
+              </Button>
+              <Button
+                icon={<CloseOutlined />}
+                onClick={() => {
+                  onResetToSnapshot();
+                  setEditing(false);
+                }}
+              >
+                取消
+              </Button>
+            </>
+          ) : (
+            <Tooltip title="参数默认只读；点击后才会解锁编辑，确认后记为待生效修改（下次续算应用）">
+              <Button type="primary" ghost icon={<EditOutlined />} onClick={() => setEditing(true)}>
+                修改参数
+              </Button>
+            </Tooltip>
+          )}
         </div>
       </Card>
 
       <Alert
-        type="info"
+        type={editing ? 'warning' : 'info'}
         showIcon
         style={{ marginBottom: 14 }}
-        message={`当前任务类型：${TASK_TYPE_LABELS[task.task_type as TaskType] ?? task.task_type}`}
-        description="低/中/高精度会自动填充推荐参数；修改任一参数后自动切换为「自定义」模式。"
+        message={
+          editing
+            ? '参数编辑中：改完点「确认修改」才会记为待生效修改（下一次续算时写入新目录）'
+            : `当前任务类型：${TASK_TYPE_LABELS[task.task_type as TaskType] ?? task.task_type} · 参数来自本次计算（只读）`
+        }
+        description={
+          editing
+            ? '留空的参数不会写入 INCAR；已修改的参数会高亮显示，可随时在顶部横幅里撤销。'
+            : '点右上角「修改参数」解锁编辑；低/中/高精度会自动填充推荐参数。'
+        }
       />
 
       <div className="job-incar-grid">
@@ -291,11 +375,23 @@ export default function IncarEditor({
               {cat.params
                 .filter((def) => !def.fracOnly || task.task_type === 'frac')
                 .map((def) => (
-                  <div key={def.key} className="job-incar-field">
+                  <div
+                    key={def.key}
+                    className={`job-incar-field${
+                      pendingSet.has(def.key) ? ' is-pending' : isChanged(def.key) ? ' is-changed' : ''
+                    }`}
+                  >
                     <div className="job-incar-field__label">
                       <Tooltip title={def.hint}>
                         <span>{def.label}</span>
                       </Tooltip>
+                      {pendingSet.has(def.key) && (
+                        <Tooltip
+                          title={`本次计算值：${snapshotParams[def.key] ?? '无'} · 待下次续算生效`}
+                        >
+                          <span className="job-incar-field__badge">待生效</span>
+                        </Tooltip>
+                      )}
                     </div>
                     <div className="job-incar-field__control">{renderField(def)}</div>
                   </div>
@@ -307,20 +403,53 @@ export default function IncarEditor({
 
       <Card
         size="small"
-        title="自定义参数"
+        title="其他参数"
         className="job-card job-incar-cat"
         style={{ marginTop: 14 }}
+        extra={
+          editing ? (
+            <Button size="small" type="link" icon={<PlusOutlined />} onClick={addExtraParam}>
+              添加参数
+            </Button>
+          ) : null
+        }
       >
         <div className="job-field-hint" style={{ marginBottom: 8 }}>
-          手动添加表单之外的参数，每行一个，格式：KEY = value（# / ! 后为注释，会被忽略）
+          不在预设表单里的参数（本次计算实际使用，可编辑；留空即不写入 INCAR）
         </div>
-        <Input.TextArea
-          rows={4}
-          value={customText}
-          onChange={(e) => setCustomText(e.target.value)}
-          placeholder={'例如：\nLVDW = .TRUE.\nVDW_RADIUS = 1.2\nNBANDS = 400'}
-          style={{ fontFamily: 'monospace' }}
-        />
+        {Object.keys(extraParams).length === 0 && !editing ? (
+          <div className="job-empty-hint">本次计算没有预设之外的参数</div>
+        ) : (
+          <div className="job-incar-extra">
+            {Object.entries(extraParams).map(([key, value]) => (
+              <div
+                key={key}
+                className={`job-incar-extra__row${pendingSet.has(key) ? ' is-pending' : ''}`}
+              >
+                <Input
+                  value={key}
+                  disabled={!editing}
+                  className="job-incar-extra__key"
+                  onChange={(e) => renameExtraParam(key, e.target.value)}
+                />
+                <span className="job-incar-extra__eq">=</span>
+                <Input
+                  value={String(value)}
+                  disabled={!editing}
+                  onChange={(e) => onParamsChange({ ...params, [key]: e.target.value }, 'custom')}
+                />
+                {editing && (
+                  <Button
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={() => removeExtraParam(key)}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       <Modal

@@ -1,10 +1,20 @@
 # 待办清单（TODO）
 
 > 创建时间：2026-08-24
-> 适用项目：`vasp-management-system`（v0.8.1）
+> 适用项目：`vasp-management-system`（v0.8.2）
 > 勾选约定：`[ ]` 未开始 · `[x]` 已完成
 
 ## 当前进度概览
+
+**已完成（v0.8.2，2026-09-15 · 作业管理输入文件重构）**
+
+- [x] 远端参数自动同步：提交作业后后台同步一次（1 exec + 4 SFTP 小文件），也可手动「同步最新参数」；快照落 `<任务>/inputs/`（含 CIF），元数据存 `task["input_state"]`
+- [x] 参数草稿 + 变更台账（file/key/from/to/at/applied_at/applied_in）：改参数不碰远端，**只在下次续算应用**
+- [x] 续算应用：`continuation._apply_drafts_to_new_dir()` 合并草稿 INCAR 参数（ISTART/ICHARG 优先，冲突告警）→ KPOINTS 网格重写 → **POSCAR 永不覆盖** → INCAR 顶部写审计注释 → 台账标记 applied_in
+- [x] INCAR 编辑器：默认只读（点「修改参数」解锁 → 确认修改才生效）、已修改/待生效参数高亮、「其他参数」列出本次计算里非预设参数（原"自定义参数"）
+- [x] POSCAR 页重构：460px 3Dmol 大窗口 + 初始 POSCAR/最新 CONTCAR 切换 + 点击选中原子（金色高亮，为固定原子铺路）+ 结构数据 + 球棍/填充、缩放、自动旋转、a/b/c 视角、重置视角
+- [x] KPOINTS：直接改 k1/k2/k3（同样只读闸门 + 确认 + 待生效高亮），显示 k×a 网格密度系数与巡检 >20 对照
+- [ ] 后续：固定原子功能（选中原子写进 POSCAR 的 Selective dynamics）
 
 **已完成（v0.8.1，2026-09-15）**
 

@@ -11,11 +11,12 @@ interface Props {
   placeholder?: string;
   suffix?: string;
   size?: 'small' | 'middle';
+  disabled?: boolean;
 }
 
 const NUM_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 
-export default function SciInput({ value, onChange, placeholder, suffix, size }: Props) {
+export default function SciInput({ value, onChange, placeholder, suffix, size, disabled }: Props) {
   const v = String(value ?? '');
   const invalid = v.trim() !== '' && !NUM_RE.test(v.trim());
   const normalize = () => {
@@ -27,6 +28,7 @@ export default function SciInput({ value, onChange, placeholder, suffix, size }:
       <Input
         size={size ?? 'middle'}
         value={v}
+        disabled={disabled}
         placeholder={placeholder ?? '数值'}
         status={invalid ? 'error' : undefined}
         suffix={

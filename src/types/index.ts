@@ -725,6 +725,8 @@ export interface VaspTaskFile {
 /** 单任务的前端工作区（文件内容 / INCAR 参数，后续由后端落盘） */
 export interface JobWorkspace {
   incarParams: Record<string, string>;
+  /** 本次计算（远端同步）实际使用的参数，用于"已修改"对比与取消回滚 */
+  snapshotParams?: Record<string, string>;
   precision: PrecisionMode;
   poscarContent: string | null;
   poscarPath: string | null;

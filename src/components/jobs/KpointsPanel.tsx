@@ -1,15 +1,24 @@
 import { useMemo, useState } from 'react';
-import { App, Button, Card, InputNumber, Radio, Tag } from 'antd';
-import { ThunderboltOutlined, UploadOutlined } from '@ant-design/icons';
+import { App, Button, Card, InputNumber, Radio, Tag, Tooltip } from 'antd';
+import {
+  CheckOutlined,
+  CloseOutlined,
+  EditOutlined,
+  ThunderboltOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import { buildKpoints, parsePoscar, recommendKgrid } from '../../utils/poscar';
-import { uploadKpoints } from '../../api/jobs';
+import { uploadKpoints, type TaskInputState } from '../../api/jobs';
 
 interface Props {
   taskId: string;
   taskName: string;
   poscarContent: string | null;
   kpointsContent: string | null;
+  input: TaskInputState | null;
   onGenerate: (content: string) => void;
+  /** 确认 k 网格修改（写入草稿，下次续算生效） */
+  onConfirmMesh: (mesh: number[]) => void;
 }
 
 export default function KpointsPanel({
@@ -17,17 +26,38 @@ export default function KpointsPanel({
   taskName,
   poscarContent,
   kpointsContent,
+  input,
   onGenerate,
+  onConfirmMesh,
 }: Props) {
   const { message } = App.useApp();
   const [density, setDensity] = useState(20);
   const [meshType, setMeshType] = useState<'Gamma' | 'Monkhorst-Pack'>('Gamma');
+  /** 参数编辑闸门（与 INCAR 页一致：默认只读） */
+  const [editing, setEditing] = useState(false);
+
+  const snapshotMesh = input?.files?.KPOINTS?.mesh ?? null;
+  const pendingMesh = input?.draft?.KPOINTS?.mesh ?? null;
+  const [meshDraft, setMeshDraft] = useState<number[]>(
+    pendingMesh ?? snapshotMesh ?? [1, 1, 1],
+  );
 
   const info = useMemo(() => (poscarContent ? parsePoscar(poscarContent) : null), [poscarContent]);
   const grid = useMemo(
     () => (info ? recommendKgrid(info.lengths, density) : null),
     [info, density],
   );
+
+  /** 当前生效网格（草稿优先，其次快照） */
+  const effectiveMesh = pendingMesh ?? snapshotMesh;
+  const meshChanged = (index: number) =>
+    !!snapshotMesh && meshDraft[index] !== snapshotMesh[index];
+  const densityProducts = useMemo(() => {
+    if (!info || !meshDraft) return null;
+    return (['a', 'b', 'c'] as const).map((axis, i) =>
+      Number((meshDraft[i] * info.lengths[axis]).toFixed(2)),
+    );
+  }, [info, meshDraft]);
 
   const generate = () => {
     if (!grid || !info) {
@@ -55,6 +85,103 @@ export default function KpointsPanel({
 
   return (
     <div className="job-panel">
+      <Card
+        size="small"
+        title="本次计算的 K 点网格"
+        className="job-card"
+        extra={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {pendingMesh && (
+              <Tag color="orange" bordered={false}>
+                待生效 {pendingMesh.join(' × ')}
+              </Tag>
+            )}
+            {editing ? (
+              <>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<CheckOutlined />}
+                  onClick={() => {
+                    onConfirmMesh(meshDraft);
+                    setEditing(false);
+                  }}
+                >
+                  确认修改
+                </Button>
+                <Button
+                  size="small"
+                  icon={<CloseOutlined />}
+                  onClick={() => {
+                    setMeshDraft(pendingMesh ?? snapshotMesh ?? [1, 1, 1]);
+                    setEditing(false);
+                  }}
+                >
+                  取消
+                </Button>
+              </>
+            ) : (
+              <Tooltip title="默认只读；点「修改参数」解锁，确认后记为待生效修改（下次续算应用）">
+                <Button
+                  size="small"
+                  type="primary"
+                  ghost
+                  icon={<EditOutlined />}
+                  disabled={!snapshotMesh}
+                  onClick={() => setEditing(true)}
+                >
+                  修改参数
+                </Button>
+              </Tooltip>
+            )}
+          </div>
+        }
+      >
+        {snapshotMesh ? (
+          <>
+            <div className="job-kpoints-form">
+              <div className="job-kpoints-field">
+                <span className="job-kpoints-field__label">k 网格</span>
+                {[0, 1, 2].map((i) => (
+                  <InputNumber
+                    key={i}
+                    min={1}
+                    max={40}
+                    value={meshDraft[i]}
+                    disabled={!editing}
+                    className={meshChanged(i) ? 'is-pending' : undefined}
+                    onChange={(v) => {
+                      const next = [...meshDraft];
+                      next[i] = Number(v ?? 1);
+                      setMeshDraft(next);
+                    }}
+                    style={{ width: 84 }}
+                  />
+                ))}
+                <span className="preview-note">
+                  {input?.files?.KPOINTS?.mesh_note || '自动网格'} · 实际生效{' '}
+                  {effectiveMesh ? effectiveMesh.join(' × ') : '—'}
+                </span>
+              </div>
+            </div>
+            {densityProducts && (
+              <div className="job-kpoints-density">
+                网格密度系数（k × 晶格常数，巡检要求 &gt; 20）：
+                {densityProducts.map((v, i) => (
+                  <Tag key={i} color={v > 20 ? 'green' : 'orange'} bordered={false}>
+                    {['a', 'b', 'c'][i]} {v}
+                  </Tag>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="job-empty-hint">
+            尚未同步本次计算的 KPOINTS；点「同步最新参数」后可直接改 k 点个数。
+          </div>
+        )}
+      </Card>
+
       <Card size="small" title="K 点网格生成" className="job-card">
         {info && grid ? (
           <>

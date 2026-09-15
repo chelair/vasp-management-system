@@ -113,7 +113,8 @@ export default function RunningTasksPanel({ jobs, loading, highlight }: Props) {
           columns={columns}
           pagination={false}
           size="small"
-          scroll={{ x: 'max-content' }}
+          // 固定高度 + 内部滚动：作业变多时模块不再被撑高
+          scroll={{ x: 'max-content', y: 320 }}
           onRow={(row) => ({
             onClick: () => {
               if (!row.task_id) return;

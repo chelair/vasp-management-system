@@ -44,6 +44,7 @@ export function createFreeEnergyGroup(payload: {
 export function createNebGroup(payload: {
   project: string;
   name?: string;
+  images?: number;
 }): Promise<CreateGroupResult> {
   return request('/groups', {
     method: 'POST',

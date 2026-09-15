@@ -36,6 +36,23 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
       { key: 'ENCUT', label: 'ENCUT', type: 'number', unit: 'eV', hint: '平面波截断能', defaultValue: '500' },
       { key: 'EDIFF', label: 'EDIFF', type: 'number', unit: 'eV', hint: '电子步收敛判据', defaultValue: '1E-5' },
       { key: 'EDIFFG', label: 'EDIFFG', type: 'number', unit: 'eV/Å', hint: '离子步力收敛判据（负值）', defaultValue: '-0.03' },
+      {
+        key: 'IVDW',
+        label: 'IVDW',
+        type: 'enum',
+        hint: '色散修正（留空则不写入；11 = DFT-D3(BJ)）',
+        defaultValue: '11',
+        options: [
+          { value: '0', label: '0', hint: '不做色散修正' },
+          { value: '1', label: '1', hint: 'DFT-D2' },
+          { value: '10', label: '10', hint: 'DFT-D3，零阻尼' },
+          { value: '11', label: '11', hint: 'DFT-D3(BJ)，Becke-Jonson 阻尼（推荐）' },
+          { value: '12', label: '12', hint: 'DFT-D3，零阻尼 + 三体项' },
+          { value: '20', label: '20', hint: 'TS 方法（需 TSVDW）' },
+          { value: '21', label: '21', hint: 'TS/HI 方法' },
+          { value: '263', label: '263', hint: 'MBD 方法' },
+        ],
+      },
     ],
   },
   {

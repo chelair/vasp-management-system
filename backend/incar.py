@@ -56,8 +56,15 @@ def modify_incar(content: str, changes: Dict[str, Any]) -> Tuple[str, List[str]]
 
     Returns:
         (修改后的文本, 警告列表)，警告如重复参数合并。
+
+    值为空的参数（None / 空字符串 / 仅空白）会被**忽略**：既不加进文件，
+    也不改动已有行——前端把参数框留空就表示"不写入该参数"（例如 NCORE）。
     """
-    changes = {str(k).strip().upper(): v for k, v in (changes or {}).items()}
+    changes = {
+        str(k).strip().upper(): v
+        for k, v in (changes or {}).items()
+        if v is not None and str(v).strip() != ""
+    }
     warnings: List[str] = []
     if not changes:
         return content, warnings

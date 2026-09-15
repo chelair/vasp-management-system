@@ -6,7 +6,8 @@
       "IBRION": 2,
       "NSW": 100,
       "EDIFFG": -0.02,
-      "ISIF": 2
+      "ISIF": 2,
+      "IVDW": 11
     },
     "check_items": ["force_convergence", "structure_reasonable"],
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
@@ -38,7 +39,8 @@
       "NFREE": 2,
       "POTIM": 0.015,
       "NSW": 1,
-      "ISIF": 2
+      "ISIF": 2,
+      "IVDW": 11
     },
     "check_items": [],
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
@@ -53,7 +55,8 @@
       "EDIFF": 1e-5,
       "ISIF": 0,
       "SPRING": -5,
-      "IMAGES": 0
+      "IMAGES": 0,
+      "IVDW": 11
     },
     "check_items": [],
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
@@ -74,7 +77,8 @@
       "NSW": 0,
       "LORBIT": 11,
       "IBRION": -1,
-      "ISIF": 2
+      "ISIF": 2,
+      "IVDW": 11
     },
     "check_items": [],
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",

@@ -108,10 +108,13 @@ export default function IncarEditor({
   const handleUploadRemote = async () => {
     try {
       // 以当前表单参数 + 自定义参数为基础，后端基于远端旧 INCAR 做统一修改
-      const merged = {
-        ...workspace.incarParams,
-        ...parseCustomIncar(customText),
-      };
+      // 留空（空字符串/仅空白）的参数不参与写入：与「生成 INCAR」一致
+      const merged = Object.fromEntries(
+        Object.entries({
+          ...workspace.incarParams,
+          ...parseCustomIncar(customText),
+        }).filter(([, value]) => String(value ?? '').trim() !== ''),
+      );
       const r = await uploadIncar(task.task_id, { params: merged });
       message.success(
         `INCAR 已上传到远端${r.backup_file ? `，旧文件已备份为 ${r.backup_file}` : ''}`,

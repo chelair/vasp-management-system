@@ -38,7 +38,9 @@ class ProjectIn(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_]*$")
     deadline: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     server: str = Field(min_length=1)
-    tasks: List[TaskIn] = Field(min_length=1)
+    # 允许"只建组"的项目：前端创建项目后立刻调 /api/groups 建自由能/NEB 组，
+    # 组内任务由后端登记；因此这里不再强制至少一个独立任务
+    tasks: List[TaskIn] = Field(default_factory=list)
     # Web 端扩展字段（原 Schema additionalProperties=false 之外显式放行）
     description: Optional[str] = None
     estimated_hours: Optional[Union[int, float]] = None

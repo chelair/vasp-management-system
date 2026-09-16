@@ -73,6 +73,12 @@ export default function KpointsPanel({
 
   const handleUploadRemote = async () => {
     if (!kpointsContent) return;
+    // 只有 k 网格（或内容）真的变了才提交修改
+    const current = input?.files?.KPOINTS?.text ?? null;
+    if (current && current.trim() === kpointsContent.trim()) {
+      message.info('KPOINTS 与本次计算一致，无需上传');
+      return;
+    }
     try {
       const r = await uploadKpoints(taskId, { content: kpointsContent });
       message.success(

@@ -292,6 +292,51 @@ export const PRESET_INCAR_KEYS: Set<string> = new Set(
   INCAR_CATEGORIES.flatMap((cat) => cat.params.map((def) => def.key)),
 );
 
+/** VASP 布尔的等价写法：`.T.` ≡ `.TRUE.` ≡ `T` ≡ `1`（大小写不敏感） */
+const TRUE_WORDS = new Set(['1', 't', 'true', '.t.', '.true.', 'yes', 'on']);
+const FALSE_WORDS = new Set(['0', 'f', 'false', '.f.', '.false.', 'no', 'off']);
+
+export function isIncarTrue(value: unknown): boolean {
+  return TRUE_WORDS.has(String(value ?? '').trim().toLowerCase());
+}
+
+export function isIncarFalse(value: unknown): boolean {
+  return FALSE_WORDS.has(String(value ?? '').trim().toLowerCase());
+}
+
+/**
+ * INCAR 参数值的**语义等价比较**（判断"有没有真改"用）：
+ * - 布尔参数：`.T.` 与 `.TRUE.`、`.F.` 与 `.FALSE.` 视为相同；
+ * - 数值参数：`1E-6` 与 `1e-6`、`-0.02` 与 `-0.020` 视为相同；
+ * - 其他：去首尾空白后按字符串比较。
+ */
+export function incarValueEquals(
+  def: IncarParamDef | undefined,
+  a: unknown,
+  b: unknown,
+): boolean {
+  const va = String(a ?? '').trim();
+  const vb = String(b ?? '').trim();
+  if (def?.type === 'bool') {
+    return (isIncarTrue(va) && isIncarTrue(vb)) || (isIncarFalse(va) && isIncarFalse(vb));
+  }
+  if (def?.type === 'number' && va !== '' && vb !== '') {
+    const na = Number(va.replace(/[dD]/, 'E'));
+    const nb = Number(vb.replace(/[dD]/, 'E'));
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb;
+  }
+  return va === vb;
+}
+
+/** 预设表单里该键的定义（找不到返回 undefined） */
+export function incarParamDef(key: string): IncarParamDef | undefined {
+  for (const cat of INCAR_CATEGORIES) {
+    const hit = cat.params.find((def) => def.key === key);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 /** 不在预设表单里的参数（"其他参数"区显示：来自本次计算的 INCAR 快照） */
 export function extraIncarParams(params: Record<string, string>): Record<string, string> {
   const extra: Record<string, string> = {};
@@ -380,17 +425,16 @@ export function formatIncarValue(def: IncarParamDef, raw: string): string {
 /** 解析真实 INCAR 文本 → 参数字典（仅收录表单已知参数，忽略注释） */
 export function parseIncarContent(content: string): Record<string, string> {
   const params: Record<string, string> = {};
-  const known = new Set(
-    INCAR_CATEGORIES.flatMap((cat) => cat.params.map((p) => p.key)),
-  );
   for (const raw of content.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
     const key = line.slice(0, eq).trim();
+    // 值保留完整内容（DIPOL = 0.5 0.5 0.18、MAGMOM = 5*2.0 等含空格的参数不能被截断）；
+    // 也不过滤"预设之外"的键——它们会出现在「其他参数」里
     const value = line.slice(eq + 1).split('#')[0].trim();
-    if (known.has(key) && value) params[key] = value;
+    if (key && value) params[key] = value;
   }
   return params;
 }

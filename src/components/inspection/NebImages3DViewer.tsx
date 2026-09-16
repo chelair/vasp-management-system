@@ -340,7 +340,7 @@ export default function NebImages3DViewer({ images }: Props) {
       </div>
 
       <div className="fe-footnote">
-        展示各映像<b>优化后</b>的结构（优先 CONTCAR，缺失时用 POSCAR），从左到右为 初态 → 中间态 → 末态；
+        展示各映像<b>优化后</b>的结构（<b>只取 CONTCAR</b>，还没有 CONTCAR 的映像不展示），从左到右为 初态 → 中间态 → 末态；
         拖动/滚轮操作任一结构，其余结构视角同步。结构由巡检在离子步推进到 25 步桶时自动从远端抓取并转 CIF。
         {!has3d && '（当前 CIF 无法解析，可能是文件缺失）'}
       </div>

@@ -923,6 +923,9 @@ export default function Jobs() {
   /** 单个任务的详情标签页（概览/POSCAR/INCAR/KPOINTS/提交脚本） */
   const renderTaskDetail = (task: Task) => {
     const ws = workspaces[task.task_id] ?? makeWorkspace(task);
+    // NEB 映像任务没有"单个输入结构"（结构是整条映像路径，见 NEB 组详情/巡检映像看板），
+    // 因此不给它 POSCAR 标签页，避免显示无意义的空 POSCAR
+    const showPoscar = task.task_type !== 'neb';
     return (
       <Tabs
         key={task.task_id}
@@ -936,6 +939,7 @@ export default function Jobs() {
               <TaskOverview
                 task={task}
                 workspace={ws}
+                input={inputStates[task.task_id] ?? null}
                 onGenerateInputs={() => setGenTask(task)}
                 onContinuation={() => setContinuationTask(task)}
                 onSubmitScript={() => setActiveTab('submit')}
@@ -954,29 +958,33 @@ export default function Jobs() {
               />
             ),
           },
-          {
-            key: 'poscar',
-            label: 'POSCAR',
-            children: (
-              <div className="job-panel">
-                <InputSourceBanner
-                  input={inputStates[task.task_id] ?? null}
-                  syncing={inputSyncing === task.task_id}
-                  onSync={() => void handleSyncInput(task)}
-                  onRevert={(file) => void handleRevertDraft(task, file)}
-                />
-                <PoscarPanel
-                  key={task.task_id}
-                  poscarContent={ws.poscarContent}
-                  poscarPath={ws.poscarPath}
-                  copyTargets={copyTargets}
-                  input={inputStates[task.task_id] ?? null}
-                  onImport={(c) => handleImportPoscar(c, task)}
-                  onCopyFromTask={(sid) => handleCopyPoscar(sid, task)}
-                />
-              </div>
-            ),
-          },
+          ...(showPoscar
+            ? [
+                {
+                  key: 'poscar',
+                  label: 'POSCAR',
+                  children: (
+                    <div className="job-panel">
+                      <InputSourceBanner
+                        input={inputStates[task.task_id] ?? null}
+                        syncing={inputSyncing === task.task_id}
+                        onSync={() => void handleSyncInput(task)}
+                        onRevert={(file) => void handleRevertDraft(task, file)}
+                      />
+                      <PoscarPanel
+                        key={task.task_id}
+                        poscarContent={ws.poscarContent}
+                        poscarPath={ws.poscarPath}
+                        copyTargets={copyTargets}
+                        input={inputStates[task.task_id] ?? null}
+                        onImport={(c) => handleImportPoscar(c, task)}
+                        onCopyFromTask={(sid) => handleCopyPoscar(sid, task)}
+                      />
+                    </div>
+                  ),
+                },
+              ]
+            : []),
           {
             key: 'incar',
             label: 'INCAR',

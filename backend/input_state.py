@@ -34,7 +34,11 @@ CIF_FILES = ("POSCAR", "CONTCAR")
 
 
 def parse_incar_text(text: str) -> Dict[str, str]:
-    """INCAR 文本 → {KEY: 值}（去注释、键大写、值取第一个 token）。"""
+    """INCAR 文本 → {KEY: 值}（去注释、键大写、**值保留完整内容**）。
+
+    注意值不能按空格截断：像 `DIPOL = 0.5 0.5 0.18`、`MAGMOM = 5*2.0 3*1.0`
+    这类参数值本身含空格，截成第一个 token 会把参数改坏（v0.8.2 踩过）。
+    """
     params: Dict[str, str] = {}
     for raw in (text or "").splitlines():
         line = raw.split("#", 1)[0].split("!", 1)[0].strip()
@@ -42,9 +46,9 @@ def parse_incar_text(text: str) -> Dict[str, str]:
             continue
         key, value = line.split("=", 1)
         key = key.strip().upper()
-        value = value.strip()
+        value = " ".join(value.split())  # 压掉多余空白，但保留多个 token
         if key:
-            params[key] = value.split()[0] if value else ""
+            params[key] = value
     return params
 
 
@@ -71,7 +75,10 @@ def parse_kpoints_mesh(text: str) -> Tuple[Optional[List[int]], str]:
 
 
 def set_kpoints_mesh(text: str, mesh: List[int]) -> str:
-    """把 KPOINTS 的网格行（第 4 个有效行）替换成新的 k 网格。"""
+    """把 KPOINTS 的网格行（第 4 个有效行）替换成新的 k 网格。
+
+    行首不留空格（早期版本写成 ` 2 3 1`，首个数前多一个空格，看着像缩进错误）。
+    """
     lines = (text or "").splitlines()
     seen = 0
     for index, line in enumerate(lines):
@@ -80,7 +87,7 @@ def set_kpoints_mesh(text: str, mesh: List[int]) -> str:
             continue
         seen += 1
         if seen == 4:
-            lines[index] = f" {mesh[0]} {mesh[1]} {mesh[2]}"
+            lines[index] = f"{mesh[0]} {mesh[1]} {mesh[2]}"
             return "\n".join(lines) + "\n"
     return text
 
@@ -294,6 +301,30 @@ def _drop_pending(changes: List[Dict[str, Any]], file: str, key: str) -> List[Di
     ]
 
 
+#: VASP 布尔的等价写法（`.T.` ≡ `.TRUE.` ≡ `T` ≡ `1`）
+_BOOL_TRUE = {"1", "t", "true", ".t.", ".true.", "yes", "on"}
+_BOOL_FALSE = {"0", "f", "false", ".f.", ".false.", "no", "off"}
+
+
+def _canonical(value: Any) -> str:
+    """参数值的规范化形式，用于判断"到底改没改"。
+
+    - 布尔：`.T.` 与 `.TRUE.`、`.F.` 与 `.FALSE.` 等价；
+    - 数值：`1E-6` 与 `1e-6`、`-0.02` 与 `-0.020` 等价；
+    - 其他（含 `0.5 0.5 0.18` 这类多值）：去首尾空白后按字符串比较。
+    """
+    text = str(value or "").strip()
+    low = text.lower()
+    if low in _BOOL_TRUE:
+        return "true"
+    if low in _BOOL_FALSE:
+        return "false"
+    try:
+        return repr(float(text.replace("D", "E").replace("d", "e")))
+    except (TypeError, ValueError):
+        return text
+
+
 def set_incar_draft(state: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
     """写入 INCAR 草稿；值与快照相同（或留空）表示"不改这一项"。"""
     state = dict(state or {})
@@ -306,7 +337,7 @@ def set_incar_draft(state: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, 
         key = str(key).strip().upper()
         value = "" if raw is None else str(raw).strip()
         base = str(snapshot_params.get(key, ""))
-        if not key or value == "" or value == base:
+        if not key or value == "" or _canonical(value) == _canonical(base):
             incar_draft.pop(key, None)
             changes = _drop_pending(changes, "INCAR", key)
             continue
@@ -398,17 +429,6 @@ def pending_kpoints_mesh(state: Dict[str, Any]) -> Optional[List[int]]:
 
 def has_pending(state: Dict[str, Any]) -> bool:
     return bool((state or {}).get("draft"))
-
-
-def audit_comment(applied: List[Dict[str, Any]]) -> str:
-    """写进 conN/INCAR 的审计注释行（VASP 忽略 # 开头的行）。"""
-    if not applied:
-        return ""
-    parts = [
-        f"{c.get('file')} {c.get('key')} {c.get('from') or '—'} -> {c.get('to')}"
-        for c in applied
-    ]
-    return "# [vasp-manager] " + now_iso() + " 续算应用参数变更：" + "；".join(parts)
 
 
 def mark_applied(state: Dict[str, Any], con_name: str) -> Dict[str, Any]:

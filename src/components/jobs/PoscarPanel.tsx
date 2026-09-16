@@ -43,12 +43,54 @@ export default function PoscarPanel({
   const cif = view === 'contcar' ? input?.contcar_cif ?? null : input?.poscar_cif ?? null;
   const shownMeta = view === 'contcar' ? contcarMeta : poscarMeta;
 
-  const toggleAtom = (atom: AtomRef) => {
-    setSelectedAtoms((prev) =>
-      prev.some((a) => a.index === atom.index)
+  /** 点击原子：默认单选（替换）；按住 Ctrl/⌘ 累加多选（与常见三维编辑器一致） */
+  const handleClickAtom = (atom: AtomRef, additive: boolean) => {
+    setSelectedAtoms((prev) => {
+      if (!additive) return [atom];
+      return prev.some((a) => a.index === atom.index)
         ? prev.filter((a) => a.index !== atom.index)
-        : [...prev, atom],
-    );
+        : [...prev, atom];
+    });
+  };
+
+  /** 框选（Shift + 拖拽）：默认用框内原子替换选择；Ctrl/⌘+Shift 则并入选中的原子 */
+  const handleBoxSelect = (atoms: AtomRef[], additive: boolean) => {
+    setSelectedAtoms((prev) => {
+      if (!additive) return atoms;
+      const merged = new Map(prev.map((a) => [a.index, a]));
+      atoms.forEach((a) => merged.set(a.index, a));
+      return [...merged.values()];
+    });
+    if (atoms.length > 0) message.success(`框选了 ${atoms.length} 个原子`);
+  };
+
+  /**
+   * 选中原子按 POSCAR 序号合并成区间显示：
+   * 同一元素且序号连续 → `Al1-3`；单独一个 → `Al7`（例：Al1 Al2 Al3 Al6 Al7 → Al1-3 Al6-7）
+   */
+  const atomGroups = useMemo(() => {
+    const sorted = [...selectedAtoms].sort((a, b) => a.poscarIndex - b.poscarIndex);
+    const groups: { element: string; from: number; to: number; atoms: AtomRef[] }[] = [];
+    for (const atom of sorted) {
+      const last = groups[groups.length - 1];
+      if (last && last.element === atom.element && atom.poscarIndex === last.to + 1) {
+        last.to = atom.poscarIndex;
+        last.atoms.push(atom);
+      } else {
+        groups.push({
+          element: atom.element,
+          from: atom.poscarIndex,
+          to: atom.poscarIndex,
+          atoms: [atom],
+        });
+      }
+    }
+    return groups;
+  }, [selectedAtoms]);
+
+  const removeGroup = (atoms: AtomRef[]) => {
+    const drop = new Set(atoms.map((a) => a.index));
+    setSelectedAtoms((prev) => prev.filter((a) => !drop.has(a.index)));
   };
 
   const readFile = (file: File) => {
@@ -82,16 +124,16 @@ export default function PoscarPanel({
                 setSelectedAtoms([]);
               }}
               options={[
-                { value: 'poscar', label: '初始 POSCAR' },
+                { value: 'poscar', label: '输入结构（POSCAR）' },
                 {
                   value: 'contcar',
-                  label: '最新 CONTCAR',
+                  label: '最新结果（CONTCAR）',
                   disabled: !input?.contcar_cif,
                 },
               ]}
             />
-            <Tooltip title="POSCAR 是提交时使用的初始结构（不会变）；CONTCAR 是这次计算最新的结构">
-              <span className="preview-note">初始结构 / 最新结构</span>
+            <Tooltip title="输入文件（INCAR/KPOINTS/POSCAR）在任务提交时即确定，之后不再变化；CONTCAR 是本次计算的结果，只读展示，不参与续算输入">
+              <span className="preview-note">输入（提交时定） / 结果（只读）</span>
             </Tooltip>
           </div>
         }
@@ -102,7 +144,8 @@ export default function PoscarPanel({
               cif={cif}
               height={460}
               selected={selectedAtoms}
-              onToggleAtom={toggleAtom}
+              onClickAtom={handleClickAtom}
+              onBoxSelect={handleBoxSelect}
               onClearSelection={() => setSelectedAtoms([])}
             />
           </div>
@@ -137,7 +180,7 @@ export default function PoscarPanel({
               )}
               {input?.source?.synced_at && (
                 <div className="preview-note" style={{ marginTop: 6 }}>
-                  结构来自 {input.source.con || '主目录'} ·{' '}
+                  输入文件在提交时确定（来源 {input.source.con || '主目录'}）·{' '}
                   {input.source.synced_at.replace('T', ' ').slice(5, 16)} 同步
                 </div>
               )}
@@ -158,21 +201,32 @@ export default function PoscarPanel({
             >
               {selectedAtoms.length === 0 ? (
                 <div className="job-field-hint">
-                  在左侧结构图上<b>点击原子</b>即可选中（金色高亮），可多选；用于后续的固定原子功能。
+                  在左侧结构图上<b>点击原子</b>即选中（金色高亮）；<b>按住 Ctrl / ⌘ 再点</b>可多选；
+                  <b>按住 Shift 拖拽</b>可框选一片原子（Ctrl/⌘+Shift 框选为并入）。
+                  编号（如 <code>Ag18</code>）与 <b>POSCAR 坐标行一致、从 1 开始</b>，用于后续的固定原子功能。
                 </div>
               ) : (
                 <div className="s3d-editor__atoms">
-                  {selectedAtoms.map((a) => (
-                    <Tag
-                      key={a.index}
-                      color="gold"
-                      bordered={false}
-                      closable
-                      onClose={() => toggleAtom(a)}
+                  {atomGroups.map((g) => (
+                    <Tooltip
+                      key={`${g.element}-${g.from}-${g.to}`}
+                      title={
+                        g.from === g.to
+                          ? `POSCAR 第 ${g.from} 个原子（${g.element}）`
+                          : `POSCAR 第 ${g.from}–${g.to} 个原子（${g.element}，共 ${g.atoms.length} 个）`
+                      }
                     >
-                      #{a.index} {a.element}
-                    </Tag>
+                      <Tag color="gold" bordered={false} closable onClose={() => removeGroup(g.atoms)}>
+                        {g.element}
+                        {g.from === g.to ? g.from : `${g.from}-${g.to}`}
+                      </Tag>
+                    </Tooltip>
                   ))}
+                  {atomGroups.length > 1 && (
+                    <span className="s3d-editor__atoms-summary">
+                      共 {selectedAtoms.length} 个原子 / {atomGroups.length} 段
+                    </span>
+                  )}
                 </div>
               )}
               <Tooltip title="固定原子功能开发中：先在 POSCAR 的 Selective dynamics 里标记 T/F">
@@ -180,6 +234,11 @@ export default function PoscarPanel({
                   固定选中原子（开发中）
                 </Button>
               </Tooltip>
+              <div className="job-field-hint" style={{ marginTop: 8 }}>
+                POSCAR 目前<b>不参与远端修改</b>：导入/复制只写本地 <code>files/POSCAR</code>；
+                后续唯一会改 POSCAR 的功能是"固定原子"（把选中原子写成
+                <code> Selective dynamics</code> 的 T/F），这条路径先搁置。
+              </div>
             </Card>
           </div>
         </div>

@@ -17,6 +17,7 @@ import {
 import type { JobWorkspace, Task, TaskStatus, TaskType } from '../../types';
 import { GROUP_ROLE_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS } from '../../types';
 import { openTaskFolder } from '../../api/jobs';
+import type { TaskInputState } from '../../api/jobs';
 import StatusTag from '../common/StatusTag';
 
 interface Props {
@@ -35,9 +36,13 @@ interface Props {
   /** 关闭（归档）任务 / 重新打开已归档任务 */
   onArchive?: (task: Task) => void;
   onUnarchive?: (task: Task) => void;
+  /** 输入文件状态（远端快照 + 待生效草稿），用于「文件结构」的同步状态 */
+  input?: TaskInputState | null;
 }
 
-const FILE_ORDER = ['INCAR', 'POSCAR', 'KPOINTS', 'POTCAR', 'submit.sh', 'CONTCAR', 'WAVECAR'];
+/** 参与参数同步的文件（POTCAR / submit.sh 不在同步范围，只显示本地就绪状态） */
+const SYNCED_FILES = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR'];
+const FILE_ORDER = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR', 'POTCAR', 'submit.sh'];
 
 export default function TaskOverview({
   task,
@@ -54,8 +59,28 @@ export default function TaskOverview({
   onDelete,
   onArchive,
   onUnarchive,
+  input,
 }: Props) {
   const { message } = App.useApp();
+
+  /** 待生效（有修改待提交）的文件集合 */
+  const pendingFiles = new Set(
+    (input?.changes ?? []).filter((c) => !c.applied_at).map((c) => c.file),
+  );
+
+  /** 单个文件的同步状态：最新（绿）/ 有修改待提交（高亮）/ 过时（黄）/ 未同步（灰） */
+  const syncStateOf = (name: string) => {
+    if (pendingFiles.has(name as 'INCAR' | 'KPOINTS')) {
+      return { key: 'pending', label: '有修改待提交', icon: <EditOutlined /> };
+    }
+    if (input?.files?.[name]) {
+      return { key: 'fresh', label: '最新', icon: <CheckCircleFilled /> };
+    }
+    if (workspace.files[name]) {
+      return { key: 'stale', label: '过时', icon: <MinusCircleFilled /> };
+    }
+    return { key: 'none', label: '未同步', icon: <MinusCircleFilled /> };
+  };
 
   /** 归档确认文案：自由能主任务会连带归档频率矫正，未完成时特别提醒 */
   const archiveDescription = (() => {
@@ -256,22 +281,38 @@ export default function TaskOverview({
       >
         <div className="job-files">
           {FILE_ORDER.map((name) => {
-            const present = workspace.files[name];
+            const synced = SYNCED_FILES.includes(name);
+            const state = synced ? syncStateOf(name) : null;
+            const localReady = !!workspace.files[name];
+            const stateKey = synced ? state!.key : localReady ? 'fresh' : 'none';
+            const stateLabel = synced ? state!.label : localReady ? '本地已就绪' : '未生成';
             return (
-              <div key={name} className={`job-file${present ? ' job-file--on' : ''}`}>
-                {present ? (
+              <div key={name} className={`job-file job-file--${stateKey}`}>
+                {synced ? (
+                  state!.icon
+                ) : localReady ? (
                   <CheckCircleFilled style={{ color: 'var(--color-success)' }} />
                 ) : (
                   <MinusCircleFilled style={{ color: 'var(--color-text-muted)' }} />
                 )}
                 <span className="job-file__name">{name}</span>
-                <span className="job-file__state">{present ? '已就绪' : '未生成'}</span>
+                <span className="job-file__state">
+                  {stateLabel}
+                  {!synced && (
+                    <Tooltip title="不参与参数同步（POTCAR 由伪势模块生成，submit.sh 由提交脚本页维护）">
+                      <span className="job-file__hint"> · 不参与同步</span>
+                    </Tooltip>
+                  )}
+                </span>
               </div>
             );
           })}
         </div>
         <div className="preview-note" style={{ marginTop: 10 }}>
-          输入文件将写入本地目录，并由「提交脚本」同步到远程后执行。
+          <b style={{ color: 'var(--color-success)' }}>最新</b> = 与本次计算（提交目录）一致；
+          <b style={{ color: '#b8761f' }}>过时</b> = 只在本地、还没同步过；
+          <b style={{ color: '#b8761f' }}>有修改待提交</b> = 参数已改，等下次续算写入。
+          输入文件在提交时确定，点「同步最新参数」可刷新。
         </div>
       </Card>
 

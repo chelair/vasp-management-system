@@ -41,6 +41,9 @@ import {
   PRECISION_PRESETS,
   buildIncarText,
   extraIncarParams,
+  incarParamDef,
+  incarValueEquals,
+  isIncarTrue,
 } from '../../data/mock/incar';
 import { saveTaskFile, uploadIncar } from '../../api/jobs';
 import SciInput from './SciInput';
@@ -63,8 +66,6 @@ interface Props {
   /** 取消修改：回到快照值 */
   onResetToSnapshot: () => void;
 }
-
-const TRUE_SET = new Set(['1', 'true', 'TRUE', '.TRUE.', 'yes']);
 
 export default function IncarEditor({
   task,
@@ -96,7 +97,9 @@ export default function IncarEditor({
   const isChanged = (key: string) => {
     const base = String(snapshotParams[key] ?? '');
     const now = String(params[key] ?? '');
-    return now !== base && (now !== '' || base !== '');
+    if (now === '' && base === '') return false;
+    // 语义比较：`.T.` 与 `.TRUE.`、`1E-6` 与 `1e-6` 不算改动
+    return !incarValueEquals(incarParamDef(key), now, base);
   };
 
   const setParam = (key: string, value: string) => {
@@ -128,6 +131,14 @@ export default function IncarEditor({
 
   const handleUploadRemote = async () => {
     try {
+      // 只有参数相对"本次计算实际使用的值"真的变了才提交修改
+      const changed = Object.entries(workspace.incarParams).filter(
+        ([key, value]) => String(value ?? '').trim() !== String(snapshotParams[key] ?? '').trim(),
+      );
+      if (changed.length === 0) {
+        message.info('参数与本次计算一致，无需上传');
+        return;
+      }
       // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改
       // 留空（空字符串/仅空白）的参数不参与写入：与「生成 INCAR」一致
       const merged = Object.fromEntries(
@@ -218,7 +229,7 @@ export default function IncarEditor({
     const value = params[def.key] ?? '';
     const key = def.key;
     if (def.type === 'bool') {
-      const checked = TRUE_SET.has(String(value).trim());
+      const checked = isIncarTrue(value);
       return (
         <Checkbox
           checked={checked}

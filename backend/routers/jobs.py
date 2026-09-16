@@ -339,6 +339,15 @@ def create_same_type_continuation(task_id: str):
                 status_code=409,
                 content=fail(f"续算目录 {con} 已登记，请勿重复创建"),
             )
+        # 续算时 `create_continuation` 已经把应用过的草稿标记进 task["input_state"]
+        # （草稿清空、台账 applied_in=conN），这里必须把它**一起落库** ——
+        # 否则重新 load_db 读到的是旧副本，界面会一直显示"有修改待提交"。
+        if task.get("input_state") is not None:
+            parent = next(
+                (t for t in proj["tasks"] if t.get("task_id") == task_id), None
+            )
+            if parent is not None:
+                parent["input_state"] = task["input_state"]
         proj["tasks"].append(sub_task)
         save_db(db)
 

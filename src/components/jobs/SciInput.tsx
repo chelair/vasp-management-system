@@ -14,14 +14,22 @@ interface Props {
   disabled?: boolean;
 }
 
-const NUM_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+/** 单个数值，或空格分隔的多个数值（如 DIPOL = 0.5 0.5 0.18、MAGMOM = 5*2.0） */
+const NUM_RE = /^([+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?|\d+\*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)(\s+([+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?|\d+\*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?))*$/;
 
 export default function SciInput({ value, onChange, placeholder, suffix, size, disabled }: Props) {
   const v = String(value ?? '');
   const invalid = v.trim() !== '' && !NUM_RE.test(v.trim());
   const normalize = () => {
     const t = v.trim();
-    if (NUM_RE.test(t)) onChange(t.replace(/^\+/, '').replace(/e([+-]?\d+)$/i, 'E$1'));
+    if (NUM_RE.test(t)) {
+      onChange(
+        t
+          .split(/\s+/)
+          .map((part) => part.replace(/^\+/, '').replace(/e([+-]?\d+)$/i, 'E$1'))
+          .join(' '),
+      );
+    }
   };
   return (
     <Tooltip title={invalid ? '请输入合法数值，支持科学计数法（如 1E-5）' : ''}>

@@ -302,10 +302,12 @@ def _sync_neb_image_structures(
             'for d in "$BASE"/[0-9]*; do',
             '  [ -d "$d" ] || continue',
             '  img=$(basename "$d")',
-            '  f=""',
-            '  if [ -s "$d/CONTCAR" ]; then f="$d/CONTCAR"; else f="$d/POSCAR"; fi',
+            # 只取 CONTCAR（优化后的结构）；缺 CONTCAR 的映像直接跳过，
+            # 不再回退 POSCAR —— 映像的 POSCAR 是 nebmake 插值出来的初始结构，
+            # 当成"优化后结构"展示会误导（2026-09-15 用户要求）
+            '  f="$d/CONTCAR"',
             '  [ -s "$f" ] || continue',
-            '  echo "@@@IMG:$img:$(basename "$f")"',
+            '  echo "@@@IMG:$img:CONTCAR"',
             '  base64 "$f" | tr -d "\\n"',
             '  echo',
             "done",
@@ -361,10 +363,10 @@ def _sync_neb_image_structures(
     if labels:
         labels.sort(key=lambda x: int(x) if x.isdigit() else 999)
         markers.append(
-            f"NEB 映像结构已同步：{labels[0]}–{labels[-1]}（共 {len(labels)} 个，取 CONTCAR/POSCAR）"
+            f"NEB 映像结构已同步：{labels[0]}–{labels[-1]}（共 {len(labels)} 个，只取 CONTCAR）"
         )
     else:
-        markers.append("未取到任何 NEB 映像结构（目录为空或文件缺失）")
+        markers.append("未取到任何 NEB 映像结构（目录为空，或映像还没有 CONTCAR）")
     return markers
 
 

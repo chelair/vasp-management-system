@@ -23,10 +23,10 @@ export default function InputSourceBanner({ input, syncing, onSync, onRevert }: 
       <div className="input-source__row">
         <div className="input-source__meta">
           <Tag color={input?.synced ? 'processing' : 'default'} bordered={false}>
-            {input?.synced ? '已同步远端参数' : '未同步（显示本地/默认值）'}
+            {input?.synced ? '本次计算的输入参数' : '未同步（显示本地/默认值）'}
           </Tag>
           <span>
-            来源：<code className="path-cell">{source?.con || '主目录'}</code>
+            提交目录：<code className="path-cell">{source?.con || '主目录'}</code>
             {source?.job_id ? ` · 作业 ${source.job_id}` : ''}
             {source?.synced_at ? ` · ${source.synced_at.replace('T', ' ').slice(5, 16)}` : ''}
           </span>

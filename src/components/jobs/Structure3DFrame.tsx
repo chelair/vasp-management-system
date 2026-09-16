@@ -10,7 +10,10 @@ declare global {
 }
 
 export interface AtomRef {
+  /** 模型内部下标（0 起） */
   index: number;
+  /** 对应 POSCAR 坐标行的序号（1 起，与 CIF 里的 Ag1/O33 编号一致） */
+  poscarIndex: number;
   element: string;
 }
 
@@ -19,7 +22,10 @@ interface Props {
   height?: number;
   /** 已选中的原子（索引 + 元素），用于高亮与后续"固定原子"功能 */
   selected: AtomRef[];
-  onToggleAtom: (atom: AtomRef) => void;
+  /** 点击原子：`additive=true` 表示按住 Ctrl/⌘（多选），否则单选替换 */
+  onClickAtom: (atom: AtomRef, additive: boolean) => void;
+  /** 框选（Shift + 拖拽）：atoms = 框内原子；additive=true 表示 Ctrl/⌘+Shift（并入当前选择） */
+  onBoxSelect: (atoms: AtomRef[], additive: boolean) => void;
   onClearSelection: () => void;
 }
 
@@ -33,27 +39,58 @@ export default function Structure3DFrame({
   cif,
   height = 460,
   selected,
-  onToggleAtom,
+  onClickAtom,
+  onBoxSelect,
   onClearSelection,
 }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
   const modelRef = useRef<any>(null);
   const structureRef = useRef<Structure3D | null>(null);
+  /** 上一次的相机视角（getView 原样保存），切换 POSCAR/CONTCAR 时恢复 */
+  const savedViewRef = useRef<number[] | null>(null);
   const [ballStick, setBallStick] = useState(true);
   const [scale, setScale] = useState(0.35);
   const [spin, setSpin] = useState(false);
+  /** Shift 按住时启用"框选"覆盖层（同时屏蔽 3Dmol 的旋转拖拽） */
+  const [shiftHeld, setShiftHeld] = useState(false);
+  const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const bandRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const shiftRef = useRef(false);
 
   const selectedRef = useRef<AtomRef[]>(selected);
   const ballStickRef = useRef(ballStick);
   const scaleRef = useRef(scale);
   const spinRef = useRef(spin);
-  const handlersRef = useRef({ onToggleAtom, onClearSelection });
+  const handlersRef = useRef({ onClickAtom, onBoxSelect, onClearSelection });
+  /** Ctrl/⌘ 按下状态（部分环境下 3Dmol 回调不带原生事件时兜底） */
+  const modifierRef = useRef(false);
   selectedRef.current = selected;
   ballStickRef.current = ballStick;
   scaleRef.current = scale;
   spinRef.current = spin;
-  handlersRef.current = { onToggleAtom, onClearSelection };
+  handlersRef.current = { onClickAtom, onBoxSelect, onClearSelection };
+
+  useEffect(() => {
+    const sync = (e: KeyboardEvent) => {
+      modifierRef.current = e.ctrlKey || e.metaKey;
+      shiftRef.current = e.shiftKey;
+      setShiftHeld(e.shiftKey);
+    };
+    const clear = () => {
+      modifierRef.current = false;
+      shiftRef.current = false;
+      setShiftHeld(false);
+    };
+    window.addEventListener('keydown', sync);
+    window.addEventListener('keyup', sync);
+    window.addEventListener('blur', clear);
+    return () => {
+      window.removeEventListener('keydown', sync);
+      window.removeEventListener('keyup', sync);
+      window.removeEventListener('blur', clear);
+    };
+  }, []);
 
   const structure = useMemo(() => (cif ? parseCif(cif) : null), [cif]);
   structureRef.current = structure;
@@ -179,10 +216,82 @@ export default function Structure3DFrame({
     viewer.render();
   }
 
-  // 结构变化 → 重建 viewer
+  /** 世界坐标 → 画布像素坐标（用于把原子投影到屏幕上判断是否落在框内） */
+  function atomToScreen(viewer: any, x: number, y: number, z: number): { x: number; y: number } | null {
+    try {
+      viewer.rotationGroup.updateMatrixWorld(true);
+      const me = viewer.modelGroup.matrixWorld.elements;
+      const wx = me[0] * x + me[4] * y + me[8] * z + me[12];
+      const wy = me[1] * x + me[5] * y + me[9] * z + me[13];
+      const wz = me[2] * x + me[6] * y + me[10] * z + me[14];
+      const cam = viewer.camera;
+      cam.updateMatrixWorld(true);
+      const inv = cam.matrixWorldInverse || cam.matrixWorld;
+      const ve = inv.elements;
+      const vx = ve[0] * wx + ve[4] * wy + ve[8] * wz + ve[12];
+      const vy = ve[1] * wx + ve[5] * wy + ve[9] * wz + ve[13];
+      const vz = ve[2] * wx + ve[6] * wy + ve[10] * wz + ve[14];
+      const pe = cam.projectionMatrix.elements;
+      const cx = pe[0] * vx + pe[4] * vy + pe[8] * vz + pe[12];
+      const cy = pe[1] * vx + pe[5] * vy + pe[9] * vz + pe[13];
+      const cw = pe[3] * vx + pe[7] * vy + pe[11] * vz + pe[15];
+      if (!cw) return null;
+      const canvas = viewer.container.querySelector('canvas');
+      if (!canvas) return null;
+      const w = canvas.clientWidth || canvas.width;
+      const h = canvas.clientHeight || canvas.height;
+      return { x: ((cx / cw + 1) / 2) * w, y: ((1 - cy / cw) / 2) * h };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 结束框选：把投影落在矩形内的原子交给父组件 */
+  function finishBand(additive: boolean) {
+    const rect = bandRef.current;
+    const viewer = viewerRef.current;
+    const parsed = structureRef.current;
+    bandRef.current = null;
+    setBand(null);
+    if (!rect || !viewer || !parsed) return;
+    const x0 = Math.min(rect.x0, rect.x1);
+    const x1 = Math.max(rect.x0, rect.x1);
+    const y0 = Math.min(rect.y0, rect.y1);
+    const y1 = Math.max(rect.y0, rect.y1);
+    if (x1 - x0 < 4 || y1 - y0 < 4) return; // 误触：当作没有框选
+    const picked: AtomRef[] = [];
+    parsed.atoms.forEach((atom, index) => {
+      const pos = atomToScreen(viewer, atom.x, atom.y, atom.z);
+      if (!pos) return;
+      if (pos.x >= x0 && pos.x <= x1 && pos.y >= y0 && pos.y <= y1) {
+      // index 是 CIF（= vasp2cif 从 POSCAR 转出，顺序与 POSCAR 坐标行一致）的下标，
+      // poscarIndex 换成人们习惯的 1 起编号，方便后续"固定原子"直接对应 POSCAR 行
+      picked.push({ index, poscarIndex: index + 1, element: atom.element });
+      }
+    });
+    handlersRef.current.onBoxSelect(picked, additive);
+  }
+
+  function bandPoint(event: React.MouseEvent<HTMLDivElement>) {
+    const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  // 结构变化（POSCAR ⇄ CONTCAR）→ 重建 viewer，但**保留当前视角**：
+  // 切换前后用同一个相机参数，不会跳回默认角度/缩放。
   useEffect(() => {
     const holder = holderRef.current;
     if (!holder) return;
+    // 先记下当前视角（3Dmol 的 getView/setView 可原样往返）
+    const previous = viewerRef.current;
+    if (previous) {
+      try {
+        const view = previous.getView();
+        if (Array.isArray(view) && view.length) savedViewRef.current = view;
+      } catch {
+        // 忽略：取不到就退回默认取景
+      }
+    }
     holder.innerHTML = '';
     viewerRef.current = null;
     modelRef.current = null;
@@ -201,9 +310,20 @@ export default function Structure3DFrame({
         if (atoms[j].bonds.indexOf(i) === -1) atoms[j].bonds.push(i);
       }
     }
-    viewer.setClickable({}, true, (atom: any) => {
+    viewer.setClickable({}, true, (atom: any, _viewer: any, event: any) => {
+      const additive =
+        typeof event?.ctrlKey === 'boolean'
+          ? !!event.ctrlKey || !!event.metaKey
+          : modifierRef.current;
       if (atom && typeof atom.index === 'number') {
-        handlersRef.current.onToggleAtom({ index: atom.index, element: String(atom.elem || '') });
+        handlersRef.current.onClickAtom(
+          {
+            index: atom.index,
+            poscarIndex: atom.index + 1,
+            element: String(atom.elem || ''),
+          },
+          additive,
+        );
       } else {
         handlersRef.current.onClearSelection();
       }
@@ -212,8 +332,19 @@ export default function Structure3DFrame({
     modelRef.current = model;
     paintModel();
     drawCellBox(viewer, structure);
-    viewer.zoomTo({}, 0);
-    viewer.zoom(1.25, 0);
+    const saved = savedViewRef.current;
+    if (saved && saved.length) {
+      // POSCAR ⇄ CONTCAR 切换：沿用上一个视角，不重置
+      try {
+        viewer.setView(saved);
+      } catch {
+        viewer.zoomTo({}, 0);
+        viewer.zoom(1.25, 0);
+      }
+    } else {
+      viewer.zoomTo({}, 0);
+      viewer.zoom(1.25, 0);
+    }
     if (spinRef.current) viewer.spin('y', 1.2);
     viewer.render();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -268,6 +399,7 @@ export default function Structure3DFrame({
         <Button size="small" icon={<ReloadOutlined />} onClick={resetView}>
           重置视角
         </Button>
+        <span className="s3d-editor__label">Shift + 拖拽 = 框选</span>
         {selected.length > 0 && (
           <Tag color="gold" bordered={false}>
             已选 {selected.length} 个原子
@@ -276,6 +408,44 @@ export default function Structure3DFrame({
       </div>
       <div className="s3d-editor__stage">
         <div ref={holderRef} className="s3d-editor__canvas" style={{ height }} />
+        {/* Shift 按住时出现的框选覆盖层：拦截拖拽，避免 3Dmol 同时旋转 */}
+        <div
+          className={`s3d-editor__band-layer${shiftHeld ? ' is-active' : ''}`}
+          onMouseDown={(e) => {
+            if (!shiftHeld || e.button !== 0) return;
+            const p = bandPoint(e);
+            const next = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+            bandRef.current = next;
+            setBand(next);
+          }}
+          onMouseMove={(e) => {
+            if (!bandRef.current) return;
+            const p = bandPoint(e);
+            const next = { ...bandRef.current, x1: p.x, y1: p.y };
+            bandRef.current = next;
+            setBand(next);
+          }}
+          onMouseUp={(e) => {
+            if (!bandRef.current) return;
+            finishBand(!!e.ctrlKey || !!e.metaKey);
+          }}
+          onMouseLeave={() => {
+            if (bandRef.current) finishBand(modifierRef.current);
+          }}
+        >
+          {band && (
+            <div
+              className="s3d-editor__band"
+              style={{
+                left: Math.min(band.x0, band.x1),
+                top: Math.min(band.y0, band.y1),
+                width: Math.abs(band.x1 - band.x0),
+                height: Math.abs(band.y1 - band.y0),
+              }}
+            />
+          )}
+          {shiftHeld && !band && <div className="s3d-editor__band-hint">按住拖动框选原子</div>}
+        </div>
         {!cif && (
           <div className="s3d-editor__empty">
             <Empty

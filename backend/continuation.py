@@ -24,8 +24,8 @@ from config import PROJECTS_DIR, load_servers
 from incar import modify_incar
 from input_state import (
     applied_items,
-    audit_comment,
     mark_applied,
+    parse_incar_text,
     pending_incar_params,
     pending_kpoints_mesh,
     set_kpoints_mesh,
@@ -354,10 +354,12 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
             if ln.strip().isdigit()
         ]
         warnings = [] if images else ["未发现映像子目录（00..NN），仅复制共享文件"]
-        updated, draft_warnings, applied = _apply_drafts_to_new_dir(
+        updated, draft_warnings, applied, incar_written = _apply_drafts_to_new_dir(
             server, task, new_dir, con, incar_text
         )
-        _write_remote_file(server, f"{new_dir}/INCAR", updated)
+        # INCAR 只在参数真的变化时写回（没变就保持 cp 过来的原文件）
+        if incar_written:
+            _write_remote_file(server, f"{new_dir}/INCAR", updated)
         if applied:
             task["input_state"] = mark_applied(task.get("input_state") or {}, con)
         return {
@@ -371,6 +373,7 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
             "images": images,
             "warnings": warnings + draft_warnings,
             "applied_changes": applied,
+            "incar_written": incar_written,
             "action": "created",
             "current_dir": source_dir,
             "message": f"已创建续算目录 {con}",
@@ -425,10 +428,12 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
     new_dir = f"{remote_dir}/{con}"
     incar_text = _script_slice(out, "===STATE_END===", "===FILES===")
     copied = [ln for ln in _script_tail(out, "===FILES===").splitlines() if ln.strip()]
-    updated, draft_warnings, applied = _apply_drafts_to_new_dir(
+    updated, draft_warnings, applied, incar_written = _apply_drafts_to_new_dir(
         server, task, new_dir, con, incar_text
     )
-    _write_remote_file(server, f"{new_dir}/INCAR", updated)
+    # INCAR 只在参数真的变化时写回（没变就保持 cp 过来的原文件）
+    if incar_written:
+        _write_remote_file(server, f"{new_dir}/INCAR", updated)
     if applied:
         task["input_state"] = mark_applied(task.get("input_state") or {}, con)
     return {
@@ -441,6 +446,7 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
         "copied_files": copied,
         "warnings": draft_warnings,
         "applied_changes": applied,
+        "incar_written": incar_written,
         "action": "created",
         "current_dir": current_dir,
         "message": f"已创建续算目录 {con}",
@@ -475,7 +481,7 @@ def _apply_drafts_to_new_dir(
     new_dir: str,
     con: str,
     incar_text: str,
-) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+) -> Tuple[str, List[str], List[Dict[str, Any]], bool]:
     """把用户在系统里改的参数（input_state.draft）应用到续算目录。
 
     - INCAR：草稿参数随后一起交给 `modify_incar`（续算必需的 ISTART=1/ICHARG=0 优先，
@@ -483,15 +489,20 @@ def _apply_drafts_to_new_dir(
     - KPOINTS：只改 k 网格行（整体重写该文件，先取回再写回）；
     - POSCAR：**不应用**（续算 POSCAR 来自 CONTCAR，用户改动只在台账里留痕）；
     - 应用后在 INCAR 顶部写入审计注释，并返回应用记录供上层标记台账。
+
+    返回 (新的 INCAR 文本, 警告, 应用记录, **是否需要写回**)：只有"参数真的变了"
+    （有草稿应用，或 ISTART/ICHARG 与目标值不同）才需要写回 —— 没变化时不重写远端文件，
+    既避免无意义写入，也避免把行尾/格式改一遍。
     """
     state = task.get("input_state") or {}
     draft_incar = pending_incar_params(state)
     mesh = pending_kpoints_mesh(state)
     applied = applied_items(state)
     warnings: List[str] = []
-    if not applied:
-        return incar_text, warnings, []
 
+    # 注意：**无论有没有草稿都要过一遍 modify_incar** —— 它同时把文本行尾统一成
+    # LF；否则从远端 cat 回来的 CRLF 文本会被原样写回，Windows 写文件时再次
+    # 把 \n 转成 \r\n，于是每续算一次就多一个 \r（表现为 INCAR 中间多出空行）。
     changes: Dict[str, Any] = {"ISTART": 1, "ICHARG": 0}
     for key, value in draft_incar.items():
         if key in changes and str(value) != str(changes[key]):
@@ -502,9 +513,11 @@ def _apply_drafts_to_new_dir(
         changes[key] = value
     new_text, incar_warnings = modify_incar(incar_text, changes)
     warnings.extend(incar_warnings)
-    comment = audit_comment(applied)
-    if comment and not new_text.lstrip().startswith(comment):
-        new_text = comment + "\n" + new_text
+    # 不在 INCAR 里写审计注释：中文注释在部分编辑器/终端按 GBK 解码会显示成乱码
+    # （用户要求去掉）。改动记录保留在本地变更台账（input_state.changes）里，
+    # 界面横幅会显示"上次续算已应用 N 项"。
+    # 只有参数（或审计注释）真的变化时才写回远端
+    needs_write = bool(applied) or parse_incar_text(new_text) != parse_incar_text(incar_text)
 
     if mesh:
         kpoints_text = _download_remote_text(server, f"{new_dir}/KPOINTS")
@@ -512,7 +525,7 @@ def _apply_drafts_to_new_dir(
             _write_remote_file(server, f"{new_dir}/KPOINTS", set_kpoints_mesh(kpoints_text, mesh))
         else:
             warnings.append("KPOINTS 未取回，k 网格修改未应用")
-    return new_text, warnings, applied
+    return new_text, warnings, applied, needs_write
 
 
 def _merge_ele_params(ele_types: List[str]) -> Tuple[Dict[str, Any], List[str]]:
@@ -536,7 +549,13 @@ def _merge_ele_params(ele_types: List[str]) -> Tuple[Dict[str, Any], List[str]]:
 
 
 def _write_remote_file(server: str, remote_path: str, content: str) -> None:
-    """把文本内容写入远程文件（本地临时文件 + 上传）。"""
+    """把文本内容写入远程文件（本地临时文件 + 上传）。
+
+    写之前统一行尾为 LF：Windows 的文本模式会把 `\\n` 再转成 `\\r\\n`，
+    如果传进来的文本已经是 CRLF（从远端 cat 回来的原文），就会变成 `\\r\\r\\n`
+    ——每续算一次 INCAR 就多一个空行（v0.8.2 踩过）。
+    """
+    content = (content or "").replace("\r\n", "\n").replace("\r", "\n")
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", suffix=".txt", delete=False
     ) as f:

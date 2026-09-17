@@ -1,10 +1,18 @@
 # 待办清单（TODO）
 
 > 创建时间：2026-08-24
-> 适用项目：`vasp-management-system`（v0.8.3）
+> 适用项目：`vasp-management-system`（v0.8.4）
 > 勾选约定：`[ ]` 未开始 · `[x]` 已完成
 
 ## 当前进度概览
+
+**已完成（v0.8.4，2026-09-17 · 跨机器迁移交接）**
+
+- [x] 新增 `MIGRATION.md`：打包清单 / 迁移后 11 项必改 / 首次自检验收表 / systemd + nginx / 回滚 / 故障排查 / data 目录速查
+- [x] 新增 `scripts/migrate_paths.py`（dry-run + `--apply`，改写前自动备份）归一化遗留绝对路径
+- [x] 修复跨机器迁移障碍：`aux_molecules.json` 路径改相对（读时还原本机绝对路径）；`reports/index.json.directory` 改相对（读时就地归一化）
+- [x] 清理测试残留 `data/projects/P`
+- [x] 迁移前置审查：无平台专有依赖、导入无大小写不一致、无非 ASCII 文件名、`projects.json` 0 处绝对路径、3Dmol 已入库
 
 **已完成（v0.8.3，2026-09-17 · 输入文件页体验修正）**
 

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-17 · 当前版本：v0.8.3（输入文件页体验修正：同步状态 / 原子选中与框选 / 布尔与多值参数识别 / 只在实际改动时写文件 / 续算状态落库）
+> 生成时间：2026-08-29 · 最近更新：2026-09-17 · 当前版本：v0.8.4（跨机器迁移交接：MIGRATION.md + 路径可移植性修复 + migrate_paths.py）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -31,6 +31,8 @@ npm run dev       # 前端 Vite，端口 5173
 ---
 
 ## 2. 数据与配置
+
+> 换机器/换操作系统（Windows → Linux）迁移看 **`MIGRATION.md`**：打包清单、迁移后必须改的 11 项、验收清单、systemd 常驻、回滚与常见故障都在那里；辅助脚本 `python scripts/migrate_paths.py [--apply]` 用来把 `data/` 里遗留的绝对路径归一化成相对路径。
 
 ```
 data/
@@ -208,8 +210,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.8.3）
+## 7. 近期重要改动记录（v0.4.1 → v0.8.4）
 
+- v0.8.4（本次）：**跨机器迁移交接（Windows → Linux）**。① 新增 **`MIGRATION.md`** 交接文档：三块构成（代码 / `data/` / 远端 HPC）→ 打包清单（逐项 + `data/` 各子目录作用与大小）→ 旧机停机与打包 → 目标机依赖与数据放置 → **迁移后必改 11 项**（SSH 私钥、`path_mapping.local_root`、`settings.json`、时区、编码、启动命令 `python`→venv `python3`、`npm run build`、遗留路径归一化、端口、xdg-open、"打开文件夹"、进程常驻）→ **首次自检验收表** → systemd 单元与 nginx 反代示例 → 注意事项（**绝不能两台机器同时跑同一 `data/`**）→ 回滚 → 已知 Windows 痕迹 → 故障排查表 → 附录（`data/` 速查 + 迁移前实测快照）。② 新增 **`scripts/migrate_paths.py`**（dry-run 默认 + `--apply`）：把 `data/aux_molecules.json` 的 `dir/opt_dir/frac_dir` 与 `data/reports/index.json` 的 `directory` 归一化成相对路径，改写前备份到 `data/backups/migration_<时间>/`，并只读扫描 `projects.json` / `checks/runs.json` 里其它绝对路径。③ **修复两处会阻碍迁移的绝对路径**：`aux_molecules.json` 改存相对数据根路径（`aux_molecules/<标签>[/opt|/frac]`），读取时由 `_resolve_entry()` 还原成**当前机器**的绝对路径（老数据里的 Windows 盘符/反斜杠自动丢弃、按标签重建，已实测 API 返回本机路径）；`reports/index.json` 的 `directory` 写入即相对（`<项目>/<报告ID>`），读取时 `_read_index()` 就地归一化。④ 清理测试残留目录 `data/projects/P`（0 文件、库中无引用）。⑤ 迁移前置审查结论：**代码无平台专有依赖**（无 pywin32/winreg/ctypes/signal 专用逻辑，`_open_in_explorer` 已含 Linux `xdg-open` 分支）、**本地模块导入无大小写不一致**（45 个模块全量扫描通过，Linux 大小写敏感）、**仓库与 `data/` 无任何非 ASCII 文件名**、`projects.json` **0 处绝对路径**、`public/3dmol/3Dmol-min.js` 已入库 → 迁移只需"clone 代码 + 拷 `data/` + 配 SSH 私钥 + 改 11 项配置"。⑥ `process.md` §2 与 `README.md` 顶部加了指向 `MIGRATION.md` 的入口。
 - v0.8.3（commit `76ef158`，已推送 origin/main）：**作业管理输入文件页的一批修正**（用户逐条验收后的收尾）。① **「文件结构」改成「同步状态」**：INCAR/KPOINTS/POSCAR/CONTCAR 显示 **最新（绿）/ 过时（黄，只在本地没同步过）/ 有修改待提交（琥珀高亮）**，POTCAR 与 submit.sh 标"不参与同步"，**去掉 WAVECAR**。② **POSCAR 页原子操作**：单击选中（金色高亮）、**Ctrl/⌘ 点击多选**、**按住 Shift 拖拽框选**（Ctrl/⌘+Shift 框选为并入），选中标签按 POSCAR 序号**自动合并区间**（`Al1 Al2 Al3 Al6 Al7` → `Al1-3 Al6-7`），序号与 **POSCAR 坐标行一致（从 1 开始，即 `Ag17`/`O33`）**；切 POSCAR ⇄ CONTCAR **保持同一视角**（`getView`/`setView` 往返，不再重置）；POSCAR 目前不参与远端修改（后续只有"固定原子"会改它，先搁置）。③ **NEB 映像只取 CONTCAR**（不再回退 POSCAR —— 映像的 POSCAR 是插值初始结构，当"优化后结构"展示会误导），NEB 映像任务的详情页**去掉 POSCAR 页签**。④ **参数识别修正**：布尔支持 `.T./.F.` 全等价写法（原来只认 `.TRUE.`，导致 `LWAVE = .T.` 显示未勾选、还会被误判成"已修改"）；含空格的参数值（`DIPOL = 0.5 0.5 0.18`、`MAGMOM = 5*2.0 3*1.0`）**完整保留**，不再被截成第一个 token。⑤ **只在实际改动时写文件**：「上传到远端」先与本次计算的快照比对，一致就跳过；续算时 INCAR 只在参数真变化时写回。⑥ **续算不再写审计注释**（中文注释在 GBK 环境显示成乱码，用户要求去掉），改动只记在本地台账；顺带修正 KPOINTS 网格行行首多一个空格、INCAR 每续算一次多一个 `\r`（`_write_remote_file` 统一 LF）两个回归。⑦ **续算后状态落库**：`create_same_type_continuation` 把父任务被应用过的 `input_state` 与续算子任务一起保存，修掉"续算成功后界面仍显示有修改待提交"。
 - v0.8.2（commit `2785c91`，已推送 origin/main）：**作业管理输入文件重构：自动同步远端参数 + 参数草稿/变更台账 + 续算应用 + POSCAR 3D 编辑页**。① 新增 `backend/input_state.py`：远端 conN 的 INCAR/KPOINTS/POSCAR/CONTCAR 同步到 `<任务>/inputs/`（含 CIF），元数据（哈希/参数/k 网格/结构摘要/来源）存 `task["input_state"]`；**提交作业成功后后台自动同步一次**（延迟 2s、不阻塞提交），也可手动「同步最新参数」，成本 1 次 exec + 4 次 SFTP 小文件，无后台轮询。② 新增接口 `GET /jobs/tasks/{id}/input`、`POST …/input/sync`、`PUT …/input/draft`、`DELETE …/input/draft/{file}`；**参数改动不再直接改远端**，而是写草稿 + 变更台账（file/key/from/to/at/applied_at/applied_in），只在**下次续算**时应用——符合"运行中的作业不重读 INCAR，不能抹掉这次计算的参数记录"这一前提。③ `continuation._apply_drafts_to_new_dir()`：续算 cp 文件后把草稿 INCAR 参数并进 `modify_incar`（ISTART/ICHARG 续算必需项优先，冲突告警）、KPOINTS 草稿只改网格行、**POSCAR 永不覆盖**（续算 POSCAR 来自 CONTCAR），并在 conN/INCAR 顶部写 `# [vasp-manager] …` 审计注释、台账标记已应用。④ 前端：INCAR 页**默认只读**（点「修改参数」解锁 → 改 → 「确认修改」才生效），**已修改/待生效参数高亮**（琥珀色 + "待生效"角标 + 原值提示），顶部来源横幅显示「来源 conN · 作业号 · 同步时间」+ 待生效清单（可逐项撤销）；**其他参数**（原"自定义参数"）改为列出本次计算 INCAR 里不在预设表单中的键值（可编辑，留空即不写）；`buildIncarText` 同步支持把这些"其他参数"写进 INCAR。⑤ **POSCAR 页重构**：大尺寸 3Dmol 窗口（460px）+ 初始 POSCAR / 最新 CONTCAR 切换 + **点击选中原子**（金色高亮、多选、可清空，为后续固定原子铺路）+ 结构数据卡（元素组成/原子数/晶格）+ 交互按钮（球棍/空间填充、原子缩放、自动旋转、a/b/c 视角、重置视角）；「固定选中原子」按钮先占位置灰。⑥ KPOINTS 页新增「本次计算的 K 点网格」卡：直接改 k1/k2/k3（同样走只读闸门 + 确认 + 待生效高亮），并显示网格密度系数 k×a 与巡检 >20 的对照。⑦ 实测（真机）：`task_1787633537913_1` 同步 10s 取回 con1 的 INCAR（22 个参数，含 ISTART/ICHARG/EDIFFG/IVDW）、KPOINTS 2×2×1、POSCAR/CONTCAR（41 原子）与两份 CIF；草稿写入 EDIFFG -0.02→-0.01 / KPOINTS 2×2×1→3×3×1 成功记录 3 项并可逐项撤销；离线单测验证续算应用（INCAR 参数合并 + 审计注释 + KPOINTS 网格重写 + 台账 applied_in）。
 - v0.8.1（commit `ae8ad08`，已推送 origin/main）：**总览滚动 + 新建项目建组 + INCAR 细节**。① **总览「运行中的任务」固定高度**：表格加 `scroll={{ y: 320 }}`，作业变多时模块不再被撑高（固定 320px 内部滚动、表头吸顶），实测 9 行时卡片高度 477px（其中表格体 320px）。② **新建项目支持"建组"**：`AddProjectModal` 的自由能/NEB 分类从"加单个任务"改为"按组创建"——自由能 = 组名 + 结构数、NEB = 组名 + 映像数，提交时先建项目再调 `POST /api/groups`；**创建自由能任务会同时登记结构优化(opt) 与频率矫正(frac) 两个任务**（frac 仍作为 opt 的子项，`parent_task_id` 指向它，呈现方式不变），修掉了"新建项目里只能建出一个 `xxx · 频率矫正`"的问题。③ **后端放开"至少 1 个独立任务"**：`models.ProjectIn.tasks` 允许空列表（只建组的项目），前端仍要求"至少 1 个子任务或 1 个组"。④ **INCAR 留空不写入**：`incar.modify_incar` 忽略空字符串/None/仅空白值，"上传远端"链路也先过滤空值——把 NCORE 之类的框清空不会再生成 `NCORE = `（已存在的行不会被删，见 §6.5）。⑤ **INCAR 默认参数新增 `IVDW`（默认 11 = DFT-D3(BJ)）**：`src/data/mock/incar.ts`（枚举选项 + 默认值）与 `data/config/task_registry.json` / `backend/defaults/task_registry.json`（四种任务类型的 default_incar）同步。⑥ 实测（隔离数据目录 + `VASP_SSH_MOCK=1`，测完删除）：只建组的项目创建成功；自由能 PATH1 × 2 个结构 → 4 个任务（2 opt + 2 frac，frac.parent=同结构 opt）、NEB NC1 × 5 映像 → 3 个任务、生成的 INCAR 含 `IVDW = 11`；`modify_incar({NCORE: ""})` 不再写入空参数。
@@ -310,7 +313,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.8.3；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
+1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.8.4；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。

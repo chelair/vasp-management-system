@@ -36,7 +36,31 @@ def _save_registry(data: Dict[str, Any]) -> None:
 
 
 def list_aux_molecules() -> List[Dict[str, Any]]:
-    return _load_registry().get("molecules", [])
+    """辅助分子列表（dir/opt_dir/frac_dir 统一还原成**当前机器的绝对路径**）。
+
+    注册表里存的是相对数据根的路径（v0.8.3 起），老数据里可能是 Windows 绝对路径，
+    这里统一解析：绝对路径直接用、相对路径按 DATA_DIR 拼接、Windows 盘符残留按标签重建。
+    """
+    return [_resolve_entry(m) for m in _load_registry().get("molecules", [])]
+
+
+def _resolve_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """把注册表条目的路径字段解析成本机绝对路径。"""
+    item = dict(entry)
+    label = str(entry.get("label") or "")
+    root = AUX_DIR / label
+    for key, default in (("dir", root), ("opt_dir", root / "opt"), ("frac_dir", root / "frac")):
+        raw = str(entry.get(key) or "").strip()
+        if not raw:
+            item[key] = str(default)
+            continue
+        candidate = Path(raw)
+        # Windows 盘符/反斜杠残留（旧数据）→ 丢弃，按标签重建
+        if re.match(r"^[A-Za-z]:[\\/]", raw) or "\\" in raw:
+            item[key] = str(default)
+            continue
+        item[key] = str(candidate if candidate.is_absolute() else DATA_DIR / candidate)
+    return item
 
 
 def get_aux(label: str) -> Optional[Dict[str, Any]]:
@@ -73,9 +97,11 @@ def add_aux_molecule(label: str) -> Dict[str, Any]:
         _write_default_inputs(task_path, role)
     entry = {
         "label": label,
-        "dir": str(root),
-        "opt_dir": str(root / "opt"),
-        "frac_dir": str(root / "frac"),
+        # 路径存**相对数据根**的形式（跨机器迁移后仍然有效）；
+        # 读取时用 aux_paths() 还原成绝对路径
+        "dir": f"aux_molecules/{label}",
+        "opt_dir": f"aux_molecules/{label}/opt",
+        "frac_dir": f"aux_molecules/{label}/frac",
         "energy": None,
         "zpe": None,
         "correction": None,

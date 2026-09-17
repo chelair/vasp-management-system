@@ -31,9 +31,22 @@ def _read_index() -> List[Dict[str, Any]]:
         return []
     try:
         data = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
+        items = data if isinstance(data, list) else []
     except Exception:  # noqa: BLE001 - 索引损坏时重建
         return []
+    # directory 统一成**相对 data/reports 的路径**：老索引里是绝对路径（含 Windows 盘符），
+    # 换机器后会失效，这里读的时候就地归一化
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        directory = str(item.get("directory") or "")
+        project = _safe_name(str(item.get("project_name") or ""))
+        report_id = str(item.get("report_id") or "")
+        if project and report_id:
+            item["directory"] = f"{project}/{report_id}"
+        elif directory:
+            item["directory"] = directory.replace("\\", "/").rsplit("reports/", 1)[-1]
+    return items
 
 
 def _write_index(items: List[Dict[str, Any]]) -> None:
@@ -97,7 +110,8 @@ def save_report(
         "chart_count": len(charts),
         "json_path": f"{_safe_name(project_name)}/{report_id}/report.json",
         "markdown_path": f"{_safe_name(project_name)}/{report_id}/report.md",
-        "directory": str(target),
+        # 目录用**相对 data/reports 的相对路径**（跨机器迁移后仍然有效）
+        "directory": f"{_safe_name(project_name)}/{report_id}",
     }
     with _lock:
         # 同一个项目只保留最新一份报告：先清理该项目的历史报告目录

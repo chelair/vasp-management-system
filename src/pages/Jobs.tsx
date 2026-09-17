@@ -50,6 +50,7 @@ import StructureDetail from '../components/jobs/StructureDetail';
 import NebGroupDetail from '../components/jobs/NebGroupDetail';
 import AddProjectModal from '../components/projects/AddProjectModal';
 import {
+  applyIncarGates,
   buildDefaultParams,
   buildIncarText,
   parseIncarContent,
@@ -436,7 +437,11 @@ export default function Jobs() {
       return;
     }
     try {
-      const state = await saveTaskInputDraft(task.task_id, { file: 'INCAR', params });
+      // 主开关关闭的整组参数（DFT+U / 偶极矩修正）不进入草稿 → 续算时也不会写入
+      const state = await saveTaskInputDraft(task.task_id, {
+        file: 'INCAR',
+        params: applyIncarGates(params),
+      });
       setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
       const count = state.changes.filter((c) => !c.applied_at).length;
       message.success(

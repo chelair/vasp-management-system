@@ -1,12 +1,12 @@
 {
   "name": "vasp-management-system",
   "private": true,
-  "version": "0.8.4",
+  "version": "0.8.5",
   "type": "module",
   "description": "VASP 第一性原理计算项目管理系统 - 前端框架（Mock 数据演示）",
   "scripts": {
     "dev": "vite",
-    "server": "python backend/run.py",
+    "server": ".venv/bin/python backend/run.py",
     "server:watch": "python -m uvicorn main:app --reload --host 0.0.0.0 --port 3001 --app-dir backend",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host",

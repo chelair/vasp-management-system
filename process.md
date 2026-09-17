@@ -1,8 +1,8 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-17 · 当前版本：v0.8.4（跨机器迁移交接：MIGRATION.md + 路径可移植性修复 + migrate_paths.py）
+> 生成时间：2026-08-29 · 最近更新：2026-09-18 · 当前版本：v0.8.5（Linux 生产部署 + 输入参数页 DFT+U / 偶极矩修正卡片 + 一键清除红点修复）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
-> 项目位置：`D:\Skill\vasp-project-manager-web`（自包含，不依赖旧项目 `vasp-project-manager`）。
+> 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
 > 版本号、改动记录（§7）、待办状态（§9）与数据现状（§2）。发现文档与代码不一致时，以代码为准并立即回来改文档。
 
@@ -15,24 +15,30 @@
 - 存储：文件型 JSON（无数据库）：`data/projects.json` + 本地目录 + 自动备份 20 份 + 巡检归档 `data/checks/`。
 - SSH：Paramiko 常驻连接池，操作真实 HPC（LSF 调度 bsub/bjobs/bkill）。
 
-### 启动方式
+### 启动方式（Linux 生产机，systemd 常驻）
 
-```powershell
-cd D:\Skill\vasp-project-manager-web
-npm run server    # 后端 API，端口 3001（等价 python backend/run.py）
-npm run dev       # 前端 Vite，端口 5173
+```bash
+sudo systemctl start   vasp-manager      # 启动
+sudo systemctl stop    vasp-manager      # 停止
+sudo systemctl restart vasp-manager      # 重启（改了 backend/*.py 后必须）
+systemctl status vasp-manager --no-pager # 状态（含 MainPID）
+sudo journalctl -u vasp-manager -f       # 实时日志
 ```
 
-- 数据目录可用 `python backend/run.py --data-dir <目录>` 覆盖（测试隔离用）。
-- 后端无 `--reload`：**改 backend/*.py 后必须重启后端进程才生效**。
-- 前端 Vite 热更新；改 `src/data/mock/incar.ts` 等默认值后需**刷新页面**（内存 workspace 不会自动重建）。
+- 单元：`/etc/systemd/system/vasp-manager.service`（`User=zouyuxi`、`WorkingDirectory=/home/zouyuxi/projects/vasp-manager`、`ExecStart=…/.venv/bin/python backend/run.py`、`Restart=always`、已 `enabled` 开机自启）。
+- 访问：`http://192.168.1.20:3001`（局域网）/ `http://10.147.20.10:3001`（ZeroTier）；`/docs` 为 Swagger。
+- 前台调试（**先 `systemctl stop`**）：`cd /home/zouyuxi/projects/vasp-manager && .venv/bin/python backend/run.py`；`npm run server` 等价（脚本已指向 `.venv/bin/python`）。
+- 前端开发用 `npm run dev`（Vite 5173）；生产是单端口 3001 同时托管 `dist/` 与 `/api`，**改前端只需 `npm run build`，不用重启后端**。
+- 数据目录可用 `backend/run.py --data-dir <目录>` 覆盖（测试隔离用）。
+- 后端无 `--reload`：**改 backend/*.py 后必须重启后端**；改 `src/data/mock/incar.ts` 等默认值后需 `npm run build` + 刷新页面。
+- **同一个 `data/` 只能有一个后端在写**（systemd 服务与前台进程二选一）。
 - `data/` 是运行时数据（已 gitignore），部署/换机要连同 `data/` 一起复制。
 
 ---
 
 ## 2. 数据与配置
 
-> 换机器/换操作系统（Windows → Linux）迁移看 **`MIGRATION.md`**：打包清单、迁移后必须改的 11 项、验收清单、systemd 常驻、回滚与常见故障都在那里；辅助脚本 `python scripts/migrate_paths.py [--apply]` 用来把 `data/` 里遗留的绝对路径归一化成相对路径。
+> 换机器/换操作系统（Windows → Linux）迁移看 **§11 部署与运维**：目录与服务、日常操作、常驻检查项、Linux 特有的坑、nginx 反代与回滚都在那里（原一次性文档 `MIGRATION.md` 已删除，内容并入 §11）；辅助脚本 `python scripts/migrate_paths.py [--apply]` 用来把 `data/` 里遗留的绝对路径归一化成相对路径。
 
 ```
 data/
@@ -210,8 +216,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.8.4）
+## 7. 近期重要改动记录（v0.4.1 → v0.8.5）
 
+- v0.8.5（Linux 生产部署）：**迁移落到 Linux + 输入参数页两张新卡片 + 两处线上 bug 修复 + 文档合并**。① **部署**：代码与数据统一在 `/home/zouyuxi/projects/vasp-manager`（git clone + `.venv` + `npm ci && npm run build`，`data/` 在仓库内故 `path_mapping.local_root` 保持相对 `data/projects`），用 systemd `vasp-manager.service`（`User=zouyuxi`、开机自启、`Restart=always`）常驻；Python 实测 **3.14.4** 可用（fastapi 0.141.1 / uvicorn[standard] 0.53.0 / paramiko 5.0.0；uvloop 0.22.1、httptools 0.8.0 均有 cp314 轮子），Node 22.22.1；`package.json` 的 `server` 脚本由 `python` 改为 `.venv/bin/python`，避免 Linux 下 `python: command not found`。② **输入参数页新增「DFT+U」卡片**：主开关关闭时整卡置灰且**不写入任何 LDAU\* 参数**；打开时写 `LDAU = .TRUE.`，并按元素表生成 `LDAUL / LDAUU / LDAUJ`（一一对应，行增删同步更新三个数组；元素名取 POSCAR 元素行，默认首元素加 U：`2 / 4.0 / 0.0`，其余 `-1 / 0.0 / 0.0`），`LDAUTYPE`（默认 1）、`LMAXMIX`（默认 4）按选择写入。③ **新增「偶极矩修正」卡片**：关闭时不写 `LDIPOL / IDIPOL / DIPOL`；打开时写 `LDIPOL = .TRUE.`、`IDIPOL` 按选择（默认 3）、`DIPOL` **三个分量都非空才写** `x y z`。开关语义用 `applyIncarGates()` 统一，同时作用于**预览文本 / 生成到本地 / 上传远端 / 续算草稿**四条链路（后端 `modify_incar` 把空值视为"不写入"，故关闭时必须清空该组参数）。④ **输入参数页布局**：卡片容器由"按行对齐的 grid"改为**两列独立流式**（`.job-incar-grid` + `.job-incar-col`，窄屏单列），卡片各自自然高度，离子弛豫 / 自旋与磁性等短卡片不再被同行高卡片撑出大片空白。⑤ **修「一键清除」红点 bug**：原实现 `setReadChanges(new Set())` + `localStorage.removeItem()` 等于清空"已读"记录，而红点条件是 `status_changed && !已读` → 点一次反而全部重新点亮；改为把当前所有 `status_changed` 任务标记为已读并写回 localStorage（与"点开详情"同一机制）。⑥ **修「其他参数」不可编辑**：原来直接渲染 `extraIncarParams()`（只保留非空值）→ 新增的空值行被过滤掉、看不见也打不进字，且行以参数名为 React key、改名会重建输入框丢焦点；改为"本地行 + 稳定 id"模型（`ExtraRow {id,key,value}`，编辑即写回参数、外部变化才重建），并补上编辑态行内「添加参数」入口与空态文案。⑦ **迁移踩坑与修复**：Windows 大小写不敏感导致 `data/projects/Ag_20260830/` 下同时存在 `NEB/`（老数据，含完整映像 00–04）与 `neb/`（Linux 新写入的空壳），页面 NEB 映像只剩中间 3 个 → 已把新文件并回老树并用软链接 `neb → NEB` 对齐；全盘审计（本地路径 272 条 / 远端路径 324 条 / 模块导入 / 产物引用）确认**无其它大小写分叉**。⑧ **文档合并**：删除一次性的 `MIGRATION.md`，可复用的部署、运维、验收与故障排查内容并入本文档 §11 与 `README.md` / `DEPENDENCIES.md`。
 - v0.8.4（commit `aaae4b3`，已推送 origin/main）：**跨机器迁移交接（Windows → Linux）**。① 新增 **`MIGRATION.md`** 交接文档：三块构成（代码 / `data/` / 远端 HPC）→ 打包清单（逐项 + `data/` 各子目录作用与大小）→ 旧机停机与打包 → 目标机依赖与数据放置 → **迁移后必改 11 项**（SSH 私钥、`path_mapping.local_root`、`settings.json`、时区、编码、启动命令 `python`→venv `python3`、`npm run build`、遗留路径归一化、端口、xdg-open、"打开文件夹"、进程常驻）→ **首次自检验收表** → systemd 单元与 nginx 反代示例 → 注意事项（**绝不能两台机器同时跑同一 `data/`**）→ 回滚 → 已知 Windows 痕迹 → 故障排查表 → 附录（`data/` 速查 + 迁移前实测快照）。② 新增 **`scripts/migrate_paths.py`**（dry-run 默认 + `--apply`）：把 `data/aux_molecules.json` 的 `dir/opt_dir/frac_dir` 与 `data/reports/index.json` 的 `directory` 归一化成相对路径，改写前备份到 `data/backups/migration_<时间>/`，并只读扫描 `projects.json` / `checks/runs.json` 里其它绝对路径。③ **修复两处会阻碍迁移的绝对路径**：`aux_molecules.json` 改存相对数据根路径（`aux_molecules/<标签>[/opt|/frac]`），读取时由 `_resolve_entry()` 还原成**当前机器**的绝对路径（老数据里的 Windows 盘符/反斜杠自动丢弃、按标签重建，已实测 API 返回本机路径）；`reports/index.json` 的 `directory` 写入即相对（`<项目>/<报告ID>`），读取时 `_read_index()` 就地归一化。④ 清理测试残留目录 `data/projects/P`（0 文件、库中无引用）。⑤ 迁移前置审查结论：**代码无平台专有依赖**（无 pywin32/winreg/ctypes/signal 专用逻辑，`_open_in_explorer` 已含 Linux `xdg-open` 分支）、**本地模块导入无大小写不一致**（45 个模块全量扫描通过，Linux 大小写敏感）、**仓库与 `data/` 无任何非 ASCII 文件名**、`projects.json` **0 处绝对路径**、`public/3dmol/3Dmol-min.js` 已入库 → 迁移只需"clone 代码 + 拷 `data/` + 配 SSH 私钥 + 改 11 项配置"。⑥ `process.md` §2 与 `README.md` 顶部加了指向 `MIGRATION.md` 的入口。
 - v0.8.3（commit `76ef158`，已推送 origin/main）：**作业管理输入文件页的一批修正**（用户逐条验收后的收尾）。① **「文件结构」改成「同步状态」**：INCAR/KPOINTS/POSCAR/CONTCAR 显示 **最新（绿）/ 过时（黄，只在本地没同步过）/ 有修改待提交（琥珀高亮）**，POTCAR 与 submit.sh 标"不参与同步"，**去掉 WAVECAR**。② **POSCAR 页原子操作**：单击选中（金色高亮）、**Ctrl/⌘ 点击多选**、**按住 Shift 拖拽框选**（Ctrl/⌘+Shift 框选为并入），选中标签按 POSCAR 序号**自动合并区间**（`Al1 Al2 Al3 Al6 Al7` → `Al1-3 Al6-7`），序号与 **POSCAR 坐标行一致（从 1 开始，即 `Ag17`/`O33`）**；切 POSCAR ⇄ CONTCAR **保持同一视角**（`getView`/`setView` 往返，不再重置）；POSCAR 目前不参与远端修改（后续只有"固定原子"会改它，先搁置）。③ **NEB 映像只取 CONTCAR**（不再回退 POSCAR —— 映像的 POSCAR 是插值初始结构，当"优化后结构"展示会误导），NEB 映像任务的详情页**去掉 POSCAR 页签**。④ **参数识别修正**：布尔支持 `.T./.F.` 全等价写法（原来只认 `.TRUE.`，导致 `LWAVE = .T.` 显示未勾选、还会被误判成"已修改"）；含空格的参数值（`DIPOL = 0.5 0.5 0.18`、`MAGMOM = 5*2.0 3*1.0`）**完整保留**，不再被截成第一个 token。⑤ **只在实际改动时写文件**：「上传到远端」先与本次计算的快照比对，一致就跳过；续算时 INCAR 只在参数真变化时写回。⑥ **续算不再写审计注释**（中文注释在 GBK 环境显示成乱码，用户要求去掉），改动只记在本地台账；顺带修正 KPOINTS 网格行行首多一个空格、INCAR 每续算一次多一个 `\r`（`_write_remote_file` 统一 LF）两个回归。⑦ **续算后状态落库**：`create_same_type_continuation` 把父任务被应用过的 `input_state` 与续算子任务一起保存，修掉"续算成功后界面仍显示有修改待提交"。
 - v0.8.2（commit `2785c91`，已推送 origin/main）：**作业管理输入文件重构：自动同步远端参数 + 参数草稿/变更台账 + 续算应用 + POSCAR 3D 编辑页**。① 新增 `backend/input_state.py`：远端 conN 的 INCAR/KPOINTS/POSCAR/CONTCAR 同步到 `<任务>/inputs/`（含 CIF），元数据（哈希/参数/k 网格/结构摘要/来源）存 `task["input_state"]`；**提交作业成功后后台自动同步一次**（延迟 2s、不阻塞提交），也可手动「同步最新参数」，成本 1 次 exec + 4 次 SFTP 小文件，无后台轮询。② 新增接口 `GET /jobs/tasks/{id}/input`、`POST …/input/sync`、`PUT …/input/draft`、`DELETE …/input/draft/{file}`；**参数改动不再直接改远端**，而是写草稿 + 变更台账（file/key/from/to/at/applied_at/applied_in），只在**下次续算**时应用——符合"运行中的作业不重读 INCAR，不能抹掉这次计算的参数记录"这一前提。③ `continuation._apply_drafts_to_new_dir()`：续算 cp 文件后把草稿 INCAR 参数并进 `modify_incar`（ISTART/ICHARG 续算必需项优先，冲突告警）、KPOINTS 草稿只改网格行、**POSCAR 永不覆盖**（续算 POSCAR 来自 CONTCAR），并在 conN/INCAR 顶部写 `# [vasp-manager] …` 审计注释、台账标记已应用。④ 前端：INCAR 页**默认只读**（点「修改参数」解锁 → 改 → 「确认修改」才生效），**已修改/待生效参数高亮**（琥珀色 + "待生效"角标 + 原值提示），顶部来源横幅显示「来源 conN · 作业号 · 同步时间」+ 待生效清单（可逐项撤销）；**其他参数**（原"自定义参数"）改为列出本次计算 INCAR 里不在预设表单中的键值（可编辑，留空即不写）；`buildIncarText` 同步支持把这些"其他参数"写进 INCAR。⑤ **POSCAR 页重构**：大尺寸 3Dmol 窗口（460px）+ 初始 POSCAR / 最新 CONTCAR 切换 + **点击选中原子**（金色高亮、多选、可清空，为后续固定原子铺路）+ 结构数据卡（元素组成/原子数/晶格）+ 交互按钮（球棍/空间填充、原子缩放、自动旋转、a/b/c 视角、重置视角）；「固定选中原子」按钮先占位置灰。⑥ KPOINTS 页新增「本次计算的 K 点网格」卡：直接改 k1/k2/k3（同样走只读闸门 + 确认 + 待生效高亮），并显示网格密度系数 k×a 与巡检 >20 的对照。⑦ 实测（真机）：`task_1787633537913_1` 同步 10s 取回 con1 的 INCAR（22 个参数，含 ISTART/ICHARG/EDIFFG/IVDW）、KPOINTS 2×2×1、POSCAR/CONTCAR（41 原子）与两份 CIF；草稿写入 EDIFFG -0.02→-0.01 / KPOINTS 2×2×1→3×3×1 成功记录 3 项并可逐项撤销；离线单测验证续算应用（INCAR 参数合并 + 审计注释 + KPOINTS 网格重写 + 台账 applied_in）。
@@ -242,6 +249,10 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 > 版本号说明：v0.5.5 的代码提交是 `60e995d`（+ `292d5fc` 文档补 commit 号），其 commit message 前缀当时写作 v0.5.1，随后统一为 v0.5.5；查历史时按 commit 号找，不要按版本号找。
 
+- v0.6.7（commit `bd9e7bb`，已推送 origin/main）：**自由能路径看板视觉与动画重做**（`PathSummaryModal` + `PathStepChart` 重写，样式见 global.css 的 `.fe-*`）。① 顶部新增四张统计卡：中间体数量、矫正项完成度（N/M）、结构优化收敛（N/M）、最高相对能（含对应结构）。② 台阶图纵轴改为**相对自由能**（ΔE = E − E参考，参考取第一个有数据的中间体），保留绝对能量显示在 tooltip 与列表；台阶带渐变柱体 + 向下渐变面积 + 状态点（未收敛/未矫正时琥珀色 + 圆点），缺数据显示灰色虚线"无数据"。③ 交互：悬停台阶上浮 3px + 柱体加粗发光 + 跟随鼠标的信息卡（自由能 / 相对 ΔE / DFT / 矫正项 / 状态 / "点击查看巡检详情"），点击台阶或列表行打开该结构巡检详情。④ 动画：台阶按顺序从左滑入（80ms 错峰）、连接线淡入、数值与结构标签依次出现，列表行错峰上浮；`prefers-reduced-motion` 下全部禁用。⑤ 明细表改为自绘列表（中间体 chip / DFT / 矫正项（正负着色）/ 自由能 / 相对 ΔE / 收敛·矫正徽标 / 跳转箭头），窄屏自动重排。⑥ **后端语义修复**：`/api/free-energy/{gid}/summary` 的 `converged` 改为「`completed`，或 `archived` 且 `archived_from == completed`」——否则归档后的路径会被整片渲染成"未收敛"琥珀色（与 v0.6.4/v0.6.5 的归档功能叠加后才暴露）。
+- v0.6.6（commit `965a8b0`，已推送 origin/main）：**巡检列表排序规则**（前端 `Inspection.tsx` 的 `filtered` 排序键）。① 状态优先级进入排序：`错误 > 警告 > 待提交（未检）> 正常 > 关闭`。② 自由能 / NEB **同组作为一个排序单元**，取组内**最高优先级状态**整体参与排序（组员恒定相邻）；整组归档的单元沉到其他任务下面（"归档任务放在其他任务下面"）。③ 原有规则保持不变，作为后续 tie-break：任务类别（结构优化→自由能→NEB→电子结构）→ 组名自然序（PATH1 < PATH2 < PATH10）→ 组内结构顺序（自由能 1..N、NEB IS→FS→neb）→ 任务名；组内被归档的成员沉到**该组末尾**（不破坏组相邻）。④ 实现中修掉两个自测发现的坑：排序单元键最初用 `项目|组名`，但同项目下自由能组与 NEB 组可能同名（Ag 都有 PATH1/2/3），导致跨类别串组、组权重算错 → 键改为 `项目|类别|组名`；"组内归档成员沉底"最初放在组键之前，会把归档成员挤到别的组后面（NEB 的 NC 组被拆开）→ 移到组键之后。
+- v0.6.5（commit `1da2de6`，已推送 origin/main）：**归档状态与巡检的关系修正**。① **归档任务禁止巡检**：`inspection_runner._plan_batches()` 单任务分支遇到 `archived` 任务抛 ValueError → 接口 400「任务已关闭（归档），请先重新打开再巡检」，杜绝"单独巡检把归档状态覆盖回 completed/zombied"（此前是线上实际发生的问题）。② **巡检列表显示「关闭」**：`CheckStatus` 新增 `archived`（`CHECK_STATUS_LABELS.archived = '关闭'`，CSS 用既有 `.status-tag--archived`），归档任务在列表状态列显示"关闭"、信息列"任务已关闭（归档）"，不再按"未检/待提交"呈现，也不计入项目块头部「未检」计数（改为单独统计「关闭 N」）；状态列筛选新增"关闭"选项。③ 归档行的「单独巡检」按钮置灰（列表与详情弹窗都加，带提示），已归档任务仍可查看详情。④ `mappers` 暴露 `archived_from` / `archived_at`，前端"重新打开"弹窗能显示真实恢复目标（此前恒显示"待提交"）。⑤ **运维教训归档**：v0.6.4 的归档连带在真机上"没生效"，原因是 3001 上的后端进程还是 01:30 启动的旧代码（改后端不重启 = 页面行为不变），已在 §8 强化说明。
+- v0.6.4（commit `3921566`，已推送 origin/main）：**自由能主任务归档连带频率矫正**。① 后端 `task_paths.free_energy_frac_task()` 按 `<结构目录>/frac` 约定（并校验 `parent_task_id`）定位 frac 子任务；`POST /jobs/tasks/{id}/archive` 归档自由能 opt 时**连带归档 frac**，`/unarchive` 连带恢复（各回各自的 `archived_from`），响应新增 `frac_status` / `archived_siblings` / `reopened_siblings`；对"主任务已归档但 frac 未归档"的历史状态，重复调用 archive 也会把 frac 补齐（幂等修复，不再直接 409）。② `mappers` 为自由能 opt 任务输出 `frac_sibling{task_id,model_name,status}`。③ 前端（作业管理任务面板 + 巡检详情弹窗）归档确认文案按 frac 状态区分：**未完成（非 completed）时加 ⚠️ 警告**"该任务的频率矫正（xxx）当前为「未收敛」，尚未正常结束；关闭主任务会一并归档它"，成功提示与"重新打开"提示也写明连带关系。④ 新增 `scripts/repair_frac_archive.py`：一次性修复历史"主任务已归档、frac 未归档"的数据（默认 dry-run，`--apply` 才写入，写入走事务并自动备份）。
 - v0.6.3（commit `fab6139`，已推送 origin/main）：**归档入口补齐 + 关闭项目展示细化**。① **巡检详情弹窗 footer 新增「关闭（归档）」**（已归档任务显示「重新打开」）：未正常结束的任务同样弹窗警告（写明当前状态、说明"关闭后不再参与全局巡检"），关闭后自动关闭弹窗并刷新列表；重新打开会重拉详情。② **作业管理已关闭项目默认折叠**：`JobsTree` 从 `defaultExpandAll` 改为受控 `expandedKeys`，初始集合排除已关闭项目及其子树（新建/归档/关闭后重置为该规则），用户仍可手动展开。③ **总览「已关闭项目」样式重做**：原来只有裸按钮 + 默认样式（看起来与卡片风格不一致），现在改为虚线分隔 + 胶囊按钮（圆角 999px、浅底、hover 变蓝）+ 列表项带灰色进度条与「另 N 个续算目录」说明。
 
 - v0.6.2（commit `2c04a1e`，已推送 origin/main）：**巡检链路加固 + 任务归档/项目关闭 + 定时调度**。① `submit` 改走 `db_transaction`，消除"提交后又被巡检回填覆盖"的竞态（[jobs.py](backend/routers/jobs.py)）。② 全局巡检改为**按项目分批**：`_plan_batches()` 规划批次，脚本/阈值每服务器每轮只上传一次，远端检查在事务外、每项目独立事务回填归档——单项目失败不再整轮回滚（摘要新增 `failed_batches`），数据库写锁从 75-90s 缩到单项目回填的几秒。③ 新增 `inspection_scheduler.py`：后台线程每 60s 判定，开关 + 间隔（默认 2h）→ 自动跑全局巡检；`PUT /api/inspections/auto` 切换，`GET /inspections/meta` 返回调度器实时状态（running / last / next / error）。④ 每次全局巡检成功后 `dashboard.invalidate_cluster_cache(prewarm=True)` 静默作废并预热集群快照。⑤ **任务归档**：`POST /jobs/tasks/{id}/archive`（未强制要求 completed，前端弹窗提醒）、`/unarchive` 恢复 `archived_from`；`archived` 状态终于接入 UI（此前枚举里有、无处写入）。⑥ **项目关闭**：`POST /projects/{id}/close`（要求该项目可见任务全部归档）与 `/reopen`；`mappers` 输出 `closed/closedAt`。⑦ 前端：巡检中心表格改为**按项目分块**（项目内保持自由能/NEB 组顺序，关闭项目排最后、默认折叠、灰显）并加入自动巡检开关与调度状态；总览项目进度把已关闭项目收进「已关闭项目」折叠区并支持关闭/重新打开；作业管理任务快捷操作新增「关闭（归档）/重新打开」、已关闭项目在树中排最后且灰显（不提供新建入口）；`vite.config.ts` 支持 `VITE_API_TARGET` 覆盖后端地址（便于隔离测试）。
@@ -252,8 +263,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 - v0.5.5（commit `60e995d`，已推送 origin/main）：① **NEB 续算活跃作业保护**——NEB 续算脚本补齐与 opt 一致的 `bjobs` 检查，运行中作业只回传 `action="running"`，不建 conN、不移动 WAVECAR（此前 NEB 路径无拦截，运行中任务可能被搬走 WAVECAR）。② NEB 续算各映像（含端点 00/NN 与中间态）存在 WAVECAR 时随续算 `mv` 移动（目标已有不覆盖），与 opt 语义一致。③ `modify_incar` 清理源文本头部空行（兼容 LF/CRLF/纯空白行；续算标记切片曾带入前导换行）。④ `_script_slice` 跳过标记行后的换行，修复 `===FILES===` 解析出空字符串首项。⑤ `GET /api/health` 的 `uptime` 改为后端进程运行秒数并新增 `startedAt`（原实现返回 `time.monotonic()`，在 Windows 上是**系统开机时长**，易误判后端是否已重启）。⑥ 文档：登记 TMDZYX 项目，明确交接文档由助手维护。
 
-- v0.4.5（commit `02c167c`，已推送）：续算合并单脚本 + 连接池化上传/下载/建目录（opt/NEB 10-15s→3.5s）；巡检修复（作业停止感知——bjobs 折行解析、NEB 按映像 OUTCAR 判定、运行中回传 last_energy）；NEB 创建文件以 IS INCAR 为基底、续算带端点 OUTCAR；停止作业 already-finished 按成功；SSH 真实延迟测试接口；INCAR 编辑器（自定义参数/生成到本地/分类分组空行/NFREE 仅 frac/MAGMOM 留空/POTIM 0.2/KPOINTS 纯 ASCII）；默认参数同步 task_registry.json（LWAVE/LCHARG=.FALSE.、NCORE=1、POTIM=0.2）；矫正项可点击重算。
 - v0.5.0（commit `6d6b78a`，已推送）：① **结构 3D 化**——结构分析触发条件改为「离子步每 25 步一桶 + 目录变化重置」（§6.2b）；新增 `scripts/vasp2cif.py`（经典 vasp2cif Python 3 移植，零第三方依赖）+ `backend/cif_convert.py`（原子写入：有 CIF 用 CIF、缺 CIF 现场转、失败保留旧结果）；详情接口返回 `poscar_cif/contcar_cif`（vesta_render 停用）；前端 Structure3DViewer + structure3d.ts + public/3dmol/3Dmol-min.js（backend/main.py 挂载 `/3dmol`），StructurePanel 以 3Dmol 结构视图替代 VESTA 三轴 PNG。② NEB 续算端点 OUTCAR 复制修复（find 仅匹配纯数字目录）。③ 组创建/加结构/独立任务改用服务器 remote_root 拼项目名（不再信任旧 remote_base）。④ 巡检列表 NEB 组按「项目+组名」自然排序相邻、组内 IS→FS→neb。⑤ SSH 保活延迟回传（后台 60s 保活实测延迟，`/api/ssh/status` 增 `latencyMs/latencyAt`，顶栏/SSH 页实时刷新）。⑥ 新增 DEPENDENCIES.md 依赖文档。数据侧修复（data/ 已 gitignore，不入库）：Ag_20260830.remote_base 已改回 HS 根、误建 test 下 PATH1_TS2 已删（本地移入 data/trash）、Ag PATH2/neb con6 已手动补 04/OUTCAR。
+- v0.4.5（commit `02c167c`，已推送）：续算合并单脚本 + 连接池化上传/下载/建目录（opt/NEB 10-15s→3.5s）；巡检修复（作业停止感知——bjobs 折行解析、NEB 按映像 OUTCAR 判定、运行中回传 last_energy）；NEB 创建文件以 IS INCAR 为基底、续算带端点 OUTCAR；停止作业 already-finished 按成功；SSH 真实延迟测试接口；INCAR 编辑器（自定义参数/生成到本地/分类分组空行/NFREE 仅 frac/MAGMOM 留空/POTIM 0.2/KPOINTS 纯 ASCII）；默认参数同步 task_registry.json（LWAVE/LCHARG=.FALSE.、NCORE=1、POTIM=0.2）；矫正项可点击重算。
 - v0.4.1：详情页分析模块 + 自由能路径看板（台阶图）+ 矫正联动 + 悬停竖线动画。
 - v0.3.x：自由能 opt 单任务巡检顺带检查 frac；INCAR 统一修改 + 续算参数规格；NEB 创建流程参数。
 - 更早：目录 ASCII 化、路径相对化（v0.5.0 路径规范）、根目录迁移 HS、单任务巡检、续算分流、NEB/自由能组管理。
@@ -313,13 +324,88 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C D:\Skill\vasp-project-manager-web log --oneline -3` 确认在 v0.8.4；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
+1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -3` 确认在 v0.8.5；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
 2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
-3. 需要联调时：重启后端（`npm run server`）→ 启动前端（`npm run dev`）→ 打开 http://localhost:5173 与 http://localhost:3001/docs。
+3. 需要联调时（生产机 Linux）：`sudo systemctl restart vasp-manager` → 打开 `http://192.168.1.20:3001`（前端已构建在 `dist/`）与 `http://192.168.1.20:3001/docs`；改前端记得先 `npm run build`，需要热更新时才另开 `npm run dev`（5173）。部署细节见 §11。
 4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。
-5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 package.json version 后 `git add -A && git commit && git push origin main`。
+5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 package.json version 后 `git add -A && git commit && git push origin main`（本机 `git push` 走 `~/.ssh/config` 里的 `github.com → ssh.github.com:443` + `~/.ssh/id_github`，无需额外配置）。
 6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
-- v0.6.4（commit `3921566`，已推送 origin/main）：**自由能主任务归档连带频率矫正**。① 后端 `task_paths.free_energy_frac_task()` 按 `<结构目录>/frac` 约定（并校验 `parent_task_id`）定位 frac 子任务；`POST /jobs/tasks/{id}/archive` 归档自由能 opt 时**连带归档 frac**，`/unarchive` 连带恢复（各回各自的 `archived_from`），响应新增 `frac_status` / `archived_siblings` / `reopened_siblings`；对"主任务已归档但 frac 未归档"的历史状态，重复调用 archive 也会把 frac 补齐（幂等修复，不再直接 409）。② `mappers` 为自由能 opt 任务输出 `frac_sibling{task_id,model_name,status}`。③ 前端（作业管理任务面板 + 巡检详情弹窗）归档确认文案按 frac 状态区分：**未完成（非 completed）时加 ⚠️ 警告**"该任务的频率矫正（xxx）当前为「未收敛」，尚未正常结束；关闭主任务会一并归档它"，成功提示与"重新打开"提示也写明连带关系。④ 新增 `scripts/repair_frac_archive.py`：一次性修复历史"主任务已归档、frac 未归档"的数据（默认 dry-run，`--apply` 才写入，写入走事务并自动备份）。
-- v0.6.5（commit `1da2de6`，已推送 origin/main）：**归档状态与巡检的关系修正**。① **归档任务禁止巡检**：`inspection_runner._plan_batches()` 单任务分支遇到 `archived` 任务抛 ValueError → 接口 400「任务已关闭（归档），请先重新打开再巡检」，杜绝"单独巡检把归档状态覆盖回 completed/zombied"（此前是线上实际发生的问题）。② **巡检列表显示「关闭」**：`CheckStatus` 新增 `archived`（`CHECK_STATUS_LABELS.archived = '关闭'`，CSS 用既有 `.status-tag--archived`），归档任务在列表状态列显示"关闭"、信息列"任务已关闭（归档）"，不再按"未检/待提交"呈现，也不计入项目块头部「未检」计数（改为单独统计「关闭 N」）；状态列筛选新增"关闭"选项。③ 归档行的「单独巡检」按钮置灰（列表与详情弹窗都加，带提示），已归档任务仍可查看详情。④ `mappers` 暴露 `archived_from` / `archived_at`，前端"重新打开"弹窗能显示真实恢复目标（此前恒显示"待提交"）。⑤ **运维教训归档**：v0.6.4 的归档连带在真机上"没生效"，原因是 3001 上的后端进程还是 01:30 启动的旧代码（改后端不重启 = 页面行为不变），已在 §8 强化说明。
-- v0.6.6（commit `965a8b0`，已推送 origin/main）：**巡检列表排序规则**（前端 `Inspection.tsx` 的 `filtered` 排序键）。① 状态优先级进入排序：`错误 > 警告 > 待提交（未检）> 正常 > 关闭`。② 自由能 / NEB **同组作为一个排序单元**，取组内**最高优先级状态**整体参与排序（组员恒定相邻）；整组归档的单元沉到其他任务下面（"归档任务放在其他任务下面"）。③ 原有规则保持不变，作为后续 tie-break：任务类别（结构优化→自由能→NEB→电子结构）→ 组名自然序（PATH1 < PATH2 < PATH10）→ 组内结构顺序（自由能 1..N、NEB IS→FS→neb）→ 任务名；组内被归档的成员沉到**该组末尾**（不破坏组相邻）。④ 实现中修掉两个自测发现的坑：排序单元键最初用 `项目|组名`，但同项目下自由能组与 NEB 组可能同名（Ag 都有 PATH1/2/3），导致跨类别串组、组权重算错 → 键改为 `项目|类别|组名`；"组内归档成员沉底"最初放在组键之前，会把归档成员挤到别的组后面（NEB 的 NC 组被拆开）→ 移到组键之后。
-- v0.6.7（commit `bd9e7bb`，已推送 origin/main）：**自由能路径看板视觉与动画重做**（`PathSummaryModal` + `PathStepChart` 重写，样式见 global.css 的 `.fe-*`）。① 顶部新增四张统计卡：中间体数量、矫正项完成度（N/M）、结构优化收敛（N/M）、最高相对能（含对应结构）。② 台阶图纵轴改为**相对自由能**（ΔE = E − E参考，参考取第一个有数据的中间体），保留绝对能量显示在 tooltip 与列表；台阶带渐变柱体 + 向下渐变面积 + 状态点（未收敛/未矫正时琥珀色 + 圆点），缺数据显示灰色虚线"无数据"。③ 交互：悬停台阶上浮 3px + 柱体加粗发光 + 跟随鼠标的信息卡（自由能 / 相对 ΔE / DFT / 矫正项 / 状态 / "点击查看巡检详情"），点击台阶或列表行打开该结构巡检详情。④ 动画：台阶按顺序从左滑入（80ms 错峰）、连接线淡入、数值与结构标签依次出现，列表行错峰上浮；`prefers-reduced-motion` 下全部禁用。⑤ 明细表改为自绘列表（中间体 chip / DFT / 矫正项（正负着色）/ 自由能 / 相对 ΔE / 收敛·矫正徽标 / 跳转箭头），窄屏自动重排。⑥ **后端语义修复**：`/api/free-energy/{gid}/summary` 的 `converged` 改为「`completed`，或 `archived` 且 `archived_from == completed`」——否则归档后的路径会被整片渲染成"未收敛"琥珀色（与 v0.6.4/v0.6.5 的归档功能叠加后才暴露）。
+
+---
+
+## 11. 部署与运维（Linux 生产机）
+
+> 2026-09-18 由一次真实迁移落地。原一次性文档 `MIGRATION.md` 的可复用内容已并入本节，该文件已删除。
+> 生产机：Ubuntu 26.04（主机名 `ZYX-S`）· 运行用户 `zouyuxi` · 局域网 `192.168.1.20` · ZeroTier `10.147.20.10`
+
+### 11.1 目录与服务
+
+| 项 | 位置 / 值 |
+| --- | --- |
+| 代码 + 数据 | `/home/zouyuxi/projects/vasp-manager`（git 克隆；`data/` 在仓库内，故 `path_mapping.local_root` 保持相对 `data/projects`） |
+| Python 环境 | 仓库内 `.venv`（Python 3.14.4；核心依赖 fastapi / uvicorn[standard] / paramiko 实测可用） |
+| 前端产物 | 仓库内 `dist/`（`npm ci && npm run build` 生成，由后端单端口托管） |
+| systemd 单元 | `/etc/systemd/system/vasp-manager.service`（`User=zouyuxi`、`WorkingDirectory=<仓库>`、`ExecStart=<仓库>/.venv/bin/python backend/run.py`、`Environment=PYTHONIOENCODING=utf-8` / `TZ=Asia/Shanghai`、`Restart=always`、`enabled`） |
+| 访问 | `http://192.168.1.20:3001`（局域网）/ `http://10.147.20.10:3001`（ZeroTier）；`/docs` = Swagger |
+| 日志 | `journalctl -u vasp-manager`（原 Windows 的 `*_log.txt` 不再使用） |
+
+```bash
+sudo systemctl start|stop|restart vasp-manager
+systemctl status vasp-manager --no-pager        # 含 MainPID（启动时报进程号）
+sudo journalctl -u vasp-manager -n 100 --no-pager
+```
+
+### 11.2 日常操作对照
+
+| 改了什么 | 要做什么 |
+| --- | --- |
+| 前端 `src/**` | `npm run build`（不用重启后端），浏览器硬刷新 |
+| 后端 `backend/*.py` | `sudo systemctl restart vasp-manager` |
+| `data/config/*.json` | 重启最稳（部分设置接口即时生效） |
+| 仅 `data/` 运行时数据 | 无需重启 |
+| 换数据目录 | 用 `--data-dir`，并把 `path_mapping.local_root` 改成**绝对路径** `<数据根>/projects` |
+
+**硬规则**：`data/` 是唯一真相，**同一时刻只能有一个后端在写** —— 起前台进程前先 `systemctl stop`；旧 Windows 机保持停止。
+
+### 11.3 迁移后的常驻检查项（原 MIGRATION.md §6 验收表的长期版本）
+
+1. `/api/health` 返回 `startedAt` = 本次启动时间；
+2. `/api/projects` = 4 项目 / 120 可见任务（63 / 34 / 7 / 16）；
+3. 顶部「SSH 已连接」+ 总览核数（`blimits`）、节点、队列、存储都有数据；
+4. 单任务巡检（选已完成任务）12–15 s 内返回；报告 4 份可读；「同步最新参数」能取回 INCAR/KPOINTS/POSCAR/CONTCAR；
+5. 巡检中心调度器显示上次/下次时间（自动巡检默认开、间隔 2h；自动报告默认开、24h）；
+6. 时区 `Asia/Shanghai`，服务内 `PYTHONIOENCODING=utf-8`（单元里已设）；
+7. `/docs` 可打开。
+
+### 11.4 Linux 特有的坑（都已踩过）
+
+| 现象 | 根因 | 处理 |
+| --- | --- | --- |
+| NEB 映像只剩中间 3 个、本地文件"看不到" | **Windows 大小写不敏感**：老数据在 `data/projects/Ag_20260830/NEB/`，而 `projects.json` 里三个主 NEB 任务的 `dir_path` 写的是 `neb/`；Linux 上是两个目录，后端在小写路径下新建了空壳 | 已把新文件并回老树并做软链接 `neb → NEB`（两套引用命中同一份数据）。全盘审计确认再无其它大小写分叉；新增目录时留意同层仅大小写不同的名字 |
+| apt / npm 报 `Temporary failure resolving …`，而 `dig` 正常 | SecureLink（校园 VPN）数据面 `sl-dp` 把 `/etc/resolv.conf` 改成 `nameserver 127.0.0.1` 自建 DNS 代理，对部分域名解析失败 | 用 `/etc/hosts` 托管段 + `/32` 例外路由 + 15 秒自愈 systemd timer（`codex-net-guard`）挡住；日志 `/var/log/codex-net-guard.log` |
+| 连 SecureLink 时后端/面板掉线 | 隧道 `tun0` 抢默认路由并把出站流量导向校园出口（模型后端 `api.deepseek.com` 随之不可达） | 同上（例外路由让后端/Codex 流量始终走物理网卡）；**HPC 操作则需要在 SecureLink 连上时做**（`hpc.xmu.edu.cn` 的路由在 `tun0` 里） |
+| 改后端不生效 | 后端无 `--reload` | `sudo systemctl restart vasp-manager` |
+| 「打开文件夹」按钮无反应 | 无桌面环境时 `xdg-open` 无效 | 忽略，或用 SFTP/终端查看 |
+| `npm run server` 报 `python: command not found` | Linux 只有 `python3` | `package.json` 的 `server` 脚本已改为 `.venv/bin/python backend/run.py` |
+| apt 下载极慢 | 默认 `archive.ubuntu.com`/`security.ubuntu.com` 在此网络下慢且偶发解析失败 | 已把 apt 源换成**华为云镜像**（`/etc/apt/sources.list.d/ubuntu.sources`，原文件备份在 `/tmp/ubuntu.sources.orig-backup`）；pip 也可用 `-i https://mirrors.huaweicloud.com/repository/pypi/simple/` |
+
+### 11.5 可选：nginx 反代（80 → 3001）
+
+```nginx
+server {
+  listen 80;
+  server_name _;
+  client_max_body_size 200m;        # 上传 POSCAR/INCAR/KPOINTS
+  location / {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_set_header Host $host;
+    proxy_read_timeout 600s;        # 巡检/续算接口耗时长
+  }
+}
+```
+
+### 11.6 回滚
+
+1. 数据没动过：直接回旧机跑（旧机保留一份完整 `data/` 副本）；
+2. 新机已产生新数据（巡检/报告/续算）而想退回：把整份 `data/` 拷回旧机，**不要只拷 `projects.json`**（`checks/`、`reports/`、`projects/` 是配套的）；
+3. 迁移前的自动备份：`data/backups/project_db_*.json`（最近 20 份）+ `data/backups/migration_*/`。

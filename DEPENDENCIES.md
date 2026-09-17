@@ -7,12 +7,13 @@
 
 | 层 | 环境 | 依赖 | 何时必需 |
 | --- | --- | --- | --- |
-| 前端 | Node.js ≥ 20.19（当前 24） | React 18 / Vite 7 / AntD 5 / Framer Motion / React Router 7（package.json） | 启动/构建前端 `npm run dev` / `npm run build` |
-| 后端核心 | Python ≥ 3.11（当前 3.12） | fastapi / uvicorn / paramiko | 启动后端 `npm run server` 必需 |
+| 前端 | Node.js ≥ 20.19（生产机 22.22.1 / npm 9.2.0） | React 18 / Vite 7 / AntD 5 / Framer Motion / React Router 7（package.json） | 构建前端 `npm ci && npm run build`（150 包，约 25 s） |
+| 后端核心 | Python ≥ 3.11（生产机 3.14.4，**已实测可用**） | fastapi / uvicorn / paramiko | 启动后端（生产机用仓库内 `.venv/bin/python backend/run.py`）必需 |
 | 后端可选 | 同上 | pymatgen / ase / apscheduler / openai | 仅对应功能用到时才装，见 §3 |
 
 安装策略：**只装核心依赖即可运行**；可选依赖由 `backend/dependencies.py` 在启动时
-后台检查缺失并提示，不影响核心功能。
+后台检查缺失并提示，不影响核心功能。国内网络建议加镜像：
+`.venv/bin/pip install -i https://mirrors.huaweicloud.com/repository/pypi/simple/ …`。
 
 ## 2. Python 核心依赖（必需）
 
@@ -22,11 +23,18 @@
 | uvicorn[standard] | ASGI 服务器（端口 3001） |
 | paramiko | SSH 连接池（远程执行 / 上传 / 下载） |
 
-安装（几十 MB，快速）：
+安装（几十 MB，快速；生产机 Linux）：
 
-```powershell
-python -m pip install -r requirements.txt
+```bash
+cd /home/zouyuxi/projects/vasp-manager
+python3 -m venv .venv
+.venv/bin/pip install -i https://mirrors.huaweicloud.com/repository/pypi/simple/ \
+  "fastapi>=0.115" "uvicorn[standard]>=0.32" "paramiko>=3.4"   # 核心三件套
+# 需要可选依赖时：# .venv/bin/pip install -r requirements.txt
 ```
+
+> `uvicorn[standard]` 会带 uvloop / httptools / watchfiles / websockets；Python 3.14 下这几项
+> 均有预编译轮子（实测 uvloop 0.22.1、httptools 0.8.0 安装即用）。
 
 ## 3. Python 可选依赖（按功能）
 

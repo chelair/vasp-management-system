@@ -1,10 +1,18 @@
 # 待办清单（TODO）
 
 > 创建时间：2026-08-24
-> 适用项目：`vasp-management-system`（v0.8.4）
+> 适用项目：`vasp-management-system`（v0.8.5）
 > 勾选约定：`[ ]` 未开始 · `[x]` 已完成
 
 ## 当前进度概览
+
+**已完成（v0.8.5，2026-09-18 · Linux 生产部署 + 输入参数页新功能）**
+
+- [x] 迁移落到 Linux 生产机：代码/数据统一在 `/home/zouyuxi/projects/vasp-manager`，systemd `vasp-manager.service` 常驻（`.venv` Python 3.14.4；`npm run server` 改指 venv 解释器）
+- [x] 输入参数页新增「DFT+U」卡片（主开关 + 元素表驱动 `LDAUL/LDAUU/LDAUJ` 三数组，关闭不写任何 LDAU\*）与「偶极矩修正」卡片（`LDIPOL/IDIPOL/DIPOL`，DIPOL 三分量齐全才写）；开关语义由 `applyIncarGates()` 统一到预览/本地/上传/草稿四条链路
+- [x] 输入参数页布局改为两列独立流式（卡片自然高度，短卡片不再被撑出空白）；修「其他参数」新增/改名不可用（本地行 + 稳定 id）；修「一键清除」把红点全部点亮的前端 bug
+- [x] 修迁移引入的大小写分叉（`Ag_20260830/neb` ↔ `NEB`，用软链接对齐）并全盘审计（本地 272 / 远端 324 条路径无其它分叉）
+- [x] 删除一次性 `MIGRATION.md`，可复用内容并入 `process.md` §11 / `README.md` / `DEPENDENCIES.md`
 
 **已完成（v0.8.4，2026-09-17 · 跨机器迁移交接）**
 

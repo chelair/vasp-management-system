@@ -2,16 +2,16 @@
 
 基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
 
-当前版本（v0.8.4）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
+当前版本（v0.8.5，运行在 Linux 生产机）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
 **项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池、结构 3D 视图与分项目报告生成均已接入真实后端**
 （Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
 总览页已是集群实时视图（bjobs 作业、blimits 核数配额、bhosts/bqueues 节点队列、df 存储），
 **前端不再有 Mock 数据**（`src/data/mock/` 仅保留编辑器默认参数与 VASP 输入文件模板）。
 
 > 跨窗口交接看 `process.md`（版本、改动记录、已知坑、待办）；`TODO.md` 为历史清单，个别条目已过时。
-> **换机器/换系统（Windows → Linux）看 [`MIGRATION.md`](MIGRATION.md)**：要打包什么、迁移后改哪 11 项、怎么验收。
+> **部署与运维（Linux 生产机）看 `process.md` §11**：目录与服务、`systemctl` 命令、常驻检查项、Linux 特有的坑（大小写、SecureLink 干扰）、nginx 反代与回滚。
 
-> 注意：本项目放在 `D:\Skill\vasp-project-manager-web`。旧项目 `vasp-project-manager` 仅作为**功能迁移参考**，
+> 注意：本项目在生产机上位于 `/home/zouyuxi/projects/vasp-manager`（旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。旧项目 `vasp-project-manager` 仅作为**功能迁移参考**，
 > **运行时不依赖旧项目目录**——真实数据（项目库、配置、本地项目目录、备份、巡检结果）已全部迁入本项目
 > `data/`，系统自包含，打包部署不会漏文件。
 
@@ -73,16 +73,22 @@
 
 ## 快速开始
 
-环境要求：**Node.js ≥ 20.19**（开发机当前为 Node 24）+ **Python ≥ 3.11**（开发机为 3.12）。
+环境要求：**Node.js ≥ 20.19**（生产机为 22.22.1）+ **Python ≥ 3.11**（生产机为 3.14.4，已实测 core 依赖可装）。
 
 ```bash
-cd vasp-project-manager-web
-npm install
-npm run server    # 终端 1：启动后端 API（端口 3001）
-npm run dev       # 终端 2：启动前端开发服务器（端口 5173）
+# 生产机（Linux）：仓库 + venv + 前端构建
+cd /home/zouyuxi/projects/vasp-manager
+python3 -m venv .venv
+.venv/bin/pip install "fastapi>=0.115" "uvicorn[standard]>=0.32" "paramiko>=3.4"   # 核心依赖
+npm ci && npm run build          # 产出 dist/，由后端单端口托管
+sudo systemctl start vasp-manager # 常驻服务（等价于 .venv/bin/python backend/run.py）
+
+# 开发时（可选）
+npm run dev                      # Vite 5173（前端热更新）
 ```
 
-浏览器打开 http://localhost:5173 即可使用。「新增项目」会真实调用后端完成校验、优先级计算、本地目录创建与数据库写入。
+浏览器打开 `http://<生产机IP>:3001`（局域网 `http://192.168.1.20:3001`，ZeroTier `http://10.147.20.10:3001`）即可使用；
+开发模式用 http://localhost:5173。「新增项目」会真实调用后端完成校验、优先级计算、本地目录创建与数据库写入。
 
 真实数据已迁移到本项目 `data/`（`projects.json` + `config/` + `projects/` + `backups/` + `checks/`），
 默认 `npm run server` 即为真实数据模式：总览 / 巡检 / 新增项目都作用于真实项目（如 Ag_20260830）。
@@ -169,12 +175,17 @@ remote_port = 5173
 ## 构建与部署（生产模式）
 
 ```bash
-npm run build       # 产出 dist/
-npm run server      # FastAPI 同时托管 API 和 dist/，单端口 3001 访问
+cd /home/zouyuxi/projects/vasp-manager
+npm run build                    # 产出 dist/
+.venv/bin/python backend/run.py  # FastAPI 同时托管 API 和 dist/，单端口 3001
+# 常驻：sudo systemctl restart vasp-manager（单元见 process.md §11）
+# 改了 backend/*.py 必须重启；只改前端则 build 后刷新页面即可
 ```
 
-此时浏览器直接访问 http://localhost:3001 或局域网 `http://<本机IP>:3001`；
+此时浏览器直接访问 `http://<生产机IP>:3001`（或 `http://localhost:3001`）；
 也可用 `npm run preview` 只预览前端（4173 端口），或将 `dist/` 放到 Nginx / IIS 托管并单独反代 `/api`。
+
+> 生产机部署细节（目录、systemd 单元、日常操作对照、nginx 反代示例）见 `process.md` §11。
 
 ## 目录结构
 

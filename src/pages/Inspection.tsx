@@ -296,9 +296,15 @@ export default function Inspection() {
   );
 
   const clearAllRead = () => {
-    setReadChanges(new Set());
+    // 「一键清除」= 把当前所有状态变化标记为已读（与点开详情同一机制）。
+    // 早前这里是 setReadChanges(new Set()) + 删除 localStorage，
+    // 等于把已读记录清空，红点会全部重新出现（刷新后依旧）。
+    const next = new Set(
+      results.filter((r) => r.status_changed).map((r) => r.task_id),
+    );
+    setReadChanges(next);
     try {
-      localStorage.removeItem(READ_CHANGES_KEY);
+      localStorage.setItem(READ_CHANGES_KEY, JSON.stringify([...next]));
     } catch {
       /* ignore */
     }

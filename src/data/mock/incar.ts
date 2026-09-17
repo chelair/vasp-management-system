@@ -228,6 +228,93 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
   },
 ];
 
+/**
+ * 带主开关的扩展卡片（DFT+U / 偶极矩修正）。
+ * UI 由 IncarEditor 单独渲染（开关 + 元素表 / 三分量），但参数属于预设集合：
+ * 1) 不出现在「其他参数」里重复出现；
+ * 2) 主开关关闭时，整组参数都不写进 INCAR（见 INCAR_TEXT_CATEGORIES 的 gate）。
+ */
+export const INCAR_SWITCH_GROUPS: {
+  key: string;
+  label: string;
+  keys: string[];
+  hint: string;
+}[] = [
+  {
+    key: 'LDAU',
+    label: 'DFT+U',
+    keys: ['LDAU', 'LDAUTYPE', 'LMAXMIX', 'LDAUL', 'LDAUU', 'LDAUJ'],
+    hint: '关闭时不写入任何 LDAU* 参数；打开时写入 LDAU = .TRUE. 与下方元素表',
+  },
+  {
+    key: 'LDIPOL',
+    label: '偶极矩修正',
+    keys: ['LDIPOL', 'IDIPOL', 'DIPOL'],
+    hint: '关闭时不写入 LDIPOL / IDIPOL / DIPOL',
+  },
+];
+
+/** LDAUTYPE 可选值 */
+export const LDAUTYPE_OPTIONS = [
+  { value: '1', label: '1', hint: 'Liechtenstein 等（VASP 默认，一般用这个）' },
+  { value: '2', label: '2', hint: 'Dudarev 等简化形式（只用 U−J）' },
+  { value: '4', label: '4', hint: 'Liechtenstein 等 + 交换分裂' },
+];
+
+/** LDAUL 可选值（-1 = 该元素不加 U） */
+export const LDAUL_OPTIONS = [
+  { value: '-1', label: '-1', hint: '不施加 U' },
+  { value: '0', label: '0', hint: 's 轨道' },
+  { value: '1', label: '1', hint: 'p 轨道' },
+  { value: '2', label: '2', hint: 'd 轨道（过渡金属常用）' },
+  { value: '3', label: '3', hint: 'f 轨道（镧系/锕系）' },
+];
+
+/** IDIPOL 可选值 */
+export const IDIPOL_OPTIONS = [
+  { value: '1', label: '1', hint: '沿 a 方向' },
+  { value: '2', label: '2', hint: '沿 b 方向' },
+  { value: '3', label: '3', hint: '沿 c 方向（表面/二维体系常用，默认）' },
+  { value: '4', label: '4', hint: '所有方向（孤立分子）' },
+];
+
+type GatedIncarCategory = IncarCategory & { gate?: string };
+
+/** 写 INCAR 时的完整分类顺序：通用分类 + 两个带主开关的扩展卡片 */
+const INCAR_TEXT_CATEGORIES: GatedIncarCategory[] = [
+  ...INCAR_CATEGORIES,
+  {
+    key: 'ldau',
+    label: 'DFT+U',
+    gate: 'LDAU',
+    params: [
+      { key: 'LDAU', label: 'LDAU', type: 'bool', hint: 'DFT+U 主开关（.TRUE. 时生效）', defaultValue: '.TRUE.' },
+      {
+        key: 'LDAUTYPE',
+        label: 'LDAUTYPE',
+        type: 'enum',
+        hint: 'DFT+U 类型（1 = Liechtenstein，2 = Dudarev，4 = 带交换分裂）',
+        defaultValue: '1',
+        options: LDAUTYPE_OPTIONS,
+      },
+      { key: 'LMAXMIX', label: 'LMAXMIX', type: 'number', hint: '电荷混合的最高 l（d 体系 4，f 体系 6）', defaultValue: '4' },
+      { key: 'LDAUL', label: 'LDAUL', type: 'string', hint: '每个元素施加 U 的 l 量子数（-1 = 不加 U）', defaultValue: '' },
+      { key: 'LDAUU', label: 'LDAUU', type: 'string', hint: '每个元素的 U 值（eV）', defaultValue: '' },
+      { key: 'LDAUJ', label: 'LDAUJ', type: 'string', hint: '每个元素的 J 值（eV）', defaultValue: '' },
+    ],
+  },
+  {
+    key: 'dipole',
+    label: '偶极矩修正',
+    gate: 'LDIPOL',
+    params: [
+      { key: 'LDIPOL', label: 'LDIPOL', type: 'bool', hint: '偶极矩修正主开关', defaultValue: '.TRUE.' },
+      { key: 'IDIPOL', label: 'IDIPOL', type: 'enum', hint: '修正方向', defaultValue: '3', options: IDIPOL_OPTIONS },
+      { key: 'DIPOL', label: 'DIPOL', type: 'string', hint: '偶极矩参考点坐标（三个分量都填才写入）', defaultValue: '' },
+    ],
+  },
+];
+
 /** 精度预设：切换低/中/高时自动应用的参数子集 */
 export const PRECISION_PRESETS: Record<
   Exclude<PrecisionMode, 'custom'>,
@@ -287,9 +374,12 @@ export function buildDefaultParams(taskType: TaskType): Record<string, string> {
   return params;
 }
 
-/** 表单预设参数的键集合（用于把"其他参数"分出来） */
+/** 表单预设参数的键集合（用于把"其他参数"分出来；含两个带主开关的卡片） */
 export const PRESET_INCAR_KEYS: Set<string> = new Set(
-  INCAR_CATEGORIES.flatMap((cat) => cat.params.map((def) => def.key)),
+  [
+    ...INCAR_CATEGORIES.flatMap((cat) => cat.params.map((def) => def.key)),
+    ...INCAR_SWITCH_GROUPS.flatMap((group) => group.keys),
+  ],
 );
 
 /** VASP 布尔的等价写法：`.T.` ≡ `.TRUE.` ≡ `T` ≡ `1`（大小写不敏感） */
@@ -330,7 +420,7 @@ export function incarValueEquals(
 
 /** 预设表单里该键的定义（找不到返回 undefined） */
 export function incarParamDef(key: string): IncarParamDef | undefined {
-  for (const cat of INCAR_CATEGORIES) {
+  for (const cat of INCAR_TEXT_CATEGORIES) {
     const hit = cat.params.find((def) => def.key === key);
     if (hit) return hit;
   }
@@ -346,6 +436,124 @@ export function extraIncarParams(params: Record<string, string>): Record<string,
     }
   }
   return extra;
+}
+
+/* ---------- DFT+U：元素表 ↔ LDAUL / LDAUU / LDAUJ 三个数组 ---------- */
+
+/** 元素表的一行（对应 VASP 里一个元素/物种） */
+export interface LdauRow {
+  ldaul: string;
+  ldauu: string;
+  ldauj: string;
+}
+
+const ARRAY_SPLIT_RE = /[\s,]+/;
+
+function splitArrayValue(value: unknown): string[] {
+  return String(value ?? '')
+    .trim()
+    .split(ARRAY_SPLIT_RE)
+    .filter((part) => part !== '');
+}
+
+/** 把 LDAUL / LDAUU / LDAUJ 三个数组解析成元素行（行数取三者最大，缺项留空） */
+export function parseLdauRows(params: Record<string, string>): LdauRow[] {
+  const l = splitArrayValue(params.LDAUL);
+  const u = splitArrayValue(params.LDAUU);
+  const j = splitArrayValue(params.LDAUJ);
+  const count = Math.max(l.length, u.length, j.length);
+  return Array.from({ length: count }, (_, i) => ({
+    ldaul: l[i] ?? '',
+    ldauu: u[i] ?? '',
+    ldauj: j[i] ?? '',
+  }));
+}
+
+/** 元素行 → 三个数组参数（一一对应，行数变化时同步更新） */
+export function ldauArrayParams(rows: LdauRow[]): Record<string, string> {
+  return {
+    LDAUL: rows.map((row) => row.ldaul.trim()).join(' '),
+    LDAUU: rows.map((row) => row.ldauu.trim()).join(' '),
+    LDAUJ: rows.map((row) => row.ldauj.trim()).join(' '),
+  };
+}
+
+/**
+ * 过滤掉"主开关关闭"的整组参数。
+ * 生成 INCAR 文本（buildIncarText）与上传/草稿链路共用同一套开关语义，
+ * 保证「主开关关闭 → 不写入该组任何参数」在两条路径上一致。
+ */
+export function applyIncarGates(params: Record<string, string>): Record<string, string> {
+  const gateOf = new Map<string, string>();
+  for (const group of INCAR_SWITCH_GROUPS) {
+    for (const key of group.keys) gateOf.set(key, group.key);
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(params)) {
+    const gate = gateOf.get(key);
+    if (gate && !isIncarTrue(params[gate] ?? '')) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/** 打开 DFT+U 时的默认元素表：第一个元素给 U（LDAUL=2 / LDAUU=4.0），其余不加 U */
+export function defaultLdauRows(elementCount: number): LdauRow[] {
+  const count = elementCount > 0 ? elementCount : 1;
+  return Array.from({ length: count }, (_, i) =>
+    i === 0
+      ? { ldaul: '2', ldauu: '4.0', ldauj: '0.0' }
+      : { ldaul: '-1', ldauu: '0.0', ldauj: '0.0' },
+  );
+}
+
+/* ---------- 偶极矩修正：DIPOL 的三个分量 ---------- */
+
+/** 把 DIPOL 拆成 x / y / z 三个分量（缺失补空串） */
+export function parseDipol(value: unknown): [string, string, string] {
+  const parts = splitArrayValue(value);
+  return [parts[0] ?? '', parts[1] ?? '', parts[2] ?? ''];
+}
+
+/** 三个分量都非空才返回 "x y z"；任一为空返回空串（即不写入 INCAR） */
+export function joinDipol(parts: [string, string, string]): string {
+  const trimmed = parts.map((part) => String(part ?? '').trim());
+  if (trimmed.some((part) => part === '')) return '';
+  return trimmed.join(' ');
+}
+
+/* ---------- 从 POSCAR 头解析元素符号（用于元素表行标签） ---------- */
+
+/** 解析 VASP5 格式 POSCAR 的元素符号行；VASP4（无元素行）或解析失败返回空数组 */
+export function parsePoscarElements(poscar: string | null | undefined): string[] {
+  if (!poscar) return [];
+  const lines = String(poscar)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  if (lines.length < 8) return [];
+  const body = lines.slice(1); // 跳过注释行
+  let index = 0;
+  // 跳过缩放系数行（单个数值，或三向缩放的三个数值）
+  const scaleTokens = body[index].split(/\s+/).filter(Boolean);
+  if (scaleTokens.length <= 3 && scaleTokens.every((token) => /^[-+.\d]/.test(token))) {
+    index += 1;
+  }
+  let lattice = 0;
+  while (index < body.length && lattice < 3) {
+    const tokens = body[index].split(/\s+/);
+    if (tokens.length >= 3 && tokens.slice(0, 3).every((t) => /^[-+.\d]/.test(t))) {
+      lattice += 1;
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  if (lattice < 3 || index >= body.length) return [];
+  const tokens = body[index].split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+  if (!tokens.every((t) => /^[A-Z][a-z]?$/.test(t))) return []; // 是数字行 → VASP4
+  return tokens;
 }
 
 function formatRows(rows: { key: string; value: string }[]): string {
@@ -380,16 +588,20 @@ export function parseCustomIncar(text: string): Record<string, string> {
  */
 export function buildIncarText(
   params: Record<string, string>,
-  categories: IncarCategory[] = INCAR_CATEGORIES,
+  categories: GatedIncarCategory[] = INCAR_TEXT_CATEGORIES,
   customText = '',
 ): string {
   const blocks: string[] = [];
   const used = new Set<string>();
   for (const cat of categories) {
     const rows: { key: string; value: string }[] = [];
+    // 带主开关的分类：主开关不是真值时整组不写入（但键仍标记为已用，
+    // 避免它们落到下面的「其他参数」块里被重复写出）
+    const gatedOff = cat.gate ? !isIncarTrue(params[cat.gate] ?? '') : false;
     for (const def of cat.params) {
       const raw = params[def.key];
       used.add(def.key);
+      if (gatedOff) continue;
       if (raw == null || String(raw).trim() === '') continue;
       rows.push({ key: def.key, value: formatIncarValue(def, raw) });
     }

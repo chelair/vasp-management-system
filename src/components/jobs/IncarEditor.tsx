@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   App,
   Alert,
@@ -10,6 +10,7 @@ import {
   Modal,
   Select,
   Segmented,
+  Switch,
   Tag,
   Tooltip,
 } from 'antd';
@@ -39,14 +40,32 @@ import {
   BUILTIN_PRESETS,
   INCAR_CATEGORIES,
   PRECISION_PRESETS,
+  IDIPOL_OPTIONS,
+  LDAUL_OPTIONS,
+  LDAUTYPE_OPTIONS,
+  PRESET_INCAR_KEYS,
+  applyIncarGates,
   buildIncarText,
-  extraIncarParams,
+  defaultLdauRows,
   incarParamDef,
   incarValueEquals,
   isIncarTrue,
+  joinDipol,
+  ldauArrayParams,
+  parseDipol,
+  parseLdauRows,
+  parsePoscarElements,
+  type LdauRow,
 } from '../../data/mock/incar';
 import { saveTaskFile, uploadIncar } from '../../api/jobs';
 import SciInput from './SciInput';
+
+/** 「其他参数」卡片的一行；id 与键名解耦，改名时输入框不会被重建（不丢焦点） */
+interface ExtraRow {
+  id: string;
+  key: string;
+  value: string;
+}
 
 interface Props {
   task: Task;
@@ -93,7 +112,6 @@ export default function IncarEditor({
   const precision = workspace.precision;
   const incarText = useMemo(() => buildIncarText(params), [params]);
   const pendingSet = useMemo(() => new Set(pendingKeys), [pendingKeys]);
-  const extraParams = useMemo(() => extraIncarParams(params), [params]);
   const isChanged = (key: string) => {
     const base = String(snapshotParams[key] ?? '');
     const now = String(params[key] ?? '');
@@ -105,6 +123,11 @@ export default function IncarEditor({
   const setParam = (key: string, value: string) => {
     // 手动修改任意参数后，自动切换为「自定义」
     onParamsChange({ ...params, [key]: value }, 'custom');
+  };
+
+  /** 一次改多个参数（主开关联动时用） */
+  const setParams = (patch: Record<string, string>) => {
+    onParamsChange({ ...params, ...patch }, 'custom');
   };
 
   const applyPrecision = (mode: Exclude<PrecisionMode, 'custom'>) => {
@@ -141,8 +164,9 @@ export default function IncarEditor({
       }
       // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改
       // 留空（空字符串/仅空白）的参数不参与写入：与「生成 INCAR」一致
+      // 主开关关闭的整组参数（DFT+U / 偶极矩修正）也在这里被过滤掉
       const merged = Object.fromEntries(
-        Object.entries(workspace.incarParams).filter(
+        Object.entries(applyIncarGates(workspace.incarParams)).filter(
           ([, value]) => String(value ?? '').trim() !== '',
         ),
       );
@@ -158,26 +182,85 @@ export default function IncarEditor({
     }
   };
 
-  /** 其他参数（不在预设表单里的键）：改名 / 改值 / 新增 / 删除 */
-  const renameExtraParam = (oldKey: string, nextKey: string) => {
-    const next = { ...params };
-    const value = next[oldKey] ?? '';
-    delete next[oldKey];
-    const key = nextKey.trim().toUpperCase();
-    if (key) next[key] = value;
+  /**
+   * 其他参数（不在预设表单里的键）：改名 / 改值 / 新增 / 删除。
+   * 用「本地行 + 稳定 id」而不是直接用 params 的键渲染，原因是：
+   *  1) 新增的行值还是空的，直接渲染 params 会因「空值不展示」而看不见；
+   *  2) 行用键做 React key 时，改名会让输入框重建 → 焦点丢失、打不进字。
+   * 行内容仍以 params 为准（变更时同步写回），外部变化（切换任务/同步/撤销）会自动重建。
+   */
+  const extraRowSeq = useRef(0);
+  const makeExtraRowId = () => `extra-${(extraRowSeq.current += 1)}`;
+  const [extraRows, setExtraRows] = useState<ExtraRow[]>(() =>
+    Object.entries(params)
+      .filter(([key]) => !PRESET_INCAR_KEYS.has(key))
+      .map(([key, value]) => ({ id: `init-${key}`, key, value: String(value ?? '') })),
+  );
+
+  const extraSig = (rows: ExtraRow[]) =>
+    rows
+      .filter((row) => row.key.trim() !== '')
+      .map((row) => JSON.stringify([row.key.trim().toUpperCase(), row.value]))
+      .sort()
+      .join('\n');
+
+  // 把本地行写回参数（以行内容为准；预设键不动）
+  const writeExtraRows = (rows: ExtraRow[]) => {
+    const next: Record<string, string> = { ...params };
+    for (const key of Object.keys(next)) {
+      if (!PRESET_INCAR_KEYS.has(key)) delete next[key];
+    }
+    for (const row of rows) {
+      const key = row.key.trim().toUpperCase();
+      if (key && !PRESET_INCAR_KEYS.has(key)) next[key] = row.value;
+    }
     onParamsChange(next, 'custom');
+  };
+
+  // 参数被外部改动（切换任务 / 同步最新参数 / 撤销）时重建行；自己编辑时签名一致 → 保留原行与焦点
+  useEffect(() => {
+    setExtraRows((prev) => {
+      const entries = Object.entries(params).filter(([key]) => !PRESET_INCAR_KEYS.has(key));
+      const fromParams = entries
+        .map(([key, value]) => JSON.stringify([key, String(value ?? '')]))
+        .sort()
+        .join('\n');
+      if (fromParams === extraSig(prev)) return prev;
+      const idBySig = new Map(
+        prev.map((row) => [JSON.stringify([row.key.trim().toUpperCase(), row.value]), row.id]),
+      );
+      const unfinished = prev.filter((row) => row.key.trim() === '');
+      const rebuilt = entries.map(([key, value]) => {
+        const sig = JSON.stringify([key, String(value ?? '')]);
+        return { id: idBySig.get(sig) ?? makeExtraRowId(), key, value: String(value ?? '') };
+      });
+      return [...rebuilt, ...unfinished];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
+
+  const applyExtraRows = (rows: ExtraRow[]) => {
+    setExtraRows(rows);
+    writeExtraRows(rows);
   };
 
   const addExtraParam = () => {
     let index = 1;
-    while (params[`NEW_PARAM_${index}`] !== undefined) index += 1;
-    onParamsChange({ ...params, [`NEW_PARAM_${index}`]: '' }, 'custom');
+    const used = new Set(extraRows.map((row) => row.key.trim().toUpperCase()));
+    while (used.has(`NEW_PARAM_${index}`) || params[`NEW_PARAM_${index}`] !== undefined) index += 1;
+    applyExtraRows([...extraRows, { id: makeExtraRowId(), key: `NEW_PARAM_${index}`, value: '' }]);
   };
 
-  const removeExtraParam = (key: string) => {
-    const next = { ...params };
-    delete next[key];
-    onParamsChange(next, 'custom');
+  const renameExtraParam = (id: string, nextKey: string) => {
+    applyExtraRows(extraRows.map((row) => (row.id === id ? { ...row, key: nextKey } : row)));
+  };
+
+  const setExtraParamValue = (id: string, value: string) => {
+    applyExtraRows(extraRows.map((row) => (row.id === id ? { ...row, value } : row)));
+  };
+
+  const removeExtraParam = (id: string) => {
+    applyExtraRows(extraRows.filter((row) => row.id !== id));
   };
 
   const handleSaveLocal = async () => {
@@ -277,6 +360,303 @@ export default function IncarEditor({
     );
   };
 
+  /* ---------- DFT+U 卡片：主开关 + 元素表（LDAUL / LDAUU / LDAUJ 一一对应） ---------- */
+
+  const elementSymbols = useMemo(
+    () => parsePoscarElements(workspace.poscarContent),
+    [workspace.poscarContent],
+  );
+  const ldauEnabled = isIncarTrue(params.LDAU ?? '');
+  const ldauRows = useMemo(() => parseLdauRows(params), [params]);
+  // 关闭时展示"打开后会写入"的默认表（只读灰显），避免整块空白
+  const ldauRowsView = ldauRows.length > 0 ? ldauRows : defaultLdauRows(elementSymbols.length);
+  const ldauRowLabel = (index: number) => elementSymbols[index] ?? `元素 ${index + 1}`;
+  const ldauLocked = !editing || !ldauEnabled;
+
+  const toggleLdau = (on: boolean) => {
+    if (!on) {
+      // 关闭：清空整组参数 → 生成/上传的 INCAR 都不含任何 LDAU*
+      setParams({ LDAU: '', LDAUTYPE: '', LMAXMIX: '', LDAUL: '', LDAUU: '', LDAUJ: '' });
+      return;
+    }
+    const rows = ldauRows.length > 0 ? ldauRows : defaultLdauRows(elementSymbols.length);
+    setParams({
+      LDAU: '.TRUE.',
+      LDAUTYPE: String(params.LDAUTYPE ?? '').trim() || '1',
+      LMAXMIX: String(params.LMAXMIX ?? '').trim() || '4',
+      ...ldauArrayParams(rows),
+    });
+  };
+
+  const updateLdauRow = (index: number, patch: Partial<LdauRow>) => {
+    const rows = ldauRowsView.map((row, i) => (i === index ? { ...row, ...patch } : row));
+    setParams(ldauArrayParams(rows));
+  };
+
+  const addLdauRow = () => {
+    setParams(ldauArrayParams([...ldauRowsView, { ldaul: '-1', ldauu: '0.0', ldauj: '0.0' }]));
+  };
+
+  const removeLdauRow = (index: number) => {
+    const rows = ldauRowsView.filter((_, i) => i !== index);
+    setParams(ldauArrayParams(rows.length > 0 ? rows : []));
+  };
+
+  /* ---------- 偶极矩修正卡片：主开关 + IDIPOL + DIPOL 三分量 ---------- */
+
+  const dipoleEnabled = isIncarTrue(params.LDIPOL ?? '');
+  const dipoleLocked = !editing || !dipoleEnabled;
+  const [dipolParts, setDipolParts] = useState<[string, string, string]>(() =>
+    parseDipol(params.DIPOL),
+  );
+
+  // 外部值（切换任务 / 远端同步）变化时同步三个输入框；输入过程中的中间态不覆盖
+  useEffect(() => {
+    setDipolParts((prev) => (joinDipol(prev) === String(params.DIPOL ?? '').trim() ? prev : parseDipol(params.DIPOL)));
+  }, [params.DIPOL]);
+
+  const toggleDipole = (on: boolean) => {
+    if (!on) {
+      setDipolParts(['', '', '']);
+      // 关闭：清空整组参数 → 生成/上传的 INCAR 都不含 LDIPOL / IDIPOL / DIPOL
+      setParams({ LDIPOL: '', IDIPOL: '', DIPOL: '' });
+      return;
+    }
+    setParams({
+      LDIPOL: '.TRUE.',
+      IDIPOL: String(params.IDIPOL ?? '').trim() || '3',
+      DIPOL: joinDipol(dipolParts),
+    });
+  };
+
+  const updateDipolPart = (index: number, value: string) => {
+    const next = [...dipolParts] as [string, string, string];
+    next[index] = value;
+    setDipolParts(next);
+    // 三个分量都非空才写入；否则置空（不写入 INCAR）
+    setParams({ DIPOL: joinDipol(next) });
+  };
+
+  /* ---------- 卡片集合：通用分类 + DFT+U + 偶极矩修正 ---------- */
+
+  const categoryCards = INCAR_CATEGORIES.map((cat) => (
+    <Card key={cat.key} size="small" title={cat.label} className="job-card job-incar-cat">
+      <div className="job-incar-fields">
+        {cat.params
+          .filter((def) => !def.fracOnly || task.task_type === 'frac')
+          .map((def) => (
+            <div
+              key={def.key}
+              className={`job-incar-field${
+                pendingSet.has(def.key) ? ' is-pending' : isChanged(def.key) ? ' is-changed' : ''
+              }`}
+            >
+              <div className="job-incar-field__label">
+                <Tooltip title={def.hint}>
+                  <span>{def.label}</span>
+                </Tooltip>
+                {pendingSet.has(def.key) && (
+                  <Tooltip
+                    title={`本次计算值：${snapshotParams[def.key] ?? '无'} · 待下次续算生效`}
+                  >
+                    <span className="job-incar-field__badge">待生效</span>
+                  </Tooltip>
+                )}
+              </div>
+              <div className="job-incar-field__control">{renderField(def)}</div>
+            </div>
+          ))}
+      </div>
+    </Card>
+  ));
+
+  const ldauCard = (
+    <Card
+      key="ldau"
+      size="small"
+      title="DFT+U"
+      className="job-card job-incar-cat"
+      extra={
+        <Tooltip
+          title={
+            !editing
+              ? '点右上角「修改参数」后可编辑'
+              : ldauEnabled
+                ? '关闭：不写入任何 LDAU* 参数'
+                : '打开：写入 LDAU = .TRUE. 与下方元素表'
+          }
+        >
+          <Switch size="small" checked={ldauEnabled} disabled={!editing} onChange={toggleLdau} />
+        </Tooltip>
+      }
+    >
+      <div className={`job-incar-fields${ldauEnabled ? '' : ' job-incar-off'}`}>
+        <div className="job-incar-field">
+          <div className="job-incar-field__label">
+            <Tooltip title="DFT+U 类型（1 = Liechtenstein，2 = Dudarev，4 = 带交换分裂）">
+              <span>LDAUTYPE</span>
+            </Tooltip>
+          </div>
+          <div className="job-incar-field__control">
+            <Select
+              style={{ width: '100%' }}
+              value={String(params.LDAUTYPE ?? '').trim() || '1'}
+              disabled={ldauLocked}
+              onChange={(value) => setParam('LDAUTYPE', value)}
+              options={LDAUTYPE_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
+            />
+          </div>
+        </div>
+        <div className="job-incar-field">
+          <div className="job-incar-field__label">
+            <Tooltip title="电荷混合的最高 l 量子数（d 体系 4，f 体系 6）">
+              <span>LMAXMIX</span>
+            </Tooltip>
+          </div>
+          <div className="job-incar-field__control">
+            <SciInput
+              value={String(params.LMAXMIX ?? '')}
+              placeholder="4"
+              disabled={ldauLocked}
+              onChange={(value) => setParam('LMAXMIX', value)}
+            />
+          </div>
+        </div>
+        <div className="job-incar-ldau">
+          <div className="job-incar-ldau__head">
+            <span>元素</span>
+            <span>LDAUL</span>
+            <span>LDAUU</span>
+            <span>LDAUJ</span>
+            <span />
+          </div>
+          {ldauRowsView.map((row, index) => (
+            <div className="job-incar-ldau__row" key={`ldau-${index}`}>
+              <span className="job-incar-ldau__elem" title={ldauRowLabel(index)}>
+                {ldauRowLabel(index)}
+              </span>
+              <Select
+                size="small"
+                value={row.ldaul || '-1'}
+                disabled={ldauLocked}
+                onChange={(value) => updateLdauRow(index, { ldaul: value })}
+                options={LDAUL_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
+              />
+              <Input
+                size="small"
+                value={row.ldauu}
+                placeholder="4.0"
+                disabled={ldauLocked}
+                onChange={(event) => updateLdauRow(index, { ldauu: event.target.value })}
+              />
+              <Input
+                size="small"
+                value={row.ldauj}
+                placeholder="0.0"
+                disabled={ldauLocked}
+                onChange={(event) => updateLdauRow(index, { ldauj: event.target.value })}
+              />
+              <Button
+                type="text"
+                size="small"
+                icon={<DeleteOutlined />}
+                disabled={ldauLocked || ldauRowsView.length <= 1}
+                onClick={() => removeLdauRow(index)}
+              />
+            </div>
+          ))}
+          <div className="job-incar-ldau__actions">
+            <Button
+              size="small"
+              type="dashed"
+              icon={<PlusOutlined />}
+              disabled={ldauLocked}
+              onClick={addLdauRow}
+            >
+              添加元素
+            </Button>
+            <span className="job-field-hint">
+              LDAUL / LDAUU / LDAUJ 一一对应，行数变化时三个数组同步更新；LDAUL = -1 表示不加 U
+            </span>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+
+  const dipoleCard = (
+    <Card
+      key="dipole"
+      size="small"
+      title="偶极矩修正"
+      className="job-card job-incar-cat"
+      extra={
+        <Tooltip
+          title={
+            !editing
+              ? '点右上角「修改参数」后可编辑'
+              : dipoleEnabled
+                ? '关闭：不写入 LDIPOL / IDIPOL / DIPOL'
+                : '打开：写入 LDIPOL = .TRUE.（DIPOL 三分量都填才写入）'
+          }
+        >
+          <Switch size="small" checked={dipoleEnabled} disabled={!editing} onChange={toggleDipole} />
+        </Tooltip>
+      }
+    >
+      <div className={`job-incar-fields${dipoleEnabled ? '' : ' job-incar-off'}`}>
+        <div className="job-incar-field">
+          <div className="job-incar-field__label">
+            <Tooltip title="偶极矩修正方向（3 = 沿 c 方向，表面/二维体系常用）">
+              <span>IDIPOL</span>
+            </Tooltip>
+          </div>
+          <div className="job-incar-field__control">
+            <Select
+              style={{ width: '100%' }}
+              value={String(params.IDIPOL ?? '').trim() || '3'}
+              disabled={dipoleLocked}
+              onChange={(value) => setParam('IDIPOL', value)}
+              options={IDIPOL_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
+            />
+          </div>
+        </div>
+        <div className="job-incar-field">
+          <div className="job-incar-field__label">
+            <Tooltip title="偶极矩参考点坐标；三个分量都填写才写入 INCAR">
+              <span>DIPOL</span>
+            </Tooltip>
+          </div>
+          <div className="job-incar-field__control">
+            <div className="job-incar-dipol">
+              {(['x', 'y', 'z'] as const).map((axis, index) => (
+                <Input
+                  key={axis}
+                  size="small"
+                  addonBefore={axis}
+                  value={dipolParts[index]}
+                  placeholder="0.5"
+                  disabled={dipoleLocked}
+                  onChange={(event) => updateDipolPart(index, event.target.value)}
+                />
+              ))}
+            </div>
+            <div className="job-field-hint">
+              {joinDipol(dipolParts)
+                ? `将写入 DIPOL = ${joinDipol(dipolParts)}`
+                : '三个分量都填写后才会写入 DIPOL'}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+
+  // 两列流式布局：按顺序左右交替，卡片各自自然高度（不做行对齐）
+  const incarCards = [...categoryCards, ldauCard, dipoleCard];
+  const incarLeftCards = incarCards.filter((_, index) => index % 2 === 0);
+  const incarRightCards = incarCards.filter((_, index) => index % 2 === 1);
+
   return (
     <div className="job-panel">
       <Card size="small" className="job-card job-incar-toolbar">
@@ -375,41 +755,8 @@ export default function IncarEditor({
       />
 
       <div className="job-incar-grid">
-        {INCAR_CATEGORIES.map((cat) => (
-          <Card
-            key={cat.key}
-            size="small"
-            title={cat.label}
-            className="job-card job-incar-cat"
-          >
-            <div className="job-incar-fields">
-              {cat.params
-                .filter((def) => !def.fracOnly || task.task_type === 'frac')
-                .map((def) => (
-                  <div
-                    key={def.key}
-                    className={`job-incar-field${
-                      pendingSet.has(def.key) ? ' is-pending' : isChanged(def.key) ? ' is-changed' : ''
-                    }`}
-                  >
-                    <div className="job-incar-field__label">
-                      <Tooltip title={def.hint}>
-                        <span>{def.label}</span>
-                      </Tooltip>
-                      {pendingSet.has(def.key) && (
-                        <Tooltip
-                          title={`本次计算值：${snapshotParams[def.key] ?? '无'} · 待下次续算生效`}
-                        >
-                          <span className="job-incar-field__badge">待生效</span>
-                        </Tooltip>
-                      )}
-                    </div>
-                    <div className="job-incar-field__control">{renderField(def)}</div>
-                  </div>
-                ))}
-            </div>
-          </Card>
-        ))}
+        <div className="job-incar-col">{incarLeftCards}</div>
+        <div className="job-incar-col">{incarRightCards}</div>
       </div>
 
       <Card
@@ -426,39 +773,65 @@ export default function IncarEditor({
         }
       >
         <div className="job-field-hint" style={{ marginBottom: 8 }}>
-          不在预设表单里的参数（本次计算实际使用，可编辑；留空即不写入 INCAR）
+          不在预设表单里的参数（本次计算实际使用；留空即不写入 INCAR）
         </div>
-        {Object.keys(extraParams).length === 0 && !editing ? (
-          <div className="job-empty-hint">本次计算没有预设之外的参数</div>
+        {extraRows.length === 0 ? (
+          <div className="job-incar-extra__empty">
+            <span className="job-field-hint">
+              {editing
+                ? '还没有其他参数，点「添加参数」新增一行'
+                : '本次计算没有预设之外的参数（点右上角「修改参数」后可添加）'}
+            </span>
+            {editing && (
+              <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={addExtraParam}>
+                添加参数
+              </Button>
+            )}
+          </div>
         ) : (
           <div className="job-incar-extra">
-            {Object.entries(extraParams).map(([key, value]) => (
+            {extraRows.map((row) => (
               <div
-                key={key}
-                className={`job-incar-extra__row${pendingSet.has(key) ? ' is-pending' : ''}`}
+                key={row.id}
+                className={`job-incar-extra__row${
+                  pendingSet.has(row.key.trim().toUpperCase()) ? ' is-pending' : ''
+                }`}
               >
                 <Input
-                  value={key}
+                  value={row.key}
                   disabled={!editing}
+                  placeholder="参数名"
                   className="job-incar-extra__key"
-                  onChange={(e) => renameExtraParam(key, e.target.value)}
+                  onChange={(e) => renameExtraParam(row.id, e.target.value)}
                 />
                 <span className="job-incar-extra__eq">=</span>
                 <Input
-                  value={String(value)}
+                  value={row.value}
                   disabled={!editing}
-                  onChange={(e) => onParamsChange({ ...params, [key]: e.target.value }, 'custom')}
+                  placeholder="值（留空不写入）"
+                  onChange={(e) => setExtraParamValue(row.id, e.target.value)}
                 />
                 {editing && (
                   <Button
                     type="text"
                     danger
                     icon={<DeleteOutlined />}
-                    onClick={() => removeExtraParam(key)}
+                    onClick={() => removeExtraParam(row.id)}
                   />
                 )}
               </div>
             ))}
+            {editing && (
+              <Button
+                size="small"
+                type="dashed"
+                icon={<PlusOutlined />}
+                style={{ marginTop: 8 }}
+                onClick={addExtraParam}
+              >
+                添加参数
+              </Button>
+            )}
           </div>
         )}
       </Card>

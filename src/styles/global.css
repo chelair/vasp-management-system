@@ -1214,10 +1214,67 @@ p {
 }
 
 .job-incar-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 14px;
-  align-items: start;
+  align-items: flex-start;
+}
+
+/* 两列各自独立流式排列：卡片取自然高度，短卡片不再被同一行的高卡片撑出空白 */
+.job-incar-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 主开关关闭：卡片主体置灰且不可编辑（开关在卡片头部，不受影响） */
+.job-incar-off {
+  opacity: 0.55;
+  filter: grayscale(0.45);
+  pointer-events: none;
+}
+
+/* DFT+U 元素表：元素 / LDAUL / LDAUU / LDAUJ / 删除 */
+.job-incar-ldau {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.job-incar-ldau__head,
+.job-incar-ldau__row {
+  display: grid;
+  grid-template-columns: minmax(56px, 1fr) 84px minmax(0, 1fr) minmax(0, 1fr) 28px;
+  gap: 6px;
+  align-items: center;
+}
+
+.job-incar-ldau__head {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.job-incar-ldau__elem {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-incar-ldau__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* 偶极矩修正的 DIPOL 三分量 */
+.job-incar-dipol {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .job-incar-fields {
@@ -1267,6 +1324,13 @@ p {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.job-incar-extra__empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .job-incar-extra__row {
@@ -2317,7 +2381,11 @@ p {
     grid-template-columns: 1fr;
   }
   .job-incar-grid {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  .job-incar-col {
+    flex: 1 1 auto;
+    width: 100%;
   }
   .jobs-grid,
   .report-grid {

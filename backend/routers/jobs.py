@@ -23,7 +23,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import DATA_DIR, load_servers
-from cluster_status import build_snapshot
+# 注意：input_state 里也有一个同名函数 build_snapshot（输入文件快照），
+# 下面 from input_state import build_snapshot 会覆盖这个名字；节点状态用别名区分，
+# 否则 /api/jobs/nodes 会因 use_cache 参数不被接受而 500（v0.8.2 起的回归）。
+from cluster_status import build_snapshot as build_node_snapshot
 from continuation import (
     _download_remote_text,
     _remote_latest_con,
@@ -98,7 +101,7 @@ def cluster_nodes(refresh: bool = False):
     try:
         servers = load_servers()
         server_name = next(iter(servers.keys()), "server1")
-        snapshot = build_snapshot(server_name, use_cache=not refresh)
+        snapshot = build_node_snapshot(server_name, use_cache=not refresh)
         return ok("查询成功", snapshot)
     except Exception as e:
         return JSONResponse(

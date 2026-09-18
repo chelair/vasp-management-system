@@ -1,10 +1,22 @@
 # 待办清单（TODO）
 
 > 创建时间：2026-08-24
-> 适用项目：`vasp-management-system`（v0.8.5）
+> 适用项目：`vasp-management-system`（v0.8.6）
 > 勾选约定：`[ ]` 未开始 · `[x]` 已完成
 
+# 发现问题
+
+> （当前无未处理问题）
+> 原「自由能路径和 neb 路径重名时会自动合并」已修复，见「已完成（v0.8.6）」。
+
 ## 当前进度概览
+
+**已完成（v0.8.6，2026-09-18 · 同名组路径列误合并修复 + 节点接口回归修复）**
+
+- [x] 修「自由能路径和 neb 路径重名时会自动合并」：巡检中心路径列的跨行合并键漏了类别，补成 `项目|task_category|组名`（Ag_20260830 的 PATH1/2/3 同时是自由能组与 NEB 组，排序相邻时被并成一格）；纯前端，`npm run build` 后刷新即生效
+- [x] 修 `/api/jobs/nodes` 500 回归（v0.8.2 引入）：`from input_state import build_snapshot` 覆盖了 `cluster_status.build_snapshot`，节点接口改用别名 `build_node_snapshot`
+- [x] 全盘核实其它分组逻辑（作业树 / 报告 / 组数据接口 / 图表文件名）均按 `group_id`、`task_id`，无按组名当键的残留
+- [x] 新增 `scripts/connect-hpc.sh` + `scripts/connect-hpc.desktop`：一键登录 HPC（校验私钥权限 + SecureLink tun0 路由）
 
 **已完成（v0.8.5，2026-09-18 · Linux 生产部署 + 输入参数页新功能）**
 

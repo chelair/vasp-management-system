@@ -490,13 +490,15 @@ export default function Inspection() {
           i += 1;
           continue;
         }
-        const key = `${row.project_name}|${row.group_name}`;
+        // 键必须带 task_category：同一项目下自由能组与 NEB 组可能同名（如都有 PATH1），
+        // 只按项目 + 组名会在两者排序相邻时被误并成一格（v0.8.6 修）。
+        const key = `${row.project_name}|${row.task_category}|${row.group_name}`;
         let j = i + 1;
         while (
           j < rows.length &&
           (rows[j].task_category === '自由能' ||
             (rows[j].task_category === 'NEB' && Boolean(rows[j].group_name))) &&
-          `${rows[j].project_name}|${rows[j].group_name}` === key
+          `${rows[j].project_name}|${rows[j].task_category}|${rows[j].group_name}` === key
         ) {
           j += 1;
         }

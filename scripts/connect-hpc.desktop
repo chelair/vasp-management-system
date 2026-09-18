@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=连接计算服务器
+Name[en]=Connect to compute server
+Comment=SSH 登录 hpc.xmu.edu.cn（mdye）；需先连接 SecureLink
+Exec=ptyxis -- bash -lc "/home/zouyuxi/projects/vasp-manager/scripts/connect-hpc.sh --pause"
+Icon=utilities-terminal
+Terminal=false
+Categories=Network;
+Keywords=HPC;VASP;SSH;hpc.xmu.edu.cn;SecureLink;
+StartupNotify=true

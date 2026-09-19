@@ -681,8 +681,16 @@ export interface ClusterSnapshot {
   queriedAt: string;
   nodes: ClusterNode[];
   queues: ClusterQueueSummary[];
-  bhost_raw?: string;
-  bqueues_raw?: string;
+  bhostRaw?: string;
+  bqueuesRaw?: string;
+  /** 采集元信息（v0.8.7：与总览页共用同一份采集缓存） */
+  cached?: boolean;
+  /** 采集失败但有旧数据时为 true（数据仍是真实采集，只是过期） */
+  stale?: boolean;
+  /** 距上次成功采集的秒数 */
+  cacheAgeSeconds?: number;
+  /** 采集缓存 TTL（秒），前端据此显示「缓存 N 分钟」 */
+  cacheTtlSeconds?: number;
 }
 
 /** 队列/分区选项 */

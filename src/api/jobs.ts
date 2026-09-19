@@ -218,6 +218,9 @@ export async function uploadIncar(
   dir: string;
   backup_file: string | null;
   warnings: string[];
+  /** 本次同步顺带生效的台账 key（同步到远端 = 立即应用这些修改） */
+  applied: string[];
+  state: TaskInputState;
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/upload-incar`, {
     method: 'POST',
@@ -230,8 +233,123 @@ export async function uploadIncar(
 export async function uploadKpoints(
   taskId: string,
   payload: { content: string },
-): Promise<{ dir: string; backup_file: string | null }> {
+): Promise<{
+  dir: string;
+  backup_file: string | null;
+  applied: string[];
+  state: TaskInputState;
+}> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/upload-kpoints`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * 写入提交脚本到远端最新目录（v0.8.7）：
+ * 旧 `vasp.lsf` 自动备份为 `old_vasp.lsf`，同时同步一份到本地镜像 `files/vasp.lsf`。
+ */
+export async function uploadSubmitScript(
+  taskId: string,
+  payload: { content: string },
+): Promise<{
+  dir: string;
+  remote_path: string;
+  backup_file: string | null;
+  size: number;
+  local_path: string | null;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/upload-submit-script`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * 上传 POSCAR 到远端最新目录（v0.8.8）：
+ * 旧文件备份为 `old_POSCAR`，同时同步一份到本地镜像 `files/POSCAR`。
+ */
+export async function uploadPoscar(
+  taskId: string,
+  payload: { content: string },
+): Promise<{
+  dir: string;
+  remote_path: string;
+  backup_file: string | null;
+  size: number;
+  local_path: string | null;
+  applied: string[];
+  state: TaskInputState;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/upload-poscar`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * 在远端「当前目录」（最新 conN，无则主目录）运行 `pos2pot` 生成 POTCAR（v0.8.8）。
+ * 单次 exec 完成：命令输出 + POTCAR 大小/行数/元素都在这一个响应里。
+ */
+export async function generatePotcar(taskId: string): Promise<{
+  dir: string;
+  command: string;
+  exit_code: number;
+  output: string;
+  generated: boolean;
+  potcar: {
+    exists: boolean;
+    size: number;
+    lines: number;
+    elements: string[];
+    elements_count: number;
+  };
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/generate-potcar`, {
+    method: 'POST',
+  });
+}
+
+export interface SelectiveDynamicsPayload {
+  /** 用页面当前的 POSCAR 文本；不传则后端读本地镜像 files/POSCAR */
+  content?: string;
+  mode: 'manual' | 'elements' | 'z_range';
+  /** manual：选中的原子（poscarIndex 为 1 起的 POSCAR 坐标行序号） */
+  atoms?: { element?: string; poscarIndex?: number; index?: number }[];
+  /** elements：要固定的元素符号 */
+  elements?: string[];
+  /** z_range：分数坐标 z 区间 */
+  zRange?: [number, number];
+  numbering?: 'element' | 'global';
+  labels?: boolean;
+  /** 生成后是否同时写入远端最新目录（旧文件备份 old_POSCAR） */
+  syncRemote?: boolean;
+}
+
+/**
+ * 生成带 `Selective Dynamics` 的 POSCAR（固定选中原子）——v0.8.7。
+ * 本地写回 `files/POSCAR`（旧文件备份 `files/old_POSCAR`）并刷新元数据；
+ * `syncRemote=true` 时同时写入远端最新目录。
+ */
+export async function applySelectiveDynamics(
+  taskId: string,
+  payload: SelectiveDynamicsPayload,
+): Promise<{
+  text: string;
+  mode: string;
+  numbering: string;
+  labels: boolean;
+  summary: string;
+  local_backup: string | null;
+  remote_dir: string | null;
+  remote_backup: string | null;
+  synced_remote: boolean;
+  state: TaskInputState;
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/selective-dynamics`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

@@ -6,6 +6,7 @@
   "embed_images": true,
   "energy_precision": 8,
   "sync_remote_dirs": false,
+  "cluster_cache_seconds": 300,
   "auto_inspection_enabled": true,
   "inspection_interval_hours": 2,
   "core_hours_per_weight": 600,

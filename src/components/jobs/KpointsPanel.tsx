@@ -19,6 +19,8 @@ interface Props {
   onGenerate: (content: string) => void;
   /** 确认 k 网格修改（写入草稿，下次续算生效） */
   onConfirmMesh: (mesh: number[]) => void;
+  /** 「同步到远端」成功后回传刷新过的输入状态 */
+  onStatePushed?: (state: TaskInputState) => void;
 }
 
 export default function KpointsPanel({
@@ -29,6 +31,7 @@ export default function KpointsPanel({
   input,
   onGenerate,
   onConfirmMesh,
+  onStatePushed,
 }: Props) {
   const { message } = App.useApp();
   const [density, setDensity] = useState(20);
@@ -48,8 +51,19 @@ export default function KpointsPanel({
     [info, density],
   );
 
-  /** 当前生效网格（草稿优先，其次快照） */
-  const effectiveMesh = pendingMesh ?? snapshotMesh;
+  /** 待生效草稿与本次计算是否相同（相同就不再提示"待生效"） */
+  const pendingDiffers =
+    !!snapshotMesh &&
+    !!pendingMesh &&
+    pendingMesh.some((v, i) => v !== snapshotMesh[i]);
+  /** 推荐网格与本次计算是否不同（不同才提示可以改） */
+  const recommendDiffers =
+    !!snapshotMesh && !!grid && grid.some((v, i) => v !== snapshotMesh[i]);
+  /** 推荐值是否已经"被采用"（= 与待生效草稿一致，或本来就与本次计算一致） */
+  const recommendAdopted =
+    !!grid &&
+    ((!!pendingMesh && pendingMesh.every((v, i) => v === grid[i])) ||
+      (!pendingMesh && !!snapshotMesh && snapshotMesh.every((v, i) => v === grid[i])));
   const meshChanged = (index: number) =>
     !!snapshotMesh && meshDraft[index] !== snapshotMesh[index];
   const densityProducts = useMemo(() => {
@@ -76,16 +90,19 @@ export default function KpointsPanel({
     // 只有 k 网格（或内容）真的变了才提交修改
     const current = input?.files?.KPOINTS?.text ?? null;
     if (current && current.trim() === kpointsContent.trim()) {
-      message.info('KPOINTS 与本次计算一致，无需上传');
+      message.info('KPOINTS 与本次计算一致，无需同步');
       return;
     }
     try {
       const r = await uploadKpoints(taskId, { content: kpointsContent });
+      onStatePushed?.(r.state);
       message.success(
-        `KPOINTS 已上传到远端${r.backup_file ? `，旧文件已备份为 ${r.backup_file}` : ''}`,
+        `KPOINTS 已同步到远端${r.backup_file ? `（旧文件备份为 ${r.backup_file}）` : ''}${
+          r.applied.length > 0 ? `，${r.applied.length} 项修改已生效` : ''
+        }`,
       );
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '上传 KPOINTS 失败');
+      message.error(err instanceof Error ? err.message : '同步 KPOINTS 到远端失败');
     }
   };
 
@@ -93,11 +110,16 @@ export default function KpointsPanel({
     <div className="job-panel">
       <Card
         size="small"
-        title="本次计算的 K 点网格"
+        title="本次计算的 K 点网格（远端 KPOINTS 当前值）"
         className="job-card"
         extra={
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {pendingMesh && (
+            {snapshotMesh && (
+              <Tag color="blue" bordered={false}>
+                本次计算 {snapshotMesh.join(' × ')}
+              </Tag>
+            )}
+            {pendingMesh && pendingDiffers && (
               <Tag color="orange" bordered={false}>
                 待生效 {pendingMesh.join(' × ')}
               </Tag>
@@ -165,8 +187,14 @@ export default function KpointsPanel({
                   />
                 ))}
                 <span className="preview-note">
-                  {input?.files?.KPOINTS?.mesh_note || '自动网格'} · 实际生效{' '}
-                  {effectiveMesh ? effectiveMesh.join(' × ') : '—'}
+                  {editing
+                    ? '编辑中：点「确认修改」记为待生效修改'
+                    : pendingDiffers
+                      ? `待生效 ${pendingMesh!.join(' × ')}（下次续算或点「同步到远端」后生效）`
+                      : snapshotMesh
+                        ? `与本次计算一致 ${snapshotMesh.join(' × ')}`
+                        : ''}
+                  {input?.files?.KPOINTS?.mesh_note ? ` · ${input.files.KPOINTS.mesh_note}` : ''}
                 </span>
               </div>
             </div>
@@ -188,7 +216,11 @@ export default function KpointsPanel({
         )}
       </Card>
 
-      <Card size="small" title="K 点网格生成" className="job-card">
+      <Card
+        size="small"
+        title="推荐网格与生成（推荐仅作建议，不会自动应用）"
+        className="job-card"
+      >
         {info && grid ? (
           <>
             <div className="job-kpoints-form">
@@ -201,7 +233,9 @@ export default function KpointsPanel({
                   onChange={(v) => setDensity(v ?? 20)}
                   style={{ width: 140 }}
                 />
-                <span className="preview-note">默认 20（约每埃 20 个 k 点）</span>
+                <span className="preview-note">
+                  默认 20；推荐值取满足 k × 晶格常数 &gt; 系数 的最小整数
+                </span>
               </div>
               <div className="job-kpoints-field">
                 <span className="job-kpoints-field__label">网格类型</span>
@@ -218,32 +252,42 @@ export default function KpointsPanel({
               </div>
             </div>
 
-            <div className="job-kpoints-result">
-              <div className="job-kpoints-result__label">
-                推荐网格
-                <span className="preview-note">
-                  {' '}
-                  ≈ 密度系数 / 晶格常数（四舍五入，最小 1）
-                </span>
-              </div>
-              <div className="job-kpoints-grid">
-                {(['a', 'b', 'c'] as const).map((axis, i) => (
-                  <div key={axis} className="job-kpoints-grid__cell">
-                    <div className="job-kpoints-grid__num">{grid[i]}</div>
-                    <div className="job-kpoints-grid__lbl">
-                      {axis} = {info.lengths[axis].toFixed(3)} Å
-                    </div>
-                  </div>
-                ))}
-                <div className="job-kpoints-grid__arrow">→</div>
-                <div className="job-kpoints-grid__sum">
-                  <div className="job-kpoints-grid__num">{grid.join(' ')}</div>
-                  <div className="job-kpoints-grid__lbl">{meshType}</div>
-                </div>
-              </div>
-              <Tag color="geekblue" style={{ marginTop: 12 }}>
-                总 k 点数：{grid[0] * grid[1] * grid[2]}
-              </Tag>
+            {/* 推荐值只作一行弱化提示（不再独立成框，避免与"本次计算网格"抢视觉重心） */}
+            <div className="job-kpoints-inline">
+              <span className="job-kpoints-inline__label">推荐</span>
+              <span
+                className={`job-kpoints-inline__value${recommendAdopted ? ' is-adopted' : ''}${
+                  recommendDiffers && !recommendAdopted ? ' is-idle' : ''
+                }`}
+              >
+                {grid.join(' × ')}
+              </span>
+              <span className="job-kpoints-inline__meta">
+                总 {grid[0] * grid[1] * grid[2]} 个 k 点 · {meshType} ·{' '}
+                {info.lengths.a.toFixed(2)}/{info.lengths.b.toFixed(2)}/{info.lengths.c.toFixed(2)} Å
+                {snapshotMesh
+                  ? recommendDiffers
+                    ? ` · 本次计算为 ${snapshotMesh.join(' × ')}`
+                    : ' · 与本次计算一致'
+                  : ' · 尚未同步本次计算参数'}
+              </span>
+              {snapshotMesh && recommendDiffers && !recommendAdopted && (
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ padding: 0, height: 'auto' }}
+                  onClick={() => {
+                    onConfirmMesh(grid);
+                    setMeshDraft(grid);
+                    message.success(
+                      `推荐网格 ${grid.join(' × ')} 已记为待生效修改（下次续算或点「同步到远端」后生效）`,
+                    );
+                  }}
+                >
+                  采用为待生效
+                </Button>
+              )}
+              {recommendAdopted && <span className="preview-note">已采用（待生效）</span>}
             </div>
 
             <Button
@@ -271,7 +315,9 @@ export default function KpointsPanel({
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span className="preview-note">已生成 · 保存至 {taskName}/KPOINTS</span>
               <Button size="small" icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
-                上传到远端
+                <Tooltip title="把当前 KPOINTS（含未生效修改）写入远端最新目录，这些修改随即标记为已生效">
+                  <span>同步到远端</span>
+                </Tooltip>
               </Button>
             </div>
           )

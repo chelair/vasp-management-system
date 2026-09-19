@@ -57,7 +57,7 @@ import {
   parsePoscarElements,
   type LdauRow,
 } from '../../data/mock/incar';
-import { saveTaskFile, uploadIncar } from '../../api/jobs';
+import { saveTaskFile, uploadIncar, type TaskInputState } from '../../api/jobs';
 import SciInput from './SciInput';
 
 /** 「其他参数」卡片的一行；id 与键名解耦，改名时输入框不会被重建（不丢焦点） */
@@ -84,6 +84,8 @@ interface Props {
   onConfirmParams: (params: Record<string, string>) => void;
   /** 取消修改：回到快照值 */
   onResetToSnapshot: () => void;
+  /** 「同步到远端」成功后回传刷新过的输入状态（草稿/台账/本次计算值） */
+  onStatePushed?: (state: TaskInputState) => void;
 }
 
 export default function IncarEditor({
@@ -99,6 +101,7 @@ export default function IncarEditor({
   pendingKeys,
   onConfirmParams,
   onResetToSnapshot,
+  onStatePushed,
 }: Props) {
   const { message } = App.useApp();
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -159,7 +162,7 @@ export default function IncarEditor({
         ([key, value]) => String(value ?? '').trim() !== String(snapshotParams[key] ?? '').trim(),
       );
       if (changed.length === 0) {
-        message.info('参数与本次计算一致，无需上传');
+        message.info('参数与本次计算一致，无需同步');
         return;
       }
       // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改
@@ -171,14 +174,17 @@ export default function IncarEditor({
         ),
       );
       const r = await uploadIncar(task.task_id, { params: merged });
+      onStatePushed?.(r.state);
+      const appliedText =
+        r.applied.length > 0 ? `，${r.applied.length} 项修改已生效` : '';
       message.success(
-        `INCAR 已上传到远端${r.backup_file ? `，旧文件已备份为 ${r.backup_file}` : ''}`,
+        `INCAR 已同步到远端${r.backup_file ? `（旧文件备份为 ${r.backup_file}）` : ''}${appliedText}`,
       );
       if (r.warnings.length > 0) {
         message.warning(r.warnings.join('；'));
       }
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '上传 INCAR 失败');
+      message.error(err instanceof Error ? err.message : '同步 INCAR 到远端失败');
     }
   };
 
@@ -704,7 +710,9 @@ export default function IncarEditor({
             生成到本地
           </Button>
           <Button icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
-            上传到远端
+            <Tooltip title="把当前参数（含未生效修改）写入远端最新目录，这些修改随即标记为已生效；不改动续算逻辑">
+              <span>同步到远端</span>
+            </Tooltip>
           </Button>
           {editing ? (
             <>

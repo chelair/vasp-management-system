@@ -1,7 +1,7 @@
 # 待办清单（TODO）
 
 > 创建时间：2026-08-24
-> 适用项目：`vasp-management-system`（v0.8.6）
+> 适用项目：`vasp-management-system`（v0.8.7）
 > 勾选约定：`[ ]` 未开始 · `[x]` 已完成
 
 # 发现问题
@@ -10,6 +10,29 @@
 > 原「自由能路径和 neb 路径重名时会自动合并」已修复，见「已完成（v0.8.6）」。
 
 ## 当前进度概览
+
+**已完成（v0.8.7，2026-09-18 · 节点看板重构 + 本地镜像扁平化）**
+
+- [x] 集群节点状态看板重构：新建 `ClusterNodeBoard`（左侧节点矩阵 + 右侧队列信息行、rAF 平滑滑动、拖动、指示条、三行 Tooltip），替换原「队列拥堵卡片 + bhost 明细表」；节点明细表按要求删除，`.queue-card*` / `.node-core-cell*` 死样式一并清理
+- [x] **本地不再创建 `conN`**：`task_paths.strip_continuation_suffix()` 让续算子任务的本地路径归并到任务族根目录（`dir_path` 字段仍保留 `.../conN` 作逻辑主键）
+- [x] **`inputs/` 并入 `files/`**：本地每个任务只有一份镜像，同步时用远端"最新计算目录"的 INCAR/KPOINTS/POSCAR/CONTCAR（+CIF）**覆盖**写入
+- [x] **草稿保护**：有未生效草稿的文件跳过覆盖（本地副本保留），元数据仍按远端记录并标 `protected`，界面"本次计算值"不受影响
+- [x] **归档静默拉取**：任务归档（关闭）后后台线程拉最新 `OUTCAR` + `OSZICAR` 到 `files/`，失败只记审计
+- [x] 迁移脚本 `scripts/flatten_local_mirror.py`（dry-run/`--apply`）已执行：14 个 `inputs/` 合并、131 个空 `conN` 骨架删除，18 个被覆盖文件备份到 `data/backups/local_mirror_20260918_200029/`
+- [x] mock 模式补强：`ssh.mock_enabled()/mock_local_path()` 公开，"最新目录定位"在 mock 下改扫本地 mock 远端树（原先无法离线联调同步路径）
+- [x] **集群采集合并**：新增 `backend/cluster_probe.py`，总览与作业管理共用一次 exec 采集 + 一份 TTL 缓存（`cluster_cache_seconds`，默认 300s）；打开页面不再各自发 SSH，任一页刷新强制重采且两边同步，巡检后失效预热；采集失败有旧数据时标 `stale`（前端显示「缓存数据」）
+- [x] **vasp.lsf 提交脚本自动生成**：`src/utils/vaspLsf.ts` 按 8 段模板（S1..S8）拼装，表单三组字段（任务名/队列/时分双框截止时间；总核数默认 24 + 每节点核数默认取队列规格 + "将分配 N 个节点"提示；软结束开关默认开，**`-wt` 预警时间可调：1–999 分钟、步长 5、默认 50**）；`POST /api/jobs/tasks/{id}/upload-submit-script` 写远端最新目录并备份 `old_vasp.lsf`、同步本地 `files/vasp.lsf`；提交仍 `bsub < vasp.lsf`
+- [x] **POSCAR 上传远端**：POSCAR 页新增「上传 POSCAR 到远端」按钮（备份 `old_POSCAR`、同步本地镜像），另把"定位目录 + 备份"合并成一次 exec
+- [x] **生成 POTCAR**：POSCAR 页新增「生成 POTCAR（pos2pot）」按钮，单次 exec 在远端当前目录运行 `pos2pot.sh`（递归处理含 POSCAR 的子目录），返回命令输出 + POTCAR 大小/行数/元素块；命令名按 `pos2pot` → `pos2pot.sh` → 绝对路径 自动解析
+- [x] **提交前输入文件非空检查（按任务类型分）**：把「定位 conN + 检查非空 + bsub」合并进**同一次 exec**（3 次往返 → 1 次），缺文件返回 400 列出文件名并阻止提交；opt/frac/ele 检查五件套，**NEB 检查 `INCAR/KPOINTS/POTCAR/vasp.lsf` + 各映像目录 `00..(IMAGES+1)/POSCAR`**（VTST 根目录无 POSCAR，原口径会误拦）
+- [x] **「上传到远端」改为「同步到远端」**（INCAR/KPOINTS/POSCAR）：写远端的同时把未生效草稿标记为已应用（`applied_in="remote"`）、刷新本地镜像与"本次计算值"元数据，界面原地更新；续算逻辑不变（已结清的草稿不会被重复应用）
+- [x] 推荐网格判定改为「满足 k × 晶格常数 > 密度系数 的**最小整数**」（`floor(系数/L)+1`，不再是四舍五入），与巡检 `k×a > 20` 判定一致
+- [x] 推荐网格改为一行弱化提示（不再独立成框、字号更小、**不采用即置灰**，采用后才转绿；「生成 KPOINTS 文件」保持主按钮）
+- [x] **KPOINTS 页三种网格讲清楚**：区分并明确标注「本次计算（蓝，远端当前值）/ 待生效（橙，下次续算或同步到远端后生效）/ 推荐（灰，仅建议）」；修正原来把"待生效"值错标成"实际生效"的提示；推荐网格加「采用为待生效」按钮（不再让人猜哪个在生效）
+- [x] 双击空白区取消选中（单击空白不再误清空，避免旋转时把框选结果清掉）
+- [x] 修「Shift 框选原子时选中页面文本」：框选覆盖层 `preventDefault()` + 整页 `user-select:none`（body 标记类）+ 窗口 mouseup 兜底清理
+- [x] **POSCAR 页「固定原子」已接前端**：弹窗支持「选中原子 / 整个元素 / 按高度区间」+ 编号方式 + 标签开关 + 可选同步远端；后端 `POST /tasks/{id}/selective-dynamics` 调脚本并刷新本地镜像/元数据（远端同步时备份 `old_POSCAR`）
+- [x] **POSCAR 固定原子脚本** `scripts/selective_dynamics.py`：插入 `Selective Dynamics` + 写 `坐标 + T/F + 元素序号` 标签；固定规则可配（手动序号/标签、元素、z 高度区间、POSCAR 页选中 JSON）；原文件存 `old_POSCAR`；已固定过的文件可重跑覆盖；坐标块之后的附加内容（CONTCAR 的"空行 + 速度块"）原样保留；**原地改写 + 逐行保留原始行尾**，同参数重跑可与原文件逐字节一致（test/1 已验证 cmp 通过）
 
 **已完成（v0.8.6，2026-09-18 · 同名组路径列误合并修复 + 节点接口回归修复）**
 
@@ -47,7 +70,7 @@
 
 **已完成（v0.8.2，2026-09-15 · 作业管理输入文件重构）**
 
-- [x] 远端参数自动同步：提交作业后后台同步一次（1 exec + 4 SFTP 小文件），也可手动「同步最新参数」；快照落 `<任务>/inputs/`（含 CIF），元数据存 `task["input_state"]`
+- [x] 远端参数自动同步：提交作业后后台同步一次（1 exec + 4 SFTP 小文件），也可手动「同步最新参数」；快照落 `<任务>/files/`（含 CIF；v0.8.7 前是 `inputs/`），元数据存 `task["input_state"]`
 - [x] 参数草稿 + 变更台账（file/key/from/to/at/applied_at/applied_in）：改参数不碰远端，**只在下次续算应用**
 - [x] 续算应用：`continuation._apply_drafts_to_new_dir()` 合并草稿 INCAR 参数（ISTART/ICHARG 优先，冲突告警）→ KPOINTS 网格重写 → **POSCAR 永不覆盖** → INCAR 顶部写审计注释 → 台账标记 applied_in
 - [x] INCAR 编辑器：默认只读（点「修改参数」解锁 → 确认修改才生效）、已修改/待生效参数高亮、「其他参数」列出本次计算里非预设参数（原"自定义参数"）

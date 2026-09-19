@@ -3,16 +3,21 @@ import { App, Button, Card, Descriptions, Empty, Segmented, Select, Tag, Tooltip
 import {
   CloudUploadOutlined,
   CopyOutlined,
+  ExperimentOutlined,
   FileTextOutlined,
   LockOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { TaskRef } from '../../types';
 import { TASK_TYPE_LABELS } from '../../types';
 import { parsePoscar } from '../../utils/poscar';
 import type { TaskInputState } from '../../api/jobs';
+import { generatePotcar, uploadPoscar } from '../../api/jobs';
 import Structure3DFrame, { type AtomRef } from './Structure3DFrame';
+import SelectiveDynamicsModal from './SelectiveDynamicsModal';
 
 interface Props {
+  taskId: string;
   poscarContent: string | null;
   poscarPath: string | null;
   copyTargets: TaskRef[];
@@ -20,15 +25,25 @@ interface Props {
   input: TaskInputState | null;
   onImport: (content: string) => void;
   onCopyFromTask: (taskId: string) => void;
+  /** 远端文件变化（上传 POSCAR / 生成 POTCAR）后刷新本地文件清单 */
+  onRemoteChanged?: () => void;
+  /** 同步到远端成功后回传刷新过的输入状态 */
+  onStatePushed?: (state: TaskInputState) => void;
+  /** 固定原子生成新 POSCAR 后回传（刷新编辑器内容 + 输入状态 + 文件清单） */
+  onPoscarGenerated?: (text: string, state: TaskInputState) => void;
 }
 
 export default function PoscarPanel({
+  taskId,
   poscarContent,
   poscarPath,
   copyTargets,
   input,
   onImport,
   onCopyFromTask,
+  onRemoteChanged,
+  onStatePushed,
+  onPoscarGenerated,
 }: Props) {
   const { message } = App.useApp();
   const [showRaw, setShowRaw] = useState(false);
@@ -36,6 +51,59 @@ export default function PoscarPanel({
   /** POSCAR = 提交时的输入结构（不会变）；CONTCAR = 这次计算的最新结构 */
   const [view, setView] = useState<'poscar' | 'contcar'>('poscar');
   const [selectedAtoms, setSelectedAtoms] = useState<AtomRef[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [potcarBusy, setPotcarBusy] = useState(false);
+  const [sdOpen, setSdOpen] = useState(false);
+  /** 生成 POTCAR 的结果（命令输出 + 摘要），就地展示，不用弹窗 */
+  const [potcarResult, setPotcarResult] = useState<{
+    ok: boolean;
+    text: string;
+    output: string;
+  } | null>(null);
+
+  const uploadRemote = async () => {
+    if (!poscarContent) {
+      message.warning('请先导入 POSCAR');
+      return;
+    }
+    setUploading(true);
+    try {
+      const r = await uploadPoscar(taskId, { content: poscarContent });
+      onStatePushed?.(r.state);
+      message.success(
+        `POSCAR 已同步到 ${r.dir}` + (r.backup_file ? `（原文件备份为 ${r.backup_file}）` : ''),
+      );
+      onRemoteChanged?.();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '同步 POSCAR 到远端失败');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const runPos2pot = async () => {
+    setPotcarBusy(true);
+    setPotcarResult(null);
+    try {
+      const r = await generatePotcar(taskId);
+      const elems = r.potcar.elements.join(' ');
+      const summary = r.generated
+        ? `POTCAR 已生成：${r.potcar.size} 字节 · ${r.potcar.lines} 行 · ${
+            r.potcar.elements_count
+          } 个元素块${elems ? `（${elems}）` : ''} · 命令 ${r.command}（${r.dir}）`
+        : `pos2pot 结束但未生成 POTCAR（exit=${r.exit_code}）`;
+      if (r.generated) message.success(summary);
+      else message.warning(summary);
+      setPotcarResult({ ok: r.generated, text: summary, output: r.output });
+      onRemoteChanged?.();
+    } catch (err) {
+      const text = err instanceof Error ? err.message : '运行 pos2pot 失败';
+      message.error(text);
+      setPotcarResult({ ok: false, text, output: '' });
+    } finally {
+      setPotcarBusy(false);
+    }
+  };
 
   const info = useMemo(() => (poscarContent ? parsePoscar(poscarContent) : null), [poscarContent]);
   const poscarMeta = input?.files?.POSCAR;
@@ -110,6 +178,17 @@ export default function PoscarPanel({
 
   return (
     <div className="job-panel">
+      <SelectiveDynamicsModal
+        open={sdOpen}
+        taskId={taskId}
+        poscarContent={poscarContent}
+        selectedAtoms={selectedAtoms}
+        onClose={() => setSdOpen(false)}
+        onApplied={(text, state) => {
+          onPoscarGenerated?.(text, state);
+          setSelectedAtoms([]);
+        }}
+      />
       <Card
         size="small"
         title="结构视图"
@@ -202,7 +281,8 @@ export default function PoscarPanel({
               {selectedAtoms.length === 0 ? (
                 <div className="job-field-hint">
                   在左侧结构图上<b>点击原子</b>即选中（金色高亮）；<b>按住 Ctrl / ⌘ 再点</b>可多选；
-                  <b>按住 Shift 拖拽</b>可框选一片原子（Ctrl/⌘+Shift 框选为并入）。
+                  <b>按住 Shift 拖拽</b>可框选一片原子（Ctrl/⌘+Shift 框选为并入）；
+                  <b>双击空白处</b>取消选中。
                   编号（如 <code>Ag18</code>）与 <b>POSCAR 坐标行一致、从 1 开始</b>，用于后续的固定原子功能。
                 </div>
               ) : (
@@ -229,15 +309,23 @@ export default function PoscarPanel({
                   )}
                 </div>
               )}
-              <Tooltip title="固定原子功能开发中：先在 POSCAR 的 Selective dynamics 里标记 T/F">
-                <Button size="small" icon={<LockOutlined />} disabled style={{ marginTop: 10 }}>
-                  固定选中原子（开发中）
+              <Tooltip title="把选中原子写成 Selective Dynamics 的 F F F（其余 T T T），生成新的 POSCAR：本地 files/POSCAR（旧文件备份 old_POSCAR），可选同时同步到远端">
+                <Button
+                  size="small"
+                  type="primary"
+                  ghost
+                  icon={<LockOutlined />}
+                  disabled={!poscarContent}
+                  style={{ marginTop: 10 }}
+                  onClick={() => setSdOpen(true)}
+                >
+                  固定原子（Selective Dynamics）
                 </Button>
               </Tooltip>
               <div className="job-field-hint" style={{ marginTop: 8 }}>
-                POSCAR 目前<b>不参与远端修改</b>：导入/复制只写本地 <code>files/POSCAR</code>；
-                后续唯一会改 POSCAR 的功能是"固定原子"（把选中原子写成
-                <code> Selective dynamics</code> 的 T/F），这条路径先搁置。
+                固定原子会生成带 <code>Selective Dynamics</code> 的新 POSCAR：
+                写回本地 <code>files/POSCAR</code>（旧文件备份 <code>old_POSCAR</code>），
+                勾选「同时同步到远端」才会写入远端最新目录；坐标块之后的内容（CONTCAR 的速度块）会原样保留。
               </div>
             </Card>
           </div>
@@ -288,6 +376,47 @@ export default function PoscarPanel({
           <span>当前文件</span>
           <code>{poscarPath ?? '尚未导入（当前为示例数据）'}</code>
         </div>
+      </Card>
+
+      <Card
+        size="small"
+        title="远端输入文件"
+        className="job-card mt-16"
+        extra={
+          <span className="preview-note">
+            作用于远端「最新计算目录」（conN 优先）；同名文件先备份为 old_*
+          </span>
+        }
+      >
+        <div className="job-import-row">
+          <Button
+            type="primary"
+            icon={<CloudUploadOutlined />}
+            disabled={!poscarContent}
+            loading={uploading}
+            onClick={() => void uploadRemote()}
+          >
+            同步 POSCAR 到远端
+          </Button>
+          <Tooltip title="在远端当前目录执行 pos2pot（服务器已有脚本），读取该目录的 POSCAR 生成 POTCAR；失败时下方会显示命令输出">
+            <Button
+              icon={<ThunderboltOutlined />}
+              loading={potcarBusy}
+              onClick={() => void runPos2pot()}
+            >
+              生成 POTCAR（pos2pot）
+            </Button>
+          </Tooltip>
+          <span className="preview-note">
+            <ExperimentOutlined /> POTCAR 由远端 pos2pot 生成，不走本地伪势库
+          </span>
+        </div>
+        {potcarResult && (
+          <div className="poscar-potcar-result">
+            <div className={potcarResult.ok ? 'is-ok' : 'is-fail'}>{potcarResult.text}</div>
+            {potcarResult.output && <pre>{potcarResult.output}</pre>}
+          </div>
+        )}
       </Card>
 
       <Card

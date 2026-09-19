@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Checkbox, Empty, Segmented, Slider, Tag } from 'antd';
+import { Button, Checkbox, Empty, Segmented, Slider } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { ELEMENT_COLORS, computeBonds, parseCif, type Structure3D } from '../../utils/structure3d';
 
@@ -57,6 +57,9 @@ export default function Structure3DFrame({
   const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const bandRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const shiftRef = useRef(false);
+  /** 上一次点击是否命中原子（用于判断"双击空白区"） */
+  const lastHitAtomRef = useRef(false);
+  const stageRef = useRef<HTMLDivElement>(null);
 
   const selectedRef = useRef<AtomRef[]>(selected);
   const ballStickRef = useRef(ballStick);
@@ -81,14 +84,48 @@ export default function Structure3DFrame({
       modifierRef.current = false;
       shiftRef.current = false;
       setShiftHeld(false);
+      endAtomSelectionDrag();
+    };
+    // 兜底：鼠标在框选层外松开（甚至松开在窗口外）时，结束拖动并恢复文本选择
+    const stopDrag = () => {
+      if (bandRef.current) finishBand(modifierRef.current);
+      else endAtomSelectionDrag();
     };
     window.addEventListener('keydown', sync);
     window.addEventListener('keyup', sync);
     window.addEventListener('blur', clear);
+    window.addEventListener('mouseup', stopDrag);
+    // 双击空白区域 → 取消选中（挂在 stage 上，画布与框选层都能覆盖到）
+    const onDoubleClick = (e: MouseEvent) => {
+      const viewer = viewerRef.current;
+      const parsed = structureRef.current;
+      // 用原子屏幕投影自己判定"是否点在原子上"，不依赖 3Dmol 的 click 回调
+      // （不同版本的 3Dmol 对空白区点击是否回调并不一致）
+      let hitAtom: boolean | null = null;
+      if (viewer && parsed) {
+        const canvas = viewer.container?.querySelector?.('canvas') as HTMLElement | null;
+        const rect = (canvas ?? stageRef.current)?.getBoundingClientRect();
+        if (rect) {
+          const px = e.clientX - rect.left;
+          const py = e.clientY - rect.top;
+          hitAtom = parsed.atoms.some((atom) => {
+            const p = atomToScreen(viewer, atom.x, atom.y, atom.z);
+            return !!p && Math.abs(p.x - px) <= 10 && Math.abs(p.y - py) <= 10;
+          });
+        }
+      }
+      if (hitAtom === null) hitAtom = lastHitAtomRef.current; // 兜底：用最近一次点击结果
+      if (!hitAtom) handlersRef.current.onClearSelection();
+    };
+    const stage = stageRef.current;
+    stage?.addEventListener('dblclick', onDoubleClick);
     return () => {
       window.removeEventListener('keydown', sync);
       window.removeEventListener('keyup', sync);
       window.removeEventListener('blur', clear);
+      window.removeEventListener('mouseup', stopDrag);
+      stage?.removeEventListener('dblclick', onDoubleClick);
+      endAtomSelectionDrag();
     };
   }, []);
 
@@ -253,6 +290,7 @@ export default function Structure3DFrame({
     const parsed = structureRef.current;
     bandRef.current = null;
     setBand(null);
+    endAtomSelectionDrag();
     if (!rect || !viewer || !parsed) return;
     const x0 = Math.min(rect.x0, rect.x1);
     const x1 = Math.max(rect.x0, rect.x1);
@@ -316,6 +354,7 @@ export default function Structure3DFrame({
           ? !!event.ctrlKey || !!event.metaKey
           : modifierRef.current;
       if (atom && typeof atom.index === 'number') {
+        lastHitAtomRef.current = true;
         handlersRef.current.onClickAtom(
           {
             index: atom.index,
@@ -325,7 +364,9 @@ export default function Structure3DFrame({
           additive,
         );
       } else {
-        handlersRef.current.onClearSelection();
+        // 空白区单击**不再**清空选中（旋转时的误触很容易触发 click），
+        // 清空改由「双击空白区」显式触发（见下面的 dblclick 监听）
+        lastHitAtomRef.current = false;
       }
     });
     viewerRef.current = viewer;
@@ -400,19 +441,18 @@ export default function Structure3DFrame({
           重置视角
         </Button>
         <span className="s3d-editor__label">Shift + 拖拽 = 框选</span>
-        {selected.length > 0 && (
-          <Tag color="gold" bordered={false}>
-            已选 {selected.length} 个原子
-          </Tag>
-        )}
+        <span className="s3d-editor__label">双击空白 = 取消选中</span>
       </div>
-      <div className="s3d-editor__stage">
+      <div className="s3d-editor__stage" ref={stageRef}>
         <div ref={holderRef} className="s3d-editor__canvas" style={{ height }} />
         {/* Shift 按住时出现的框选覆盖层：拦截拖拽，避免 3Dmol 同时旋转 */}
         <div
           className={`s3d-editor__band-layer${shiftHeld ? ' is-active' : ''}`}
           onMouseDown={(e) => {
             if (!shiftHeld || e.button !== 0) return;
+            // 关键：阻止默认行为，否则 Shift+点击/拖拽会扩展浏览器文本选区
+            e.preventDefault();
+            beginAtomSelectionDrag();
             const p = bandPoint(e);
             const next = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
             bandRef.current = next;
@@ -458,3 +498,12 @@ export default function Structure3DFrame({
     </div>
   );
 }
+  /** 框选期间临时禁用浏览器文本选择（Shift+点击/拖拽会顺带选中周围页面文字） */
+  function beginAtomSelectionDrag() {
+    window.getSelection()?.removeAllRanges();
+    document.body.classList.add('is-atom-selecting');
+  }
+
+  function endAtomSelectionDrag() {
+    document.body.classList.remove('is-atom-selecting');
+  }

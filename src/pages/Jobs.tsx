@@ -104,6 +104,7 @@ function makeWorkspace(task: Task): JobWorkspace {
       KPOINTS: false,
       POTCAR: false,
       'submit.sh': false,
+      'vasp.lsf': false,
       CONTCAR: false,
       WAVECAR: false,
     },
@@ -907,22 +908,35 @@ export default function Jobs() {
     message.success(`输入文件已生成：${genTask.model_name}`);
   };
 
-  /** 保存提交脚本到本地任务目录 files/submit.sh */
-  const handleScriptSaved = async (script: string, task?: Task | null) => {
+  /** 远端文件写入/生成成功后：刷新该任务本地文件清单与就绪标记
+   *（vasp.lsf / POSCAR / POTCAR 等由后端同步到本地镜像 files/） */
+  const handleRemoteFilesChanged = async (task?: Task | null) => {
     const t = task ?? selectedTask;
     if (!t) return;
     try {
-      const r = await saveTaskFile(t.task_id, 'submit.sh', script);
-      upsertLocalFile(t.task_id, 'submit.sh', r.size);
+      const files = await fetchTaskFiles(t.task_id);
+      setTaskFileList((prev) => ({ ...prev, [t.task_id]: files }));
+      const names = new Set(files.map((f) => f.name));
+      const base = workspaces[t.task_id] ?? makeWorkspace(t);
+      patchWorkspace(t.task_id, {
+        files: {
+          ...base.files,
+          INCAR: names.has('INCAR'),
+          KPOINTS: names.has('KPOINTS'),
+          POSCAR: names.has('POSCAR'),
+          CONTCAR: names.has('CONTCAR'),
+          POTCAR: names.has('POTCAR'),
+          'vasp.lsf': names.has('vasp.lsf'),
+          'submit.sh': names.has('submit.sh'),
+        },
+      });
+      const entry = files.find((f) => f.name === 'vasp.lsf');
+      if (entry) upsertLocalFile(t.task_id, 'vasp.lsf', entry.size);
     } catch (err) {
       message.warning(
-        err instanceof Error ? `提交脚本写入后端失败：${err.message}` : '提交脚本写入后端失败',
+        err instanceof Error ? `刷新本地文件清单失败：${err.message}` : '刷新本地文件清单失败',
       );
     }
-    const base = workspaces[t.task_id] ?? makeWorkspace(t);
-    patchWorkspace(t.task_id, {
-      files: { ...base.files, 'submit.sh': true },
-    });
   };
 
   /** 单个任务的详情标签页（概览/POSCAR/INCAR/KPOINTS/提交脚本） */
@@ -978,10 +992,18 @@ export default function Jobs() {
                       />
                       <PoscarPanel
                         key={task.task_id}
+                        taskId={task.task_id}
                         poscarContent={ws.poscarContent}
                         poscarPath={ws.poscarPath}
                         copyTargets={copyTargets}
                         input={inputStates[task.task_id] ?? null}
+                        onRemoteChanged={() => void handleRemoteFilesChanged(task)}
+                        onStatePushed={(state) => applyInputState(task, state)}
+                        onPoscarGenerated={(text, state) => {
+                          patchWorkspace(task.task_id, { poscarContent: text });
+                          applyInputState(task, state);
+                          void handleRemoteFilesChanged(task);
+                        }}
                         onImport={(c) => handleImportPoscar(c, task)}
                         onCopyFromTask={(sid) => handleCopyPoscar(sid, task)}
                       />
@@ -1015,6 +1037,7 @@ export default function Jobs() {
                   pendingKeys={Object.keys(inputStates[task.task_id]?.draft?.INCAR ?? {})}
                   onConfirmParams={(p) => void handleConfirmParams(task, p)}
                   onResetToSnapshot={() => handleResetParams(task)}
+                  onStatePushed={(state) => applyInputState(task, state)}
                 />
               </div>
             ),
@@ -1052,6 +1075,7 @@ export default function Jobs() {
                       message.error(err instanceof Error ? err.message : '保存 k 网格修改失败');
                     }
                   }}
+                  onStatePushed={(state) => applyInputState(task, state)}
                 />
               </div>
             ),
@@ -1062,11 +1086,10 @@ export default function Jobs() {
             children: (
               <SubmitScriptPanel
                 task={task}
-                workspace={ws}
                 snapshot={clusterSnapshot}
                 loading={snapshotLoading}
                 onRefresh={() => void loadClusterSnapshot(true)}
-                onSaved={(s) => handleScriptSaved(s, task)}
+                onWritten={() => void handleRemoteFilesChanged(task)}
               />
             ),
           },

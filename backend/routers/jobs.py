@@ -7,12 +7,14 @@
 每个任务目录下：files/（VASP 文件）、images/、reports/、continuation/
 """
 
+import base64
 from datetime import datetime
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -46,14 +48,18 @@ import ssh
 from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
 from task_paths import free_energy_frac_task, is_continuation_task, task_dir
 from input_state import (
+    _hash as text_hash,
     build_snapshot,
+    download_archive_outputs,
     has_pending,
+    mark_file_applied,
     merge_snapshot,
     parse_incar_text,
     parse_kpoints_mesh,
     poscar_meta,
     read_snapshot_cif,
     read_snapshot_text,
+    snapshot_dir,
     revert_draft,
     set_incar_draft,
     set_kpoints_draft,
@@ -78,6 +84,7 @@ TEXT_FILE_WHITELIST = {
     "vasprun.xml",
     "submit.sh",
     "run.sh",
+    "vasp.lsf",
 }
 
 
@@ -151,6 +158,65 @@ def _files_dir(task_dir: Path) -> Path:
     """统一文件目录为 <任务目录>/files/，不存在时退化到任务根目录扫描。"""
     files_dir = task_dir / "files"
     return files_dir if files_dir.is_dir() else task_dir
+
+
+def _prepare_remote_write(
+    server: str, remote_dir: str, name: str, backup_name: str
+) -> tuple[str, bool]:
+    """**一次 exec** 完成「定位最新 conN（无则主目录）+ 把已有 <name> 备份为 <backup_name>」。
+
+    返回 `(工作目录, 是否真有旧文件被备份)`。原来"定位目录"和"备份"是两次往返，
+    现在合并成一次（调用方随后用 SFTP 写内容即可）。
+    mock 模式（VASP_SSH_MOCK=1）直接操作本地 mock 远端树，便于离线验证。
+    """
+    if ssh.mock_enabled():
+        base = ssh.mock_local_path(remote_dir)
+        work = base
+        if base.is_dir():
+            cons = sorted(
+                (p for p in base.glob("con[0-9]*") if p.is_dir()),
+                key=lambda p: int("".join(ch for ch in p.name if ch.isdigit()) or 0),
+            )
+            if cons:
+                work = cons[-1]
+        src = work / name
+        had_old = src.is_file()
+        if src.is_file():
+            dst = work / backup_name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        suffix = work.relative_to(base).as_posix() if work != base else ""
+        return (f"{remote_dir}/{suffix}" if suffix else remote_dir), had_old
+
+    script = "\n".join(
+        [
+            'cd "' + remote_dir + '" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+            'LATEST=$(ls -d con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -1)',
+            'WORK="' + remote_dir + '"',
+            '[ -n "$LATEST" ] && WORK="' + remote_dir + '/$LATEST"',
+            'cd "$WORK" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+            'if [ -f "' + name + '" ]; then',
+            '  mv -f "' + name + '" "' + backup_name + '"',
+            '  echo "@@@BACKUP=1"',
+            "else",
+            '  echo "@@@BACKUP=0"',
+            "fi",
+            'echo "@@@WORK=$WORK"',
+        ]
+    )
+    try:
+        script_b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        result = ssh.run_remote(
+            server, f"echo {script_b64} | base64 -d | bash", timeout=60
+        )
+    except Exception:  # noqa: BLE001 - 定位失败回退主目录写入
+        return remote_dir, False
+    out = str(result.get("stdout") or "")
+    if "@@@NO_DIR" in out:
+        return remote_dir, False
+    match = re.search(r"@@@WORK=(.+)", out)
+    work_dir = match.group(1).strip() if match else remote_dir
+    return work_dir, "@@@BACKUP=1" in out
 
 
 def _open_in_explorer(path: str) -> None:
@@ -300,11 +366,11 @@ def create_same_type_continuation(task_id: str):
                 ),
             )
 
-        # 登记续算子任务（本地镜像目录仅建空结构，文件不经过本地）
+        # 登记续算子任务：`dir_path` 仍写 `<任务目录>/conN`（逻辑主键：查重 + 远端映射），
+        # 但本地**不再建 conN 目录**（v0.8.7）—— task_dir() 解析时剥掉后缀，
+        # 续算子任务的本地落点就是任务族根目录，与父任务共享同一份文件镜像。
         con = result["con"]
         local_dir = local_continuation_dir(str(task.get("dir_path", "")), con)
-        for sub in ("files", "images", "reports", "continuation"):
-            (resolve_local_path(local_dir) / sub).mkdir(parents=True, exist_ok=True)
         now = now_iso()
         rel_remote = to_remote_rel(project.get("server"), result["remote_dir"])
         sub_task = {
@@ -658,6 +724,51 @@ def delete_task(task_id: str):
         return JSONResponse(status_code=500, content=fail(f"删除任务失败：{e}"))
 
 
+def _submit_preflight_lines(task_type: str, submit_script: str) -> list:
+    """提交前的输入文件检查（shell 片段）：把缺失项累积到 `EMPTY`。
+
+    - **普通任务**（opt / frac / ele）：工作目录下 POSCAR / INCAR / KPOINTS / POTCAR /
+      vasp.lsf 都必须非空；
+    - **NEB 任务**：工作目录（`neb/<组名>/neb`，或续算 `conN`）里是
+      INCAR / KPOINTS / POTCAR / vasp.lsf + **映像子目录 00..NN**，
+      POSCAR 在**每个映像目录**里（VTST 约定，根目录没有 POSCAR）。
+      因此按 INCAR 的 `IMAGES` 推算应有 `00 .. (IMAGES+1)`，逐个检查非空 POSCAR；
+      INCAR 里没有 IMAGES 时退化为"至少 3 个数字映像目录且每个都有非空 POSCAR"。
+    """
+    common = [
+        'EMPTY=""',
+        "for f in INCAR KPOINTS POTCAR " + submit_script + "; do",
+        '  [ -s "$f" ] || EMPTY="$EMPTY $f"',
+        "done",
+    ]
+    if task_type != "neb":
+        return [
+            'EMPTY=""',
+            "for f in POSCAR INCAR KPOINTS POTCAR " + submit_script + "; do",
+            '  [ -s "$f" ] || EMPTY="$EMPTY $f"',
+            "done",
+        ]
+    return [
+        *common,
+        "IMAGES=$(grep -iE '^[[:space:]]*IMAGES[[:space:]]*=' INCAR | tail -1 | tr -dc '0-9')",
+        'if [ -n "$IMAGES" ]; then',
+        "  EXPECT=$((IMAGES + 2))",
+        "  i=0",
+        '  while [ "$i" -lt "$EXPECT" ]; do',
+        '    d=$(printf "%02d" "$i")',
+        '    [ -s "$d/POSCAR" ] || EMPTY="$EMPTY $d/POSCAR"',
+        "    i=$((i + 1))",
+        "  done",
+        "else",
+        '  NIMG=$(ls -d [0-9][0-9] 2>/dev/null | wc -l | tr -d " ")',
+        '  [ "$NIMG" -ge 3 ] || EMPTY="$EMPTY 映像目录(00..NN)"',
+        '  for d in $(ls -d [0-9][0-9] 2>/dev/null); do',
+        '    [ -s "$d/POSCAR" ] || EMPTY="$EMPTY $d/POSCAR"',
+        "  done",
+        "fi",
+    ]
+
+
 @router.post("/tasks/{task_id}/submit")
 def submit_task(task_id: str):
     """提交作业：远程目录内执行 bsub < vasp.lsf，登记 job_id 并将状态更新为 queued。"""
@@ -676,57 +787,37 @@ def submit_task(task_id: str):
     if not remote_dir:
         return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
 
-    # 定位最新续算目录（conN，即使尚无输出），在该目录内提交；
-    # 无续算目录则用任务主目录
     servers = load_servers()
-    batch_path = servers.get(server, {}).get("batch_check_path")
-    latest = ""
-    if batch_path:
-        try:
-            latest = _remote_latest_con(server, remote_dir, batch_path)
-        except Exception:  # noqa: BLE001 - 定位失败回退主目录
-            latest = ""
-    work_dir = f"{remote_dir}/{latest}" if latest else remote_dir
-
+    profile = str(
+        servers.get(server, {}).get(
+            "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
+        )
+    )
     submit_script = "vasp.lsf"
-    command = (
-        f"bash -c 'cd \"{work_dir}\" && "
-        f"[ -f \"{submit_script}\" ] && bsub < \"{submit_script}\"'"
+    command = f'cd "{remote_dir}" && bsub < {submit_script}'
+
+    # 一次 exec 完成「定位最新 conN → 输入文件非空检查 → 提交」。
+    # 原来要 3 次往返（定位 conN / 存在性检查 / bsub），现在只有 1 次：
+    # 提交前的非空校验顺带在同一个脚本里做，不增加任何额外通讯。
+    preflight = "\n".join(
+        [
+            'cd "' + remote_dir + '" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+            'LATEST=$(ls -d con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -1)',
+            'WORK="' + remote_dir + '"',
+            '[ -n "$LATEST" ] && WORK="' + remote_dir + '/$LATEST"',
+            'cd "$WORK" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+            'echo "@@@WORK=$WORK"',
+            *_submit_preflight_lines(str(task.get("task_type") or ""), submit_script),
+            '[ -n "$EMPTY" ] && { echo "@@@EMPTY=$EMPTY"; exit 4; }',
+            'echo "@@@BSUB"',
+            "source " + profile + " >/dev/null 2>&1 || true",
+            'bsub < "' + submit_script + '"',
+            'echo "@@@BSUB_RC=$?"',
+        ]
     )
     try:
-        # 先确认远程目录与提交脚本存在
-        check = ssh.run_remote(
-            server,
-            f'bash -c \'[ -d "{work_dir}" ] && [ -f "{work_dir}/vasp.lsf" ] && echo YES || echo NO\'',
-            timeout=30,
-        )
-        if "YES" not in check["stdout"]:
-            detail = ssh.run_remote(
-                server,
-                f'bash -c \'[ -d "{work_dir}" ] && echo DIR_OK || echo NO_DIR\'',
-                timeout=30,
-            )["stdout"].strip()
-            if detail == "NO_DIR":
-                return JSONResponse(
-                    status_code=404,
-                    content=fail(f"远程目录不存在：{work_dir}"),
-                )
-            return JSONResponse(
-                status_code=404,
-                content=fail("提交脚本 vasp.lsf 不存在，请先创建提交脚本"),
-            )
-
-        # 加载 LSF profile 后提交（复用节点查询的 profile 路径）
-        profile = str(
-            servers.get(server, {}).get(
-                "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
-            )
-        )
-        result = ssh.run_remote(
-            server,
-            f'bash -c "source {profile} >/dev/null 2>&1; cd \"{work_dir}\" && bsub < vasp.lsf"',
-            timeout=60,
-        )
+        script_b64 = base64.b64encode(preflight.encode("utf-8")).decode("ascii")
+        result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=90)
     except Exception as e:  # noqa: BLE001 - SSH 连接类错误统一返回 502
         return JSONResponse(
             status_code=502,
@@ -734,6 +825,27 @@ def submit_task(task_id: str):
         )
 
     raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+    work_match = re.search(r"@@@WORK=(.+)", raw)
+    work_dir = work_match.group(1).strip() if work_match else remote_dir
+    if "@@@NO_DIR" in raw:
+        return JSONResponse(
+            status_code=404,
+            content=fail(f"远程目录不存在：{remote_dir}"),
+        )
+    empty_match = re.search(r"@@@EMPTY=(.*)", raw)
+    if empty_match:
+        missing = [name for name in empty_match.group(1).split() if name]
+        _audit_log(
+            project["name"], task_id, work_dir, command,
+            f"PRECHECK_FAIL empty={','.join(missing)}",
+        )
+        return JSONResponse(
+            status_code=400,
+            content=fail(
+                f"以下输入文件缺失或为空，已阻止提交：{'、'.join(missing)}"
+                f"（目录 {work_dir}；请先补齐再提交）"
+            ),
+        )
     # 以 bsub 明确输出 "Job <id> is submitted" 作为成功标志；
     # stderr 中的 bashrc/conda 等环境噪音（含 Error 字样）不判定为提交失败
     submit_match = re.search(r"Job <(\d+)> is submitted", raw)
@@ -848,6 +960,8 @@ def archive_task(task_id: str):
                     )
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"关闭任务失败：{e}"))
+    # 归档后静默拉回最新计算目录的 OUTCAR / OSZICAR 到本地镜像（失败不影响归档）
+    _schedule_archive_outputs(str(project.get("name") or ""), task_id)
     return ok(
         "任务已关闭（归档）",
         {
@@ -1001,8 +1115,9 @@ def stop_task(task_id: str):
 
 
 # ------------------------------------------------------------ 输入文件（v0.8.2）
-# 三层职责：远端 conN（运行真相）→ 本地快照 inputs/（同步副本）→ 草稿（下次续算生效）
-# 方案与口径见 process.md §6.11；同步成本 = 1 次 exec + 4 次 SFTP 小文件。
+# 三层职责：远端 conN（运行真相）→ 本地镜像 files/（同步副本，v0.8.7 前是 inputs/）
+# → 草稿（下次续算生效）。方案与口径见 process.md §6.11；
+# 同步成本 = 1 次 exec + 4 次 SFTP 小文件。
 
 
 def _find_task_in_db(db: Dict[str, Any], task_id: str) -> Dict[str, Any] | None:
@@ -1013,8 +1128,71 @@ def _find_task_in_db(db: Dict[str, Any], task_id: str) -> Dict[str, Any] | None:
     return None
 
 
+def _push_input_file(
+    project: Dict[str, Any],
+    task_id: str,
+    name: str,
+    text: str,
+    work_dir: str,
+) -> tuple:
+    """「同步到远端」之后的本地状态更新（v0.8.7）。
+
+    1. 更新本地镜像 `<任务目录>/files/<name>`（内容就是刚推上去的文本）；
+    2. 用刚写入的内容重算 `input_state.files[name]` 元数据（哈希/参数/k 网格/结构摘要），
+       界面上的"本次计算值"立刻变成新值，不再显示"已修改"；
+    3. 把该文件的**未生效台账条目标记已应用**（`applied_in="remote"`）、清掉该文件草稿；
+    4. 落库并返回 `(刷新后的输入面板载荷, 被应用的 key 列表)`。
+    """
+    now = now_iso()
+    with db_transaction() as db:
+        current = _find_task_in_db(db, task_id)
+        if current is None:
+            raise LookupError(f"任务 {task_id} 不存在")
+        task_for_path = {**current, "project_name": project.get("name", "")}
+        # ① 本地镜像
+        try:
+            target = snapshot_dir(task_for_path) / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        except OSError:
+            pass
+        # ② 元数据（与 build_snapshot 同口径）
+        meta: Dict[str, Any] = {"hash": text_hash(text), "size": len(text)}
+        if name == "INCAR":
+            meta["params"] = parse_incar_text(text)
+        elif name == "KPOINTS":
+            mesh, note = parse_kpoints_mesh(text)
+            meta["mesh"] = mesh
+            meta["mesh_note"] = note
+        elif name in ("POSCAR", "CONTCAR"):
+            meta.update(poscar_meta(text))
+        state = dict(current.get("input_state") or {})
+        files_meta = dict(state.get("files") or {})
+        files_meta[name] = meta
+        state["files"] = files_meta
+        # ③ 台账：这条修改已经推到远端，不再"待生效"
+        state, applied = mark_file_applied(state, name, "remote")
+        source = dict(state.get("source") or {})
+        source.update(
+            {
+                "kind": "push",
+                "synced_at": now,
+                "pushed": {"file": name, "at": now, "dir": work_dir},
+            }
+        )
+        state["source"] = source
+        current["input_state"] = state
+        updated = dict(current)
+    return _input_payload(project, updated), applied
+
+
 def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
-    """组装输入文件面板所需的全部数据：快照 + 草稿 + 变更台账 + 3D 用 CIF。"""
+    """组装输入文件面板所需的全部数据：本地镜像 + 草稿 + 变更台账 + 3D 用 CIF。
+
+    v0.8.7 起"本地镜像"就是 `<任务目录>/files/`（原 inputs/ 快照已合并进来），
+    `text` 直接读镜像里的文件；`files[name]` 的元数据仍以远端"本次计算"为准
+    （有未生效草稿的文件带 `protected: true`，只跳过覆盖、元数据照更新）。
+    """
     state = dict(task.get("input_state") or {})
     files_meta = dict(state.get("files") or {})
     files: Dict[str, Any] = {}
@@ -1022,31 +1200,7 @@ def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, A
         text = read_snapshot_text(task, name)
         if text is None:
             continue
-        files[name] = {**files_meta.get(name, {}), "text": text, "local": False}
-
-    # 尚未同步过：退回本地 files/ 的文件（至少能看到当前草稿内容）
-    try:
-        local_files = _files_dir(_resolve_task_dir(str(task.get("task_id") or "")))
-    except Exception:  # noqa: BLE001 - 本地目录缺失不影响接口
-        local_files = None
-    if local_files is not None:
-        for name in ("INCAR", "KPOINTS", "POSCAR"):
-            path = local_files / name
-            if name in files or not path.is_file():
-                continue
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            meta: Dict[str, Any] = {"local": True, "size": len(text)}
-            if name == "INCAR":
-                meta["params"] = parse_incar_text(text)
-            elif name == "KPOINTS":
-                mesh, note = parse_kpoints_mesh(text)
-                meta.update({"mesh": mesh, "mesh_note": note})
-            else:
-                meta.update(poscar_meta(text))
-            files[name] = {**meta, "text": text}
+        files[name] = {**files_meta.get(name, {}), "text": text}
 
     poscar_cif = read_snapshot_cif(task, "POSCAR")
     if poscar_cif is None:
@@ -1119,6 +1273,48 @@ def _schedule_input_sync(project_name: str, task_id: str, delay: float = 2.0) ->
             _audit_log(project_name, task_id, "", "input-sync", f"FAILED: {e}")
 
     threading.Thread(target=worker, daemon=True, name=f"input-sync-{task_id}").start()
+
+
+def _schedule_archive_outputs(
+    project_name: str, task_id: str, delay: float = 1.5
+) -> None:
+    """归档（关闭任务）后后台静默拉取最新 OUTCAR / OSZICAR 到本地镜像。
+
+    只影响本地文件：失败、远端缺文件、SSH 未连接都只记一条审计日志，不回传给用户。
+    """
+
+    def worker() -> None:
+        time.sleep(delay)
+        try:
+            db = load_db()
+            project = next(
+                (p for p in db.get("projects", []) if p.get("name") == project_name), None
+            )
+            task = next(
+                (
+                    t
+                    for t in (project or {}).get("tasks", [])
+                    if t.get("task_id") == task_id
+                ),
+                None,
+            )
+            if project is None or task is None:
+                return
+            result = download_archive_outputs(str(project.get("server") or ""), task)
+            _audit_log(
+                project_name,
+                task_id,
+                str(result.get("source_dir") or ""),
+                "archive-outputs",
+                f"OK saved={','.join(result.get('saved') or []) or '-'} "
+                f"missing={','.join(result.get('missing') or []) or '-'}",
+            )
+        except Exception as e:  # noqa: BLE001 - 后台下载失败只记审计
+            _audit_log(project_name, task_id, "", "archive-outputs", f"FAILED: {e}")
+
+    threading.Thread(
+        target=worker, daemon=True, name=f"archive-outputs-{task_id}"
+    ).start()
 
 
 @router.get("/tasks/{task_id}/input")
@@ -1245,25 +1441,426 @@ def upload_incar(task_id: str, payload: dict = Body(default={})):
             timeout=30,
         )
         _write_remote_file(server, f"{work_dir}/INCAR", new_text)
+        # 同步到远端 = 立即应用：本地镜像/元数据一并刷新，草稿台账标记已应用
+        payload_state, applied = _push_input_file(project, task_id, "INCAR", new_text, work_dir)
         _audit_log(
             project["name"],
             task_id,
             work_dir,
             "upload-incar",
-            f"OK backup={'old_INCAR' if old else 'none'}",
+            f"OK backup={'old_INCAR' if old else 'none'} applied={','.join(applied) or '-'}",
         )
         return ok(
-            "INCAR 已上传到远端",
+            "INCAR 已同步到远端",
             {
                 "dir": work_dir,
                 "backup_file": "old_INCAR" if old else None,
                 "warnings": warnings,
+                "applied": applied,
+                "state": payload_state,
             },
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"上传 INCAR 失败：{e}"))
+
+
+SELECTIVE_DYNAMICS_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "selective_dynamics.py"
+
+
+@router.post("/tasks/{task_id}/selective-dynamics")
+def apply_selective_dynamics(task_id: str, payload: dict = Body(default={})):
+    """按选中的原子生成带 `Selective Dynamics` 的 POSCAR（v0.8.7）。
+
+    调用仓库里的 `scripts/selective_dynamics.py`（纯标准库）在临时目录里生成结果：
+
+    - 入参：`content`（POSCAR 文本，缺省用本地镜像 `files/POSCAR`）、
+      `mode`（manual/elements/z_range）、`atoms`（[{element,poscarIndex}]）、
+      `elements`、`zRange`、`numbering`（element/global）、`labels`、`syncRemote`；
+    - 本地：写回 `<任务>/files/POSCAR`，旧文件备份为 `files/old_POSCAR`，
+      并刷新 `input_state.files.POSCAR` 元数据；
+    - `syncRemote=true` 时同时写入远端最新目录（旧文件备份为 `old_POSCAR`）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        server = project.get("server")
+        mode = str(payload.get("mode") or "manual")
+        numbering = str(payload.get("numbering") or "element")
+        labels = bool(payload.get("labels", True))
+        sync_remote = bool(payload.get("syncRemote"))
+
+        content = str(payload.get("content") or "")
+        if not content.strip():
+            mirror = _resolve_task_dir(task_id) / "files" / "POSCAR"
+            if mirror.is_file():
+                content = mirror.read_text(encoding="utf-8", errors="replace")
+        if not content.strip():
+            return JSONResponse(
+                status_code=400,
+                content=fail("没有可用的 POSCAR：请先导入/同步 POSCAR，或在 content 里传文本"),
+            )
+        if not SELECTIVE_DYNAMICS_SCRIPT.is_file():
+            return JSONResponse(
+                status_code=500,
+                content=fail(f"缺少脚本 {SELECTIVE_DYNAMICS_SCRIPT}"),
+            )
+
+        args = [
+            sys.executable,
+            str(SELECTIVE_DYNAMICS_SCRIPT),
+            "--poscar",
+            "{tmp}/POSCAR",
+            "--mode",
+            mode,
+            "--numbering",
+            numbering,
+            "--backup-mode",
+            "keep_first",
+        ]
+        if not labels:
+            args.append("--no-labels")
+        if mode == "manual":
+            indices = []
+            for atom in payload.get("atoms") or []:
+                if isinstance(atom, dict):
+                    value = atom.get("poscarIndex")
+                    if value is None and atom.get("index") is not None:
+                        value = int(atom["index"]) + 1
+                    if value is not None:
+                        indices.append(str(int(value)))
+                elif atom is not None:
+                    indices.append(str(atom))
+            if not indices:
+                return JSONResponse(
+                    status_code=400,
+                    content=fail("manual 模式需要在 POSCAR 图上选中原子（或传 atoms）"),
+                )
+            args += ["--fixed-atoms", ",".join(sorted(set(indices), key=int))]
+        elif mode == "elements":
+            elements = [str(e).strip() for e in (payload.get("elements") or []) if str(e).strip()]
+            if not elements:
+                return JSONResponse(
+                    status_code=400, content=fail("elements 模式需要传 elements（如 [\"Fe\"]）")
+                )
+            args += ["--fixed-elements", ",".join(elements)]
+        elif mode == "z_range":
+            z_range = payload.get("zRange") or [0.0, 0.25]
+            args += ["--z-range", str(float(z_range[0])), str(float(z_range[1]))]
+        else:
+            return JSONResponse(
+                status_code=400,
+                content=fail("mode 仅支持 manual / elements / z_range"),
+            )
+
+        with tempfile.TemporaryDirectory(prefix="sd_") as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "POSCAR").write_text(content, encoding="utf-8")
+            proc = subprocess.run(
+                [a.replace("{tmp}", tmp) for a in args],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            log = (proc.stdout or "") + (proc.stderr or "")
+            if proc.returncode != 0 or not (tmp_path / "POSCAR").is_file():
+                return JSONResponse(
+                    status_code=400,
+                    content=fail(f"生成 Selective Dynamics 失败：{log.strip()[-400:] or '未知错误'}"),
+                )
+            new_text = (tmp_path / "POSCAR").read_text(encoding="utf-8", errors="replace")
+
+        # ---- 写本地镜像（旧文件备份为 files/old_POSCAR）----
+        files_dir = _resolve_task_dir(task_id) / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        local_backup = ""
+        target = files_dir / "POSCAR"
+        if target.is_file():
+            backup = files_dir / "old_POSCAR"
+            shutil.copy2(target, backup)
+            local_backup = str(backup)
+
+        # ---- 可选：同步到远端最新目录 ----
+        work_dir = ""
+        remote_backup = None
+        if sync_remote:
+            remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+            if not remote_dir:
+                return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+            work_dir, had_old = _prepare_remote_write(
+                server, remote_dir, "POSCAR", "old_POSCAR"
+            )
+            _write_remote_file(server, f"{work_dir}/POSCAR", new_text)
+            remote_backup = "old_POSCAR" if had_old else None
+
+        payload_state, _applied = _push_input_file(
+            project, task_id, "POSCAR", new_text, work_dir
+        )
+        summary = "；".join(
+            line.strip() for line in log.splitlines() if line.strip().startswith(("结构：", "固定：", "注意：", "规则："))
+        )
+        _audit_log(
+            project["name"], task_id, work_dir or str(files_dir), "selective-dynamics",
+            f"OK mode={mode} numbering={numbering} labels={labels} sync_remote={sync_remote}",
+        )
+        return ok(
+            "已生成带 Selective Dynamics 的 POSCAR",
+            {
+                "text": new_text,
+                "mode": mode,
+                "numbering": numbering,
+                "labels": labels,
+                "summary": summary,
+                "local_backup": local_backup or None,
+                "remote_dir": work_dir or None,
+                "remote_backup": remote_backup,
+                "synced_remote": sync_remote,
+                "state": payload_state,
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content=fail("生成超时（60s）"))
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"生成 Selective Dynamics 失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/upload-poscar")
+def upload_poscar(task_id: str, payload: dict = Body(default={})):
+    """把导入的 POSCAR 写入远端最新目录；旧文件备份为 `old_POSCAR`（逻辑同 INCAR）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        server = project.get("server")
+        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+        if not remote_dir:
+            return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+        content = str(payload.get("content") or "")
+        if not content.strip():
+            return JSONResponse(status_code=400, content=fail("请提供 content（POSCAR 全文）"))
+
+        # 一次 exec：定位最新 conN + 备份 old_POSCAR；随后 SFTP 写内容
+        work_dir, had_old = _prepare_remote_write(
+            server, remote_dir, "POSCAR", "old_POSCAR"
+        )
+        _write_remote_file(server, f"{work_dir}/POSCAR", content)
+
+        # 本地镜像 + 元数据同步刷新（POSCAR 没有草稿，applied 为空）
+        payload_state, applied = _push_input_file(project, task_id, "POSCAR", content, work_dir)
+        local_path = str(_resolve_task_dir(task_id) / "files" / "POSCAR")
+
+        _audit_log(
+            project["name"], task_id, work_dir, "upload-poscar",
+            f"OK size={len(content)} applied={','.join(applied) or '-'}",
+        )
+        return ok(
+            "POSCAR 已同步到远端",
+            {
+                "dir": work_dir,
+                "remote_path": f"{work_dir}/POSCAR",
+                "backup_file": "old_POSCAR" if had_old else None,
+                "size": len(content),
+                "local_path": local_path,
+                "applied": applied,
+                "state": payload_state,
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"上传 POSCAR 失败：{e}"))
+
+
+@router.post("/tasks/{task_id}/generate-potcar")
+def generate_potcar(task_id: str):
+    """在远端"当前目录"运行 `pos2pot` 生成 POTCAR，返回输出与结果摘要。
+
+    - 远端脚本实际是 `/data/gpfs03/mdye/projects/potcar/pos2pot.sh`：**递归**遍历当前目录下
+      所有含 `POSCAR` 的子目录并调用 `potcar.sh $(sed -n 6p POSCAR)`；`pos2pot` 只是
+      `~/.bashrc` 里的 alias，非交互 exec 看不到，因此这里按
+      `pos2pot` → `pos2pot.sh` → 绝对路径 依次解析。
+    - 命令可用 `servers.json` 的 `pos2pot_cmd` 覆盖（写裸命令或绝对路径，不带参数）。
+    - 单次 exec 完成：跑命令 + 报告 POTCAR 大小/行数/元素，不额外发请求。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        server = project.get("server")
+        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+        if not remote_dir:
+            return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+        configured = str(
+            load_servers().get(server, {}).get("pos2pot_cmd") or "pos2pot"
+        ).strip()
+
+        # 单次 exec：脚本内部自己定位最新 conN（不额外发请求）
+        script = "\n".join(
+            [
+                'cd "' + remote_dir + '" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+                'LATEST=$(ls -d con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -1)',
+                'WORK="' + remote_dir + '"',
+                '[ -n "$LATEST" ] && WORK="' + remote_dir + '/$LATEST"',
+                'cd "$WORK" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+                'echo "@@@WORK=$WORK"',
+                'CMD="' + configured + '"',
+                'if ! command -v "$CMD" >/dev/null 2>&1; then',
+                "  for cand in pos2pot.sh /data/gpfs03/mdye/projects/potcar/pos2pot.sh; do",
+                '    if command -v "$cand" >/dev/null 2>&1; then CMD="$cand"; break; fi',
+                "  done",
+                "fi",
+                'if ! command -v "$CMD" >/dev/null 2>&1; then',
+                '  echo "@@@NOT_FOUND=$CMD"; exit 5',
+                "fi",
+                'echo "@@@RUN=$CMD"',
+                'OUT=$("$CMD" 2>&1); RC=$?',
+                'echo "@@@RC=$RC"',
+                'echo "@@@OUT_START"',
+                'echo "$OUT" | tail -n 40',
+                'echo "@@@OUT_END"',
+                'echo "@@@POTCAR_START"',
+                "if [ -s POTCAR ]; then",
+                '  echo "SIZE=$(wc -c < POTCAR | tr -d \' \')"',
+                '  echo "LINES=$(wc -l < POTCAR | tr -d \' \')"',
+                # 元素取每个块首的 TITEL 行（`TITEL  = PAW_PBE Al 04Jan2001` → Al）
+                '  echo "ELEMENTS=$(awk \'/^ *TITEL/{printf "%s,", $4}\' POTCAR)"',
+                '  echo "NBLOCKS=$(grep -c \'^ *TITEL\' POTCAR)"',
+                '  head -n 2 POTCAR',
+                "else",
+                '  echo "MISSING"',
+                "fi",
+                'echo "@@@POTCAR_END"',
+            ]
+        )
+        script_b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=120)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:  # noqa: BLE001 - SSH 连接类错误
+        return JSONResponse(
+            status_code=502,
+            content=fail(f"运行 pos2pot 失败（SSH）：{e}"),
+        )
+
+    raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+    work_match = re.search(r"@@@WORK=(.+)", raw)
+    work_dir = work_match.group(1).strip() if work_match else remote_dir
+    if "@@@NO_DIR" in raw:
+        return JSONResponse(status_code=404, content=fail(f"远程目录不存在：{work_dir}"))
+    not_found = re.search(r"@@@NOT_FOUND=(\S*)", raw)
+    if not_found:
+        return JSONResponse(
+            status_code=400,
+            content=fail(
+                f"远端找不到命令 {not_found.group(1) or 'pos2pot'}"
+                "（可在 servers.json 用 pos2pot_cmd 指定绝对路径）"
+            ),
+        )
+    run_match = re.search(r"@@@RUN=(\S+)", raw)
+    command = run_match.group(1) if run_match else configured
+
+    def _slice(start: str, end: str) -> str:
+        s = raw.find(start)
+        if s < 0:
+            return ""
+        s += len(start)
+        e = raw.find(end, s)
+        return raw[s:e].strip() if e >= 0 else raw[s:].strip()
+
+    rc_match = re.search(r"@@@RC=(-?\d+)", raw)
+    rc = int(rc_match.group(1)) if rc_match else -1
+    output = _slice("@@@OUT_START", "@@@OUT_END")
+    potcar_block = _slice("@@@POTCAR_START", "@@@POTCAR_END")
+    size_match = re.search(r"SIZE=(\d+)", potcar_block)
+    lines_match = re.search(r"LINES=(\d+)", potcar_block)
+    elems_match = re.search(r"ELEMENTS=(.*)", potcar_block)
+    blocks_match = re.search(r"NBLOCKS=(\d+)", potcar_block)
+    elements = [
+        item for item in (elems_match.group(1).split(",") if elems_match else []) if item
+    ]
+    generated = "MISSING" not in potcar_block and bool(size_match)
+    potcar = {
+        "exists": generated,
+        "size": int(size_match.group(1)) if size_match else 0,
+        "lines": int(lines_match.group(1)) if lines_match else 0,
+        "elements_count": int(blocks_match.group(1)) if blocks_match else len(elements),
+        "elements": elements,
+    }
+    _audit_log(
+        project["name"], task_id, work_dir, "generate-potcar",
+        f"rc={rc} potcar={'ok' if generated else 'missing'} size={potcar['size']}",
+    )
+    return ok(
+        "POTCAR 已生成" if generated else "pos2pot 执行结束，但未检测到 POTCAR",
+        {
+            "dir": work_dir,
+            "command": command,
+            "exit_code": rc,
+            "output": output,
+            "potcar": potcar,
+            "generated": generated,
+        },
+    )
+
+
+@router.post("/tasks/{task_id}/upload-submit-script")
+def upload_submit_script(task_id: str, payload: dict = Body(default={})):
+    """把前端生成的 `vasp.lsf` 写入远端最新目录（旧文件备份为 `old_vasp.lsf`）。
+
+    与 INCAR / KPOINTS 的写入逻辑一致：
+    - 目标目录 = 最大编号 conN（存在即算，续算后改脚本自然落到新目录），否则任务主目录；
+    - 同名文件先 `mv -f` 成 `old_vasp.lsf`（已存在则覆盖），再写入新内容；
+    - 文本统一 LF（`_write_remote_file`），并同步一份到本地镜像 `files/vasp.lsf`
+      （`vasp.lsf` 不在四件套同步集合里，不会被同步流程覆盖）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        server = project.get("server")
+        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+        if not remote_dir:
+            return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
+        content = str(payload.get("content") or "")
+        if not content.strip():
+            return JSONResponse(
+                status_code=400, content=fail("请提供 content（完整脚本文本）")
+            )
+
+        # 一次 exec：定位最新 conN + 备份 old_vasp.lsf；随后 SFTP 写内容
+        work_dir, had_old = _prepare_remote_write(
+            server, remote_dir, "vasp.lsf", "old_vasp.lsf"
+        )
+        _write_remote_file(server, f"{work_dir}/vasp.lsf", content)
+
+        local_path = ""
+        try:
+            # 本地镜像固定写 <任务目录>/files/（与输入四件套同一份镜像；
+            # vasp.lsf 不参与同步覆盖，不会被远端四件套冲掉）
+            target = _resolve_task_dir(task_id) / "files" / "vasp.lsf"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            local_path = str(target)
+        except Exception:  # noqa: BLE001 - 本地镜像写失败不影响远端结果
+            local_path = ""
+
+        _audit_log(
+            project["name"],
+            task_id,
+            work_dir,
+            "upload-submit-script",
+            f"OK backup={'old_vasp.lsf' if had_old else 'none'} size={len(content)}",
+        )
+        return ok(
+            "提交脚本已写入远端",
+            {
+                "dir": work_dir,
+                "remote_path": f"{work_dir}/vasp.lsf",
+                "backup_file": "old_vasp.lsf" if had_old else None,
+                "size": len(content),
+                "local_path": local_path or None,
+            },
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"写入提交脚本失败：{e}"))
 
 
 @router.post("/tasks/{task_id}/upload-kpoints")
@@ -1295,16 +1892,24 @@ def upload_kpoints(task_id: str, payload: dict = Body(default={})):
             timeout=30,
         )
         _write_remote_file(server, f"{work_dir}/KPOINTS", str(content))
+        payload_state, applied = _push_input_file(
+            project, task_id, "KPOINTS", str(content), work_dir
+        )
         _audit_log(
             project["name"],
             task_id,
             work_dir,
             "upload-kpoints",
-            f"OK backup={'old_KPOINTS' if old else 'none'}",
+            f"OK backup={'old_KPOINTS' if old else 'none'} applied={','.join(applied) or '-'}",
         )
         return ok(
-            "KPOINTS 已上传到远端",
-            {"dir": work_dir, "backup_file": "old_KPOINTS" if old else None},
+            "KPOINTS 已同步到远端",
+            {
+                "dir": work_dir,
+                "backup_file": "old_KPOINTS" if old else None,
+                "applied": applied,
+                "state": payload_state,
+            },
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))

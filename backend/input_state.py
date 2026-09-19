@@ -3,9 +3,11 @@
 三层职责（方案见 process.md §6.11）：
 
 1. **远端 conN/**：这次计算真正用的输入文件（唯一真相）；
-2. **本地快照**：从远端同步回来的副本，落盘在 `<任务目录>/inputs/`
+2. **本地镜像**：远端"最新计算目录"的副本，落盘在 `<任务目录>/files/`
    （INCAR / KPOINTS / POSCAR / CONTCAR + 由 vasp2cif 转出的 *.cif），
    元数据（哈希 / 参数 / 来源目录 / 时间）写在 `task["input_state"]`；
+   **v0.8.7 起本地不再有 `inputs/` 与 `conN/` 子目录** —— 每个任务只有这一份文件，
+   每次同步用远端最新目录覆盖（有未生效草稿的文件跳过，见 `build_snapshot`）；
 3. **草稿 drafts**：用户在系统里改的参数，**不直接改远端**，
    只在**下一次续算**时由 `apply_drafts` 相关脚本应用，并把每条改动
    记进台账（changes）里标记 applied_at / applied_in。
@@ -28,6 +30,8 @@ from task_paths import task_dir
 
 SNAPSHOT_FILES = ("INCAR", "KPOINTS", "POSCAR", "CONTCAR")
 CIF_FILES = ("POSCAR", "CONTCAR")
+#: 归档（关闭任务）时静默拉回本地的输出文件
+ARCHIVE_OUTPUT_FILES = ("OUTCAR", "OSZICAR")
 
 
 # --------------------------------------------------------------------- 解析
@@ -133,11 +137,15 @@ def _hash(text: str) -> str:
 
 
 def snapshot_dir(task: Dict[str, Any]) -> Path:
-    """快照目录：<任务目录>/inputs/。"""
+    """本地计算文件目录：<任务目录>/files/。
+
+    v0.8.7 前是独立的 `<任务目录>/inputs/` 快照目录；现在合并成一份 —— 与编辑器的
+    "生成到本地"、巡检结构同步写的是同一个目录，同步时按最新远端目录覆盖。
+    """
     task_with_project = dict(task)
     task_with_project.setdefault("project_name", task.get("project_name", ""))
     root = task_dir(str(task.get("project_name") or ""), task_with_project)
-    return root / "inputs"
+    return root / "files"
 
 
 def _write_snapshot_file(task: Dict[str, Any], name: str, text: str) -> Path:
@@ -186,18 +194,62 @@ def read_snapshot_cif(task: Dict[str, Any], name: str) -> Optional[str]:
 # -------------------------------------------------------------------- 同步
 
 
-def _newest_dir_with_incar(server: str, remote_dir: str) -> str:
-    """一次 exec 定位"最新且真的有 INCAR 的目录"（conN 优先，否则主目录）。"""
+def _newest_dir_with_file(server: str, remote_dir: str, filename: str) -> str:
+    """一次 exec 定位"最新且真的含 <filename> 的目录"（conN 优先，否则主目录）。"""
+    if ssh.mock_enabled():
+        # 本地模拟模式（VASP_SSH_MOCK=1）：直接扫 mock 远端目录树，便于离线联调
+        base = ssh.mock_local_path(remote_dir)
+
+        def _has_file(path: Path) -> bool:
+            f = path / filename
+            return f.is_file() and f.stat().st_size > 0
+
+        def _con_index(path: Path) -> int:
+            digits = "".join(ch for ch in path.name if ch.isdigit())
+            return int(digits or 0)
+
+        for candidate in sorted(
+            (p for p in base.glob("con[0-9]*") if p.is_dir()),
+            key=_con_index,
+            reverse=True,
+        ):
+            if _has_file(candidate):
+                return f"{remote_dir.rstrip('/')}/{candidate.name}"
+        if _has_file(base):
+            return str(base)
+        return ""
     script = (
         f'for d in $(ls -d "{remote_dir}"/con[0-9]* 2>/dev/null | sort -V -r); do '
-        f'if [ -s "$d/INCAR" ]; then echo "$d"; exit 0; fi; done; '
-        f'if [ -s "{remote_dir}/INCAR" ]; then echo "{remote_dir}"; fi'
+        f'if [ -s "$d/{filename}" ]; then echo "$d"; exit 0; fi; done; '
+        f'if [ -s "{remote_dir}/{filename}" ]; then echo "{remote_dir}"; fi'
     )
     result = ssh.run_remote(server, f"bash -c '{script}'", timeout=30)
     if result.get("exit_code") != 0:
         detail = (result.get("stderr") or result.get("stdout") or "").strip()
         raise RuntimeError(detail or "定位远端输入目录失败")
     return str(result.get("stdout") or "").strip()
+
+
+def _download_mirror_file(
+    server: str, task: Dict[str, Any], remote_path: str, name: str
+) -> bool:
+    """下载一个文件覆盖到本地镜像目录（返回是否成功；失败不抛错）。"""
+    target = snapshot_dir(task) / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        return bool(ssh.download_file(server, remote_path, str(target)))
+    except Exception:  # noqa: BLE001 - 单文件失败不影响其它文件
+        return False
+
+
+def pending_files(task: Dict[str, Any]) -> set:
+    """有"未生效草稿"的文件名集合（这些文件同步时不覆盖本地副本）。"""
+    state = task.get("input_state") or {}
+    return {
+        str(change.get("file"))
+        for change in (state.get("changes") or [])
+        if not change.get("applied_at")
+    }
 
 
 def _download_text(server: str, remote_path: str) -> Optional[str]:
@@ -221,16 +273,18 @@ def _download_text(server: str, remote_path: str) -> Optional[str]:
 def build_snapshot(
     server: str, task: Dict[str, Any], *, kind: str = "manual"
 ) -> Dict[str, Any]:
-    """从远端最新目录取回输入文件，写本地快照并返回 input_state（不落库）。
+    """从远端最新目录取回输入文件，**覆盖**本地镜像并返回 input_state（不落库）。
 
     成本：1 次 exec（定位目录）+ 4 次 SFTP 小文件下载（INCAR/KPOINTS/POSCAR/CONTCAR）。
+    **有未生效草稿的文件跳过覆盖**（保留本地副本，草稿留到下次续算生效），
+    这些文件的元数据仍按远端记录并标记 `protected: true`，供界面显示"本次计算值"。
     """
     remote_dir = resolve_remote_path(
         server, str(task.get("remote_dir") or "")
     ).rstrip("/")
     if not remote_dir:
         raise ValueError("任务缺少远程目录")
-    source_dir = _newest_dir_with_incar(server, remote_dir) or remote_dir
+    source_dir = _newest_dir_with_file(server, remote_dir, "INCAR") or remote_dir
 
     texts: Dict[str, str] = {}
     for name in SNAPSHOT_FILES:
@@ -240,10 +294,16 @@ def build_snapshot(
     if not texts:
         raise RuntimeError(f"远端目录 {source_dir} 下没有可同步的输入文件")
 
+    protected = pending_files(task)
     files: Dict[str, Any] = {}
     for name, text in texts.items():
-        _write_snapshot_file(task, name, text)
         meta: Dict[str, Any] = {"hash": _hash(text), "size": len(text)}
+        if name in protected:
+            # 有未生效草稿：不覆盖本地副本；元数据仍按远端记录（界面显示"本次计算值"）
+            meta["protected"] = True
+            meta["remote_hash"] = meta["hash"]
+        else:
+            _write_snapshot_file(task, name, text)
         if name == "INCAR":
             meta["params"] = parse_incar_text(text)
         elif name == "KPOINTS":
@@ -254,7 +314,7 @@ def build_snapshot(
             meta.update(poscar_meta(text))
         files[name] = meta
     for name in CIF_FILES:
-        if name in texts:
+        if name in texts and name not in protected:
             _convert_to_cif(task, name)
 
     con = source_dir[len(remote_dir):].lstrip("/") or ""
@@ -265,11 +325,34 @@ def build_snapshot(
             "job_id": str(task.get("job_id") or "") or None,
             "synced_at": now_iso(),
             "kind": kind,
+            "protected": sorted(name for name in texts if name in protected),
         },
         "files": files,
         "draft": {},
         "changes": [],
     }
+
+
+def download_archive_outputs(server: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    """归档时静默拉回"最新计算目录"的 OUTCAR / OSZICAR 到本地镜像。
+
+    目录选择：优先含 OUTCAR 的最大编号 conN，否则任务主目录。
+    单文件失败只记录、不抛错 —— 归档本身不依赖它。
+    """
+    remote_dir = resolve_remote_path(
+        server, str(task.get("remote_dir") or "")
+    ).rstrip("/")
+    if not remote_dir:
+        raise ValueError("任务缺少远程目录")
+    source_dir = _newest_dir_with_file(server, remote_dir, "OUTCAR") or remote_dir
+    saved: List[str] = []
+    missing: List[str] = []
+    for name in ARCHIVE_OUTPUT_FILES:
+        if _download_mirror_file(server, task, f"{source_dir}/{name}", name):
+            saved.append(name)
+        else:
+            missing.append(name)
+    return {"source_dir": source_dir, "saved": saved, "missing": missing}
 
 
 def merge_snapshot(task: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -461,3 +544,36 @@ def applied_items(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         for c in (state or {}).get("changes") or []
         if not c.get("applied_at") and draft.get(str(c.get("file") or ""))
     ]
+
+
+def mark_file_applied(
+    state: Dict[str, Any], file_name: str, where: str
+) -> Tuple[Dict[str, Any], List[str]]:
+    """把**单个文件**的未生效台账条目标记已应用，并清掉该文件的草稿。
+
+    用于「同步到远端」（v0.8.7）：用户不想等下次续算时，可以把当前参数直接
+    推到远端最新目录 —— 推完这些修改就不再是"待生效"，台账记 `applied_in=<where>`。
+
+    返回 `(新 state, 被应用的 key 列表)`。
+    """
+    state = dict(state or {})
+    draft = dict(state.get("draft") or {})
+    now = now_iso()
+    applied_keys: List[str] = []
+    changes: List[Dict[str, Any]] = []
+    for entry in state.get("changes") or []:
+        item = dict(entry)
+        if item.get("file") == file_name and not item.get("applied_at"):
+            item["applied_at"] = now
+            item["applied_in"] = where
+            applied_keys.append(str(item.get("key") or ""))
+        changes.append(item)
+    state["changes"] = changes
+    draft.pop(file_name, None)
+    state["draft"] = draft
+    state["last_applied"] = {
+        "con": where,
+        "at": now,
+        "items": [c for c in changes if c.get("applied_in") == where],
+    }
+    return state, applied_keys

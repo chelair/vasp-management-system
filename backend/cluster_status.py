@@ -1,21 +1,17 @@
-"""集群节点状态查询：bhost（主）+ bqueues（补充）+ 节点-队列映射。
+"""集群节点状态：解析共享采集 + 节点-队列映射。
 
-节点-队列映射固化在 servers.json 的 node_groups 中（b001-b014 → normal_2week 等），
-真实模式下通过 Paramiko 执行 bhost / bqueues 并解析；
-模拟模式（VASP_SSH_MOCK=1）或真实查询失败时，按映射生成模拟负载，保证界面可预览。
+节点-队列映射固化在 servers.json 的 node_groups 中（b001-b014 → normal_2week 等）。
+**v0.8.7 起不再自己发 SSH**：原始 bhosts / bqueues 来自 `cluster_probe` 的共享采集
+（与总览页同一份、同一 TTL 缓存），这里只做解析与映射；
+模拟模式（VASP_SSH_MOCK=1）或采集失败且无旧数据时，按映射生成模拟负载供界面预览。
 """
 
 import hashlib
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import cluster_probe
 from config import load_servers
-from ssh import run_remote
-
-# 节点状态缓存（秒）：避免页面反复打开时重复 SSH 查询
-CACHE_TTL_SECONDS = 60
-_snapshot_cache: Dict[str, Any] = {"at": 0.0, "data": None}
 
 
 def format_walltime(days: Optional[int]) -> str:
@@ -154,12 +150,12 @@ def _map_status(bhost_status: str, idle: int, running: int) -> str:
 
 
 def build_snapshot(server_name: str, use_cache: bool = True) -> Dict[str, Any]:
-    """查询服务器节点状态：bhost 主数据 + bqueues 补充 + node_groups 映射。"""
-    global _snapshot_cache
-    now = time.time()
-    if use_cache and _snapshot_cache["data"] and now - _snapshot_cache["at"] < CACHE_TTL_SECONDS:
-        return _snapshot_cache["data"]
+    """节点状态：读 `cluster_probe` 的**共享采集**（与总览页同一份）+ node_groups 映射。
 
+    v0.8.7 起不再单独发 SSH：采集（bhosts / bqueues / bjobs / blimits / df 一次 exec）
+    由 `cluster_probe.probe()` 统一做并按 TTL（默认 300s）缓存，`use_cache=False`
+    等价于 `refresh=1`（强制重采，总览页看到的也会一起更新）。
+    """
     servers = load_servers()
     cfg = servers.get(server_name)
     groups = (cfg or {}).get("node_groups", [])
@@ -175,38 +171,17 @@ def build_snapshot(server_name: str, use_cache: bool = True) -> Dict[str, Any]:
             "bqueuesRaw": "",
         }
 
+    probe = cluster_probe.probe(server_name, refresh=not use_cache)
+    sections = probe.get("sections") or {}
+    bhost_raw = sections.get("BHOSTS", "")
+    bqueues_raw = sections.get("BQUEUES", "")
     source = "real"
-    error = ""
-    bhost_raw = ""
-    bqueues_raw = ""
-    nodes_query_cmd = str(cfg.get("nodes_query_cmd", "")).strip()
-    bhost_cmd = str(cfg.get("bhost_cmd", 'bash -c "bhosts"'))
-    bqueues_cmd = str(cfg.get("bqueues_cmd", 'bash -c "bqueues"'))
+    error = str(probe.get("error") or "")
+    if not bhost_raw:
+        # 采集失败且没有可用旧数据 → 回退模拟负载（界面明确标"模拟数据"）
+        source = "mock"
+        error = error or "未取到节点状态数据（检查 SSH / LSF profile）"
     try:
-        if nodes_query_cmd:
-            # 单次 SSH 连接同时查询 bhosts + bqueues，避免登录 shell 开销
-            query = run_remote(server_name, nodes_query_cmd, timeout=35)
-            if query["exit_code"] != 0:
-                raise RuntimeError(
-                    query["stderr"].strip()
-                    or query["stdout"].strip()
-                    or "节点状态查询失败"
-                )
-            out = query["stdout"]
-            if "===BQUEUES===" in out:
-                head, bqueues_raw = out.split("===BQUEUES===", 1)
-            else:
-                head, bqueues_raw = out, ""
-            bhost_raw = head.split("===BHOST===", 1)[1] if "===BHOST===" in head else head
-        else:
-            bhost = run_remote(server_name, bhost_cmd, timeout=25)
-            bqueues = run_remote(server_name, bqueues_cmd, timeout=25)
-            if bhost["exit_code"] != 0:
-                raise RuntimeError(
-                    bhost["stderr"].strip() or bhost["stdout"].strip() or "bhost 执行失败"
-                )
-            bhost_raw = bhost["stdout"]
-            bqueues_raw = bqueues.get("stdout", "")
         host_map = parse_bhost(bhost_raw)
         queue_map = parse_bqueues(bqueues_raw)
     except Exception as e:  # noqa: BLE001 - SSH 不可用/未连接时回退模拟
@@ -303,12 +278,15 @@ def build_snapshot(server_name: str, use_cache: bool = True) -> Dict[str, Any]:
     result = {
         "source": source,
         "error": error or None,
-        "queriedAt": datetime.now().isoformat(timespec="seconds"),
+        "queriedAt": probe.get("queriedAt") or datetime.now().isoformat(timespec="seconds"),
         "nodes": nodes,
         "queues": queues,
         "bhostRaw": bhost_raw,
         "bqueuesRaw": bqueues_raw,
+        # 采集元信息：前端据此显示「缓存 X 分钟 · N 分钟前采集」（v0.8.7）
+        "cached": bool(probe.get("cached")),
+        "stale": bool(probe.get("stale")),
+        "cacheAgeSeconds": probe.get("cacheAgeSeconds"),
+        "cacheTtlSeconds": probe.get("cacheTtlSeconds"),
     }
-    if source == "real" or not error:
-        _snapshot_cache = {"at": now, "data": result}
     return result

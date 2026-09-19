@@ -27,13 +27,27 @@ CATEGORY_DIRS = {
     "ele": "ele",
 }
 
+#: 续算子任务的目录后缀（.../con12）
+_CONTINUATION_RE = re.compile(r"/con\d+$")
+
+
+def strip_continuation_suffix(dir_path: str) -> str:
+    """去掉续算子任务的 `/conN` 尾巴，得到任务族的本地根目录。
+
+    **远端**仍按 conN 组织（VASP 续算就在那儿跑），只有**本地镜像**合并成一份：
+    `<任务目录>/files/` 永远保存"远端最新计算目录"里的文件（v0.8.7 起）。
+    任务记录里的 `dir_path` 保持原样 —— 它是续算子任务的逻辑主键
+    （重复登记检查、远端目录推导都靠它），只在本地路径解析时剥掉后缀。
+    """
+    return _CONTINUATION_RE.sub("", str(dir_path or ""))
+
 
 def is_continuation_task(task: Dict[str, Any]) -> bool:
     """续算子任务：dir_path 指向续算目录（.../conN）。
 
     续算在后台登记子任务记录（供巡检定位/文件重定向），但不在前端展示为独立子项。
     """
-    return bool(re.search(r"/con\d+$", str(task.get("dir_path", "") or "")))
+    return bool(_CONTINUATION_RE.search(str(task.get("dir_path", "") or "")))
 
 
 def free_energy_frac_task(
@@ -63,10 +77,14 @@ def free_energy_frac_task(
 
 
 def task_dir(project_name: str, task: Dict[str, Any]) -> Path:
-    """任务本地目录（绝对路径；dir_path 为相对路径时自动拼接本地根目录）。"""
+    """任务本地目录（绝对路径；dir_path 为相对路径时自动拼接本地根目录）。
+
+    续算子任务（dir_path 形如 `.../con3`）解析到**任务族根目录**：本地只保留一份
+    文件镜像，不再建 `conN/` 目录（v0.8.7）。
+    """
     stored = task.get("dir_path")
     if stored:
-        return resolve_local_path(stored)
+        return resolve_local_path(strip_continuation_suffix(stored))
     return (
         PROJECTS_DIR
         / str(project_name)

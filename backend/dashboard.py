@@ -2,10 +2,12 @@
 
 设计要点：
 
-- **单次 SSH 往返**：把 bjobs / blimits / df / bhosts / bqueues 合并进一个
-  bash 脚本，用 `@@@SECTION` 标记分段（每条 exec 有 1.3-4s shell 启动开销）。
-- **缓存**：集群快照默认缓存 5 分钟（settings.json `dashboard_cache_seconds`
-  可调），`refresh=1` 强制刷新；本地聚合（风险/统计/趋势）缓存 60 秒。
+- **单次 SSH 往返（v0.8.7 起与作业管理共用）**：bjobs / blimits / df / bhosts /
+  bqueues 的采集在 `cluster_probe.py`，用 `@@@SECTION` 标记分段；总览与作业管理
+  读**同一份**缓存，任一页 `refresh=1` 都会强制重采（两边同时更新）。
+- **缓存**：集群采集按 TTL 缓存，默认 5 分钟（settings.json `cluster_cache_seconds`，
+  兼容旧的 `dashboard_cache_seconds`），`refresh=1` 强制刷新；本地聚合（风险/统计/趋势）
+  缓存 60 秒。**打开页面不会每次都发 SSH** —— TTL 内直接命中缓存。
 - **命令可配置**：node_status_cmd / queue_status_cmd / user_used_cores_cmd /
   user_total_cores_cmd / storage_check_cmd，servers.json（按服务器）优先，
   其次 settings.json（全局），最后用内置默认值，便于适配 Slurm 等调度器。
@@ -21,9 +23,9 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+import cluster_probe
 from checks_store import CHECKS_DIR, collect_results, list_runs, to_frontend_rows
 from config import DATA_DIR, load_servers, load_settings
-from ssh import run_remote
 from storage import load_db
 from task_paths import is_continuation_task
 
@@ -31,7 +33,6 @@ DASHBOARD_DIR = DATA_DIR / "dashboard"
 HISTORY_FILE = DASHBOARD_DIR / "core_history.json"
 AUDIT_FILE = DATA_DIR / "audit_submit.log"
 
-CLUSTER_CACHE_TTL = 300  # 集群快照缓存（秒）
 LOCAL_CACHE_TTL = 60  # 本地聚合缓存（秒）
 HISTORY_MIN_INTERVAL = 600  # 历史采样最小间隔（秒）
 HISTORY_MAX = 4000  # 历史文件最多保留条数
@@ -39,79 +40,11 @@ TREND_DAYS = 7
 STORAGE_WARN_PERCENT = 85  # 存储使用率告警线（剩余 <15%）
 CORES_WARN_PERCENT = 90  # 核数占用告警线
 
-DEFAULT_COMMANDS = {
-    "node_status_cmd": "bhosts",
-    "queue_status_cmd": "bqueues",
-    "user_used_cores_cmd": (
-        'bjobs -u $USER -o "jobid stat queue job_name slots exec_host" -noheader'
-    ),
-    "user_total_cores_cmd": "blimits",
-    "storage_check_cmd": "df -h {storage_path}",
-}
+#: 采集命令默认值（实现已搬到 cluster_probe，这里保留别名便于外部引用）
+DEFAULT_COMMANDS = cluster_probe.DEFAULT_COMMANDS
 
-_cluster_cache: Dict[str, Dict[str, Any]] = {}
 _local_cache: Dict[str, Any] = {"at": 0.0, "data": None}
 _lock = threading.Lock()
-
-
-# ---------------------------------------------------------------- 命令与脚本
-
-
-def _command(server_cfg: Dict[str, Any], key: str) -> str:
-    """取远端命令：servers.json（按服务器）> settings.json（全局）> 内置默认。"""
-    val = str(server_cfg.get(key, "") or "").strip()
-    if val:
-        return val
-    val = str(load_settings().get(key, "") or "").strip()
-    return val or DEFAULT_COMMANDS[key]
-
-
-def _cluster_script(server_name: str) -> str:
-    cfg = load_servers().get(server_name, {}) or {}
-    profile = str(
-        cfg.get("lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf")
-    )
-    storage_path = str(cfg.get("remote_base", "") or "").rstrip("/") or "."
-    commands = {
-        key: _command(cfg, key).replace("{storage_path}", storage_path)
-        for key in DEFAULT_COMMANDS
-    }
-    return "\n".join(
-        [
-            f"source {profile} >/dev/null 2>&1 || true",
-            "echo @@@BJOBS",
-            commands["user_used_cores_cmd"],
-            "echo @@@BLIMITS",
-            commands["user_total_cores_cmd"],
-            "echo @@@DF",
-            commands["storage_check_cmd"],
-            "echo @@@BHOSTS",
-            commands["node_status_cmd"],
-            "echo @@@BQUEUES",
-            commands["queue_status_cmd"],
-            "echo @@@END",
-        ]
-    )
-
-
-def _sections(output: str) -> Dict[str, str]:
-    """按 @@@NAME 标记切分远端输出。"""
-    result: Dict[str, str] = {}
-    current: Optional[str] = None
-    buf: List[str] = []
-    for line in output.splitlines():
-        m = re.match(r"^@@@([A-Z]+)\s*$", line.strip())
-        if m:
-            if current:
-                result[current] = "\n".join(buf).strip("\n")
-            current = m.group(1)
-            buf = []
-            continue
-        if current:
-            buf.append(line)
-    if current:
-        result[current] = "\n".join(buf).strip("\n")
-    return result
 
 
 # ------------------------------------------------------------------ 远端解析
@@ -305,40 +238,28 @@ def parse_df(text: str) -> Optional[Dict[str, Any]]:
 def cluster_snapshot(
     server_name: str, refresh: bool = False
 ) -> Dict[str, Any]:
-    """取集群快照（缓存 5 分钟）；失败时返回上一份可用快照并带 error。"""
-    global _cluster_cache
-    cached = _cluster_cache.get(server_name)
-    ttl = int(load_settings().get("dashboard_cache_seconds", CLUSTER_CACHE_TTL) or CLUSTER_CACHE_TTL)
-    now = time.time()
-    if cached and not refresh and now - cached["at"] < ttl:
-        return {**cached["data"], "cached": True, "cacheAgeSeconds": round(now - cached["at"], 1)}
+    """取集群快照：读 `cluster_probe` 的**共享采集**（默认缓存 5 分钟，作业管理同一份）。
 
+    失败但有上一份采集时返回旧数据 + `stale` + `error`（不伪造数据）；
+    完全没有数据时返回 `source="error"` 的空快照。
+    """
     with _lock:
-        cached = _cluster_cache.get(server_name)
-        now = time.time()
-        if cached and not refresh and now - cached["at"] < ttl:
-            return {**cached["data"], "cached": True, "cacheAgeSeconds": round(now - cached["at"], 1)}
-
+        probe = cluster_probe.probe(server_name, refresh=refresh)
+        sections = probe.get("sections") or {}
         cfg = load_servers().get(server_name, {}) or {}
         user = str(cfg.get("user", "") or "")
         snapshot: Dict[str, Any] = {
             "server": server_name,
-            "source": "real",
-            "error": None,
-            "queriedAt": datetime.now().isoformat(timespec="seconds"),
+            "source": "real" if sections else "error",
+            "error": probe.get("error"),
+            "queriedAt": probe.get("queriedAt"),
             "jobs": [],
             "coreLimit": {"used": None, "limit": None, "queues": []},
             "storage": None,
             "nodes": None,
             "queues": [],
         }
-        try:
-            result = run_remote(server_name, _cluster_script(server_name), timeout=90)
-            if result.get("exit_code") != 0:
-                raise RuntimeError(
-                    (result.get("stderr") or result.get("stdout") or "集群查询失败").strip()[:300]
-                )
-            sections = _sections(result.get("stdout", ""))
+        if sections:
             snapshot["jobs"] = parse_jobs(sections.get("BJOBS", ""))
             snapshot["coreLimit"] = parse_blimits(sections.get("BLIMITS", ""), user)
             snapshot["storage"] = parse_df(sections.get("DF", ""))
@@ -348,20 +269,15 @@ def cluster_snapshot(
                 key: sections.get(key, "")[:4000]
                 for key in ("BJOBS", "BLIMITS", "DF")
             }
-        except Exception as e:  # noqa: BLE001 - SSH 不可用时保留上一份快照
-            snapshot.update({"source": "error", "error": str(e)})
-            if cached:
-                return {
-                    **cached["data"],
-                    "cached": True,
-                    "cacheAgeSeconds": round(now - cached["at"], 1),
-                    "stale": True,
-                    "error": str(e),
-                }
-        _cluster_cache[server_name] = {"at": now, "data": snapshot}
-        if snapshot["source"] == "real":
+        if snapshot["source"] == "real" and not probe.get("cached"):
             _append_history(snapshot)
-        return {**snapshot, "cached": False, "cacheAgeSeconds": 0.0}
+        return {
+            **snapshot,
+            "cached": probe.get("cached"),
+            "stale": probe.get("stale"),
+            "cacheAgeSeconds": probe.get("cacheAgeSeconds"),
+            "cacheTtlSeconds": probe.get("cacheTtlSeconds"),
+        }
 
 
 # ------------------------------------------------------------------ 历史趋势
@@ -893,17 +809,14 @@ def cached_overview(server_name: str, refresh: bool = False) -> Dict[str, Any]:
 def invalidate_cluster_cache(
     servers: Optional[List[str]] = None, prewarm: bool = True
 ) -> List[str]:
-    """作废集群快照缓存（巡检结束后调用，让总览拿到最新数据）。
+    """作废集群采集缓存（巡检结束后调用，让总览/作业管理都拿到最新数据）。
 
     - 只作废传入的服务器；不传则作废全部有缓存的服务器。
     - `prewarm=True` 时后台线程立即重查一次（静默，不阻塞调用方），
       这样用户切到总览页时直接命中新快照。
     """
     global _local_cache
-    targets = [s for s in (servers or list(_cluster_cache.keys())) if s]
-    for name in targets:
-        if name in _cluster_cache:
-            _cluster_cache[name] = {"at": 0.0, "data": None}
+    targets = cluster_probe.invalidate(servers)
     # 本地聚合（风险/趋势/项目进度）同样可能与巡检结果相关
     _local_cache = {"at": 0.0, "data": None}
 

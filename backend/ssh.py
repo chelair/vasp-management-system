@@ -52,6 +52,16 @@ def _mock_root() -> Path:
     )
 
 
+def mock_enabled() -> bool:
+    """是否处于本地模拟模式（VASP_SSH_MOCK=1）。"""
+    return _mock_enabled()
+
+
+def mock_local_path(remote_path: str) -> Path:
+    """模拟模式下远程绝对路径对应的本地路径（非 mock 模式调用无意义）。"""
+    return _local_path(remote_path)
+
+
 def _local_path(remote_path: str) -> Path:
     """模拟模式下把远程绝对路径映射为本地路径。"""
     return _mock_root() / str(remote_path).lstrip("/")

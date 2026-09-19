@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-18 · 当前版本：v0.8.6（同名自由能组 / NEB 组路径列误合并修复 + `/api/jobs/nodes` 回归修复 + HPC 连接快捷脚本）
+> 生成时间：2026-08-29 · 最近更新：2026-09-19 · 当前版本：v0.8.7（节点看板重构 + 本地镜像扁平化 + 集群采集合并 + vasp.lsf 生成 + POSCAR 同步/POTCAR/固定原子 + 提交前检查）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -38,7 +38,7 @@ sudo journalctl -u vasp-manager -f       # 实时日志
 
 ## 2. 数据与配置
 
-> 换机器/换操作系统（Windows → Linux）迁移看 **§11 部署与运维**：目录与服务、日常操作、常驻检查项、Linux 特有的坑、nginx 反代与回滚都在那里（原一次性文档 `MIGRATION.md` 已删除，内容并入 §11）；辅助脚本 `python scripts/migrate_paths.py [--apply]` 用来把 `data/` 里遗留的绝对路径归一化成相对路径。
+> 换机器/换操作系统（Windows → Linux）迁移看 **§11 部署与运维**：目录与服务、日常操作、常驻检查项、Linux 特有的坑、nginx 反代与回滚都在那里（原一次性文档 `MIGRATION.md` 已删除，内容并入 §11）；辅助脚本 `python scripts/migrate_paths.py [--apply]` 用来把 `data/` 里遗留的绝对路径归一化成相对路径。；**结构固定原子**用 `python scripts/selective_dynamics.py`（自带配置区，见 §7 v0.8.7 ⑨）生成带 `Selective Dynamics` 的 POSCAR。
 
 ```
 data/
@@ -47,7 +47,7 @@ data/
 ├── checks/                    # 巡检归档 check_results_*.json + runs.json
 ├── dashboard/
 │   └── core_history.json      # 总览集群采样历史（核数/运行中任务，v0.6.0 起累积）
-├── projects/                  # 本地项目镜像目录（files/ 等）
+├── projects/                  # 本地项目镜像目录（每个任务一份 files/，见 §3）
 ├── reports/                   # 分项目报告（v0.7.0 起）：<项目>/<报告ID>/{report.json,report.md,charts/*.svg} + index.json
 ├── trash/                     # 删除任务/项目的回收站
 ├── aux_molecules/             # 辅助分子全局目录（opt|frac）
@@ -69,11 +69,21 @@ data/
 - LSF profile：`/opt/ibm/lsfsuite/lsf/conf/profile.lsf`（bsub/bjobs/bkill 前需 source）。
 - VTST 脚本：`/data/gpfs03/mdye/VTST/vtstscripts/nebef.pl`（NEB 能垒分析）。
 
-### 总览集群查询命令（v0.6.0，可配置）
+### 集群采集与查询命令（v0.6.0 起；**v0.8.7 起总览与作业管理共用一次采集**）
 
-总览页把 5 条集群命令合并进**一次 exec**（标记分段 `@@@BJOBS / @@@BLIMITS / @@@DF / @@@BHOSTS / @@@BQUEUES`），
+采集实现统一在 `backend/cluster_probe.py`：把 5 条集群命令合并进**一次 exec**
+（标记分段 `@@@BJOBS / @@@BLIMITS / @@@DF / @@@BHOSTS / @@@BQUEUES`），
 命令可在 `servers.json`（按服务器）或 `settings.json`（全局）中覆盖，缺省用内置默认值
-（见 `backend/dashboard.py DEFAULT_COMMANDS），便于适配 Slurm：
+（见 `cluster_probe.DEFAULT_COMMANDS`，`dashboard.DEFAULT_COMMANDS` 是同一对象的别名），便于适配 Slurm：
+
+- **共享缓存**：原始输出按 `settings.cluster_cache_seconds`（兼容旧的 `dashboard_cache_seconds`，默认 **300s**）
+  缓存；总览页（`/api/dashboard/overview`）与作业管理（`/api/jobs/nodes`）读**同一份**，
+  **页面打开时只要缓存没过期就不发 SSH**；任一页传 `?refresh=1` 强制重采，两边同时更新；
+  全局巡检结束后 `invalidate_cluster_cache()` 会作废这份缓存并后台预热。
+- 采集失败但有上一份数据时返回旧数据 + `stale=true` + `error`（界面显示「缓存数据」），
+  完全没有可用数据时：作业管理回退**模拟负载**（`source: mock`），总览返回 `source: error`。
+- 节点范围差异（既有设计，不是 bug）：作业管理只渲染 `servers.json` 里 `node_groups` 映射的节点
+  （如 80 个），总览的节点统计来自 `bhosts` 全量（如 201 个）。
 
 | 键 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -86,13 +96,14 @@ data/
 核数上限优先取 `blimits`；若想由系统配置固定一个上限（例如管理员给了口头配额），
 在 `settings.json` 写 `dashboard_total_cores: 200` 即可覆盖，界面会标注「系统配置手动指定」。
 
-### 项目盘点（2026-09-13，均 server1 / HS 根下，以 projects.json 为准）
+### 项目盘点（2026-09-18，均 server1 / HS 根下，以 projects.json 为准）
 
 | 项目 | 任务数 | 构成 | 状态与备注 |
 | --- | --- | --- | --- |
-| Ag_20260830 | 127 | opt 59 / neb 47 / frac 21 | 三条自由能路径 PATH1-3（含 NEB）；completed 47 / pending 74 / queued 5 / zombied 1 |
-| Co_260902 | 53 | opt 22 / neb 18 / frac 12 / ele 1 | completed 30 / pending 23 |
-| TMDZYX | 34 | opt 34 | 7 个过渡金属（Zn/Al/Co/Ti/Cu/Fe/Ni）各一条 opt + con1..con4 续算子任务；completed 1 / unconverged 3 / zombied 3 / pending 27。**v0.5.0 之后新增，本项目尚未在其中任何目录做过破坏性测试** |
+| Ag_20260830 | 141（可见 63） | opt / neb / frac 混合 | 三条自由能路径 PATH1-3 + 同名 NEB 组（v0.8.6 修复的正是这里的路径列合并）；含 conN 续算子任务 |
+| Co_260902 | 53（可见 34） | opt 22 / neb 18 / frac 12 / ele 1 | 已关闭 |
+| TMDZYX | 34（可见 7） | opt 34 | 7 个过渡金属（Zn/Al/Co/Ti/Cu/Fe/Ni）各一条 opt + con1..con4 续算子任务；已关闭。**v0.5.0 之后新增，本项目尚未在其中任何目录做过破坏性测试** |
+| FS_Kaolin | 23（可见 16） | opt / ele | v0.8.4 迁移后新增；报告与本地镜像齐全 |
 
 TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不占顶层展示，但参与提交/巡检定位。
 
@@ -103,7 +114,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - 任务类型：`opt`（结构优化）/ `frac`（频率矫正）/ `neb`（NEB）/ `ele`（电子结构，subtype：pdos/bader/diff_charge/work_function）。
 - **目录一律 ASCII**：`opt/`、`ele/`、`free_energy/<组名>/<结构N>/`（opt 直接在结构目录，frac 为 `1/frac` 与 conN 同级）、`neb/<组名>/opt/IS|FS` + `neb/<组名>/neb/00..NN`（conN 续算同级）。
 - 元数据路径全部为**相对项目根目录**（禁止绝对路径 / `~`），统一 `paths.resolve_local_path / resolve_remote_path` 解析。
-- 续算目录 `conN`：作业提交/状态/续算源使用“最新目录”（最大编号 conN，存在即算）；巡检结果使用“最新有结果目录”（OUTCAR 有效，逐级回退到主目录）。
+- 续算目录 `conN`：**只在远端存在**（v0.8.7 起本地不再建 `conN/`，见 §6.11）；作业提交/状态/续算源使用“最新目录”（最大编号 conN，存在即算）；巡检结果使用“最新有结果目录”（OUTCAR 有效，逐级回退到主目录）。
 - 状态枚举：`pending / queued / running / completed / unconverged / zombied / archived`；**状态机无白名单，任意合法流转**。
 
 ---
@@ -158,7 +169,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`：分项目报告页——按项目生成 / 一键生成所有项目、**项目报告列表（每项目一份，同项目重生成直接覆盖）**、章节导航、Markdown 渲染（自写轻量渲染器，无第三方依赖，`chartResolver` 把 `charts/x.svg` 映射到 `/api/reports/project/{id}/files/x.svg`）；**正文只渲染图片，没有任何交互式组件或结构化数据视图**（v0.7.2 起"所见即所得"——前端看到的排版与导出 HTML/PDF 一致）；**导出按钮挂在「报告内容」标题行**，点击才展开章节勾选 Popover（下载 Markdown / 导出 HTML / 导出 PDF）。图里的看板版式（自由能 / NEB / 项目进度）由后端 `report_panels.py` 生成，与巡检详情页保持一致。
-- `components/jobs/`：IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、SubmitScriptPanel、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
+- `components/jobs/`：**SelectiveDynamicsModal（固定原子：选中/元素/高度三规则 + 编号方式 + 可选同步远端）**、IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、**SubmitScriptPanel（vasp.lsf 生成：三组参数表单 + 8 段模板预览 + 写入远端）**、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
 - `utils/structure3d.ts`：3Dmol 数据工具（CIF 解析、VESTA 元素配色、共价半径算键）；3Dmol 库本地化于 `public/3dmol/3Dmol-min.js`（index.html 全局引入，无 npm 依赖）。
@@ -175,11 +186,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 3. **续算**：`POST /jobs/tasks/{id}/continuation`。opt：最新目录 OUTCAR/CONTCAR 均非空 → 创建 con(N+1)，复制 CONTCAR→POSCAR/POTCAR/KPOINTS/INCAR/提交脚本、**WAVECAR 用 mv**，INCAR 改 ISTART=1/ICHARG=0；未完成 → 分流提示（input_complete_but_not_finished / input_incomplete）；运行中 → 提示等待。NEB：从最新续算目录复制共享文件 + 端点 POSCAR 固定并**带上 00/NN OUTCAR**、中间映像 CONTCAR→POSCAR、**各映像（含端点/中间态）存在 WAVECAR 时随续算 mv 移动**（目标已有不覆盖）。续算在 DB 登记隐藏子任务（不展示，供后台定位）。
    - **活跃作业保护（v0.5.5）**：opt/NEB 续算脚本都在创建目录**之前**用 `bjobs -l`（含 `bjobs -o 'jobid exec_cwd'` 按源目录/映像子目录二次匹配）判定是否有 RUN/SSUSP/PSUSP/USUSP 作业，命中则只回传状态、返回 `action="running"`，**不建目录、不移动文件**。opt 自 v0.4.5 起如此，NEB 在 v0.5.5 补齐（此前 NEB 续算对运行中作业没有拦截）。
    - **WAVECAR 是移动语义**：续算成功后源目录不再保留 WAVECAR（opt 与 NEB 一致，目标已存在则不覆盖）。NEB 连端点 00/NN 的 WAVECAR 也一并移动，端点 POSCAR/OUTCAR 是复制。
-4. **提交/停止**：提交 = 定位最新 con → 检查 vasp.lsf → `bsub < vasp.lsf`，成功后**立即写库 job_id**；停止 = bkill，输出 `Job has already finished` 也按成功处理（状态→pending，job_id 保留为历史）。
+4. **提交/停止**：提交 = **单次 exec** 完成「定位最新 con → 输入文件非空检查 → `bsub < vasp.lsf`」（v0.8.7 起，原来 3 次往返压到 1 次，检查失败返回 400 并列出缺失文件），成功后**立即写库 job_id**；停止 = bkill，输出 `Job has already finished` 也按成功处理（状态→pending，job_id 保留为历史）。**检查口径按任务类型分**：opt/frac/ele = 工作目录下 `POSCAR/INCAR/KPOINTS/POTCAR/vasp.lsf` 都非空；**NEB = 工作目录下 `INCAR/KPOINTS/POTCAR/vasp.lsf`，POSCAR 在映像子目录**（VTST 约定，根目录没有 POSCAR）——按 INCAR 的 `IMAGES` 推算应有 `00..(IMAGES+1)` 并逐个检查非空 `POSCAR`，INCAR 没写 `IMAGES` 时退化为"至少 3 个数字映像目录且每个都有非空 POSCAR"。
 5. **文件构建**：`create_frac_files`（opt 最新输出 → frac，默认 ISYM=0/SIGMA=0.05/NSW=1/IBRION=5/**NFREE=2**/POTIM=0.015）；`create_neb_files`（**以 IS INCAR 为基底只改 NEB 参数**：IBRION=3/POTIM=0/IOPT=3/LCLIMB/IMAGES/ICHAIN/SPRING=-5/MAXMOVE=0.2）；`build_ele_inputs`（NSW=-1/IBRION=-1 + 各类型参数，冲突抛错）。
-   - **输入文件状态：快照 / 草稿 / 变更台账（v0.8.2，`backend/input_state.py`）**：三层职责——① **远端 conN/** 是这次计算真正用的输入（唯一真相）；② **本地快照** `<任务目录>/inputs/`（INCAR / KPOINTS / POSCAR / CONTCAR + 同目录 *.cif），元数据（哈希 / 解析出的参数 / k 网格 / 结构摘要 / 来源目录 / 同步时间）写在 `task["input_state"]`；③ **草稿 drafts** + **变更台账 changes**（`file/key/from/to/at/applied_at/applied_in`）。
+   - **输入文件状态：本地镜像 / 草稿 / 变更台账（v0.8.2 起，v0.8.7 扁平化）**：三层职责——① **远端 conN/** 是这次计算真正用的输入（唯一真相）；② **本地镜像** `<任务目录>/files/`（INCAR / KPOINTS / POSCAR / CONTCAR + 同目录 *.cif；v0.8.7 前是独立的 `inputs/` 快照目录），每次同步用“远端最新目录”**覆盖**写入，**有未生效草稿的文件跳过**（元数据仍按远端记录并标 `protected`），元数据（哈希 / 解析出的参数 / k 网格 / 结构摘要 / 来源目录 / 同步时间）写在 `task["input_state"]`；③ **草稿 drafts** + **变更台账 changes**（`file/key/from/to/at/applied_at/applied_in`）。
      - **同步时机**：提交作业成功后后台自动同步一次（`_schedule_input_sync`，延迟 2s，不阻塞接口）；用户可随时点「同步最新参数」手动同步。成本固定为 **1 次 exec + 4 次 SFTP 小文件**（定位"最新且真的有 INCAR 的目录"→ 下载四个文件），不做后台轮询。
-     - **改参数不碰远端**：编辑器默认**只读**，点「修改参数」才解锁，改完点「确认修改」才写入草稿 —— **只在下次续算时应用**（运行中的作业不会重读 INCAR，直接改最新目录会抹掉"这次计算用了什么参数"的记录）。
+     - **改参数不碰远端**：编辑器默认**只读**，点「修改参数」才解锁，改完点「确认修改」才写入草稿 —— 默认**只在下次续算时应用**（运行中的作业不会重读 INCAR，直接改最新目录会抹掉"这次计算用了什么参数"的记录）；**v0.8.7 起也可以点「同步到远端」立即应用**：把当前参数（含未生效修改）写进远端最新目录，并把该文件的草稿台账标记 `applied_in="remote"`（同时刷新本地镜像与 `input_state.files[...]` 元数据，"本次计算值"立刻变新值），点过一次后不会再重复应用也不算"待生效"。
      - **续算应用**（`continuation._apply_drafts_to_new_dir`）：cp 文件后按 `modify_incar(ISTART=1/ICHARG=0 + 草稿参数)` 写 conN/INCAR（续算必需项优先，用户改了这两项会告警），KPOINTS 草稿只改网格行（网格行**行首不留空格**），**POSCAR 永不覆盖**（续算 POSCAR 来自 CONTCAR）；台账条目标记 `applied_in=conN` 并清空草稿。
        - **只在实际改动时写文件**：INCAR 只在"有草稿应用，或 ISTART/ICHARG 与目标值不同"时写回，没变化就保持 `cp` 过来的原文件；KPOINTS 只有草稿才写。返回值里的 `incar_written` 标明是否写过。
        - **不往 INCAR 里写注释**（v0.8.3 起）：早期版本会在 conN/INCAR 顶部写 `# [vasp-manager] … 续算应用参数变更：…`，中文注释被按 GBK 解码时显示成乱码（用户要求去掉），改动记录只留在本地变更台账，界面横幅显示"上次续算已应用 N 项"。
@@ -216,8 +227,23 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.8.6）
+## 7. 近期重要改动记录（v0.4.1 → v0.8.7）
 
+- v0.8.7（2026-09-19，待提交）：**集群节点状态看板重构 + 本地镜像扁平化（去掉本地 conN / inputs）**。
+  ① **看板重构**：作业管理「提交脚本」页原先的"队列拥堵卡片网格 + bhost 明细表"换成自研组件 `src/components/jobs/ClusterNodeBoard.tsx`——左侧**节点矩阵**（一个队列一行、格 = 节点，`radial-gradient` 七段透明度衰减 + 双层阴影，颜色按 `free/total` 从 4° 暖红连续映射到 142° 翠绿）、右侧**队列信息行**（状态圆点 / 队列名 / 节点数 chip / 三档渐变进度条 + 25/50/75 刻度 / 百分比 / 状态胶囊，阈值 80% / 45%），左右行高 14px、行距 8px 严格对齐；滚轮（纵横都映射横向、按 deltaMode 归一化、限幅 60px）与拖动（系数 0.5）走 target/curr 分离 + rAF 插值（`translate3d`，不用 CSS transition），底部 235×2px 滑动指示条同帧同步，Tooltip 事件委托只显示 节点名/队列名/已用·总核，视口 235px（14 格）+ `mask-image` 渐隐；样式为 `global.css` 的 `.cnb-*` 段，旧的 `.queue-card*` / `.node-core-cell*` 与 bhost 明细表一并删除。
+  ② **本地镜像扁平化（用户决策，方案 B）**：本地每个任务**只有一份** `<任务目录>/files/`，取消 `inputs/` 快照目录与本地 `conN/` 骨架目录。`task_paths.strip_continuation_suffix()` 在本地路径解析时剥掉 `dir_path` 的 `/conN` 尾巴（**`dir_path` 字段本身保持 `.../conN`** —— 它是续算子任务的逻辑主键：重复登记 409 检查、远端目录推导都靠它）；同步 `build_snapshot` 用"远端最新计算目录"（`_newest_dir_with_file`，conN 优先）的四件套 INCAR/KPOINTS/POSCAR/CONTCAR **覆盖** `files/` 并生成 CIF，**有未生效草稿的文件跳过覆盖**（元数据仍按远端记录 + `protected: true`，界面"本次计算值"不受影响）；新增**归档静默拉取**：`POST /tasks/{id}/archive` 成功后后台线程 `download_archive_outputs()` 把最新含 OUTCAR 目录的 `OUTCAR`/`OSZICAR` 拉到 `files/`（失败只记审计日志，不影响归档）；新增迁移脚本 `scripts/flatten_local_mirror.py`（dry-run 默认 / `--apply`）：把 14 个 `inputs/` 合并进 `files/`（被覆盖与被跳过的文件先备份到 `data/backups/local_mirror_<时间戳>/`）并删除 131 个**确认不含任何文件**的空 conN 骨架目录。已实测（mock 远端 + 隔离数据目录）：同步取 con2 落到 `files/`、无 `inputs/`/`conN`、草稿保护的 INCAR 保留本地版本而元数据仍为远端 `-0.03`、归档拉到 OUTCAR+OSZICAR、续算子任务 `task_dir()` 解析到父任务目录。
+  ③ **集群采集合并（总览 ↔ 作业管理）**：新增 `backend/cluster_probe.py` 统一采集与缓存——原来总览（`dashboard.cluster_snapshot`，5 分钟缓存）和作业管理节点看板（`cluster_status.build_snapshot`，60 秒缓存）各自发 SSH、各查一次 bhosts/bqueues，现在**共用一次 exec 采集 + 一份 TTL 缓存**（`settings.cluster_cache_seconds`，兼容 `dashboard_cache_seconds`，默认 300s）：打开任一页面只要缓存没过期就**不发 SSH**，任一页手动「刷新」强制重采、两边同时更新，全局巡检后照旧失效并预热；采集失败但有旧数据时返回旧数据 + `stale`（前端标「缓存数据」）而不是伪造数据。`cluster_status` 不再持有自己的缓存与 SSH 调用（`CACHE_TTL_SECONDS`/`_snapshot_cache` 已删），`dashboard.DEFAULT_COMMANDS` 变成 `cluster_probe` 的别名；实机验证：①作业管理无缓存时 1 次采集（80 节点/5 队列）→ ②再打开命中缓存 → ③总览复用同一份（`queriedAt` 相同、`cached=true`、节点 201/队列 6/作业 3）→ ④总览强制刷新后作业管理读到的是刷新后的数据。
+  ④ **附带修复**：`ssh.mock_enabled()/mock_local_path()` 公开化，mock 模式的"最新目录定位"改为直接扫 `VASP_MOCK_REMOTE_ROOT`（原先 mock 下 exec 不支持该脚本，同步路径无法离线联调）。**注意**：本地 `files/` 现在会被同步覆盖，需要长期保留的手改文件请先「生成到本地」另存或依赖备份目录。
+  ⑤ **vasp.lsf 提交脚本自动生成**（用户提供的验证过模板，拆成"固定段 + 可配置段"）：新增 `src/utils/vaspLsf.ts` 按 **8 段**拼装——S1 HEADER（`#!/bin/bash`）/ S2 BSUB 指令 / S3 配置变量 / S4 环境准备 / S5 日志起始 / **S6 软结束模块（条件）** / S7 主运行 / S8 收尾；表单三组**紧凑分组框**（①基本信息 ②资源 ③软结束，组内自适应字段网格、标签在上控件在下、底部一行放远程目录与两个按钮）驱动：① 任务名称（`-J`，默认任务 model_name）、队列（`-q`，下拉取集群队列并带 walltime/核每节点）、截止时间（`-W`，**时分双数字框**：小时 0-999 默认 24 步长 1，分钟 0-59 默认 00 步长 5，**超界归一到 59、失焦两位补零**，`0:00` 阻止写入，输出 `HH:MM` 两位小时如 `04:30`）；② 总核数（`-n`，**默认 24**，推荐值仍按健康节点最大空闲核数提示）、每节点核数（`-R "span[ptile=X]"`，默认取队列 `coresPerNode`）——**不做整除校验**，只提示 `将分配 ceil(核数/每节点) 个节点`；③ 软结束开关（默认开：S2 在 `-W` 与 `-n` 之间插 `-wt N`/`-wa URG`（**N 可调**：1–999 分钟、步长 5、默认 50，关闭软结束时禁用）、S6 生成 `lsf_watcher` + `WATCHER_PID`、S8 追加 `kill $WATCHER_PID`；关闭则三处全部消失）。后端新增 `POST /api/jobs/tasks/{id}/upload-submit-script`：写入**远端最新目录**（最大编号 conN，逻辑同 `upload-incar`/`upload-kpoints`）的 `vasp.lsf`，同名先备份 `old_vasp.lsf`，同时同步一份到本地镜像 `files/vasp.lsf`（`vasp.lsf` 已加入本地文本白名单、不参与四件套同步覆盖），审计记 `upload-submit-script`；提交仍走既有的 `bsub < vasp.lsf`（成功后回填 job_id + 置 `queued`）。模板约束已用 26 项断言核对：BSUB 全部顶格、指令行不含 `$变量`、软结束开关三处联动、`NPROCS=${LSB_DJOB_NUMPROC:-N}` 兜底、末尾 `exit $RC`；**注意原始提示词代码块首行带一个 BOM（`\ufeff`），会让 shebang 失效，已刻意不写入**。
+  ⑥ **POSCAR 上传 + POTCAR 生成 + 提交前非空检查**：① POSCAR 页新增「上传 POSCAR 到远端」（`POST /api/jobs/tasks/{id}/upload-poscar`，备份 `old_POSCAR`、同步本地镜像 `files/POSCAR`）；② 新增「生成 POTCAR（pos2pot）」按钮（`POST /api/jobs/tasks/{id}/generate-potcar`）——远端脚本实为 `/data/gpfs03/mdye/projects/potcar/pos2pot.sh`（**递归**遍历当前目录下含 POSCAR 的子目录，对每个目录调 `potcar.sh $(sed -n 6p POSCAR)`；`pos2pot` 只是 `~/.bashrc` 的 alias，非交互 exec 看不到），因此接口按 `pos2pot` → `pos2pot.sh` → 绝对路径 依次解析（可用 `servers.json: pos2pot_cmd` 覆盖），**单次 exec** 返回命令输出 + POTCAR 大小/行数/元素块（元素取每块 `TITEL` 行的第 4 列；实测 Al2O3 → 296771 字节 / 3335 行 / 2 元素块，脚本自身会把旧 POTCAR 备份成 `old-POTCAR`）；③ **提交前非空检查（按任务类型分）**：把"定位最新 conN / 文件存在性检查 / bsub"合并成**同一次 exec**（原来 3 次往返 → 1 次，通讯负担反而下降），缺文件时返回 400 并列出具体文件名且**不提交**；opt/frac/ele 检查 `POSCAR/INCAR/KPOINTS/POTCAR/vasp.lsf`，**NEB 检查 `INCAR/KPOINTS/POTCAR/vasp.lsf` + 各映像目录 `00..(IMAGES+1)/POSCAR`**（VTST 根目录没有 POSCAR，原口径会把 NEB 全部误拦）；④ `upload-poscar` / `upload-submit-script` 的"定位目录 + 备份 old_*"也合并为一次 exec（`_prepare_remote_write`，返回工作目录与是否真有旧文件）。
+  ⑦ **输入文件「上传到远端」→「同步到远端」**（INCAR / KPOINTS / POSCAR 三处按钮统一改名）：语义从"只推文件"变成"**推文件 + 立即应用修改**"——后端 `upload-incar` / `upload-kpoints` / `upload-poscar` 写远端后调用 `_push_input_file()`：① 更新本地镜像 `<任务>/files/<name>`；② 用刚写入的文本重算 `input_state.files[<name>]` 元数据（哈希/参数/k 网格/结构），界面上"本次计算值"立刻变新值；③ 用新增的 `input_state.mark_file_applied()` 把该文件的未生效台账条目标记 `applied_in="remote"` 并清掉该文件草稿；④ 返回 `{applied:[...], state}`，前端据此原地刷新（不再多发请求）。**续算逻辑完全不变**：草稿已被同步结清后，续算时 `applied_items()` 为空 → 不会重复写。
+  ⑧ **KPOINTS 页三种网格讲清楚**（用户反馈"推荐网格"与"本次计算的 K 点网格"打架）：原来第一张卡片的提示写「实际生效」，取值却是 `待生效草稿 ?? 本次计算`，有待生效修改时显示的其实是"下次才生效"的值；第二张卡片叫「K 点网格生成」，「推荐网格」看起来也像生效值。现在统一成三种状态、各自命名与配色：**本次计算**（蓝，远端 KPOINTS 当前值）/ **待生效**（橙，`下次续算或点「同步到远端」后生效`）/ **推荐**（灰，仅建议）——第一张卡片标题补「（远端 KPOINTS 当前值）」并在 extra 里同时挂「本次计算 X × Y × Z」「待生效 …」两个标签，提示行按"编辑中 / 待生效 / 与本次计算一致"三分支显示；第二张卡片改名「推荐网格与生成（推荐仅作建议，不会自动应用）」，底部加一行对比「本次计算 A → 推荐 B（不同）」+ **「采用为待生效」按钮**（把推荐值写进草稿，不直接生效）；未同步时提示"推荐值只能先生成 KPOINTS 文件再同步到远端"。
+  ⑨ **POSCAR 固定原子脚本 `scripts/selective_dynamics.py`**（用户提供模板验证过：`test/1` 已固定、`test/2` 普通且 CRLF）：纯标准库、零依赖，读取 `./POSCAR` → 在元素数量行后插入 `Selective Dynamics` → 按第 6/7 行生成 `元素+序号` 标签（默认元素内序号 `Fe1…Fe24 S1…S32`，`--numbering global` 则全局 `Fe1…S56`）→ 每行写 `原坐标 + T/F + 标签`；末尾标签可 `--no-labels` 关闭（VASP/ASE/vasp2cif 都会忽略额外列，已实测本仓 `vasp2cif` 能正常转 CIF）。**固定规则可配**：`manual`（序号或 `O33` 标签）/ `indices` / `elements` / `z_range`（分数坐标 z 区间，Cartesian 会先做晶格求逆换算）/ `from_json`（直接吃 POSCAR 页选中的 `{element,poscarIndex}` 列表）；原文件备份为 `old_POSCAR`（`--backup-mode keep_first` 可只留最初一份）。**重复运行安全**：已含 `Selective Dynamics` 的文件会重新解析并按新配置覆盖，不会叠加。 **坐标块之后的附加内容原样保留**（VASP 的 CONTCAR 常在坐标块后跟"空行 + 速度块"，MD 续跑要用）：解析时只取前 N 个非空行作为坐标行，其余（含空行分隔）原封不动写回，最终行数只 +1（Selective Dynamics）。已用 `test/3/CONTCAR`（32 原子 + 33 行速度块）验证：输出 74 行、非零速度逐字节保留、重跑幂等（SD 行仍只有 1 行）、本仓 `vasp2cif` 仍正常转出 32 原子 CIF。 **重写策略：原地手术、最小 diff**（v0.8.7 收尾）：坐标行不再重排，而是切出"前缀（缩进 + 3 个坐标 token 及其间原始空白）"与"尾部"，已有 T/F 的行只替换标志字母（`F  F  F` 之间的空格、标签前的对齐空格原样保留），没有标志的行按**原文件坐标列宽**追加；同时**逐行保留原始行尾**（CRLF 文件写回仍是 CRLF，末行没有换行就不补），SD 行原有则沿用原文大小写。实测：`test/1`（已固定 56 原子）用原文那批 F 原子重跑 → `cmp` **逐字节完全一致**；`test/2`（CRLF、无标志）diff 只有"插入 1 行 SD + 32 行加标志"，CRLF 保留；`test/3`（CONTCAR）速度块 33 行与原文件逐字节一致，总行数只 +1。
+  ⑩ **POSCAR 页「固定原子」接入脚本**（原来那个灰掉的"开发中"按钮）：新增 `SelectiveDynamicsModal`（规则：选中原子 / 整个元素 / 按高度区间；编号：元素内 / 全局；坐标行标签开关；「生成后同时同步到远端」复选框）→ `POST /api/jobs/tasks/{id}/selective-dynamics` → 后端把页面上的 POSCAR 文本写进临时目录、调用 `scripts/selective_dynamics.py`（`sys.executable`，60s 超时）→ 结果写回本地 `files/POSCAR`（旧文件备份 `files/old_POSCAR`）并刷新 `input_state.files.POSCAR` 元数据；勾选同步时再走 `_prepare_remote_write`（远端备份 `old_POSCAR`）+ `_push_input_file`。返回 `{text, summary, state, ...}`，前端刷新编辑器文本、输入状态与文件清单并清空选区；未选中原子时弹窗自动切到「整个元素」、manual 选项置灰。实测（mock 远端）：manual 固定 Al1+O2 → 本地/镜像/元数据都对；elements+全局编号+同步 → 远端 O3/O4/O5 且 `old_POSCAR` 备份生成；z_range [0,0.05] 固定两个 z=0.02 的原子；已固定的文本再跑一次 SD 行仍为 1 行；未选原子返回 400。
+  ⑪ **修「Shift 框选原子时选中了浏览器文本」**（用户反馈）：3D 结构视图的框选覆盖层原来只处理坐标，没拦浏览器默认行为 —— Shift+点击会扩展页面文本选区。现在 `onMouseDown` 里 `preventDefault()` + 清空已有选区，并给 `document.body` 加 `is-atom-selecting` 类（整页 `user-select: none` + 十字光标），框选层/画布本身也加了 `user-select: none`；结束路径统一走 `finishBand()` → `endAtomSelectionDrag()`，另加 `window mouseup` 兜底（鼠标在层外/窗口外松开也会恢复）。jsdom 实测：未按 Shift 时**不**阻止默认、不加标记；Shift+mousedown 时 `defaultPrevented=true` 且标记生效；窗口 mouseup 后标记清除、矩形结束；松开 Shift 覆盖层失活。
+  ⑫ **双击空白取消选中**（用户要求）：原来 3D 视图里**单击**空白区就会清空选中，而旋转时"按下-移动-松开"很容易被判成 click，框选好的原子常被误清。现在改成：空白区单击**不动**选中，**双击空白区**才取消选中（双击打在原子上则保持选中）。判定不依赖 3Dmol 的 click 回调 —— 用已有的原子屏幕投影（`atomToScreen`，±10px）自己判断"是否点在原子上"，拿不到投影时才退回"最近一次点击是否命中原子"；监听挂在 stage 容器上（画布与 Shift 框选层都能覆盖），并在控件行加了「双击空白 = 取消选中」提示。jsdom 实测：单击空白不触发清空、双击空白触发一次清空、清空后"已选 N 个原子"标签消失。
+  ⑬ **推荐网格改成一行弱化提示**（用户反馈"还是容易混淆、不要独立窗口、小一点、降低视觉重心、不采用就置灰"）：删掉原来那个独立卡片式推荐块（`.job-kpoints-result` 大框 + a/b/c 三格 + 箭头 + 总点数 Tag，相关 CSS 一并删除），改为一行内联 `推荐 2 × 2 × 1 · 总 4 个 k 点 · Gamma · 10.00/12.00/15.00 Å · 本次计算为 3 × 3 × 2`：① 未采用（推荐 ≠ 本次计算且未记为待生效）→ 值**再压一层灰度**（`is-idle`）+ 一个 `type="link"` 的「采用为待生效」小链接；② 已采用（待生效 = 推荐）或与本次计算一致 → 值转绿（`is-adopted`）并显示「已采用（待生效）」；③ 尚未同步参数 → 提示"尚未同步本次计算参数"。主操作「生成 KPOINTS 文件」保持 primary，推荐行放在它上方作为说明行。jsdom 四种状态实测：旧大框 0 个残留、`is-idle`/`is-adopted`/按钮/已采用标记均按预期出现。
+  ⑭ **推荐网格的判定标准明确为"大于密度系数的最小值"**（用户口径）：`recommendKgrid` 原来是 `round(密度系数 / L)`，会把 k×a **正好等于**系数（如 L=10、系数 20 → k=2 → 20）或偏小的值（L=15 → k=1 → 15）推出来，与巡检"k×a > 20 合格"的判定自相矛盾。现改为 `k = floor(密度系数 / L) + 1`（**严格大于且最小**，最小 1），保证每个轴都落在合格区间；实测：10/12/15 Å@20 → `3×2×2`（30/24/30）、9.48/9.48/27.35 Å@20 → `3×3×1`（28.4/28.4/27.3）、3/3/3 Å@20 → `7×7×7`（21）、30/25/40 Å@20 → `1×1×1`；面板提示同步改为"推荐值取满足 k × 晶格常数 > 系数 的最小整数"（`Jobs.tsx` 里"生成输入文件"用的也是同一个函数，口径一致）。
 - v0.8.6（commit `052ff27`，已推送 origin/main）：**同名自由能组 / NEB 组路径列误合并修复 + `/api/jobs/nodes` 回归修复 + HPC 连接快捷脚本**。① **修「自由能路径和 NEB 路径重名时会自动合并」**（用户登记在 TODO.md「发现问题」）：巡检中心把同组的行**跨行合并「路径」列**，排序用的单元键是 `项目|task_category|组名`，但合并用的键只有 `项目|组名` → Ag_20260830 的 PATH1/2/3 双身份组（自由能 `free_energy_Ag111` 等 7 行 + NEB `neb_Ag111` 等 3 行）在排序里类别相邻（自由能 1 → NEB 2）且键相同，被并成一格、NEB 组失去自己的路径格。修法：`src/pages/Inspection.tsx` 的 `rowSpanByProject` 合并键补 `task_category` 并留注释防回退；**纯前端改动**，`npm run build` 后刷新页面即生效（3001 单端口托管 `dist/`，无需重启后端）。后端侧已核实无同类隐患：作业管理任务树、报告（`_free_energy_paths` / `_neb_details`）、组数据接口、图表文件名全部按 `group_id` / `task_id` 聚合，仅"显示名"取 `group.name`。② **修 `/api/jobs/nodes` 的 500 回归**（v0.8.2 引入）：`backend/routers/jobs.py` 先 `from cluster_status import build_snapshot`（签名 `(server_name, use_cache=True)`），又被后面的 `from input_state import build_snapshot`（签名 `(server, task, *, kind="manual")`）覆盖，节点接口传 `use_cache=` 必然 `TypeError` → 500；改为 `from cluster_status import build_snapshot as build_node_snapshot`（节点接口用别名，输入快照仍用原名），实测 `GET /api/jobs/nodes` 返回 200 + 真实节点数据（`source: real`，15 个节点）。③ **新增 `scripts/connect-hpc.sh` + `scripts/connect-hpc.desktop`**：桌面/终端一键登录 HPC（默认 `mdye@hpc.xmu.edu.cn`，`HPC_HOST` / `HPC_USER` 可覆盖），登录前校验私钥存在与 `600` 权限、校验目标 IP 路由是否走 `tun0`（SecureLink 校园 VPN），支持 `--cmd '命令'` 单命令执行与 `--pause`（桌面启动器用，退出后窗口不闪退）。④ 文档：TODO.md「发现问题」清空并登记本次修复，process.md §5 排序条目补「跨行合并键同样必须带 `task_category`」。
 - v0.8.5（commit `589338e`，已推送 origin/main）：**迁移落到 Linux + 输入参数页两张新卡片 + 两处线上 bug 修复 + 文档合并**。① **部署**：代码与数据统一在 `/home/zouyuxi/projects/vasp-manager`（git clone + `.venv` + `npm ci && npm run build`，`data/` 在仓库内故 `path_mapping.local_root` 保持相对 `data/projects`），用 systemd `vasp-manager.service`（`User=zouyuxi`、开机自启、`Restart=always`）常驻；Python 实测 **3.14.4** 可用（fastapi 0.141.1 / uvicorn[standard] 0.53.0 / paramiko 5.0.0；uvloop 0.22.1、httptools 0.8.0 均有 cp314 轮子），Node 22.22.1；`package.json` 的 `server` 脚本由 `python` 改为 `.venv/bin/python`，避免 Linux 下 `python: command not found`。② **输入参数页新增「DFT+U」卡片**：主开关关闭时整卡置灰且**不写入任何 LDAU\* 参数**；打开时写 `LDAU = .TRUE.`，并按元素表生成 `LDAUL / LDAUU / LDAUJ`（一一对应，行增删同步更新三个数组；元素名取 POSCAR 元素行，默认首元素加 U：`2 / 4.0 / 0.0`，其余 `-1 / 0.0 / 0.0`），`LDAUTYPE`（默认 1）、`LMAXMIX`（默认 4）按选择写入。③ **新增「偶极矩修正」卡片**：关闭时不写 `LDIPOL / IDIPOL / DIPOL`；打开时写 `LDIPOL = .TRUE.`、`IDIPOL` 按选择（默认 3）、`DIPOL` **三个分量都非空才写** `x y z`。开关语义用 `applyIncarGates()` 统一，同时作用于**预览文本 / 生成到本地 / 上传远端 / 续算草稿**四条链路（后端 `modify_incar` 把空值视为"不写入"，故关闭时必须清空该组参数）。④ **输入参数页布局**：卡片容器由"按行对齐的 grid"改为**两列独立流式**（`.job-incar-grid` + `.job-incar-col`，窄屏单列），卡片各自自然高度，离子弛豫 / 自旋与磁性等短卡片不再被同行高卡片撑出大片空白。⑤ **修「一键清除」红点 bug**：原实现 `setReadChanges(new Set())` + `localStorage.removeItem()` 等于清空"已读"记录，而红点条件是 `status_changed && !已读` → 点一次反而全部重新点亮；改为把当前所有 `status_changed` 任务标记为已读并写回 localStorage（与"点开详情"同一机制）。⑥ **修「其他参数」不可编辑**：原来直接渲染 `extraIncarParams()`（只保留非空值）→ 新增的空值行被过滤掉、看不见也打不进字，且行以参数名为 React key、改名会重建输入框丢焦点；改为"本地行 + 稳定 id"模型（`ExtraRow {id,key,value}`，编辑即写回参数、外部变化才重建），并补上编辑态行内「添加参数」入口与空态文案。⑦ **迁移踩坑与修复**：Windows 大小写不敏感导致 `data/projects/Ag_20260830/` 下同时存在 `NEB/`（老数据，含完整映像 00–04）与 `neb/`（Linux 新写入的空壳），页面 NEB 映像只剩中间 3 个 → 已把新文件并回老树并用软链接 `neb → NEB` 对齐；全盘审计（本地路径 272 条 / 远端路径 324 条 / 模块导入 / 产物引用）确认**无其它大小写分叉**。⑧ **文档合并**：删除一次性的 `MIGRATION.md`，可复用的部署、运维、验收与故障排查内容并入本文档 §11 与 `README.md` / `DEPENDENCIES.md`。
 - v0.8.4（commit `aaae4b3`，已推送 origin/main）：**跨机器迁移交接（Windows → Linux）**。① 新增 **`MIGRATION.md`** 交接文档：三块构成（代码 / `data/` / 远端 HPC）→ 打包清单（逐项 + `data/` 各子目录作用与大小）→ 旧机停机与打包 → 目标机依赖与数据放置 → **迁移后必改 11 项**（SSH 私钥、`path_mapping.local_root`、`settings.json`、时区、编码、启动命令 `python`→venv `python3`、`npm run build`、遗留路径归一化、端口、xdg-open、"打开文件夹"、进程常驻）→ **首次自检验收表** → systemd 单元与 nginx 反代示例 → 注意事项（**绝不能两台机器同时跑同一 `data/`**）→ 回滚 → 已知 Windows 痕迹 → 故障排查表 → 附录（`data/` 速查 + 迁移前实测快照）。② 新增 **`scripts/migrate_paths.py`**（dry-run 默认 + `--apply`）：把 `data/aux_molecules.json` 的 `dir/opt_dir/frac_dir` 与 `data/reports/index.json` 的 `directory` 归一化成相对路径，改写前备份到 `data/backups/migration_<时间>/`，并只读扫描 `projects.json` / `checks/runs.json` 里其它绝对路径。③ **修复两处会阻碍迁移的绝对路径**：`aux_molecules.json` 改存相对数据根路径（`aux_molecules/<标签>[/opt|/frac]`），读取时由 `_resolve_entry()` 还原成**当前机器**的绝对路径（老数据里的 Windows 盘符/反斜杠自动丢弃、按标签重建，已实测 API 返回本机路径）；`reports/index.json` 的 `directory` 写入即相对（`<项目>/<报告ID>`），读取时 `_read_index()` 就地归一化。④ 清理测试残留目录 `data/projects/P`（0 文件、库中无引用）。⑤ 迁移前置审查结论：**代码无平台专有依赖**（无 pywin32/winreg/ctypes/signal 专用逻辑，`_open_in_explorer` 已含 Linux `xdg-open` 分支）、**本地模块导入无大小写不一致**（45 个模块全量扫描通过，Linux 大小写敏感）、**仓库与 `data/` 无任何非 ASCII 文件名**、`projects.json` **0 处绝对路径**、`public/3dmol/3Dmol-min.js` 已入库 → 迁移只需"clone 代码 + 拷 `data/` + 配 SSH 私钥 + 改 11 项配置"。⑥ `process.md` §2 与 `README.md` 顶部加了指向 `MIGRATION.md` 的入口。

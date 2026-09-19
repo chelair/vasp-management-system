@@ -42,7 +42,7 @@ interface Props {
 
 /** 参与参数同步的文件（POTCAR / submit.sh 不在同步范围，只显示本地就绪状态） */
 const SYNCED_FILES = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR'];
-const FILE_ORDER = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR', 'POTCAR', 'submit.sh'];
+const FILE_ORDER = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR', 'POTCAR', 'vasp.lsf'];
 
 export default function TaskOverview({
   task,
@@ -299,7 +299,7 @@ export default function TaskOverview({
                 <span className="job-file__state">
                   {stateLabel}
                   {!synced && (
-                    <Tooltip title="不参与参数同步（POTCAR 由伪势模块生成，submit.sh 由提交脚本页维护）">
+                    <Tooltip title="不参与参数同步（POTCAR 由伪势模块生成，vasp.lsf 由提交脚本页生成并写入远端）">
                       <span className="job-file__hint"> · 不参与同步</span>
                     </Tooltip>
                   )}
@@ -309,10 +309,11 @@ export default function TaskOverview({
           })}
         </div>
         <div className="preview-note" style={{ marginTop: 10 }}>
-          <b style={{ color: 'var(--color-success)' }}>最新</b> = 与本次计算（提交目录）一致；
-          <b style={{ color: '#b8761f' }}>过时</b> = 只在本地、还没同步过；
-          <b style={{ color: '#b8761f' }}>有修改待提交</b> = 参数已改，等下次续算写入。
-          输入文件在提交时确定，点「同步最新参数」可刷新。
+          <b style={{ color: 'var(--color-success)' }}>最新</b> = 已同步远端最新计算目录；
+          <b style={{ color: '#b8761f' }}>有修改待提交</b> = 参数已改，等下次续算写入；
+          <b style={{ color: 'var(--color-text-muted)' }}>未同步</b> = 本地还没有这份文件。
+          点「同步最新参数」会用远端最新目录覆盖本地文件（有未生效改动的文件跳过）。
+          归档时后台会静默拉取该次计算的 OUTCAR / OSZICAR。
         </div>
       </Card>
 

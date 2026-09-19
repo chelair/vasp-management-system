@@ -97,14 +97,26 @@ export function parsePoscar(text: string): PoscarInfo | null {
 }
 
 /**
- * 推荐 k 点网格：每个方向 ≈ 密度系数 / 晶格常数（最小为 1）。
- * 密度系数 20 表示约每埃 20 个 k 点，与多数脚本习惯一致。
+ * 推荐 k 点网格：每个方向取**满足 `k × 晶格常数 > 密度系数` 的最小整数**。
+ *
+ * 密度系数 20 表示"每埃至少 20 个 k 点"的密度要求；取严格大于（而不是四舍五入）
+ * 是为了让每个轴的 k×a 都落在巡检的合格区间（> 20）里。
  */
 export function recommendKgrid(
   lengths: { a: number; b: number; c: number },
   density: number,
 ): [number, number, number] {
-  const g = (L: number) => Math.max(1, Math.round(density / (L || 1)));
+  /**
+   * 推荐标准：满足 `k × 晶格常数 > 密度系数` 的**最小整数** k。
+   *
+   * 即 `k = floor(密度系数 / L) + 1`（严格大于，不是四舍五入）——
+   * 这样每个轴的 k×a 都会落在巡检的 `> 20` 合格区间里。
+   * 例：L=10 Å、系数 20 → k=3（k×a=30）；L=15 Å → k=2（30）；L=30 Å → k=1（30）。
+   */
+  const g = (L: number) => {
+    const length = Number.isFinite(L) && L > 0 ? L : 1;
+    return Math.max(1, Math.floor(density / length) + 1);
+  };
   return [g(lengths.a), g(lengths.b), g(lengths.c)];
 }
 

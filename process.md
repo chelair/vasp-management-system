@@ -243,7 +243,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.8）
 
-- v0.9.8（2026-09-21，待提交）：**新建规则改成交互式「选作用对象」+ 下架 neb.create 动作**。
+- v0.9.8（commit `d35ace8`，已推送 origin/main）：**新建规则改成交互式「选作用对象」+ 下架 neb.create 动作**。
   ① **作用对象显式选择**（用户："可选针对项目/opt 任务/自由能组，要做成更易交互的，而不是藏在条件里"）：弹窗新增「作用对象」下拉——项目 / opt 任务（结构优化）/ 自由能组，以及「指定项目（可选）」；映射规则见 `src/utils/ruleTarget.ts`（纯函数、可单测）：项目 → 条件为空；opt 任务 → `condition.task_type="opt"`；自由能组 → `condition.group_type="free_energy"`；指定项目时**条件规则**写 `condition.project`、**定时规则**写 `trigger.scope="project:<名>"`。原来的键值条件编辑器降级为折叠的「附加条件（可选）」，编辑既有规则时按条件**反推**作用对象并回填。
   ② **下架 `neb.create`**（用户："neb计算文件创建那个先去掉吧"）：从动作目录（`ACTIONS`）里移除，`GET /api/actions` 只剩 `task.continuation / task.submit / frac.create`，新建/编辑规则时选不到；后端对 `action="neb.create"` 直接 400（未知动作）。实现类 `_NebCreate` 保留在 `automation/actions.py`（注释注明暂未启用），需要时加回注册表即可。
   ③ 默认规则同步去掉 NEB 那条（`neb-both-ends-converged` 从 `DEFAULT_RULES` 移除），并清理生产数据里已存在的那份规则文件（动作下架后它已无法执行）。

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：**v0.8.8（尚未提交）**（续算后输入状态即时刷新 + 任务树组状态色 + 作业管理显示巡检告警）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.8.8（续算后输入状态即时刷新 + 任务树组状态色 + 作业管理显示巡检告警）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -233,7 +233,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.8.8）
 
-- v0.8.8（2026-09-20，待提交）：**三处状态/告警显示修复**（用户反馈）：① **创建续算后 INCAR/KPOINTS 同步状态不刷新**——`handleSameTypeCreated` 只调了 `refreshProjects()`，而续算会把父任务"已应用"的草稿清掉并把台账标成 `applied_in=conN`，界面拿的仍是旧 `input_state`，要刷新页面才更新；现在 `ContinuationModal` 把**发起续算的父任务 id** 一起回传，成功后额外 `GET /jobs/tasks/{id}/input` 重新读取该任务的输入状态并 `applyInputState()`（纯本地读取，不发 SSH）。② **任务树里自由能结构节点只有灰色计数"2"、看不到状态颜色**——新增 `utils/project.pickGroupStatus()`（关注度：异常(红) > 未收敛(黄) > 运行中(蓝) > 排队(青) > 待提交(灰) > 已完成(绿) > 已归档），自由能**结构节点**（opt+frac 两个任务）与**组节点**、NEB **组节点**都改为显示"成员里优先级最高"的 `StatusTag`，结构节点不再显示那个恒为 2 的灰色计数。jsdom 实测：completed+unconverged → 未收敛、archived+pending → 待提交（灰 > 归档）、都 archived → 已归档、zombied+running → 异常。
+- v0.8.8（commit `46276d1`，已推送 origin/main）：**三处状态/告警显示修复**（用户反馈）：① **创建续算后 INCAR/KPOINTS 同步状态不刷新**——`handleSameTypeCreated` 只调了 `refreshProjects()`，而续算会把父任务"已应用"的草稿清掉并把台账标成 `applied_in=conN`，界面拿的仍是旧 `input_state`，要刷新页面才更新；现在 `ContinuationModal` 把**发起续算的父任务 id** 一起回传，成功后额外 `GET /jobs/tasks/{id}/input` 重新读取该任务的输入状态并 `applyInputState()`（纯本地读取，不发 SSH）。② **任务树里自由能结构节点只有灰色计数"2"、看不到状态颜色**——新增 `utils/project.pickGroupStatus()`（关注度：异常(红) > 未收敛(黄) > 运行中(蓝) > 排队(青) > 待提交(灰) > 已完成(绿) > 已归档），自由能**结构节点**（opt+frac 两个任务）与**组节点**、NEB **组节点**都改为显示"成员里优先级最高"的 `StatusTag`，结构节点不再显示那个恒为 2 的灰色计数。jsdom 实测：completed+unconverged → 未收敛、archived+pending → 待提交（灰 > 归档）、都 archived → 已归档、zombied+running → 异常。
   ③ **作业管理显示巡检告警**（用户问"作业管理里为什么不会像巡检中心那样显示『警告 低精度收敛 · 能量…』"）：根因是两边数据源不同 —— 作业管理读 `tasks[].status`（**数据库状态**，由提交/停止/巡检回填），而"低精度收敛 / 计算完成但力未收敛 / k 网格密度系数不足"这类是**巡检判定**的细分结论，只存在 `data/checks` 里（且低精度收敛按设计落库仍记 `completed`，不影响进度口径），所以作业管理里看不到。现在：`checks_store` 新增带 30s 短缓存的 `merged_results()`（原来是每次请求全量读 20+MB 的 checks，顺手提速）+ `task_check_summary()`（复用巡检中心同一套 `to_frontend_rows` 文案）+ `invalidate_cache()`（巡检归档后立即失效）；`GET /api/projects` 的每个任务多带一个 `check: {status, message, checked_at, energy, has_inspection}`；前端在**任务树**给带告警的任务/组加 ⚠/⛔ 图标（**只有悬停到图标本身才弹出完整结论**——行/任务名的 tooltip 保持只显示任务信息，红色=错误、琥珀=警告），在**作业概览**的「最近巡检」行显示 `警告/错误` 标签 + 完整结论（低精度收敛 · 能量 … · k 网格密度系数 13.63 ≤ 20…）+ 时间，与「状态」行的数据库状态并列显示。实测：接口 0.33s 返回、2 个任务带告警、jsdom 里任务树 2 个告警图标、概览行显示"警告 + 低精度收敛…"。
 - v0.8.7（commit `7df6a91`，已推送 origin/main）：**集群节点状态看板重构 + 本地镜像扁平化（去掉本地 conN / inputs）**。
   ① **看板重构**：作业管理「提交脚本」页原先的"队列拥堵卡片网格 + bhost 明细表"换成自研组件 `src/components/jobs/ClusterNodeBoard.tsx`——左侧**节点矩阵**（一个队列一行、格 = 节点，`radial-gradient` 七段透明度衰减 + 双层阴影，颜色按 `free/total` 从 4° 暖红连续映射到 142° 翠绿）、右侧**队列信息行**（状态圆点 / 队列名 / 节点数 chip / 三档渐变进度条 + 25/50/75 刻度 / 百分比 / 状态胶囊，阈值 80% / 45%），左右行高 14px、行距 8px 严格对齐；滚轮（纵横都映射横向、按 deltaMode 归一化、限幅 60px）与拖动（系数 0.5）走 target/curr 分离 + rAF 插值（`translate3d`，不用 CSS transition），底部 235×2px 滑动指示条同帧同步，Tooltip 事件委托只显示 节点名/队列名/已用·总核，视口 235px（14 格）+ `mask-image` 渐隐；样式为 `global.css` 的 `.cnb-*` 段，旧的 `.queue-card*` / `.node-core-cell*` 与 bhost 明细表一并删除。
@@ -359,11 +359,10 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.8.8，尚未提交**（工作区有未提交改动，见下）；服务已重启并运行 v0.8.8 代码（`GET /api/health` 的 `startedAt` = 2026-09-20T20:13:26）；`npm run build` 已出。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.8.8，已提交并推送 origin/main**（`46276d1`，工作区应干净）；服务已重启并运行 v0.8.8 代码（`GET /api/health` 的 `startedAt` = 2026-09-20T20:13:26）；`npm run build` 已出。
 
-1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -3` → 应看到 `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` **当前有未提交改动**（v0.8.8）：
-   `TODO.md` · `process.md` · `package.json`(0.8.8) · `backend/{checks_store,inspection_runner,mappers}.py` · `backend/routers/projects.py` · `src/{types/index.ts,utils/project.ts,pages/Jobs.tsx}` · `src/components/jobs/{ContinuationModal,JobsTree,TaskOverview}.tsx` · `src/styles/global.css`。
-   → 用户说「git」时：按 §10.5 的写法提交为 `v0.8.8: …`，然后补一个 `docs: process.md 补 v0.8.8 commit 号` 的小提交。
+1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
+   → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。
 2. 读 `TODO.md`（§11 巡检异常规则引擎、§12 自动执行/大模型动作接口 —— 两项都已设计但**用户明确要求先搁置**）+ `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时（生产机 Linux）：`sudo systemctl restart vasp-manager` → 打开 `http://192.168.1.20:3001`（前端已构建在 `dist/`）与 `http://192.168.1.20:3001/docs`；改前端记得先 `npm run build`，需要热更新时才另开 `npm run dev`（5173）。部署细节见 §11。
 4. 用户对"默认参数 / 目录结构 / 作业号同步 / 巡检状态"等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。**验证习惯**：本轮开发都用「隔离数据目录 + `VASP_SSH_MOCK=1` 的 mock 远端」或「服务器 `/tmp` 临时目录」做端到端验证（`/tmp/sd_test`、`/tmp/vm_*` 之类），前端用 jsdom 渲染断言（`/tmp/cnbtest` 下装了 jsdom，临时测试文件用完即删）。

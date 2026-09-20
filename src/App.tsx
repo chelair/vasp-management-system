@@ -5,6 +5,7 @@ import { Spin } from 'antd';
 import { AnimatePresence } from 'framer-motion';
 import AppLayout from './components/layout/AppLayout';
 import { useAuth } from './context/AuthContext';
+import Automation from './pages/Automation';
 import Dashboard from './pages/Dashboard';
 import Inspection from './pages/Inspection';
 import Jobs from './pages/Jobs';
@@ -65,6 +66,14 @@ export default function App() {
           <Route path="/inspection" element={<Inspection />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/report" element={<Report />} />
+          <Route
+            path="/automation"
+            element={
+              <AdminRoute>
+                <Automation />
+              </AdminRoute>
+            }
+          />
           <Route
             path="/ssh"
             element={

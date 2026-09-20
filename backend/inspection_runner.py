@@ -556,6 +556,28 @@ def run_inspection(
     # 巡检归档后作废"最近巡检结论"缓存，让作业管理/总览立刻拿到新结论
     invalidate_cache()
 
+    # 触发层（v0.9.6）：巡检**只发事件**，不直接调动作（SSH 抖动不连锁失败）。
+    # 投递是非阻塞的：事件由 automation 的独立线程消费、匹配规则后入队执行。
+    try:
+        from automation import events as automation_events
+
+        automation_events.publish_inspection_events(
+            str(summary.get("run_id") or ""), rows
+        )
+    except Exception as e:  # noqa: BLE001 - 事件投递失败不影响巡检结果
+        try:
+            from automation import audit as automation_audit
+
+            automation_audit.write(
+                action="automation.event",
+                status="failed",
+                trigger="inspection_completed",
+                trigger_id=str(summary.get("run_id") or ""),
+                reason=f"巡检事件投递失败：{e}",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     # 全局巡检后静默刷新集群状态：作废快照缓存并后台预热（不阻塞返回）
     if task_id is None and not failures:
         try:

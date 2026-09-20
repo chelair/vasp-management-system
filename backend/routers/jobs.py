@@ -291,6 +291,334 @@ def _audit_log(project: str, task_id: str, remote_dir: str, command: str, result
         pass
 
 
+# ============================================================ 动作核心（v0.9.6）
+# 下面四个 `core_*` 是「提交作业 / 创建续算 / 生成频率矫正 / 创建 NEB 文件」的
+# 业务实现，**HTTP 接口与自动化动作层共用同一份**（接缝要求：不让调度器直接调
+# 业务接口，也不在两个地方各写一份逻辑）。前置条件不满足时抛 `ActionError`，
+# 由调用方决定映射成 HTTP 响应还是动作失败原因。
+
+
+class ActionError(Exception):
+    """动作前置条件不满足（HTTP 400/404/409 或自动化 blocked/preflight 失败）。"""
+
+    def __init__(self, status_code: int, message: str, data: Dict[str, Any] | None = None):
+        super().__init__(message)
+        self.status_code = int(status_code)
+        self.message = message
+        self.data = data or {}
+
+
+def core_continuation(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    """同类型续算核心：远端建 conN 并登记隐藏续算子任务。
+
+    返回 `{**result, task_id, local_dir, remote_dir}`；`result["action"]` 为
+    `created / running / input_complete_but_not_finished / input_incomplete`，
+    **只有 created 才算真的创建了目录**（自动化层必须判这个字段）。
+    """
+    task_id = str(task.get("task_id") or "")
+    if is_continuation_task(task):
+        raise ActionError(400, "续算子任务不支持再续算，请对原始任务操作")
+    if task.get("task_type") not in ("opt", "neb"):
+        raise ActionError(400, "仅结构优化（opt）与 NEB 任务支持同类型续算")
+
+    result = create_continuation(project.get("server"), project, task)
+    if result.get("action") != "created":
+        _audit_log(
+            project["name"],
+            task_id,
+            str(result.get("current_dir", "")),
+            "continuation",
+            f"action={result.get('action')} missing={result.get('missing_files') or []}",
+        )
+        return dict(result)
+
+    if task.get("task_type") != "neb" and "POSCAR" not in result.get("copied_files", []):
+        raise ActionError(
+            400,
+            f"源目录缺少 CONTCAR，无法生成续算 POSCAR（源：{result.get('source_dir')}）",
+        )
+
+    # 登记续算子任务：dir_path 写 `<任务目录>/conN`（逻辑主键），本地不再建 conN 目录
+    con = result["con"]
+    local_dir = local_continuation_dir(str(task.get("dir_path", "")), con)
+    now = now_iso()
+    rel_remote = to_remote_rel(project.get("server"), result["remote_dir"])
+    sub_task = {
+        "task_id": _new_task_id(project),
+        "task_type": task.get("task_type"),
+        "subtype": task.get("subtype"),
+        "model_name": f"{task.get('model_name', 'task')}_{con}",
+        "status": "pending",
+        "last_energy": None,
+        "last_check_time": None,
+        "job_id": None,
+        "notes": f"由 {task.get('model_name')} 同类型续算创建（{con}）",
+        "continuation_ready": False,
+        "continuation_dir": None,
+        "dir_path": local_dir,
+        "remote_dir": rel_remote,
+        "group": None,
+        "parent_task_id": task_id,
+        "input_source": {
+            "poscar_from": to_remote_rel(
+                project.get("server"), f"{result['source_dir']}/CONTCAR"
+            ),
+            "potcar_from": None,
+            "kpoints_from": None,
+        },
+        "created_at": now,
+        "updated_at": now,
+    }
+    from storage import save_db
+
+    db = load_db()
+    proj = next(p for p in db["projects"] if p["name"] == project["name"])
+    if any(t.get("dir_path") == local_dir for t in proj["tasks"]):
+        raise ActionError(409, f"续算目录 {con} 已登记，请勿重复创建")
+    # create_continuation 会把应用过的草稿写进 task["input_state"]，必须一起落库
+    if task.get("input_state") is not None:
+        parent = next((t for t in proj["tasks"] if t.get("task_id") == task_id), None)
+        if parent is not None:
+            parent["input_state"] = task["input_state"]
+    proj["tasks"].append(sub_task)
+    save_db(db)
+
+    return {
+        **result,
+        "task_id": sub_task["task_id"],
+        "local_dir": local_dir,
+        "remote_dir": rel_remote,
+    }
+
+
+def core_submit(
+    project: Dict[str, Any], task: Dict[str, Any], *, dry_run: bool = False
+) -> Dict[str, Any]:
+    """提交作业核心：一次 exec 完成「定位最新 conN → 输入文件非空检查 → bsub」。
+
+    `dry_run=True` 时只跑到检查（脚本打印 `@@@CHECK_ONLY` 就退出），
+    **不执行 bsub、不改状态**，返回 `{dry_run, will_submit, work_dir}`。
+    """
+    task_id = str(task.get("task_id") or "")
+    status = task.get("status")
+    job_id = task.get("job_id")
+    if job_id and status in ("queued", "running"):
+        raise ActionError(409, "作业已提交/运行中，请勿重复操作")
+
+    server = project.get("server")
+    remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
+    if not remote_dir:
+        raise ActionError(404, "任务缺少远程目录")
+
+    servers = load_servers()
+    profile = str(
+        servers.get(server, {}).get(
+            "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
+        )
+    )
+    submit_script = "vasp.lsf"
+    command = f'cd "{remote_dir}" && bsub < {submit_script}'
+    lines = [
+        'cd "' + remote_dir + '" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+        'LATEST=$(ls -d con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -1)',
+        'WORK="' + remote_dir + '"',
+        '[ -n "$LATEST" ] && WORK="' + remote_dir + '/$LATEST"',
+        'cd "$WORK" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+        'echo "@@@WORK=$WORK"',
+        *_submit_preflight_lines(str(task.get("task_type") or ""), submit_script),
+        '[ -n "$EMPTY" ] && { echo "@@@EMPTY=$EMPTY"; exit 4; }',
+    ]
+    if dry_run:
+        lines.append('echo "@@@CHECK_ONLY"')
+    else:
+        lines += [
+            'echo "@@@BSUB"',
+            "source " + profile + " >/dev/null 2>&1 || true",
+            'bsub < "' + submit_script + '"',
+            'echo "@@@BSUB_RC=$?"',
+        ]
+    script = "\n".join(lines)
+    try:
+        script_b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=90)
+    except Exception as e:  # noqa: BLE001 - SSH 连接类错误统一按 502 上报
+        raise ActionError(502, f"无法连接远程服务器，请检查 SSH 配置：{e}") from e
+
+    raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+    work_match = re.search(r"@@@WORK=(.+)", raw)
+    work_dir = work_match.group(1).strip() if work_match else remote_dir
+    if "@@@NO_DIR" in raw:
+        raise ActionError(404, f"远程目录不存在：{remote_dir}")
+    empty_match = re.search(r"@@@EMPTY=(.*)", raw)
+    if empty_match:
+        missing = [name for name in empty_match.group(1).split() if name]
+        _audit_log(
+            project["name"], task_id, work_dir, command,
+            f"PRECHECK_FAIL empty={','.join(missing)}",
+        )
+        raise ActionError(
+            400,
+            f"以下输入文件缺失或为空，已阻止提交：{'、'.join(missing)}"
+            f"（目录 {work_dir}；请先补齐再提交）",
+            {"missing": missing, "work_dir": work_dir},
+        )
+    if dry_run:
+        return {
+            "dry_run": True,
+            "will_submit": True,
+            "task_id": task_id,
+            "work_dir": work_dir,
+            "submit_script": submit_script,
+            "raw_output": raw,
+        }
+
+    submit_match = re.search(r"Job <(\d+)> is submitted", raw)
+    if not submit_match and result.get("exit_code") != 0:
+        _audit_log(project["name"], task_id, remote_dir, command, f"FAILED: {raw}")
+        raise ActionError(500, f"bsub 提交失败：{raw or '未知错误'}")
+    match = submit_match or re.search(r"Job <(\d+)>", raw)
+    if not match:
+        _audit_log(project["name"], task_id, remote_dir, command, f"UNPARSED: {raw}")
+        raise ActionError(500, f"未能从 bsub 输出解析作业 ID：{raw}")
+    new_job_id = match.group(1)
+    try:
+        with db_transaction() as db:
+            update_task_status(
+                db, project["name"], task_id, "queued", {"job_id": new_job_id}
+            )
+    except Exception as e:  # noqa: BLE001 - 状态落库失败不影响已提交事实
+        _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")
+    _audit_log(project["name"], task_id, remote_dir, command, f"OK job={new_job_id}")
+    _schedule_input_sync(str(project.get("name") or ""), task_id)
+    return {"job_id": new_job_id, "new_status": "queued", "raw_output": raw}
+
+
+def core_create_frac(
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    params: Dict[str, Any] | None = None,
+    *,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """生成频率矫正（frac）输入文件核心。"""
+    task_id = str(task.get("task_id") or "")
+    if task.get("task_type") != "opt":
+        raise ActionError(400, "仅结构优化任务可创建频率矫正")
+    frac_task = next(
+        (
+            t
+            for t in project.get("tasks", [])
+            if t.get("dir_path") == f"{task.get('dir_path', '')}/frac"
+        ),
+        None,
+    )
+    if frac_task is None:
+        raise ActionError(404, "未找到对应的频率矫正子任务（frac），请先在自由能组中创建")
+    if dry_run:
+        return {
+            "dry_run": True,
+            "will_do": "从任务最新输出生成 frac 输入文件（CONTCAR→POSCAR / POTCAR / KPOINTS）",
+            "task_id": task_id,
+            "frac_task_id": frac_task.get("task_id"),
+            "source_dir_hint": task.get("continuation_dir") or task.get("remote_dir"),
+        }
+    result = create_frac_files(
+        project["server"], project, task, frac_task, params=params or {}
+    )
+    frac_task["input_source"] = {
+        "poscar_from": f"{result['source_dir']}/CONTCAR",
+        "potcar_from": f"{result['source_dir']}/POTCAR",
+        "kpoints_from": f"{result['source_dir']}/KPOINTS",
+    }
+    frac_task["notes"] = (
+        f"频率矫正输入由 {task.get('model_name')} 生成（{result['latest_dir'] or '主目录'}）"
+    )
+    db = load_db()
+    proj = next(p for p in db["projects"] if p["name"] == project["name"])
+    for t in proj["tasks"]:
+        if t.get("task_id") == frac_task["task_id"]:
+            t.update(frac_task)
+    save_db(db)
+    _audit_log(
+        project["name"], task_id, result["frac_dir"],
+        "create-frac", f"OK src={result['source_dir']}",
+    )
+    return dict(result)
+
+
+def core_create_neb(
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    payload: Dict[str, Any] | None = None,
+    *,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """创建 NEB 计算文件核心（nebmake.pl 插值）。"""
+    task_id = str(task.get("task_id") or "")
+    body = payload or {}
+    if task.get("task_type") != "neb":
+        raise ActionError(400, "仅 NEB 任务可创建计算文件")
+    initial_id = body.get("initial_opt_task_id")
+    final_id = body.get("final_opt_task_id")
+    try:
+        num_images = int(body.get("num_images", 3))
+    except (TypeError, ValueError):
+        raise ActionError(400, "num_images 必须是整数") from None
+    if not initial_id or not final_id:
+        raise ActionError(400, "缺少初态/末态优化任务 ID")
+    tasks = project.get("tasks", [])
+    initial_task = next((t for t in tasks if t.get("task_id") == initial_id), None)
+    final_task = next((t for t in tasks if t.get("task_id") == final_id), None)
+    if initial_task is None or final_task is None:
+        raise ActionError(404, "初态/末态优化任务不存在")
+    if initial_task.get("task_type") != "opt" or final_task.get("task_type") != "opt":
+        raise ActionError(400, "初态/末态必须是结构优化任务")
+    if initial_task.get("status") != "completed":
+        raise ActionError(
+            400,
+            f"初态优化未收敛（当前状态：{initial_task.get('status')}），请先完成结构优化",
+        )
+    if final_task.get("status") != "completed":
+        raise ActionError(
+            400,
+            f"末态优化未收敛（当前状态：{final_task.get('status')}），请先完成结构优化",
+        )
+    if dry_run:
+        return {
+            "dry_run": True,
+            "will_do": f"用 nebmake.pl 在 NEB 目录生成 {num_images} 个映像",
+            "task_id": task_id,
+            "initial_opt_task_id": initial_id,
+            "final_opt_task_id": final_id,
+            "num_images": num_images,
+        }
+    result = create_neb_files(
+        project["server"],
+        project,
+        task,
+        initial_task,
+        final_task,
+        num_images,
+        params=body.get("params") or {},
+    )
+    task["input_source"] = {
+        "poscar_from": f"{result['source_is']}/CONTCAR",
+        "potcar_from": f"{result['source_is']}/POTCAR",
+        "kpoints_from": f"{result['source_is']}/KPOINTS",
+    }
+    db = load_db()
+    proj = next(p for p in db["projects"] if p["name"] == project["name"])
+    for t in proj["tasks"]:
+        if t.get("task_id") == task_id:
+            t.update(task)
+    save_db(db)
+    _audit_log(
+        project["name"], task_id, result["neb_dir"],
+        f"create-neb images={num_images}", "OK",
+    )
+    return dict(result)
+
+
 @router.get("/tasks/{task_id}/files")
 def list_task_files(task_id: str):
     try:
@@ -392,164 +720,37 @@ def create_same_type_continuation(task_id: str):
     """同类型续算：全部在远程服务器完成，创建 conN 目录并登记续算子任务。"""
     try:
         project, task = _resolve_task(task_id)
-        if is_continuation_task(task):
-            return JSONResponse(
-                status_code=400,
-                content=fail("续算子任务不支持再续算，请对原始任务操作"),
-            )
-        if task.get("task_type") not in ("opt", "neb"):
-            return JSONResponse(
-                status_code=400,
-                content=fail("仅结构优化（opt）与 NEB 任务支持同类型续算"),
-            )
-        # 状态不做前置拦截：由续算分流逻辑按最新目录 OUTCAR/CONTCAR 判断
-        # （未运行/异常任务将返回 input_incomplete / input_complete_but_not_finished）
-        result = create_continuation(project.get("server"), project, task)
-        if result.get("action") != "created":
-            _audit_log(
-                project["name"],
-                task_id,
-                str(result.get("current_dir", "")),
-                "continuation",
-                f"action={result.get('action')} missing={result.get('missing_files') or []}",
-            )
-            return ok(result.get("message", "续算检查完成"), result)
-        # 非 NEB 续算必须得到 POSCAR（来自最新 CONTCAR）
-        if task.get("task_type") != "neb" and "POSCAR" not in result.get("copied_files", []):
-            return JSONResponse(
-                status_code=400,
-                content=fail(
-                    f"源目录缺少 CONTCAR，无法生成续算 POSCAR（源：{result.get('source_dir')}）"
-                ),
-            )
-
-        # 登记续算子任务：`dir_path` 仍写 `<任务目录>/conN`（逻辑主键：查重 + 远端映射），
-        # 但本地**不再建 conN 目录**（v0.8.7）—— task_dir() 解析时剥掉后缀，
-        # 续算子任务的本地落点就是任务族根目录，与父任务共享同一份文件镜像。
-        con = result["con"]
-        local_dir = local_continuation_dir(str(task.get("dir_path", "")), con)
-        now = now_iso()
-        rel_remote = to_remote_rel(project.get("server"), result["remote_dir"])
-        sub_task = {
-            "task_id": _new_task_id(project),
-            "task_type": task.get("task_type"),
-            "subtype": task.get("subtype"),
-            "model_name": f"{task.get('model_name', 'task')}_{con}",
-            "status": "pending",
-            "last_energy": None,
-            "last_check_time": None,
-            "job_id": None,
-            "notes": f"由 {task.get('model_name')} 同类型续算创建（{con}）",
-            "continuation_ready": False,
-            "continuation_dir": None,
-            "dir_path": local_dir,
-            "remote_dir": rel_remote,
-            "group": None,
-            "parent_task_id": task_id,
-            "input_source": {
-                "poscar_from": to_remote_rel(
-                    project.get("server"), f"{result['source_dir']}/CONTCAR"
-                ),
-                "potcar_from": None,
-                "kpoints_from": None,
-            },
-            "created_at": now,
-            "updated_at": now,
-        }
-        from storage import save_db
-
-        db = load_db()
-        proj = next(p for p in db["projects"] if p["name"] == project["name"])
-        if any(t.get("dir_path") == local_dir for t in proj["tasks"]):
-            return JSONResponse(
-                status_code=409,
-                content=fail(f"续算目录 {con} 已登记，请勿重复创建"),
-            )
-        # 续算时 `create_continuation` 已经把应用过的草稿标记进 task["input_state"]
-        # （草稿清空、台账 applied_in=conN），这里必须把它**一起落库** ——
-        # 否则重新 load_db 读到的是旧副本，界面会一直显示"有修改待提交"。
-        if task.get("input_state") is not None:
-            parent = next(
-                (t for t in proj["tasks"] if t.get("task_id") == task_id), None
-            )
-            if parent is not None:
-                parent["input_state"] = task["input_state"]
-        proj["tasks"].append(sub_task)
-        save_db(db)
-
-        return ok(
-            "续算目录已创建",
-            {
-                **result,
-                "task_id": sub_task["task_id"],
-                "local_dir": local_dir,
-                "remote_dir": rel_remote,
-            },
-        )
+        data = core_continuation(project, task)
+        if data.get("action") != "created":
+            return ok(data.get("message", "续算检查完成"), data)
+        return ok("续算目录已创建", data)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except ActionError as e:
+        return JSONResponse(status_code=e.status_code, content=fail(e.message, e.data or None))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建续算失败：{e}"))
-
-
 @router.post("/tasks/{task_id}/create-frac")
 def create_frac(task_id: str, payload: dict = Body(default={})):
     """为结构优化任务构建频率矫正（frac）输入文件（自由能流程）。"""
     try:
         project, task = _resolve_task(task_id)
-        if task.get("task_type") != "opt":
-            return JSONResponse(status_code=400, content=fail("仅结构优化任务可创建频率矫正"))
-        frac_task = next(
-            (
-                t
-                for t in project["tasks"]
-                if t.get("dir_path") == f"{task.get('dir_path', '')}/frac"
-            ),
-            None,
-        )
-        if frac_task is None:
-            return JSONResponse(
-                status_code=404,
-                content=fail("未找到对应的频率矫正子任务（frac），请先在自由能组中创建"),
-            )
-        result = create_frac_files(
-            project["server"],
-            project,
-            task,
-            frac_task,
-            params=payload.get("params") or {},
-        )
-        frac_task["input_source"] = {
-            "poscar_from": f"{result['source_dir']}/CONTCAR",
-            "potcar_from": f"{result['source_dir']}/POTCAR",
-            "kpoints_from": f"{result['source_dir']}/KPOINTS",
-        }
-        frac_task["notes"] = f"频率矫正输入由 {task.get('model_name')} 生成（{result['latest_dir'] or '主目录'}）"
-        db = load_db()
-        proj = next(p for p in db["projects"] if p["name"] == project["name"])
-        for t in proj["tasks"]:
-            if t.get("task_id") == frac_task["task_id"]:
-                t.update(frac_task)
-        save_db(db)
-        _audit_log(
-            project["name"], task_id, result["frac_dir"],
-            "create-frac", f"OK src={result['source_dir']}",
-        )
+        result = core_create_frac(project, task, payload.get("params") or {})
         return ok("频率矫正输入文件已生成", result)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except ActionError as e:
+        return JSONResponse(status_code=e.status_code, content=fail(e.message, e.data or None))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建频率矫正失败：{e}"))
-
-
 @router.post("/tasks/{task_id}/build-ele-inputs")
 def build_ele(task_id: str, payload: dict = Body(default={})):
     """为电子结构任务构建输入文件（从 opt 导入或外部结构）。"""
@@ -611,73 +812,18 @@ def create_neb(task_id: str, payload: dict = Body(default={})):
     """根据初末态 opt 任务创建 NEB 计算文件（nebmake.pl 插值）。"""
     try:
         project, task = _resolve_task(task_id)
-        if task.get("task_type") != "neb":
-            return JSONResponse(status_code=400, content=fail("仅 NEB 任务可创建计算文件"))
-        initial_id = payload.get("initial_opt_task_id")
-        final_id = payload.get("final_opt_task_id")
-        num_images = int(payload.get("num_images", 3))
-        if not initial_id or not final_id:
-            return JSONResponse(status_code=400, content=fail("缺少初态/末态优化任务 ID"))
-        initial_task = next(
-            (t for t in project["tasks"] if t.get("task_id") == initial_id), None
-        )
-        final_task = next(
-            (t for t in project["tasks"] if t.get("task_id") == final_id), None
-        )
-        if initial_task is None or final_task is None:
-            return JSONResponse(status_code=404, content=fail("初态/末态优化任务不存在"))
-        if initial_task.get("task_type") != "opt" or final_task.get("task_type") != "opt":
-            return JSONResponse(status_code=400, content=fail("初态/末态必须是结构优化任务"))
-        # 通过项目数据库校验初末态是否收敛
-        if initial_task.get("status") != "completed":
-            return JSONResponse(
-                status_code=400,
-                content=fail(
-                    f"初态优化未收敛（当前状态：{initial_task.get('status')}），请先完成结构优化"
-                ),
-            )
-        if final_task.get("status") != "completed":
-            return JSONResponse(
-                status_code=400,
-                content=fail(
-                    f"末态优化未收敛（当前状态：{final_task.get('status')}），请先完成结构优化"
-                ),
-            )
-        result = create_neb_files(
-            project["server"],
-            project,
-            task,
-            initial_task,
-            final_task,
-            num_images,
-            params=payload.get("params") or {},
-        )
-        task["input_source"] = {
-            "poscar_from": f"{result['source_is']}/CONTCAR",
-            "potcar_from": f"{result['source_is']}/POTCAR",
-            "kpoints_from": f"{result['source_is']}/KPOINTS",
-        }
-        db = load_db()
-        proj = next(p for p in db["projects"] if p["name"] == project["name"])
-        for t in proj["tasks"]:
-            if t.get("task_id") == task_id:
-                t.update(task)
-        save_db(db)
-        _audit_log(
-            project["name"], task_id, result["neb_dir"],
-            f"create-neb images={num_images}", "OK",
-        )
+        result = core_create_neb(project, task, payload)
         return ok("NEB 计算文件已生成", result)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except ActionError as e:
+        return JSONResponse(status_code=e.status_code, content=fail(e.message, e.data or None))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建 NEB 计算文件失败：{e}"))
-
-
 @router.patch("/tasks/{task_id}")
 def rename_task(task_id: str, payload: RenameTaskPayload):
     """重命名独立任务：同步更新本地/远端目录与数据库。"""
@@ -843,130 +989,16 @@ def submit_task(task_id: str):
     """提交作业：远程目录内执行 bsub < vasp.lsf，登记 job_id 并将状态更新为 queued。"""
     try:
         project, task = _resolve_task(task_id)
+        data = core_submit(project, task)
+        return ok(f"作业 {data['job_id']} 已提交到队列", data)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
-
-    status = task.get("status")
-    job_id = task.get("job_id")
-    if job_id and status in ("queued", "running"):
-        return JSONResponse(status_code=409, content=fail("作业已提交/运行中，请勿重复操作"))
-
-    server = project.get("server")
-    remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
-    if not remote_dir:
-        return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
-
-    servers = load_servers()
-    profile = str(
-        servers.get(server, {}).get(
-            "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
-        )
-    )
-    submit_script = "vasp.lsf"
-    command = f'cd "{remote_dir}" && bsub < {submit_script}'
-
-    # 一次 exec 完成「定位最新 conN → 输入文件非空检查 → 提交」。
-    # 原来要 3 次往返（定位 conN / 存在性检查 / bsub），现在只有 1 次：
-    # 提交前的非空校验顺带在同一个脚本里做，不增加任何额外通讯。
-    preflight = "\n".join(
-        [
-            'cd "' + remote_dir + '" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
-            'LATEST=$(ls -d con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -1)',
-            'WORK="' + remote_dir + '"',
-            '[ -n "$LATEST" ] && WORK="' + remote_dir + '/$LATEST"',
-            'cd "$WORK" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
-            'echo "@@@WORK=$WORK"',
-            *_submit_preflight_lines(str(task.get("task_type") or ""), submit_script),
-            '[ -n "$EMPTY" ] && { echo "@@@EMPTY=$EMPTY"; exit 4; }',
-            'echo "@@@BSUB"',
-            "source " + profile + " >/dev/null 2>&1 || true",
-            'bsub < "' + submit_script + '"',
-            'echo "@@@BSUB_RC=$?"',
-        ]
-    )
-    try:
-        script_b64 = base64.b64encode(preflight.encode("utf-8")).decode("ascii")
-        result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=90)
+    except ActionError as e:
+        return JSONResponse(status_code=e.status_code, content=fail(e.message, e.data or None))
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
-    except Exception as e:  # noqa: BLE001 - SSH 连接类错误统一返回 502
-        return JSONResponse(
-            status_code=502,
-            content=fail(f"无法连接远程服务器，请检查 SSH 配置：{e}"),
-        )
-
-    raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
-    work_match = re.search(r"@@@WORK=(.+)", raw)
-    work_dir = work_match.group(1).strip() if work_match else remote_dir
-    if "@@@NO_DIR" in raw:
-        return JSONResponse(
-            status_code=404,
-            content=fail(f"远程目录不存在：{remote_dir}"),
-        )
-    empty_match = re.search(r"@@@EMPTY=(.*)", raw)
-    if empty_match:
-        missing = [name for name in empty_match.group(1).split() if name]
-        _audit_log(
-            project["name"], task_id, work_dir, command,
-            f"PRECHECK_FAIL empty={','.join(missing)}",
-        )
-        return JSONResponse(
-            status_code=400,
-            content=fail(
-                f"以下输入文件缺失或为空，已阻止提交：{'、'.join(missing)}"
-                f"（目录 {work_dir}；请先补齐再提交）"
-            ),
-        )
-    # 以 bsub 明确输出 "Job <id> is submitted" 作为成功标志；
-    # stderr 中的 bashrc/conda 等环境噪音（含 Error 字样）不判定为提交失败
-    submit_match = re.search(r"Job <(\d+)> is submitted", raw)
-    if not submit_match and result.get("exit_code") != 0:
-        _audit_log(project["name"], task_id, remote_dir, command, f"FAILED: {raw}")
-        return JSONResponse(
-            status_code=500,
-            content=fail(f"bsub 提交失败：{raw or '未知错误'}"),
-        )
-
-    if not submit_match:
-        match = re.search(r"Job <(\d+)>", raw)
-    else:
-        match = submit_match
-    if not match:
-        _audit_log(project["name"], task_id, remote_dir, command, f"UNPARSED: {raw}")
-        return JSONResponse(
-            status_code=500,
-            content=fail(f"未能从 bsub 输出解析作业 ID：{raw}"),
-        )
-    new_job_id = match.group(1)
-
-    # 登记 job_id 并将状态更新为 queued（走串行事务，避免与巡检回填互相覆盖）
-    try:
-        with db_transaction() as db:
-            update_task_status(
-                db,
-                project["name"],
-                task_id,
-                "queued",
-                {"job_id": new_job_id},
-            )
-    except permissions.PermissionDenied:
-        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
-    except Exception as e:  # noqa: BLE001 - 状态落库失败不影响已提交事实
-        _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")
-
-    _audit_log(project["name"], task_id, remote_dir, command, f"OK job={new_job_id}")
-    # 提交成功后后台同步一次输入参数（远端 conN 的 INCAR/KPOINTS/POSCAR/CONTCAR）
-    _schedule_input_sync(str(project.get("name") or ""), task_id)
-    return ok(
-        f"作业 {new_job_id} 已提交到队列",
-        {
-            "job_id": new_job_id,
-            "new_status": "queued",
-            "raw_output": raw,
-        },
-    )
-
-
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"提交作业失败：{e}"))
 @router.post("/tasks/{task_id}/archive")
 def archive_task(task_id: str):
     """关闭（归档）任务：只改状态，本地/远端文件都不动。

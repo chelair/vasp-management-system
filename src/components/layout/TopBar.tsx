@@ -21,6 +21,7 @@ const TITLES: Record<string, string> = {
   '/jobs': '作业管理',
   '/report': '智能报告',
   '/ssh': 'SSH 连接',
+  '/automation': '自动化',
 };
 
 export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {

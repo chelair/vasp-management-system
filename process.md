@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.5（账号体系 1~5 步 + 登录审计/安全收尾）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.6（自动/定时执行动作系统：事件+定时触发 → 规则 → 调度 → 四动作 → 审计）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -133,6 +133,10 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `ssh.py` | **统一 SSH 连接池**：`run_remote`（exec）/ `upload_file` / `download_file` / `mkdir_remote` 共用一条常驻连接；Paramiko 传输层 keepalive 30s + 后台每 60s 应用层保活（echo ok 实测延迟写入连接池状态）、空闲 5min 回收、断线重连；`VASP_SSH_MOCK=1` 本地模拟模式。禁止业务代码自建 Paramiko 客户端 |
 | `config.py` | 读取 data/config 下各 JSON（servers/settings/task_registry/path_mapping），每次现读无缓存 |
 | `auth.py` | **账号与会话底座（v0.9.0）**：`hashlib.scrypt` + 随机 salt 的密码哈希、`secrets.token_urlsafe(32)` 的 token 生成与 **sha256 存盘**、用户/会话文件（`data/users/{users,sessions}.json`；原子写 + 文件锁 + 0600/0700）、滑动续期、`ensure_users_file()` 首次启动自动建默认管理员（随机密码打印 stdout 与日志） |
+| `automation/` | **自动/定时执行动作系统（v0.9.6）**：`store.py`（automation.json 开关 / `config/rules/*.json` 规则 / `action_history.json` 冷却·计数·幂等指纹·规则失败 / `action_runs.json` 运行记录，原子写 + 文件锁）、`events.py`（事件总线：**巡检只发事件**，独立线程消费）、`rules.py`（`build_context` 任务上下文 + condition 匹配 + 定时 scope 解析）、`cron.py`（零依赖 5 段 cron 解析与 next_after）、`actions.py`（动作目录：preflight + 执行，复用 `routers.jobs.core_*`）、`scheduler.py`（队列/工作线程、任务级文件锁、冷却、执行上限、幂等指纹、失败熔断、全局暂停、dry_run、长动作 run_id）、`audit.py`（写 `actions.jsonl`，五态 success/failed/skipped/blocked/dry_run）、`service.py`（挂 lifespan 启停） |
+| `routers/automation.py` | **动作与自动化接口（v0.9.6，仅 admin）**：`GET/POST /api/actions[/{name}]`、`GET /api/actions/runs/{run_id}`、`/api/automation/{status,settings,rules,rules/{id},rules/{id}/run,reload,decisions,runs}` |
+| `routers/jobs.py`（v0.9.6） | 四个业务核心抽成 `core_continuation / core_submit / core_create_frac / core_create_neb`（+ `ActionError`），**HTTP 接口与自动化动作层共用同一份实现**；submit 支持 `dry_run=True`（脚本跑到检查就退出，不 bsub、不改状态） |
+| `ssh.py`（v0.9.6） | mock 模式增强：除 `python3 <脚本>` 外，支持 `echo <b64> \| base64 -d \| bash`（路径单遍重写到模拟根、把 `<模拟根>/_mock_bin` 放进 PATH），**仅 mock 生效**，用于离线端到端验证提交/续算等 bash 脚本 |
 | `permissions.py` | **归属判断（v0.9.2）**：`visible_projects/visible_project_names`（列表过滤）、`ensure_project_owner/ensure_task_owner`（单对象，越权抛 `PermissionDenied` → 全局 403）、`enforce_task`（给 `jobs._resolve_task` 这类唯一入口用，从认证中间件写入的 contextvar 取用户，**后台线程无用户时自动放行**）、`current_username` 审计助手。**只做归属判断，不含业务逻辑** |
 | `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天 |
 | `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期）/列出/吊销（按 `session_id`） |
@@ -237,8 +241,18 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.5）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.6）
 
+- v0.9.6（2026-09-20，待提交）：**自动/定时执行动作系统**（触发层 → 规则层 → 调度层 → 执行层 → 审计层），首批四个动作：创建续算 / 提交作业 / 创建 NEB 文件 / 创建频率矫正。
+  ① **触发层**：`automation/events.py` 事件总线（`queue.Queue` + 独立线程）。巡检在 `run_inspection()` 归档后**只投递 `inspection_completed` 事件**（每任务一条，负载含 task_id/status/converged/task_type/group_id/source_dir），**不在巡检里调动作**（避免 SSH 抖动连锁失败）；定时触发由零依赖 cron 线程每 20s 检查一次，命中即投递 `schedule` 事件（scope=all / project:X）。
+  ② **规则层**：`data/config/rules/*.json`（一文件一规则，改动**立即生效不用重启**）；condition 支持精确匹配 / 列表 / 布尔，上下文由 `rules.build_context()` 提供（task_type、status、converged、group_type、group_role、frac_missing、initial_converged、final_converged、images_created、is_continuation…）。命中投递动作，**未命中写一条 skipped 审计并写明哪个条件不满足**。首次启动自动生成 4 条示例规则（未收敛→续算、收敛缺 frac→建频率、NEB 初末态收敛→建 NEB、每天 02:00 扫未收敛）。
+  ③ **调度层**：动作队列（pending/running/done）+ 2 个工作线程；三条并发控制——任务级互斥（进程内锁 + `data/locks/task_*.lock` 文件锁）、冷却期（`guard.cooldown_seconds`，示例规则续算 1800s、NEB 3600s）、执行上限（`guard.max_runs_per_task`）；另有**幂等指纹**（task+action+params 的 sha256）、**用户手动接管跳过**（审计里 5 分钟内有真实用户名的操作则不碰）、**失败熔断**（同规则连续失败 N 次自动进 `disabled_rules`）、**全局暂停立即生效**（`automation.json: enabled`）。
+  ④ **执行层**：统一入口 `POST /api/actions/{action_name}`（`task.continuation / task.submit / neb.create / frac.create`），内部调用 `routers.jobs` 抽出的四个 `core_*`，不重写业务逻辑；短动作同步返回 `{status, result, audit_id}`，长动作（`frac.create`/`neb.create`）返回 `{status: running, run_id}` 并可用 `GET /api/actions/runs/{run_id}` 轮询；`dry_run` 只跑 preflight 返回 `will_do`（**不写状态、不建目录**）。**续算按 `action=created` 判定成功**（`running/input_incomplete` 一律记 skipped）。
+  ⑤ **审计层**：复用 `data/audit/actions.jsonl`，在作业/账号字段基础上追加 `automation/action/status/trigger/trigger_id/rule_id/run_id/reason/elapsed_ms/details`；**五种状态 success / failed / skipped / blocked / dry_run 都有落盘**（blocked 一定带明确 reason）。
+  ⑥ **前端**：新增「自动化」页（仅 admin）：全局开关（总开关 / dry_run 演练 / 定时触发）+ 定时任务表（cron、scope、下次执行、立即触发）+ 规则表（触发/条件/动作/guard/失败次数/启停开关）+ 决策日志（五态标签）+ 动作运行记录；侧栏「系统 → 自动化」与 `/automation` 走 `AdminRoute`。
+  ⑦ **与提示词的偏差（已确认合理）**：**未引入 APScheduler**（项目一直零新依赖），用 `automation/cron.py` 自研 5 段 cron + 后台线程实现同样的「cron 表达式 / 持久化 / 改完立即生效」，`requirements.txt` 不变；其余按提示词实现。自动化接口全部 **admin-only**（规则是全局的、动作会提交作业）。
+  ⑧ 验证（隔离数据目录 + mock 远端 + 真实 HTTP，未碰生产）：**36 项断言全过** —— dry_run 只跑 preflight、短动作成功、冷却拦截、执行上限、幂等键、手动接管跳过、全局暂停立即生效、长动作 run_id + 轮询最终结果、失败记 failed、规则上下文与条件匹配（自由能 frac_missing / NEB 初末态 / 未收敛）、巡检事件命中投递 + 未命中 skipped、cron 解析与「改 cron 立即重算 next_run」、审计五态齐全；HTTP 层：动作目录与四个动作可调、dry_run 与真实提交（mock bsub 返回 job_id）、续算返回业务 action、长动作轮询、自动化状态/设置/规则开关/立即触发/决策日志/运行记录/重载配置、非 admin 一律 403。**另附 jobs 核心抽取回归 11 项**（提交成功/重复 409/缺文件 400/续算建 con1 并登记子任务/frac 与 neb 的前置校验）。
+  ⑨ 本版**不做**（按提示词"暂时不做"）：智能体接入、多人共享、微信通知、报告自动生成、用户管理页、日志页。
 - v0.9.5（commit `dc66312`，已推送 origin/main）：**账号系统上线后的安全/可运维收尾**（v0.9.4 未使用，直接发 0.9.5）。
   ① **账号审计**：新增 `auth.audit()`，把**登录成功 / 登录失败 / 限速拦截 / 登出 / 长期 token 签发 / token 吊销**写进与作业动作同一份 `data/audit/actions.jsonl`（`command=auth.login|auth.logout|auth.token-issue|auth.token-revoke`，带 `username` / `ip` / `detail`）。
   ② **`?token=` 收紧**：查询参数形式的 token **只允许文档路径**（`/docs`、`/openapi.json`、`/redoc`），普通 API 的 GET 不再接受（token 落进浏览器历史 / 代理日志是常见泄露途径）；请求头与 Cookie 不受影响。
@@ -409,7 +423,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 11. **自动执行 / 大模型动作接口**（2026-09-20 审计，**设计已定、尚未实现**）：为「定时执行 + 大模型决策后自动执行（续算/固定原子/建 NEB 等）」准备统一动作层。现状审计：73 个接口（32 读 / 41 写）散落在 jobs/projects/groups 路由，**没有统一动作目录、没有 dry-run 前置校验（只有 submit 内嵌五件套检查）、没有幂等键、长动作同步阻塞（NEB 创建远端 300s、巡检 75-90s）、没有统一动作台账（仅 `jobs.py::_audit_log` 文本行且只覆盖部分动作）、没有审批闸门与通知出口**；已有半成品：`report_rules.json`（13 条声明式规则）→ `risks[].advice` → `actions.items[{action_id,priority,task_id,action(自然语言),reason}]` + `llm_context{key_findings,open_questions,data_references,constraints}`。建议新增：`GET /actions`（动作目录，含参数 schema/前置/风险/幂等/是否长任务）、`POST /actions/{name}`（`dry_run` + `idempotency_key` + `requested_by/reason`）、`GET /actions/runs/{id}`（长动作轮询）、`/approve`·`/cancel`、`GET /actions/ledger`、`GET /observe/context`（一次给出巡检 findings + 任务事实 + 集群 + 动作历史，供大模型消费）。落地顺序：①动作目录+统一执行端点+给续算/固定原子/NEB 补 preflight → ②台账+幂等键+审批闸门 → ③异步 run+轮询+重试 → ④LLM 闭环（先只放开低风险动作）。**待用户拍板**：无人值守白名单、是否先全审、是否只允许选"参数档"而非任意 INCAR 键值、台账位置与保留量、失败重试与通知渠道。详见 TODO.md §12。
 
 12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
-13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策，**先写待办、暂不实现自动执行**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。
+13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策；**规则化自动执行部分已在 v0.9.6 落地**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。**v0.9.6 已实现**：事件总线（巡检只发事件）、规则层（`config/rules/*.json`）、调度层（冷却/上限/幂等/熔断/全局暂停）、统一动作入口 `/api/actions/*`（四个动作，preflight + dry_run + run_id）、五态审计与前端自动化页；**尚未做**：`role=agent` 的 token scope、待确认队列、大模型决策闭环（`delegate_to`）。
 14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
     - **第 1～5 步已完成**（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效 / 前端角色化收尾），并在 v0.9.5 做了登录审计与安全加固：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
 

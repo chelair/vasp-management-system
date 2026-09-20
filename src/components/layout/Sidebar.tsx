@@ -6,6 +6,7 @@ import {
   FileTextOutlined,
   ReadOutlined,
   SafetyCertificateOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import BrandLogo from './BrandLogo';
 import { useAuth } from '../../context/AuthContext';
@@ -65,6 +66,16 @@ export default function Sidebar({ open, onNavigate }: Props) {
         {isAdmin && (
           <>
             <div className="nav-section-label">系统</div>
+            <NavLink
+              to="/automation"
+              onClick={onNavigate}
+              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+            >
+              <span className="nav-item__icon">
+                <ThunderboltOutlined />
+              </span>
+              自动化
+            </NavLink>
             <NavLink
               to="/ssh"
               onClick={onNavigate}

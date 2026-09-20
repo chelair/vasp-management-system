@@ -14,6 +14,7 @@ from envelope import fail
 from middleware.auth import install as install_auth_middleware
 from permissions import PermissionDenied
 from routers import auth as auth_router
+from routers import automation as automation_router
 from routers import auxiliary as aux
 from routers import free_energy
 from routers import (
@@ -80,7 +81,22 @@ async def lifespan(_: FastAPI):
         start_scheduler()
     except Exception as e:  # noqa: BLE001 - 调度器启动失败不影响服务
         print(f"[auto-inspection] 调度器启动失败：{e}")
+
+    # 自动/定时执行动作系统（v0.9.6）：事件总线 + 动作队列 + cron 触发
+    try:
+        from automation import start_automation
+
+        start_automation()
+    except Exception as e:  # noqa: BLE001 - 自动化启动失败不影响主服务
+        print(f"[automation] 启动失败：{e}")
     yield
+
+    try:
+        from automation import stop_automation
+
+        stop_automation()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 app = FastAPI(title="VASP 计算项目管理系统 API", version="0.2.0", lifespan=lifespan)
@@ -149,6 +165,7 @@ async def permission_handler(_, exc: PermissionDenied):
 
 app.include_router(meta.router, prefix="/api")
 app.include_router(auth_router.router, prefix="/api")
+app.include_router(automation_router.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")

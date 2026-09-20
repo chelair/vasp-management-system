@@ -236,6 +236,48 @@ body: {
 
 ---
 
+## 4.4 统一动作与自动化（v0.9.6，仅 admin）
+
+所有动作走同一入口（调度器不直接调业务接口），内部复用 `routers.jobs` 的四个核心实现。
+
+| 接口 | 参数 | 说明 |
+| --- | --- | --- |
+| `GET /api/actions` | — | 动作目录：名称 / 说明 / 是否长动作 / 参数提示 |
+| `POST /api/actions/{action_name}` | `{task_id?, params?, dry_run?, idempotency_key?, wait?}` | `task.continuation` / `task.submit` / `neb.create` / `frac.create` |
+| `GET /api/actions/runs/{run_id}` | — | 长动作轮询：`running / success / failed / skipped` + result |
+| `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则 + 计数 |
+| `GET/PUT /api/automation/settings` | `{enabled?, dry_run?, schedules_enabled?, failure_threshold?}` | 改完**立即生效**（enabled=false 即全局暂停） |
+| `GET /api/automation/rules` · `PUT /api/automation/rules/{id}` | `{enabled}` | 规则列表 / 启停 |
+| `POST /api/automation/rules/{id}/run` | — | 立即触发一条定时规则（不等 cron） |
+| `GET /api/automation/decisions?limit=` | — | 决策日志（五态） |
+| `GET /api/automation/runs?limit=` | — | 动作运行记录 |
+| `POST /api/automation/reload` | — | 显式重载配置（本该每次现读） |
+
+返回值约定：
+
+- `dry_run=true` → `{status: "dry_run", preflight_ok, preflight, will_do}`，**不执行、不写状态**；
+- 短动作 → `{status: "success"|"failed"|"skipped"|"blocked", result, audit_id, reason}`；
+- 长动作 → `{status: "running", run_id}`（`frac.create` / `neb.create`）；
+- `task.continuation` 的**业务结果**在 `result.action`：只有 `created` 才算创建成功，
+  `running` / `input_complete_but_not_finished` / `input_incomplete` 一律按 `skipped` 记账。
+
+规则文件：`data/config/rules/<id>.json`（一文件一规则）
+
+```json
+{
+  "id": "opt-unconverged-continuation",
+  "enabled": true,
+  "trigger": { "type": "inspection_completed" },
+  "condition": { "task_type": "opt", "status": ["unconverged", "zombied"], "is_continuation": false },
+  "action": "task.continuation",
+  "guard": { "cooldown_seconds": 1800, "max_runs_per_task": 5 }
+}
+```
+
+定时规则把 `trigger` 换成 `{ "type": "schedule", "cron": "0 2 * * *", "scope": "all" }`
+（`scope` 还支持 `project:<项目名>`）。全局开关在 `data/config/automation.json`：
+`{enabled, dry_run, schedules_enabled, disabled_rules, failure_threshold}`。
+
 ## 5. 智能体闭环：巡检 → 判断 → 执行（建议用法）
 
 目标：**只读为主、动作最少、影响最小**。三个阶段各自的推荐调用：

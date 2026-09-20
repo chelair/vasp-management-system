@@ -11,6 +11,8 @@
 """
 
 import os
+import base64
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +67,107 @@ def mock_local_path(remote_path: str) -> Path:
 def _local_path(remote_path: str) -> Path:
     """模拟模式下把远程绝对路径映射为本地路径。"""
     return _mock_root() / str(remote_path).lstrip("/")
+
+
+#: 模拟模式下支持 `echo <base64> | base64 -d | bash`（提交/续算/建 NEB 等都用它）
+_MOCK_B64_BASH = re.compile(r"echo\s+([A-Za-z0-9+/=]+)\s*\|\s*base64\s+-d\s*\|\s*bash")
+
+
+def _mock_shell_prefixes() -> list:
+    """模拟模式下需要重写的远程绝对路径前缀（按长度倒序匹配）。"""
+    prefixes = set()
+    for cfg in load_servers().values():
+        for key in ("remote_base", "home", "root", "scratch_root"):
+            value = str((cfg or {}).get(key) or "").strip()
+            if value.startswith("/") and value != "/":
+                prefixes.add(value.rstrip("/"))
+    # 脚本里按绝对路径调用的公共工具目录
+    prefixes.update(
+        {
+            "/data/gpfs03/mdye/VTST",
+            "/data/gpfs03/mdye/projects/potcar",
+            "/opt/ibm/lsfsuite",
+        }
+    )
+    return sorted(prefixes, key=len, reverse=True)
+
+
+def _mock_rewrite_paths(text: str) -> str:
+    """把脚本里的远程绝对路径重写到模拟根目录，让 bash 脚本能本地跑起来。
+
+    必须**单遍替换**（前缀按长度倒序进正则的 alternation）：否则先替换长前缀后，
+    短前缀（如 `home` = `/data/gpfs03/mdye`）会把刚写好的模拟根路径再包一层。
+    """
+    root = str(_mock_root())
+    prefixes = _mock_shell_prefixes()
+    if not prefixes:
+        return text
+    pattern = re.compile("|".join(re.escape(prefix) for prefix in prefixes))
+    return pattern.sub(lambda m: root + m.group(0), text)
+
+
+def _mock_run(command: str, timeout: int) -> Dict[str, Any]:
+    """模拟模式执行：python 脚本直跑；base64 bash 脚本重写路径后本地 bash 执行。
+
+    - `python3 <脚本> <参数…>`：脚本与参数按模拟根映射后由当前解释器执行（原有行为）；
+    - `echo <b64> | base64 -d | bash`：解码 → 路径重写 → `bash` 执行，工作目录为模拟根，
+      并把 `<模拟根>/_mock_bin` 放进 PATH（测试可放 bsub 等打桩脚本）；
+    - 其他命令一律返回"不支持的远程命令"。
+    """
+    parts = command.strip().split()
+    if parts and parts[0] in ("python3", "python"):
+        script = _local_path(parts[1])
+        args = [_local_path(part) for part in parts[2:]]
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(script), *[str(a) for a in args]],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {"stdout": "", "stderr": f"mock timeout（{timeout}s）", "exit_code": 1}
+        return {
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "exit_code": proc.returncode,
+        }
+
+    match = _MOCK_B64_BASH.search(command)
+    if match:
+        try:
+            script = base64.b64decode(match.group(1)).decode("utf-8")
+        except Exception as e:  # noqa: BLE001
+            return {"stdout": "", "stderr": f"mock: base64 解码失败：{e}", "exit_code": 1}
+        script = _mock_rewrite_paths(script)
+        root = _mock_root()
+        shim = root / "_mock_bin"
+        shim.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ)
+        env["PATH"] = f"{shim}:{env.get('PATH', '')}"
+        env["VASP_SSH_MOCK"] = "1"
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                cwd=str(root),
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return {"stdout": "", "stderr": f"mock timeout（{timeout}s）", "exit_code": 1}
+        return {
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "exit_code": proc.returncode,
+        }
+
+    return {"stdout": "", "stderr": "mock: 不支持的远程命令", "exit_code": 1}
 
 
 def _get_client(server_name: str):
@@ -297,27 +400,7 @@ def run_remote(server_name: str, command: str, timeout: int = 30) -> Dict[str, o
     下次调用会重新建立连接。
     """
     if _mock_enabled():
-        parts = command.strip().split()
-        if parts and parts[0] in ("python3", "python"):
-            script = _local_path(parts[1])
-            args = [_local_path(part) for part in parts[2:]]
-            try:
-                proc = subprocess.run(
-                    [sys.executable, str(script), *[str(a) for a in args]],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=timeout,
-                )
-            except subprocess.TimeoutExpired:
-                return {"stdout": "", "stderr": f"mock timeout（{timeout}s）", "exit_code": 1}
-            return {
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-                "exit_code": proc.returncode,
-            }
-        return {"stdout": "", "stderr": "mock: 不支持的远程命令", "exit_code": 1}
+        return _mock_run(command, timeout)
 
     ensure_pruner()
     lock = _exec_lock(server_name)

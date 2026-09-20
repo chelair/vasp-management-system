@@ -239,7 +239,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.3）
 
-- v0.9.3（2026-09-20，待提交）：**第 5 步基础收尾——前端按角色隐藏入口 + 403 统一处理（纯前端，后端与数据结构零改动）**。
+- v0.9.3（commit `f84c459`，已推送 origin/main）：**第 5 步基础收尾——前端按角色隐藏入口 + 403 统一处理（纯前端，后端与数据结构零改动）**。
   ① 角色来源：`AuthContext` 启动时用 `GET /api/auth/me` 取 `{username, role}`，**登录成功后也再拉一次 `/auth/me`**（以服务端为准）。
   ② 顶栏用户菜单：显示用户名 + 角色标签（管理员 / 普通用户 / 智能体），保留退出登录；SSH 状态胶囊对非 admin 只显示状态（不跳转 `/ssh`），提示改为"仅管理员可管理"。
   ③ 按角色隐藏入口：侧栏「系统 → SSH 连接」仅 admin 渲染（该页包含 SSH 配置与根目录/路径映射等全局配置）；巡检中心的**自动巡检开关**与「立即巡检」按钮仅 admin 渲染（普通用户看到只读的"仅管理员可修改"）；总览快捷操作「触发全局巡检」与风险面板里的巡检按钮仅 admin。
@@ -411,7 +411,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.2，已提交并推送**（`3038ae8`；v0.9.0 登录认证、v0.9.1 归属字段、v0.9.2 授权过滤）；`npm run build` 已出。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.3，已提交并推送**（`f84c459`；v0.9.0 登录认证 / v0.9.1 归属字段 / v0.9.2 授权过滤 / v0.9.3 前端角色化）；`npm run build` 已出。**生产机仍是 22:53 启动的 v0.9.0 进程**，需 `sudo systemctl restart vasp-manager` 部署 v0.9.1~v0.9.3，并建议随后跑一次 `scripts/migrate_owners.py --owner zouyuxi --apply` 给现有 4 个项目补 owner。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
 
 1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。

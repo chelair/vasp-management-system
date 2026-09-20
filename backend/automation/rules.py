@@ -12,6 +12,19 @@ from automation import store
 #: 条件里不能出现这些"仅供内部"的键
 _RESERVED = {"trigger", "action", "guard", "enabled", "id", "description"}
 
+#: 允许出现在 condition 里的字段（与 build_context() 的输出对齐；未知字段会被拒绝，
+#: 否则规则会静默地永不命中）
+CONDITION_KEYS = {
+    "task_id", "model_name", "task_type", "status", "job_id",
+    "project", "project_id", "owner",
+    "is_continuation", "archived", "converged",
+    "group_type", "group_role", "group_id", "group_name",
+    "source_dir",
+    "frac_task_id", "frac_status", "frac_missing",
+    "initial_task_id", "final_task_id", "initial_converged", "final_converged",
+    "images_created",
+}
+
 
 def build_context(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     """任务的判定上下文（规则 condition 里能用的字段都来自这里）。"""

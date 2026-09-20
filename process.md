@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-21 · 当前版本：v0.9.8（规则改「选作用对象」+ 下架 neb.create 动作）
+> 生成时间：2026-08-29 · 最近更新：2026-09-21 · 当前版本：v0.9.9（规则三级交互：选作用对象→选具体项目/任务/组→附加条件下拉）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -241,8 +241,18 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.8）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.9）
 
+- v0.9.9（2026-09-21，待提交）：**规则配置改三级交互（选作用对象 → 选具体对象 → 附加条件也用下拉）**。
+  ① **作用对象 → 具体对象**（用户："选了作用对象之后要能够让我选具体的"）：
+     - 作用对象 = 项目 → 「具体项目」多选（留空 = 全部项目）→ 条件 `project`（单个是字符串、多个是列表）；
+     - 作用对象 = opt 任务 → 「具体 opt 任务」多选（按"项目 / 任务名"搜索）→ 条件 `task_type=opt` + `task_id`（多选即列表）；
+     - 作用对象 = 自由能组 → 「具体自由能组」多选（按"项目 / 路径组名"搜索）→ 条件 `group_type=free_energy` + `group_id`；
+     - 定时规则：所选对象只涉及**一个**项目时自动写 `trigger.scope="project:<名>"`（列表里直观可见），涉及多个项目则 `scope=all` 并由 `condition` 过滤。
+  ② **附加条件改成下拉**（用户："我怎么知道期望值填什么"）：字段从「任务状态 / 在组里的角色 / 是否已收敛 / 缺频率矫正输入 / NEB 初态已收敛 / NEB 末态已收敛 / NEB 映像文件已创建 / 是续算子任务 / 已归档 / 任务名 / 作业号」里选（中文名 + 说明），取值控件按字段类型自适应——布尔给「是/否」、状态与角色给多选（值为中文标签，如"未收敛""NEB 初态优化"）、任务名/作业号才需要手填（带示例提示）。作用对象已覆盖的 `task_type / group_type / project / task_id / group_id` 不再出现在附加条件里。
+  ③ **后端配套**：`rules.CONDITION_KEYS` 白名单 + `_validate_rule` 拒绝未知条件字段（以前写错字段会静默永不命中，现在直接 400 并列出可用字段）；条件值列表/字符串/布尔都支持（`build_context` 与匹配器早已支持列表比较）。
+  ④ 映射与回填是纯函数（`src/utils/ruleTarget.ts`）：`selectionToCondition()` 生成 condition/scope，`conditionToSelection()` 在编辑时按条件反推作用对象、具体对象与附加条件（含定时 scope → 项目）。
+  ⑤ 验证：前端 17 项（映射 11 项：单/多项目、具体任务与组、定时 scope、编辑反推、布尔/多选/文本归一化；弹窗 6 项：三级下拉、具体对象列出 ProjX/PATH1、附加条件字段是中文标签、字段目录不含作用对象已覆盖项）+ 后端 4 项（四类新条件都能建规则、未知字段 400、列表能看到 task_id/group_id、定时+具体组 scope=all）+ `tsc` + build。
 - v0.9.8（commit `d35ace8`，已推送 origin/main）：**新建规则改成交互式「选作用对象」+ 下架 neb.create 动作**。
   ① **作用对象显式选择**（用户："可选针对项目/opt 任务/自由能组，要做成更易交互的，而不是藏在条件里"）：弹窗新增「作用对象」下拉——项目 / opt 任务（结构优化）/ 自由能组，以及「指定项目（可选）」；映射规则见 `src/utils/ruleTarget.ts`（纯函数、可单测）：项目 → 条件为空；opt 任务 → `condition.task_type="opt"`；自由能组 → `condition.group_type="free_energy"`；指定项目时**条件规则**写 `condition.project`、**定时规则**写 `trigger.scope="project:<名>"`。原来的键值条件编辑器降级为折叠的「附加条件（可选）」，编辑既有规则时按条件**反推**作用对象并回填。
   ② **下架 `neb.create`**（用户："neb计算文件创建那个先去掉吧"）：从动作目录（`ACTIONS`）里移除，`GET /api/actions` 只剩 `task.continuation / task.submit / frac.create`，新建/编辑规则时选不到；后端对 `action="neb.create"` 直接 400（未知动作）。实现类 `_NebCreate` 保留在 `automation/actions.py`（注释注明暂未启用），需要时加回注册表即可。

@@ -77,6 +77,9 @@ def _validate_rule(rule: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
     condition = rule.get("condition") or {}
     if not isinstance(condition, dict):
         return {}, "condition 必须是对象"
+    unknown = sorted(str(k) for k in condition if str(k) not in rules.CONDITION_KEYS)
+    if unknown:
+        return {}, f"condition 里有不支持的字段：{', '.join(unknown)}（可用字段见 API.md）"
     guard = dict(rule.get("guard") or {})
     for key in ("cooldown_seconds", "max_runs_per_task"):
         if key in guard and guard[key] is not None:

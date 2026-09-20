@@ -267,15 +267,23 @@ body: {
 规则文件：`data/config/rules/<id>.json`（一文件一规则）。前端配置规则时先选**作用对象**，
 再（可选）加附加条件，映射关系：
 
-| 作用对象 | condition | 备注 |
-| --- | --- | --- |
-| 项目 | `{}` | 项目下所有任务；"指定项目"时条件规则写 `condition.project` |
-| opt 任务（结构优化） | `{"task_type": "opt"}` | |
-| 自由能组 | `{"group_type": "free_energy"}` | 含路径里的 frac 子任务 |
-| 定时规则的"指定项目" | 写 `trigger.scope = "project:<名>"` | 不指定即 `all` |
+| 作用对象 | 具体对象（可多选） | 生成的 condition | 定时规则的 scope |
+| --- | --- | --- | --- |
+| 项目 | 具体项目（留空=全部） | `project`（单值或列表） | 只涉及 1 个项目 → `project:<名>`，否则 `all` |
+| opt 任务（结构优化） | 具体任务（可搜索） | `task_type=opt` + `task_id`（单值或列表） | 同上（按所选任务反查项目） |
+| 自由能组 | 具体路径组（可搜索） | `group_type=free_energy` + `group_id`（单值或列表） | 同上（按所选组反查项目） |
 
-附加条件（可折叠）用于更细的判定，例如 `status=unconverged`、`converged=false`、
-`frac_missing=true`、`initial_converged=true` 等（字段与 `rules.build_context()` 对齐）。
+附加条件（可选，界面全是下拉，字段带中文名与说明）：
+
+| 字段 | 取值 |
+| --- | --- |
+| `status` | 多选：待提交 / 排队中 / 运行中 / 已完成 / 未收敛 / 异常（僵尸）/ 已归档 |
+| `group_role` | 多选：自由能结构优化 / 频率矫正 / NEB 初态优化 / NEB 末态优化 / NEB 映像计算 |
+| `converged` / `frac_missing` / `initial_converged` / `final_converged` / `images_created` / `is_continuation` / `archived` | 是 / 否 |
+| `model_name` / `job_id` | 手填（带示例提示） |
+
+> 条件字段有**白名单**：`rules.CONDITION_KEYS`（与 `build_context()` 输出对齐）。
+> 写错字段名会被 400 拒绝并列出可用字段，不会出现"规则静默永不命中"。
 
 ```json
 {

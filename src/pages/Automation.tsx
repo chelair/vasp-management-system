@@ -5,6 +5,7 @@ import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import RuleModal from '../components/automation/RuleModal';
 import { fetchProjects } from '../api/projects';
+import type { TaskRefLite } from '../utils/ruleTarget';
 import {
   createAutomationRule,
   deleteAutomationRule,
@@ -61,7 +62,7 @@ export default function Automation() {
   const [actionCatalog, setActionCatalog] = useState<ActionCatalogItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<AutomationRule | null>(null);
-  const [projectNames, setProjectNames] = useState<string[]>([]);
+  const [taskRefs, setTaskRefs] = useState<TaskRefLite[]>([]);
 
   const load = useCallback(
     async (notify = false) => {
@@ -98,8 +99,22 @@ export default function Automation() {
       .then((catalog) => setActionCatalog(catalog.actions ?? []))
       .catch(() => setActionCatalog([]));
     fetchProjects()
-      .then((list) => setProjectNames(list.map((p) => p.name)))
-      .catch(() => setProjectNames([]));
+      .then((list) =>
+        setTaskRefs(
+          list.flatMap((project) =>
+            (project.tasks ?? []).map((task) => ({
+              task_id: task.task_id,
+              model_name: task.model_name,
+              task_type: task.task_type,
+              project: project.name,
+              group_id: task.group?.group_id ?? null,
+              group_name: task.group?.name ?? null,
+              group_type: task.group?.group_type ?? null,
+            })),
+          ),
+        ),
+      )
+      .catch(() => setTaskRefs([]));
   }, []);
 
   const paused = settings ? !settings.enabled : false;
@@ -526,7 +541,7 @@ export default function Automation() {
         open={modalOpen}
         rule={editingRule}
         actions={actionCatalog}
-        projects={projectNames}
+        refs={taskRefs}
         onCancel={() => {
           setModalOpen(false);
           setEditingRule(null);

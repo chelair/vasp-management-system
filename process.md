@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.3（第 5 步收尾：前端按角色隐藏入口 + 403 轻提示）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.5（账号体系 1~5 步 + 登录审计/安全收尾）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -237,8 +237,16 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.3）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.5）
 
+- v0.9.5（2026-09-20，待提交）：**账号系统上线后的安全/可运维收尾**（v0.9.4 未使用，直接发 0.9.5）。
+  ① **账号审计**：新增 `auth.audit()`，把**登录成功 / 登录失败 / 限速拦截 / 登出 / 长期 token 签发 / token 吊销**写进与作业动作同一份 `data/audit/actions.jsonl`（`command=auth.login|auth.logout|auth.token-issue|auth.token-revoke`，带 `username` / `ip` / `detail`）。
+  ② **`?token=` 收紧**：查询参数形式的 token **只允许文档路径**（`/docs`、`/openapi.json`、`/redoc`），普通 API 的 GET 不再接受（token 落进浏览器历史 / 代理日志是常见泄露途径）；请求头与 Cookie 不受影响。
+  ③ **禁止缓存凭据响应**：`/auth/login`、`/auth/me`、`/auth/logout`、`/auth/tokens`(签发) 统一返回 `Cache-Control: no-store`。
+  ④ **会话文件自清理**：会话条数达到阈值（100）时，创建新会话前顺手清掉过期会话，长期运行不再无限增长。
+  ⑤ **上下文清理**：认证中间件在请求结束的 `finally` 里清掉 `permissions` 的 contextvar（防御性，避免极端情况下残留）。
+  ⑥ 验证（隔离实例 + 真实 HTTP，16 项断言）：登录成功/失败/限速/登出/token 签发/吊销都在审计 JSONL 里且带用户名与 IP；登录响应与 `/auth/me` 带 `no-store`；`?token=` 在普通 GET 上 401、在 `/docs` 上可用；Cookie 仍可用于浏览器读 `/docs`；会话超阈值自动清理过期项。
+  ⑦ **已知边界（有意保留，未在本版处理）**：登录失败限速是**进程内内存**计数（重启清零）；未上 HTTPS 因此 Cookie 无法带 `Secure`；无用户管理 / 操作日志 / 在线会话页面（用 `scripts/set_password.py` 与 `/auth/tokens` 接口管理）；`role=agent` 的 token scope、多人共享项目仍未做。
 - v0.9.3（commit `f84c459`，已推送 origin/main）：**第 5 步基础收尾——前端按角色隐藏入口 + 403 统一处理（纯前端，后端与数据结构零改动）**。
   ① 角色来源：`AuthContext` 启动时用 `GET /api/auth/me` 取 `{username, role}`，**登录成功后也再拉一次 `/auth/me`**（以服务端为准）。
   ② 顶栏用户菜单：显示用户名 + 角色标签（管理员 / 普通用户 / 智能体），保留退出登录；SSH 状态胶囊对非 admin 只显示状态（不跳转 `/ssh`），提示改为"仅管理员可管理"。
@@ -403,7 +411,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
 13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策，**先写待办、暂不实现自动执行**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。
 14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
-    - **第 1～5 步已完成**（含前端角色化收尾）（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效）：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
+    - **第 1～5 步已完成**（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效 / 前端角色化收尾），并在 v0.9.5 做了登录审计与安全加固：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 

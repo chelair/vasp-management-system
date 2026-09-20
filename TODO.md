@@ -11,6 +11,14 @@
 
 ## 当前进度概览
 
+**已完成（v0.9.5，2026-09-20 · 账号系统安全/可运维收尾）**
+
+- [x] 账号审计：登录成功/失败/限速/登出/长期 token 签发与吊销写入 `data/audit/actions.jsonl`（带 username / ip / detail）
+- [x] `?token=` 只允许文档路径；凭据响应统一 `Cache-Control: no-store`；会话文件超阈值自动清理过期项；认证中间件请求结束清理 contextvar
+- [x] 验证：隔离实例 16 项 HTTP 断言通过；此前 第 4 步 34 项、第 5 步 15 项前端断言仍有效
+- [ ] 已知边界（有意保留）：限速为进程内内存（重启清零）、未上 HTTPS（Cookie 无 Secure）、无用户/日志/会话管理页、agent token scope、多人共享项目
+
+
 **已完成（v0.9.3，2026-09-20 · 第 5 步基础收尾：前端角色化 + 403 轻提示）**
 
 - [x] 顶栏显示用户名 + 角色标签；登录后与启动时都用 `/auth/me` 刷新角色
@@ -747,7 +755,7 @@
 - [x] **③ 归属字段与迁移**（**2026-09-20 完成，隔离目录已验证；生产数据迁移待用户确认后执行 `--apply`**）：`projects.json` 增加 `owner`/`created_at`；`scripts/migrate_owners.py`（dry-run 默认，`--apply` 写入）把现有 4 个项目归给指定管理员；`mappers` 输出 `owner`
 - [x] **④ 授权生效**（**2026-09-20 完成，隔离目录已验证；生产待确认后部署**）：`backend/permissions.py`（`visible_projects` / `ensure_owner` / `ensure_task_owner`）接入 `projects / jobs(_resolve_task) / groups / free_energy / reports / inspections / dashboard`；`_audit_log` 增加 `username` 字段
   - 验收：A 账号看不到 B 的项目（列表 + 单对象 + 巡检 + 报告 + 总览统计）；直接拿 B 的 task_id 调动作 → `403`；admin 可见全部
-- [x] **⑤ 收尾（前端角色化 + 403 处理）**（**2026-09-20 完成，隔离目录已验证；生产待部署**）：前端角色化（隐藏他人项目、admin 多"全部项目"视图）、智能体长期 token（与 §13 白名单打通）、可选加固（HTTPS、在线会话与强制下线、密码策略、操作日志页）
+- [x] **⑤ 收尾（前端角色化 + 403 处理 + 登录审计/安全加固，v0.9.5）**（**2026-09-20 完成，隔离目录已验证；生产待部署**）：前端角色化（隐藏他人项目、admin 多"全部项目"视图）、智能体长期 token（与 §13 白名单打通）、可选加固（HTTPS、在线会话与强制下线、密码策略、操作日志页）
 
 **兼容与回滚**
 

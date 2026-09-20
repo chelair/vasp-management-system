@@ -105,14 +105,17 @@ def login(request: Request, payload: dict = Body(default={})):
     key = _rate_key(request, username)
     retry_after = _seconds_until_retry(key)
     if retry_after > 0:
+        auth.audit("login", "BLOCKED（限速）", username, _client_ip(request))
         return JSONResponse(
             status_code=429,
             content=fail(f"登录失败次数过多，请 {max(1, retry_after // 60)} 分钟后再试"),
+            headers={"Cache-Control": "no-store"},
         )
 
     user = auth.authenticate(username, password)
     if user is None:
         _record_failure(key)
+        auth.audit("login", "FAILED（用户名或密码错误）", username, _client_ip(request))
         remaining = LOGIN_MAX_FAILURES - len(_failures(key))
         message = "用户名或密码错误"
         if remaining <= 2:
@@ -120,10 +123,12 @@ def login(request: Request, payload: dict = Body(default={})):
         return JSONResponse(status_code=401, content=fail(message))
 
     _clear_failures(key)
+    auth.audit("login", "OK", username, _client_ip(request), detail=f"device={device}")
     token, session = auth.create_session(
         user, name=device, kind="session", ttl_seconds=SESSION_EXTEND_SECONDS
     )
     response = JSONResponse(
+        headers={"Cache-Control": "no-store"},
         content=ok(
             "登录成功",
             {
@@ -151,7 +156,11 @@ def logout(request: Request):
     """删除当前会话（旧 token 立即失效）。"""
     token = getattr(request.state, "token", "") or ""
     revoked = auth.revoke_token(token) if token else False
-    response = JSONResponse(content=ok("已退出登录", {"revoked": revoked}))
+    auth.audit("logout", "OK" if revoked else "NOOP", current_user(request).get("username"), _client_ip(request))
+    response = JSONResponse(
+        content=ok("已退出登录", {"revoked": revoked}),
+        headers={"Cache-Control": "no-store"},
+    )
     response.delete_cookie(COOKIE_NAME, path="/")
     return response
 
@@ -161,13 +170,16 @@ def me(request: Request):
     """当前用户 + 当前会话信息（前端启动时校验登录态）。"""
     user = current_user(request)
     session = getattr(request.state, "session", {}) or {}
-    return ok(
-        "查询成功",
-        {
-            "user": _public_user(user),
-            "session": _public_session(session),
-            "is_admin": str(user.get("role") or "") == "admin",
-        },
+    return JSONResponse(
+        content=ok(
+            "查询成功",
+            {
+                "user": _public_user(user),
+                "session": _public_session(session),
+                "is_admin": str(user.get("role") or "") == "admin",
+            },
+        ),
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -215,14 +227,24 @@ def create_token(request: Request, payload: dict = Body(default={})):
         created_by=str(admin.get("username") or ""),
         never_expires=ttl_days is None,
     )
-    return ok(
-        "长期 token 已签发（明文只显示这一次，请立即保存）",
-        {
-            "token": token,
-            "user": _public_user(target),
-            "session": _public_session(session),
-            "expires_at": session.get("expires_at"),
-        },
+    auth.audit(
+        "token-issue",
+        "OK",
+        admin.get("username"),
+        _client_ip(request),
+        detail=f"for={target.get('username')} name={name} expires_days={ttl_days}",
+    )
+    return JSONResponse(
+        content=ok(
+            "长期 token 已签发（明文只显示这一次，请立即保存）",
+            {
+                "token": token,
+                "user": _public_user(target),
+                "session": _public_session(session),
+                "expires_at": session.get("expires_at"),
+            },
+        ),
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -260,4 +282,11 @@ def delete_token(token_id: str, request: Request):
     if not is_admin(request) and str(session.get("user_id")) != str(user.get("user_id")):
         return JSONResponse(status_code=403, content=fail("只能吊销自己的 token"))
     removed = auth.delete_session(token_id)
+    auth.audit(
+        "token-revoke",
+        "OK" if removed else "NOOP",
+        user.get("username"),
+        _client_ip(request),
+        detail=f"session_id={token_id} owner={session.get('user_id')}",
+    )
     return ok("token 已吊销", {"revoked": removed, "session_id": token_id})

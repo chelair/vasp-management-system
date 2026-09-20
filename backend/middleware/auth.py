@@ -37,6 +37,10 @@ PROTECTED_EXACT = ("/docs", "/openapi.json", "/redoc")
 #: 仅允许"Cookie / 查询参数"带 token 的安全方法（写操作必须用 Authorization 头）
 SAFE_METHODS = ("GET", "HEAD")
 
+#: 只有文档类路径允许用 `?token=`（token 出现在 URL 里会进浏览器历史/代理日志，
+#: 所以普通 API 的 GET 不接受查询参数 token，仍可用请求头或 Cookie）
+QUERY_TOKEN_PREFIXES = ("/docs", "/openapi.json", "/redoc")
+
 COOKIE_NAME = "vasp_token"
 #: 会话滑动续期窗口（秒）：默认 14 天
 SESSION_EXTEND_SECONDS = auth.SESSION_TTL_DAYS * 24 * 3600
@@ -73,9 +77,11 @@ def extract_token(request: Request) -> Optional[str]:
     if token:
         return token
     if request.method.upper() in SAFE_METHODS:
-        query = (request.query_params.get("token") or "").strip()
-        if query:
-            return query
+        path = request.url.path
+        if any(path.startswith(prefix) for prefix in QUERY_TOKEN_PREFIXES):
+            query = (request.query_params.get("token") or "").strip()
+            if query:
+                return query
         cookie = (request.cookies.get(COOKIE_NAME) or "").strip()
         if cookie:
             return cookie
@@ -106,7 +112,11 @@ async def auth_middleware(request: Request, call_next):
     request.state.username = user.get("username")
     # 供深层调用（jobs._resolve_task 等"唯一入口"）做归属校验用
     permissions.set_current_user(user)
-    return await call_next(request)
+    try:
+        return await call_next(request)
+    finally:
+        # 防御性清理：避免极少数情况下 contextvar 残留到后续处理
+        permissions.clear_current_user()
 
 
 def install(app: FastAPI) -> None:

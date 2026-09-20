@@ -57,11 +57,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 ### 2.2 调用约定
 
 - **请求头**：`Authorization: Bearer <token>`（推荐）。备用：`X-Auth-Token: <token>`。
-- **`?token=` 与 Cookie**：只对 `GET`/`HEAD` 生效（方便浏览器直接打开 `/docs?token=...`），**写操作必须用请求头**——这条规则是为了不引入 CSRF 面。
+- **`?token=`**：**只对文档路径**（`/docs`、`/openapi.json`、`/redoc`）生效，且只用于首次打开 HTML；`/openapi.json` 这类后续请求需要 Cookie 或请求头（推荐直接在浏览器登录后用 Cookie 打开 `/docs`，脚本用 `Authorization` 头）。普通 API 的 GET **不接受** `?token=`（避免 token 进浏览器历史/代理日志）。
+- **Cookie**：登录时由后端写入（HttpOnly、SameSite=Lax），只对 `GET`/`HEAD` 生效，**写操作必须用请求头**——这条规则是为了不引入 CSRF 面。
 - **会话有效期**：默认 14 天并**滑动续期**（每次请求把有效期推回 14 天，漂移 ≥1 小时才写盘）；长期 token 默认不过期，可随时吊销。
 - **失效场景**（都会返回 `401`）：token 不存在 / 已过期 / 已吊销 / 用户被禁用。改密与禁用会自动吊销该用户全部会话。
 - **退出登录后**：旧 token 立即不可用（服务端删除会话，不依赖前端）。
 - **日志/排障**：`sudo journalctl -u vasp-manager`；账号初始化（首次启动）会把随机初始密码打印到日志与 stdout。
+- **审计**：账号相关动作（登录成功/失败、限速拦截、登出、长期 token 签发与吊销）与作业动作写同一份 `data/audit/actions.jsonl`，字段含 `at/username/command/result`（账号类额外带 `ip`，token 类带 `detail`）。
+- **凭据响应不缓存**：`/auth/login`、`/auth/me`、`/auth/logout`、`/auth/tokens` 均返回 `Cache-Control: no-store`。
 
 ```bash
 # 签发一个给智能体的长期 token（admin）

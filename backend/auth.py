@@ -39,6 +39,10 @@ USERS_DIR = DATA_DIR / "users"
 USERS_FILE = USERS_DIR / "users.json"
 SESSIONS_FILE = USERS_DIR / "sessions.json"
 LOCK_FILE = USERS_DIR / ".auth.lock"
+#: 账号审计（与作业动作写同一份 JSONL，便于统一消费）
+AUDIT_FILE = DATA_DIR / "audit" / "actions.jsonl"
+#: 会话条数超过这个阈值时，创建会话前顺手清理过期会话（避免文件无限增长）
+SESSION_PURGE_THRESHOLD = 100
 
 #: 首次启动自动创建的管理员用户名
 DEFAULT_ADMIN_USERNAME = "zouyuxi"
@@ -360,6 +364,38 @@ def hash_token(token: str) -> str:
     return sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
+def audit(
+    event: str,
+    result: str,
+    username: str = "",
+    ip: str = "",
+    detail: str = "",
+) -> None:
+    """账号审计：登录成功/失败、登出、长期 token 签发与吊销。
+
+    与作业动作写同一份 `data/audit/actions.jsonl`（字段兼容 + 额外 `ip`/`detail`）；
+    审计失败不影响主流程。
+    """
+    try:
+        AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "at": now_iso(),
+            "username": normalize_username(username) or "-",
+            "project": "",
+            "task_id": "",
+            "remote_dir": "",
+            "command": f"auth.{event}",
+            "result": result,
+            "ip": ip or "-",
+        }
+        if detail:
+            record["detail"] = detail
+        with open(AUDIT_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:  # noqa: BLE001 - 审计失败不影响登录
+        logger.warning("写账号审计失败：%s", e)
+
+
 def new_session_id() -> str:
     return f"sess_{secrets.token_hex(8)}"
 
@@ -410,6 +446,9 @@ def create_session(
         doc = _read_json(SESSIONS_FILE, None)
         if not isinstance(doc, dict) or not isinstance(doc.get("sessions"), list):
             doc = {"version": 1, "sessions": []}
+        # 会话条数偏多时顺手清理过期项（长期运行下避免文件无限增长）
+        if len(doc["sessions"]) >= SESSION_PURGE_THRESHOLD:
+            doc["sessions"] = [s for s in doc["sessions"] if not is_expired(s)]
         doc["sessions"].append(record)
         _write_json(SESSIONS_FILE, doc)
     return token, dict(record)

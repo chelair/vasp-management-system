@@ -243,7 +243,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.12）
 
-- v0.9.12（2026-09-21，待提交）：**规则支持"动作成功后自动提交作业"接力**（用户："提交作业作为勾选项放在动作后面，因为创建续算完成后一般都会接着提交"）。
+- v0.9.12（commit `43d1640`，已推送 origin/main）：**规则支持"动作成功后自动提交作业"接力**（用户："提交作业作为勾选项放在动作后面，因为创建续算完成后一般都会接着提交"）。
   ① 规则新增可选字段 `follow_up_action`：弹窗里在「动作」右边多了勾选项「执行成功后自动提交作业」，勾上即写 `follow_up_action="task.submit"`；主动作本身就是"提交作业"时该勾选项禁用（不会重复提交）。规则列表的"动作"列会显示接力关系（如 `task.continuation → task.submit`）。
   ② 执行语义（`automation/scheduler.py`）：**只有主动作成功才接力**——续算返回 `action != created`（记 skipped，例如 `input_incomplete`）或主动作失败时，后续提交不会执行；接力动作以 `trigger="follow_up"`、`trigger_id=<主动作 run_id>` 记账，同样受 `guard` 的冷却/上限约束。手动动作入口 `POST /api/actions/{name}` 也支持 `follow_up` 参数。
   ③ **修一个真 bug：隐式幂等指纹**。原实现会给"没传 idempotency_key"的调用自动生成 `task|action` 指纹并永久去重 —— 结果同一条规则第二天再也跑不起来（第二次会被判"重复请求"）。现在**只认显式传入的 `idempotency_key`**，重复次数交给 `guard.cooldown_seconds / max_runs_per_task` 控制（这也是提示词里原本的设计）。

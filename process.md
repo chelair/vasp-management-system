@@ -239,7 +239,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.5）
 
-- v0.9.5（2026-09-20，待提交）：**账号系统上线后的安全/可运维收尾**（v0.9.4 未使用，直接发 0.9.5）。
+- v0.9.5（commit `dc66312`，已推送 origin/main）：**账号系统上线后的安全/可运维收尾**（v0.9.4 未使用，直接发 0.9.5）。
   ① **账号审计**：新增 `auth.audit()`，把**登录成功 / 登录失败 / 限速拦截 / 登出 / 长期 token 签发 / token 吊销**写进与作业动作同一份 `data/audit/actions.jsonl`（`command=auth.login|auth.logout|auth.token-issue|auth.token-revoke`，带 `username` / `ip` / `detail`）。
   ② **`?token=` 收紧**：查询参数形式的 token **只允许文档路径**（`/docs`、`/openapi.json`、`/redoc`），普通 API 的 GET 不再接受（token 落进浏览器历史 / 代理日志是常见泄露途径）；请求头与 Cookie 不受影响。
   ③ **禁止缓存凭据响应**：`/auth/login`、`/auth/me`、`/auth/logout`、`/auth/tokens`(签发) 统一返回 `Cache-Control: no-store`。
@@ -419,7 +419,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.3，已提交并推送**（`f84c459`；v0.9.0 登录认证 / v0.9.1 归属字段 / v0.9.2 授权过滤 / v0.9.3 前端角色化）；`npm run build` 已出。**生产机仍是 22:53 启动的 v0.9.0 进程**，需 `sudo systemctl restart vasp-manager` 部署 v0.9.1~v0.9.3，并建议随后跑一次 `scripts/migrate_owners.py --owner zouyuxi --apply` 给现有 4 个项目补 owner。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.5，已提交并推送**（`dc66312`；v0.9.0 登录认证 / v0.9.1 归属字段 / v0.9.2 授权过滤 / v0.9.3 前端角色化 / v0.9.5 账号审计与安全加固）；`npm run build` 已出（dist 为 v0.9.3 前端，本版无前端改动）。**生产机仍是 22:53 启动的 v0.9.0 进程**，需 `sudo systemctl restart vasp-manager` 部署 v0.9.1~v0.9.3，并建议随后跑一次 `scripts/migrate_owners.py --owner zouyuxi --apply` 给现有 4 个项目补 owner。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
 
 1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。

@@ -239,7 +239,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.2）
 
-- v0.9.2（2026-09-20，待提交）：**授权生效（账号体系第 4 步）——按项目 owner 过滤，越权一律 403**。
+- v0.9.2（commit `3038ae8`，已推送 origin/main）：**授权生效（账号体系第 4 步）——按项目 owner 过滤，越权一律 403**。
   ① 新增 `backend/permissions.py`（只做归属判断）：列表过滤 `visible_projects / visible_project_names`（admin 全可见，普通用户只看 `owner==自己`，大小写归一）、单对象 `ensure_project_owner / ensure_task_owner`（抛 `PermissionDenied`）、`enforce_task(task, db)`（唯一入口用）、审计助手 `current_username(request)`。认证中间件校验通过后把 user 写入 **contextvar**，供深层调用使用；后台线程没有登录用户时自动放行（内部流程不受影响）。
   ② **403 出口统一**：`main.py` 注册 `PermissionDenied` 异常处理器 → `403` + 统一 JSON 信封（不返回 404，避免探测资源是否存在）；各路由原有的 `except Exception` 会吞掉异常，已机械插入 `except permissions.PermissionDenied: raise`（12 个路由文件、87 处）保证穿透。
   ③ **作业动作全覆盖**：`jobs._resolve_task` / `_resolve_task_dir` 是全部 task 级接口的唯一入口，在这里统一校验 → 一次覆盖提交、续算、上传 INCAR/KPOINTS/POSCAR/vasp.lsf、生成频率矫正、创建 NEB、改参数草稿、归档、删除、读取文件等 26 个接口；另新增 `GET /api/projects/{project_id}` 单项目接口（越权 403）以补齐"单项目读"入口。
@@ -403,7 +403,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.0，已提交并推送**（`840f544`）；`npm run build` 已出（dist 为需登录版本）。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.2，已提交并推送**（`3038ae8`；v0.9.0 登录认证、v0.9.1 归属字段、v0.9.2 授权过滤）；`npm run build` 已出。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
 
 1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。

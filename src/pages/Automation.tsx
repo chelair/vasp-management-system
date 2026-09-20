@@ -5,6 +5,7 @@ import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import RuleModal from '../components/automation/RuleModal';
 import { fetchProjects } from '../api/projects';
+import { cronToSchedule, describeDelay, describeSchedule } from '../utils/schedule';
 import type { TaskRefLite } from '../utils/ruleTarget';
 import {
   createAutomationRule,
@@ -222,7 +223,9 @@ export default function Automation() {
           trigger?.type === 'schedule' ? (
             <span>
               <Tag>定时</Tag>
-              <code>{trigger.cron}</code>
+              {trigger.mode === 'after'
+                ? describeDelay(trigger.after_seconds)
+                : describeSchedule(cronToSchedule(trigger.cron))}
             </span>
           ) : (
             <Tag color="geekblue">巡检完成</Tag>
@@ -300,11 +303,11 @@ export default function Automation() {
       width: 190,
       render: (_: unknown, s: AutomationSchedule) =>
         s.mode === 'after' ? (
-          <Tag color="purple">{Math.max(1, Math.round((s.after_seconds ?? 0) / 60))} 分钟后执行一次</Tag>
+          <Tag color="purple">{describeDelay(s.after_seconds)}</Tag>
         ) : (
           <span>
-            <Tag>cron</Tag>
-            <code>{s.cron}</code>
+            <Tag>重复</Tag>
+            {describeSchedule(cronToSchedule(s.cron))}
           </span>
         ),
     },
@@ -339,7 +342,7 @@ export default function Automation() {
     },
     {
       title: '操作',
-      width: 170,
+      width: 230,
       render: (_: unknown, s: AutomationSchedule) => (
         <Space size={0}>
           <Button size="small" type="link" onClick={() => void triggerSchedule(s)}>
@@ -350,6 +353,34 @@ export default function Automation() {
               重新计时
             </Button>
           )}
+          <Button
+            size="small"
+            type="link"
+            onClick={() => {
+              const rule = rules.find((r) => r.id === s.id);
+              if (rule) {
+                setEditingRule(rule);
+                setModalOpen(true);
+              }
+            }}
+          >
+            编辑
+          </Button>
+          <Popconfirm
+            title={`删除定时任务 ${s.id}？`}
+            description="删除后不再定时触发（历史冷却/计数一并清理）"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={async () => {
+              const rule = rules.find((r) => r.id === s.id);
+              if (rule) await removeRule(rule);
+            }}
+          >
+            <Button size="small" type="link" danger>
+              删除
+            </Button>
+          </Popconfirm>
         </Space>
       ),
     },

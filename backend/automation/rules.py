@@ -15,7 +15,7 @@ _RESERVED = {"trigger", "action", "guard", "enabled", "id", "description"}
 #: 允许出现在 condition 里的字段（与 build_context() 的输出对齐；未知字段会被拒绝，
 #: 否则规则会静默地永不命中）
 CONDITION_KEYS = {
-    "task_id", "model_name", "task_type", "status", "job_id",
+    "task_id", "model_name", "task_type", "status",
     "project", "project_id", "owner",
     "is_continuation", "archived", "converged",
     "group_type", "group_role", "group_id", "group_name",

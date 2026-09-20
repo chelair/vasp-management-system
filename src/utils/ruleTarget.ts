@@ -199,7 +199,6 @@ export const CONDITION_FIELDS: ConditionField[] = [
   boolField('is_continuation', '是续算子任务', 'conN 目录登记的隐藏子任务'),
   boolField('archived', '已归档', '任务被关闭（归档）'),
   { key: 'model_name', label: '任务名（完全匹配）', type: 'text', hint: '例如 ProjA_opt' },
-  { key: 'job_id', label: '作业号', type: 'text', hint: '例如 857318' },
 ];
 
 export function findConditionField(key: string): ConditionField | undefined {
@@ -227,4 +226,85 @@ export function toFormValue(key: string, value: unknown): unknown {
     return Array.isArray(value) ? value.map(String) : value ? [String(value)] : [];
   }
   return value === undefined || value === null ? '' : String(value);
+}
+
+/* ------------------------------------------------------------------ 树状结构（具体对象选择用） */
+
+export interface PickerTreeNode {
+  value: string;
+  title: string;
+  selectable: boolean;
+  children?: PickerTreeNode[];
+}
+
+function sortBy<T>(items: T[], key: (item: T) => string): T[] {
+  return [...items].sort((a, b) => key(a).localeCompare(key(b), 'zh-Hans-CN'));
+}
+
+/**
+ * opt 任务的树：项目 → （自由能/NEB 组 或 独立任务）→ 任务叶子。
+ * 任务多的时候用 TreeSelect + 搜索就不会乱。
+ */
+export function buildOptTaskTree(refs: TaskRefLite[]): PickerTreeNode[] {
+  const byProject = new Map<string, TaskRefLite[]>();
+  for (const ref of refs) {
+    if (ref.task_type !== 'opt') continue;
+    const list = byProject.get(ref.project) ?? [];
+    list.push(ref);
+    byProject.set(ref.project, list);
+  }
+  const tree: PickerTreeNode[] = [];
+  for (const [project, tasks] of sortBy(Array.from(byProject.entries()), ([name]) => name)) {
+    const byGroup = new Map<string, { title: string; tasks: TaskRefLite[] }>();
+    for (const task of tasks) {
+      const key = task.group_id || `__solo__:${project}`;
+      const title = task.group_id ? task.group_name || task.group_id : '独立任务';
+      const bucket = byGroup.get(key) ?? { title, tasks: [] };
+      bucket.tasks.push(task);
+      byGroup.set(key, bucket);
+    }
+    tree.push({
+      value: `p:${project}`,
+      title: project,
+      selectable: false,
+      children: sortBy(Array.from(byGroup.entries()), ([, bucket]) => bucket.title).map(([key, bucket]) => ({
+        value: `g:${project}:${key}`,
+        title: `${bucket.title}（${bucket.tasks.length}）`,
+        selectable: false,
+        children: sortBy(bucket.tasks, (task) => task.model_name).map((task) => ({
+          value: task.task_id,
+          title: task.model_name,
+          selectable: true,
+        })),
+      })),
+    });
+  }
+  return tree;
+}
+
+/** 自由能组的树：项目 → 路径组（叶子） */
+export function buildFreeEnergyGroupTree(refs: TaskRefLite[]): PickerTreeNode[] {
+  const byProject = new Map<string, Map<string, { name: string; count: number }>>();
+  for (const ref of refs) {
+    if (ref.group_type !== 'free_energy' || !ref.group_id) continue;
+    const groups = byProject.get(ref.project) ?? new Map();
+    const entry = groups.get(ref.group_id) ?? { name: ref.group_name || ref.group_id, count: 0 };
+    entry.count += ref.task_type === 'opt' ? 1 : 0;
+    groups.set(ref.group_id, entry);
+    byProject.set(ref.project, groups);
+  }
+  const tree: PickerTreeNode[] = [];
+  for (const [project, groups] of sortBy(Array.from(byProject.entries()), ([name]) => name)) {
+    tree.push({
+      value: `p:${project}`,
+      title: project,
+      selectable: false,
+      children: sortBy(Array.from(groups.entries()), ([, entry]) => entry.name).map(([groupId, entry]) => ({
+        value: groupId,
+        title: entry.count > 0 ? `${entry.name}（${entry.count} 个结构）` : entry.name,
+        selectable: true,
+      })),
+    });
+  }
+  return tree;
 }

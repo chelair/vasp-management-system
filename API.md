@@ -270,8 +270,8 @@ body: {
 | 作用对象 | 具体对象（可多选） | 生成的 condition | 定时规则的 scope |
 | --- | --- | --- | --- |
 | 项目 | 具体项目（留空=全部） | `project`（单值或列表） | 只涉及 1 个项目 → `project:<名>`，否则 `all` |
-| opt 任务（结构优化） | 具体任务（可搜索） | `task_type=opt` + `task_id`（单值或列表） | 同上（按所选任务反查项目） |
-| 自由能组 | 具体路径组（可搜索） | `group_type=free_energy` + `group_id`（单值或列表） | 同上（按所选组反查项目） |
+| opt 任务（结构优化） | 具体任务（**树：项目 → 组/独立任务 → 任务**，可搜索） | `task_type=opt` + `task_id`（单值或列表） | 同上（按所选任务反查项目） |
+| 自由能组 | 具体路径组（**树：项目 → 自由能组**，可搜索） | `group_type=free_energy` + `group_id`（单值或列表） | 同上（按所选组反查项目） |
 
 附加条件（可选，界面全是下拉，字段带中文名与说明）：
 
@@ -280,7 +280,7 @@ body: {
 | `status` | 多选：待提交 / 排队中 / 运行中 / 已完成 / 未收敛 / 异常（僵尸）/ 已归档 |
 | `group_role` | 多选：自由能结构优化 / 频率矫正 / NEB 初态优化 / NEB 末态优化 / NEB 映像计算 |
 | `converged` / `frac_missing` / `initial_converged` / `final_converged` / `images_created` / `is_continuation` / `archived` | 是 / 否 |
-| `model_name` / `job_id` | 手填（带示例提示） |
+| `model_name` | 手填（带示例提示），用于锁定某个具体任务 |
 
 > 条件字段有**白名单**：`rules.CONDITION_KEYS`（与 `build_context()` 输出对齐）。
 > 写错字段名会被 400 拒绝并列出可用字段，不会出现"规则静默永不命中"。

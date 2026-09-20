@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space } from 'antd';
+import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, TreeSelect } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import type { ActionCatalogItem, AutomationRule } from '../../api/automation';
 import {
@@ -10,6 +10,8 @@ import {
   normalizeConditionValue,
   selectionToCondition,
   toFormValue,
+  buildFreeEnergyGroupTree,
+  buildOptTaskTree,
   type RuleTargetType,
   type TaskRefLite,
 } from '../../utils/ruleTarget';
@@ -56,24 +58,9 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
     () => Array.from(new Set(refs.map((r) => r.project))).sort(),
     [refs],
   );
-  const optTasks = useMemo(
-    () => refs.filter((r) => r.task_type === 'opt'),
-    [refs],
-  );
-  const freeEnergyGroups = useMemo(() => {
-    const map = new Map<string, { group_id: string; name: string; project: string }>();
-    for (const ref of refs) {
-      if (ref.group_type !== 'free_energy' || !ref.group_id) continue;
-      if (!map.has(ref.group_id)) {
-        map.set(ref.group_id, {
-          group_id: ref.group_id,
-          name: ref.group_name || ref.group_id,
-          project: ref.project,
-        });
-      }
-    }
-    return Array.from(map.values());
-  }, [refs]);
+  /** 任务/组都做成"项目 → 组 → 任务"的树，避免长列表里翻找 */
+  const optTaskTree = useMemo(() => buildOptTaskTree(refs), [refs]);
+  const freeEnergyGroupTree = useMemo(() => buildFreeEnergyGroupTree(refs), [refs]);
 
   useEffect(() => {
     if (!open) return;
@@ -334,33 +321,31 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
               />
             )}
             {target === 'opt' && (
-              <Select
-                mode="multiple"
+              <TreeSelect
+                multiple
                 allowClear
                 showSearch
-                placeholder="搜索并选择任务"
+                treeDefaultExpandAll={false}
+                treeNodeFilterProp="title"
+                placeholder="按 项目 → 组 → 任务 选择（可直接搜索任务名）"
                 value={tasks}
-                onChange={setTasks}
-                optionFilterProp="label"
-                options={optTasks.map((t) => ({
-                  value: t.task_id,
-                  label: `${t.project} / ${t.model_name}`,
-                }))}
+                onChange={(value) => setTasks((value as string[]) ?? [])}
+                treeData={optTaskTree}
+                maxTagCount="responsive"
               />
             )}
             {target === 'free_energy' && (
-              <Select
-                mode="multiple"
+              <TreeSelect
+                multiple
                 allowClear
                 showSearch
-                placeholder="搜索并选择自由能路径组"
+                treeDefaultExpandAll={false}
+                treeNodeFilterProp="title"
+                placeholder="按 项目 → 自由能组 选择（可直接搜索组名）"
                 value={groups}
-                onChange={setGroups}
-                optionFilterProp="label"
-                options={freeEnergyGroups.map((g) => ({
-                  value: g.group_id,
-                  label: `${g.project} / ${g.name}`,
-                }))}
+                onChange={(value) => setGroups((value as string[]) ?? [])}
+                treeData={freeEnergyGroupTree}
+                maxTagCount="responsive"
               />
             )}
             <div className="job-field-hint">{targetHint}</div>

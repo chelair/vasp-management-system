@@ -74,6 +74,12 @@ def _validate_rule(rule: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
     action = str(rule.get("action") or "").strip()
     if action not in actions.ACTIONS:
         return {}, f"未知动作：{action}（可用：{', '.join(actions.ACTIONS)}）"
+    follow_up = str(rule.get("follow_up_action") or "").strip()
+    if follow_up:
+        if follow_up not in actions.ACTIONS:
+            return {}, f"后续动作未知：{follow_up}（可用：{', '.join(actions.ACTIONS)}）"
+        if follow_up == action:
+            return {}, "后续动作不能与主动作相同"
     condition = rule.get("condition") or {}
     if not isinstance(condition, dict):
         return {}, "condition 必须是对象"
@@ -96,6 +102,7 @@ def _validate_rule(rule: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
             "condition": condition,
             "action": action,
             "guard": guard,
+            "follow_up_action": follow_up or None,
         },
         "",
     )
@@ -141,6 +148,7 @@ def run_action(action_name: str, request: Request, payload: dict = Body(default=
             dry_run=body.get("dry_run"),
             idempotency_key=body.get("idempotency_key"),
             wait=bool(body.get("wait", True)),
+            follow_up=body.get("follow_up") or None,
         )
         return ok(result.get("reason") or "动作已处理", result)
     except permissions.PermissionDenied:

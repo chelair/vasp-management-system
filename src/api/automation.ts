@@ -24,6 +24,8 @@ export interface AutomationRule {
   condition: Record<string, unknown>;
   action: string;
   guard: { cooldown_seconds?: number; max_runs_per_task?: number };
+  /** 主动作成功后接着执行的动作（例如续算成功后自动提交作业） */
+  follow_up_action?: string | null;
   failures?: number;
 }
 

@@ -198,8 +198,13 @@ def submit(
     guard: Optional[Dict[str, Any]] = None,
     wait: bool = True,
     project_name: str = "",
+    follow_up: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """统一入口：前置检查 → （dry_run 只跑 preflight）→ 入队执行。"""
+    """统一入口：前置检查 → （dry_run 只跑 preflight）→ 入队执行。
+
+    `follow_up`：主动作**成功**后接着执行的另一个动作（例如"续算成功 → 提交作业"）；
+    主动作被跳过（如续算判定没真创建）或失败时不会执行后续动作。
+    """
     params = dict(params or {})
     guard = dict(guard or {})
     settings = store.load_settings()
@@ -262,7 +267,9 @@ def submit(
                 trigger=trigger, trigger_id=trigger_id, rule_id=rule_id, project=project_name,
             )
 
-    fingerprint = idempotency_key or (f"{task_id}|{action_name}" if task_id else "")
+    # 幂等指纹只认显式传入的 idempotency_key（自动生成的 task|action 指纹会让同一规则
+    # 第二天就再也跑不起来——重复次数该由 guard 的冷却/上限控制）
+    fingerprint = str(idempotency_key or "")
     if fingerprint:
         seen = history["fingerprints"].get(fingerprint)
         if seen and seen.get("status") in ("success", "running", "dry_run"):
@@ -313,6 +320,7 @@ def submit(
         "fingerprint": fingerprint,
         "run_id": store.new_run_id(),
         "project": project_name,
+        "follow_up": follow_up,
         "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     if spec.long_running:
@@ -480,6 +488,8 @@ def _execute(job: Dict[str, Any]) -> Dict[str, Any]:
         "reason": reason,
         "audit_id": record.get("at"),
         "run_id": job["run_id"],
+        # 只有成功才接力后续动作；真正投递在任务锁释放之后（见 _worker_loop）
+        "follow_up": job.get("follow_up") if status == "success" else None,
     }
 
 
@@ -510,6 +520,19 @@ def _worker_loop() -> None:
             if lock_tuple is not None:
                 _release_task_lock(lock_tuple)
 
+        follow_up = outcome.pop("follow_up", None) if isinstance(outcome, dict) else None
+        if follow_up and job.get("task_id"):
+            # 主动作已完成且锁已释放 → 投递后续动作（不等待，交给工作线程）
+            submit(
+                follow_up,
+                task_id=job["task_id"],
+                trigger="follow_up",
+                trigger_id=str(job.get("run_id") or ""),
+                rule_id=str(job.get("rule_id") or ""),
+                guard=job.get("guard") or {},
+                project_name=str(job.get("project") or ""),
+                wait=False,
+            )
         spec = actions.ACTIONS.get(job["action"])
         if spec and spec.long_running:
             _finish_run(

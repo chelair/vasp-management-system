@@ -292,9 +292,15 @@ body: {
   "trigger": { "type": "inspection_completed" },
   "condition": { "task_type": "opt", "status": ["unconverged", "zombied"], "is_continuation": false },
   "action": "task.continuation",
-  "guard": { "cooldown_seconds": 1800, "max_runs_per_task": 5 }
+  "guard": { "cooldown_seconds": 1800, "max_runs_per_task": 5 },
+  "follow_up_action": "task.submit"
 }
 ```
+
+> `follow_up_action`（可选）：主动作**成功**后自动接着执行的动作（典型用法：续算成功 → 提交作业；
+> 界面上就是「动作」右边那个"执行成功后自动提交作业"勾选项）。续算未真正创建（`action != created`）
+> 或主动作失败时不会接力；手动动作入口 `POST /api/actions/{name}` 也支持顶层 `follow_up` 参数。
+> 幂等去重只认显式传入的 `idempotency_key`，重复次数由 `guard` 的冷却与上限控制。
 
 > 前端界面用**中文日程**表达（每天 02:00 / 每周一 08:30 / 每隔 30 分钟 / 30 分钟后执行一次），
 > 不要求用户理解调度表达式；下面两种存储形式是接口层的形态（脚本/智能体可直接使用）。

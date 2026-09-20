@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, TimePicker, TreeSelect } from 'antd';
+import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, TimePicker, Tooltip, TreeSelect } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { ActionCatalogItem, AutomationRule } from '../../api/automation';
@@ -64,6 +64,9 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
   const [repeatWeekday, setRepeatWeekday] = useState(1);
   const [repeatDay, setRepeatDay] = useState(1);
   const [customExpression, setCustomExpression] = useState('');
+  /** 主动作成功后是否自动提交作业（续算后一般都要提交） */
+  const [followUpSubmit, setFollowUpSubmit] = useState(false);
+  const [mainAction, setMainAction] = useState<string>('');
   const [target, setTarget] = useState<RuleTargetType>('project');
   const [projects, setProjects] = useState<string[]>([]);
   const [tasks, setTasks] = useState<string[]>([]);
@@ -121,6 +124,8 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
         value: toFormValue(key, value),
       })),
     );
+    setFollowUpSubmit(rule?.follow_up_action === 'task.submit');
+    setMainAction(rule?.action ?? actions[0]?.name ?? '');
     form.setFieldsValue({
       id: rule?.id ?? '',
       description: rule?.description ?? '',
@@ -182,6 +187,7 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
               : { type: 'inspection_completed' },
         condition,
         action: values.action,
+        follow_up_action: followUpSubmit && values.action !== 'task.submit' ? 'task.submit' : null,
         guard: {
           cooldown_seconds: values.cooldown_seconds ?? 0,
           max_runs_per_task: values.max_runs_per_task ?? 0,
@@ -391,11 +397,29 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
           )}
           <Form.Item name="action" label="动作" style={{ width: 240 }} rules={[{ required: true }]}>
             <Select
+              onChange={(value) => setMainAction(String(value))}
               options={actions.map((a) => ({
                 value: a.name,
                 label: `${a.label}（${a.name}）`,
               }))}
             />
+          </Form.Item>
+          <Form.Item label=" " style={{ width: 220 }}>
+            <Tooltip
+              title={
+                mainAction === 'task.submit'
+                  ? '动作本身就是提交作业，不需要再接一次'
+                  : '主动作成功后自动执行「提交作业」（续算完成后一般都要提交）'
+              }
+            >
+              <Checkbox
+                checked={followUpSubmit && mainAction !== 'task.submit'}
+                disabled={mainAction === 'task.submit'}
+                onChange={(e) => setFollowUpSubmit(e.target.checked)}
+              >
+                执行成功后自动提交作业
+              </Checkbox>
+            </Tooltip>
           </Form.Item>
         </Space>
 

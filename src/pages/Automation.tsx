@@ -242,7 +242,21 @@ export default function Automation() {
           </span>
         ),
       },
-      { title: '动作', dataIndex: 'action', width: 150 },
+      {
+        title: '动作',
+        dataIndex: 'action',
+        width: 190,
+        render: (action: string, rule: AutomationRule) => (
+          <span>
+            {action}
+            {rule.follow_up_action ? (
+              <Tooltip title="主动作成功后会接着执行后续动作">
+                <span className="preview-note"> → {rule.follow_up_action}</span>
+              </Tooltip>
+            ) : null}
+          </span>
+        ),
+      },
       {
         title: 'Guard',
         dataIndex: 'guard',

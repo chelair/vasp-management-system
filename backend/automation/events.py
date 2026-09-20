@@ -74,6 +74,7 @@ def _match_rules_for_task(rule_iter, project: Dict[str, Any], task: Dict[str, An
             trigger_id=str(event.get("run_id") or event.get("schedule_id") or ""),
             rule_id=str(rule.get("id") or ""),
             guard=rule.get("guard") or {},
+            follow_up=rule.get("follow_up_action") or None,
             wait=False,
             project_name=str(project.get("name") or ""),
         )

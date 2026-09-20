@@ -37,24 +37,35 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 }
 
 _LOCK = threading.RLock()
+_LOCK_STATE = threading.local()
 
 
 @contextmanager
 def _locked() -> Iterator[None]:
-    """进程内可重入锁 + 跨进程文件锁（与账号模块同一套路）。"""
-    with _LOCK:
-        LOCKS_DIR.mkdir(parents=True, exist_ok=True)
-        handle = open(LOCKS_DIR / ".automation.lock", "a+", encoding="utf-8")
-        try:
-            try:
-                import fcntl
+    """进程内可重入锁 + 跨进程文件锁（与账号模块同一套路）。
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            except ImportError:  # pragma: no cover - 非 POSIX
-                pass
+    **同线程嵌套安全**：`flock` 对同一文件的第二个 fd 会阻塞，所以嵌套时只复用
+    外层锁（`delete_rule` 里 `update_history` 就是嵌套调用）。
+    """
+    with _LOCK:
+        depth = getattr(_LOCK_STATE, "depth", 0)
+        _LOCK_STATE.depth = depth + 1
+        handle = None
+        try:
+            LOCKS_DIR.mkdir(parents=True, exist_ok=True)
+            if depth == 0:
+                handle = open(LOCKS_DIR / ".automation.lock", "a+", encoding="utf-8")
+                try:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except ImportError:  # pragma: no cover - 非 POSIX
+                    pass
             yield
         finally:
-            handle.close()
+            _LOCK_STATE.depth = depth
+            if handle is not None:
+                handle.close()
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -162,6 +173,51 @@ def set_rule_enabled(rule_id: str, enabled: bool) -> Dict[str, Any]:
     raise KeyError(f"规则不存在：{rule_id}")
 
 
+def find_rule(rule_id: str) -> Optional[Dict[str, Any]]:
+    for rule in load_rules():
+        if str(rule.get("id")) == str(rule_id):
+            return rule
+    return None
+
+
+def create_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    """新建规则文件；同名规则已存在时抛 KeyError。"""
+    rule_id = str(rule.get("id") or "").strip()
+    if find_rule(rule_id) is not None:
+        raise KeyError(f"规则已存在：{rule_id}")
+    payload = {k: v for k, v in rule.items() if not k.startswith("_")}
+    with _locked():
+        _write_json(RULES_DIR / f"{rule_id}.json", payload)
+    return payload
+
+
+def delete_rule(rule_id: str) -> bool:
+    """删除规则文件，并清掉它的历史（冷却/计数/失败数/定时下次触发）。"""
+    target = str(rule_id)
+    rule = find_rule(target)
+    if rule is None:
+        return False
+    path = RULES_DIR / str(rule.get("_file") or f"{target}.json")
+    with _locked():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+
+        def mutate(history: Dict[str, Any]) -> None:
+            history["next_runs"].pop(target, None)
+            history["next_crons"].pop(target, None)
+            history["rule_failures"].pop(target, None)
+
+        update_history(mutate)
+    # 从熔断禁用列表里移除（规则都没了）
+    settings = load_settings()
+    disabled = [str(x) for x in settings.get("disabled_rules") or [] if str(x) != target]
+    if disabled != list(settings.get("disabled_rules") or []):
+        save_settings({"disabled_rules": disabled})
+    return True
+
+
 # ------------------------------------------------------------------ 历史 / 运行记录
 
 
@@ -172,6 +228,7 @@ _EMPTY_HISTORY: Dict[str, Any] = {
     "rule_failures": {},  # rule_id -> 连续失败次数
     "next_runs": {},      # schedule_id -> 下次触发时间
     "next_crons": {},     # schedule_id -> 计算 next_run 时用的 cron（改了要重算）
+    "last_fired": {},     # schedule_id -> 上次触发时间（"N 秒后执行一次"用来看是否已执行）
     "last_results": {},   # "task|action" -> {at, status, reason}
 }
 

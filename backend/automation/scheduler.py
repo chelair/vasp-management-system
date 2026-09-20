@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import threading
 import time
@@ -25,6 +26,7 @@ from automation import actions, audit, cron, rules, store
 
 MANUAL_HOLD_SECONDS = 300          # 用户手动操作过 → 5 分钟内不让自动化碰
 SHORT_WAIT_SECONDS = 150           # 短动作等待上限（超时按 running 返回）
+TICK_SECONDS = int(os.environ.get("AUTOMATION_TICK_SECONDS", "20"))  # 定时检查间隔
 WORKER_COUNT = 2
 
 _QUEUE: "queue.Queue[Dict[str, Any]]" = queue.Queue()
@@ -535,6 +537,50 @@ def _tick_schedules() -> None:
             continue
         schedule_id = str(schedule["id"])
         cron_expr = str(schedule.get("cron") or "")
+        mode = str(schedule.get("mode") or ("cron" if cron_expr else "after"))
+        # ---- 模式二：`xx 秒后执行一次`（一次性，触发后不自动重排）----
+        if mode == "after":
+            try:
+                delay = int(schedule.get("after_seconds") or 0)
+            except (TypeError, ValueError):
+                delay = 0
+            if delay <= 0:
+                continue
+            next_text = str(history["next_runs"].get(schedule_id) or "")
+            fired = str(history["last_fired"].get(schedule_id) or "")
+            if not next_text:
+                if fired:
+                    continue  # 已经执行过一次，等"重新计时"
+                history["next_runs"][schedule_id] = (
+                    now + timedelta(seconds=delay)
+                ).astimezone().isoformat(timespec="seconds")
+                changed = True
+                continue
+            try:
+                due_at = datetime.fromisoformat(next_text)
+            except ValueError:
+                continue
+            if now < due_at:
+                continue
+            from automation import events
+
+            events.publish(
+                {
+                    "type": "schedule",
+                    "schedule_id": schedule_id,
+                    "rule_id": schedule_id,
+                    "scope": schedule.get("scope") or "all",
+                    "mode": "after",
+                    "fired_at": now.astimezone().isoformat(timespec="seconds"),
+                }
+            )
+            history["next_runs"].pop(schedule_id, None)
+            history["next_crons"].pop(schedule_id, None)
+            history["last_fired"][schedule_id] = now.isoformat(timespec="seconds")
+            changed = True
+            continue
+
+        # ---- 模式一：cron（周期）----
         try:
             next_dt = datetime.fromisoformat(str(history["next_runs"].get(schedule_id) or ""))
         except ValueError:
@@ -594,11 +640,38 @@ def _schedule_loop() -> None:
                 action="automation.schedule", status="failed",
                 reason=f"定时检查失败：{e}", trigger="schedule",
             )
-        _STOP.wait(20)
+        _STOP.wait(TICK_SECONDS)
 
 
 def next_run_of(schedule_id: str) -> Optional[str]:
     return store.load_history()["next_runs"].get(str(schedule_id))
+
+
+def prime_schedule(
+    schedule_id: str,
+    cron_expr: Optional[str] = None,
+    after_seconds: Optional[int] = None,
+) -> Optional[str]:
+    """新建/修改定时规则后立刻算出下次触发时间（"xx 秒后一次"同时清除已执行标记）。"""
+    if after_seconds:
+        # 与 cron 分支 / `_tick_schedules()` 的 datetime.now() 保持同一表示（本地 naive），
+        # 否则 naive 与 aware 比较会抛 TypeError
+        next_at = (datetime.now() + timedelta(seconds=int(after_seconds))).isoformat(
+            timespec="seconds"
+        )
+    else:
+        try:
+            next_at = cron.next_after(str(cron_expr or "")).isoformat(timespec="seconds")
+        except cron.CronError:
+            return None
+
+    def mutate(history: Dict[str, Any]) -> None:
+        history["next_runs"][str(schedule_id)] = next_at
+        history["next_crons"][str(schedule_id)] = str(cron_expr or "")
+        history["last_fired"].pop(str(schedule_id), None)
+
+    store.update_history(mutate)
+    return next_at
 
 
 def start() -> None:

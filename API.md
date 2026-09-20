@@ -247,7 +247,10 @@ body: {
 | `GET /api/actions/runs/{run_id}` | — | 长动作轮询：`running / success / failed / skipped` + result |
 | `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则 + 计数 |
 | `GET/PUT /api/automation/settings` | `{enabled?, dry_run?, schedules_enabled?, failure_threshold?}` | 改完**立即生效**（enabled=false 即全局暂停） |
-| `GET /api/automation/rules` · `PUT /api/automation/rules/{id}` | `{enabled}` | 规则列表 / 启停 |
+| `GET /api/automation/rules` | — | 规则列表 |
+| `POST /api/automation/rules` | 规则对象 | 新建规则（id 冲突 409；校验 id/cron/动作/guard） |
+| `PUT /api/automation/rules/{id}` | `{enabled?, description?, trigger?, condition?, action?, guard?}` | 修改规则（改 cron / after_seconds 后**立即重排下次触发**） |
+| `DELETE /api/automation/rules/{id}` | — | 删除规则（含其冷却/计数/熔断/下次触发历史） |
 | `POST /api/automation/rules/{id}/run` | — | 立即触发一条定时规则（不等 cron） |
 | `GET /api/automation/decisions?limit=` | — | 决策日志（五态） |
 | `GET /api/automation/runs?limit=` | — | 动作运行记录 |
@@ -274,8 +277,18 @@ body: {
 }
 ```
 
-定时规则把 `trigger` 换成 `{ "type": "schedule", "cron": "0 2 * * *", "scope": "all" }`
-（`scope` 还支持 `project:<项目名>`）。全局开关在 `data/config/automation.json`：
+定时规则有两种模式（都要带 `scope`，支持 `all` 或 `project:<项目名>`）：
+
+```json
+{ "trigger": { "type": "schedule", "mode": "cron",  "cron": "0 2 * * *", "scope": "all" } }
+{ "trigger": { "type": "schedule", "mode": "after", "after_seconds": 1800, "scope": "all" } }
+```
+
+- `mode=cron`：按 cron 表达式周期执行；
+- `mode=after`：**N 秒后执行一次**（一次性）。新建/修改规则时按 `now + after_seconds` 排期，
+  触发一次后 `next_run` 清空、`last_fired_at` 记录，不会重复；要再来一次就在页面上点
+  「重新计时」（等价于重新保存该规则），或对同一规则 `PUT` 一次。
+- 两种模式都支持「立即触发」：`POST /api/automation/rules/{id}/run`。全局开关在 `data/config/automation.json`：
 `{enabled, dry_run, schedules_enabled, disabled_rules, failure_threshold}`。
 
 ## 5. 智能体闭环：巡检 → 判断 → 执行（建议用法）

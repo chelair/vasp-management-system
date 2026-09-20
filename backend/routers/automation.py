@@ -18,6 +18,9 @@
 
 from __future__ import annotations
 
+import re
+from typing import Any, Dict, Tuple
+
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse
 
@@ -27,10 +30,71 @@ from automation import actions, audit, cron, events, rules, scheduler, store
 
 router = APIRouter(tags=["actions"])
 
+RULE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
+
 
 def _require_admin(request: Request) -> None:
     permissions.ensure_admin(
         getattr(request.state, "user", None), "只有管理员可以使用自动化与动作接口"
+    )
+
+
+def _validate_rule(rule: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    """规则校验（新建/修改共用）：返回 (规范化规则, 错误信息)。"""
+    rule_id = str(rule.get("id") or "").strip()
+    if not RULE_ID_PATTERN.match(rule_id):
+        return {}, "规则 id 只能用小写字母、数字、点、下划线、短横线（2-64 位）"
+    trigger = dict(rule.get("trigger") or {})
+    trigger_type = str(trigger.get("type") or "")
+    if trigger_type not in ("inspection_completed", "schedule"):
+        return {}, "trigger.type 仅支持 inspection_completed / schedule"
+    if trigger_type == "schedule":
+        mode = str(trigger.get("mode") or ("cron" if trigger.get("cron") else "after")).strip()
+        if mode not in ("cron", "after"):
+            return {}, "定时模式仅支持 cron（周期）/ after（N 秒后执行一次）"
+        trigger["mode"] = mode
+        trigger["scope"] = str(trigger.get("scope") or "all").strip() or "all"
+        if mode == "cron":
+            cron_expr = str(trigger.get("cron") or "").strip()
+            try:
+                cron.parse(cron_expr)
+            except cron.CronError as e:
+                return {}, f"cron 表达式不合法：{e}"
+            trigger["cron"] = cron_expr
+            trigger.pop("after_seconds", None)
+        else:
+            try:
+                after_seconds = int(trigger.get("after_seconds") or 0)
+            except (TypeError, ValueError):
+                return {}, "after_seconds 必须是整数秒"
+            if after_seconds <= 0:
+                return {}, "after_seconds 必须大于 0（多少秒后执行一次）"
+            trigger["after_seconds"] = after_seconds
+            trigger.pop("cron", None)
+    action = str(rule.get("action") or "").strip()
+    if action not in actions.ACTIONS:
+        return {}, f"未知动作：{action}（可用：{', '.join(actions.ACTIONS)}）"
+    condition = rule.get("condition") or {}
+    if not isinstance(condition, dict):
+        return {}, "condition 必须是对象"
+    guard = dict(rule.get("guard") or {})
+    for key in ("cooldown_seconds", "max_runs_per_task"):
+        if key in guard and guard[key] is not None:
+            try:
+                guard[key] = max(0, int(guard[key]))
+            except (TypeError, ValueError):
+                return {}, f"guard.{key} 必须是整数"
+    return (
+        {
+            "id": rule_id,
+            "enabled": bool(rule.get("enabled", True)),
+            "description": str(rule.get("description") or "").strip(),
+            "trigger": trigger,
+            "condition": condition,
+            "action": action,
+            "guard": guard,
+        },
+        "",
     )
 
 
@@ -104,6 +168,7 @@ def action_run(run_id: str, request: Request):
 
 def _schedule_rows() -> list:
     rows = []
+    history = store.load_history()
     for schedule in rules.schedules():
         rule = next((r for r in store.load_rules() if str(r.get("id")) == str(schedule["id"])), {})
         rows.append(
@@ -111,6 +176,7 @@ def _schedule_rows() -> list:
                 **schedule,
                 "trigger": rule.get("trigger") or {},
                 "next_run_at": scheduler.next_run_of(schedule["id"]),
+                "last_fired_at": history["last_fired"].get(str(schedule["id"])),
                 "cron_note": cron.describe(schedule["cron"]) if schedule.get("cron") else "",
             }
         )
@@ -205,31 +271,106 @@ def list_automation_rules(request: Request):
         return JSONResponse(status_code=500, content=fail(f"读取规则失败：{e}"))
 
 
-@router.put("/automation/rules/{rule_id}")
-def update_automation_rule(rule_id: str, request: Request, payload: dict = Body(default={})):
-    """启用 / 停用规则（写回规则文件；`disabled_rules` 用于失败熔断）。"""
+@router.post("/automation/rules")
+def create_automation_rule(request: Request, payload: dict = Body(default={})):
+    """新建规则（写 `data/config/rules/<id>.json`，立即生效）。"""
     try:
         _require_admin(request)
-        if "enabled" in (payload or {}):
-            rule = store.set_rule_enabled(rule_id, bool(payload["enabled"]))
-            settings = store.load_settings()
-            disabled = [x for x in settings.get("disabled_rules") or [] if str(x) != str(rule_id)]
-            store.save_settings({"disabled_rules": disabled})
-            audit.write(
-                action="automation.rule",
-                status="success",
-                trigger="api",
-                rule_id=rule_id,
-                reason=f"规则 {rule_id} 已{'启用' if payload['enabled'] else '停用'}",
+        rule, error = _validate_rule(payload or {})
+        if error:
+            return JSONResponse(status_code=400, content=fail(error))
+        try:
+            created = store.create_rule(rule)
+        except KeyError as e:
+            return JSONResponse(status_code=409, content=fail(str(e)))
+        if (rule.get("trigger") or {}).get("type") == "schedule":
+            trigger = rule.get("trigger") or {}
+            scheduler.prime_schedule(
+                rule["id"],
+                trigger.get("cron"),
+                trigger.get("after_seconds"),
             )
-            return ok("规则已更新", rule)
-        return JSONResponse(status_code=400, content=fail("仅支持修改 enabled"))
-    except KeyError as e:
-        return JSONResponse(status_code=404, content=fail(str(e)))
+        audit.write(
+            action="automation.rule",
+            status="success",
+            trigger="api",
+            rule_id=rule["id"],
+            reason=f"新建规则：{rule.get('description') or rule['id']}",
+            details={"rule": created},
+        )
+        return ok("规则已创建（立即生效）", created)
     except permissions.PermissionDenied:
         raise
     except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"新建规则失败：{e}"))
+
+
+@router.put("/automation/rules/{rule_id}")
+def update_automation_rule(rule_id: str, request: Request, payload: dict = Body(default={})):
+    """修改规则：`enabled` 开关，或传完整字段（description/trigger/condition/action/guard）做编辑。"""
+    try:
+        _require_admin(request)
+        existing = store.find_rule(rule_id)
+        if existing is None:
+            return JSONResponse(status_code=404, content=fail(f"规则不存在：{rule_id}"))
+        body = payload or {}
+        editable = {"enabled", "description", "trigger", "condition", "action", "guard"}
+        if not (set(body) & editable):
+            return JSONResponse(
+                status_code=400,
+                content=fail(f"可修改字段：{', '.join(sorted(editable))}"),
+            )
+        merged = {**{k: v for k, v in existing.items() if not k.startswith("_")}}
+        for key in editable:
+            if key in body:
+                merged[key] = body[key]
+        rule, error = _validate_rule(merged)
+        if error:
+            return JSONResponse(status_code=400, content=fail(error))
+        saved = store.save_rule({**rule, "_file": existing.get("_file")})
+        if (rule.get("trigger") or {}).get("type") == "schedule":
+            scheduler.prime_schedule(rule["id"], str((rule["trigger"] or {}).get("cron") or ""))
+        # 手动启用时把熔断标记也清掉（否则会被 disabled_rules 挡住）
+        if body.get("enabled"):
+            settings = store.load_settings()
+            disabled = [x for x in settings.get("disabled_rules") or [] if str(x) != str(rule_id)]
+            if disabled != list(settings.get("disabled_rules") or []):
+                store.save_settings({"disabled_rules": disabled})
+        audit.write(
+            action="automation.rule",
+            status="success",
+            trigger="api",
+            rule_id=rule["id"],
+            reason=f"更新规则：{', '.join(sorted(set(body) & editable))}",
+        )
+        return ok("规则已更新（立即生效）", saved)
+    except permissions.PermissionDenied:
+        raise
+    except KeyError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"更新规则失败：{e}"))
+
+
+@router.delete("/automation/rules/{rule_id}")
+def delete_automation_rule(rule_id: str, request: Request):
+    """删除规则（含它的冷却/计数/熔断历史）。"""
+    try:
+        _require_admin(request)
+        if not store.delete_rule(rule_id):
+            return JSONResponse(status_code=404, content=fail(f"规则不存在：{rule_id}"))
+        audit.write(
+            action="automation.rule",
+            status="success",
+            trigger="api",
+            rule_id=rule_id,
+            reason=f"删除规则 {rule_id}",
+        )
+        return ok("规则已删除", {"id": rule_id})
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"删除规则失败：{e}"))
 
 
 @router.post("/automation/rules/{rule_id}/run")

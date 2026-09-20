@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, App, Button, Card, Empty, Space, Switch, Table, Tag, Tooltip } from 'antd';
-import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Card, Empty, Popconfirm, Space, Switch, Table, Tag, Tooltip } from 'antd';
+import { PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
+import RuleModal from '../components/automation/RuleModal';
 import {
+  createAutomationRule,
+  deleteAutomationRule,
+  fetchActionCatalog,
   fetchAutomationDecisions,
   fetchAutomationRuns,
   fetchAutomationStatus,
@@ -11,6 +15,8 @@ import {
   runAutomationRule,
   saveAutomationSettings,
   setAutomationRuleEnabled,
+  updateAutomationRule,
+  type ActionCatalogItem,
   type AutomationDecision,
   type AutomationRule,
   type AutomationRun,
@@ -51,6 +57,9 @@ export default function Automation() {
   const [decisions, setDecisions] = useState<AutomationDecision[]>([]);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [actionCatalog, setActionCatalog] = useState<ActionCatalogItem[]>([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<AutomationRule | null>(null);
 
   const load = useCallback(
     async (notify = false) => {
@@ -81,6 +90,13 @@ export default function Automation() {
     void load();
   }, [load]);
 
+  // 动作目录只拉一次（新建/编辑规则弹窗的下拉选项）
+  useEffect(() => {
+    fetchActionCatalog()
+      .then((catalog) => setActionCatalog(catalog.actions ?? []))
+      .catch(() => setActionCatalog([]));
+  }, []);
+
   const paused = settings ? !settings.enabled : false;
 
   const updateSettings = async (patch: Partial<AutomationSettings>) => {
@@ -99,10 +115,54 @@ export default function Automation() {
   const toggleRule = async (rule: AutomationRule, enabled: boolean) => {
     try {
       await setAutomationRuleEnabled(rule.id, enabled);
+      // 规则表与定时任务表共用同一份规则：两处都要立刻变（原来只改了规则表，
+      // 定时任务表的开关要刷新页面才更新）
       setRules((prev) => prev.map((r) => (r.id === rule.id ? { ...r, enabled } : r)));
+      setSchedules((prev) => prev.map((s) => (s.id === rule.id ? { ...s, enabled } : s)));
       message.success(`规则 ${rule.id} 已${enabled ? '启用' : '停用'}`);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '更新规则失败');
+    }
+  };
+
+  const submitRule = async (payload: Partial<AutomationRule>) => {
+    if (editingRule) {
+      await updateAutomationRule(editingRule.id, payload);
+      message.success('规则已更新（立即生效）');
+    } else {
+      await createAutomationRule(payload);
+      message.success('规则已创建（立即生效）');
+    }
+    setModalOpen(false);
+    setEditingRule(null);
+    await load();
+  };
+
+  const removeRule = async (rule: AutomationRule) => {
+    try {
+      await deleteAutomationRule(rule.id);
+      message.success(`规则 ${rule.id} 已删除`);
+      await load();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '删除规则失败');
+    }
+  };
+
+  /** "N 分钟后执行一次"重新开始倒计时（等价于原样保存一次该规则） */
+  const rearmSchedule = async (schedule: AutomationSchedule) => {
+    try {
+      await updateAutomationRule(schedule.id, {
+        trigger: {
+          type: 'schedule',
+          mode: 'after',
+          after_seconds: schedule.after_seconds ?? 1800,
+          scope: schedule.scope || 'all',
+        },
+      });
+      message.success('已重新计时');
+      await load();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '重新计时失败');
     }
   };
 
@@ -115,6 +175,12 @@ export default function Automation() {
       message.error(err instanceof Error ? err.message : '触发失败');
     }
   };
+
+  /** 规则表只展示「条件触发」规则；定时规则在下面的定时任务表里 */
+  const conditionRules = useMemo(
+    () => rules.filter((r) => (r.trigger?.type ?? 'inspection_completed') !== 'schedule'),
+    [rules],
+  );
 
   const ruleColumns = useMemo(
     () => [
@@ -173,20 +239,68 @@ export default function Automation() {
           <Switch size="small" checked={enabled} onChange={(v) => void toggleRule(rule, v)} />
         ),
       },
+      {
+        title: '操作',
+        width: 130,
+        render: (_: unknown, rule: AutomationRule) => (
+          <Space size={4}>
+            <Button
+              size="small"
+              type="link"
+              onClick={() => {
+                setEditingRule(rule);
+                setModalOpen(true);
+              }}
+            >
+              编辑
+            </Button>
+            <Popconfirm
+              title={`删除规则 ${rule.id}？`}
+              description="删除后不再参与匹配（历史冷却/计数一并清理）"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => void removeRule(rule)}
+            >
+              <Button size="small" type="link" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        ),
+      },
     ],
     [],
   );
 
   const scheduleColumns = [
     { title: '任务', dataIndex: 'description', render: (v: string, s: AutomationSchedule) => v || s.id },
-    { title: 'cron', dataIndex: 'cron', width: 120 },
+    {
+      title: '类型',
+      width: 190,
+      render: (_: unknown, s: AutomationSchedule) =>
+        s.mode === 'after' ? (
+          <Tag color="purple">{Math.max(1, Math.round((s.after_seconds ?? 0) / 60))} 分钟后执行一次</Tag>
+        ) : (
+          <span>
+            <Tag>cron</Tag>
+            <code>{s.cron}</code>
+          </span>
+        ),
+    },
     { title: '范围', dataIndex: 'scope', width: 100 },
     { title: '动作', dataIndex: 'action', width: 150 },
     {
       title: '下次执行',
-      dataIndex: 'next_run_at',
-      width: 160,
-      render: (v: string | null) => formatTime(v),
+      width: 190,
+      render: (_: unknown, s: AutomationSchedule) =>
+        s.next_run_at ? (
+          formatTime(s.next_run_at)
+        ) : s.last_fired_at ? (
+          <span className="preview-note">已执行（{formatTime(s.last_fired_at)}）</span>
+        ) : (
+          '—'
+        ),
     },
     {
       title: '启用',
@@ -205,11 +319,18 @@ export default function Automation() {
     },
     {
       title: '操作',
-      width: 110,
+      width: 170,
       render: (_: unknown, s: AutomationSchedule) => (
-        <Button size="small" type="link" onClick={() => void triggerSchedule(s)}>
-          立即触发
-        </Button>
+        <Space size={0}>
+          <Button size="small" type="link" onClick={() => void triggerSchedule(s)}>
+            立即触发
+          </Button>
+          {s.mode === 'after' && (
+            <Button size="small" type="link" onClick={() => void rearmSchedule(s)}>
+              重新计时
+            </Button>
+          )}
+        </Space>
       ),
     },
   ];
@@ -264,6 +385,16 @@ export default function Automation() {
         subtitle="巡检事件与定时触发 → 规则匹配 → 动作执行 → 审计留痕（仅管理员可见）"
         extra={
           <Space>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setEditingRule(null);
+                setModalOpen(true);
+              }}
+            >
+              新建规则
+            </Button>
             <Button
               icon={<ReloadOutlined />}
               loading={loading}
@@ -357,8 +488,9 @@ export default function Automation() {
           size="small"
           rowKey="id"
           loading={loading}
-          dataSource={rules}
+          dataSource={conditionRules}
           columns={ruleColumns}
+          locale={{ emptyText: '还没有条件触发规则，点右上角「新建规则」' }}
           pagination={false}
         />
       </Card>
@@ -384,6 +516,17 @@ export default function Automation() {
           pagination={{ pageSize: 10, size: 'small' }}
         />
       </Card>
+
+      <RuleModal
+        open={modalOpen}
+        rule={editingRule}
+        actions={actionCatalog}
+        onCancel={() => {
+          setModalOpen(false);
+          setEditingRule(null);
+        }}
+        onSubmit={submitRule}
+      />
     </PageTransition>
   );
 }

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.6（自动/定时执行动作系统：事件+定时触发 → 规则 → 调度 → 四动作 → 审计）
+> 生成时间：2026-08-29 · 最近更新：2026-09-21 · 当前版本：v0.9.7（自动化：规则增删改 + 定时"N 分钟后执行一次" + 开关即时生效）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -241,8 +241,16 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.6）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.7）
 
+- v0.9.7（2026-09-21，待提交）：**自动化系统按用户反馈修复 + 新增"定时后执行"类型**。
+  ① **规则可增删改**（用户："这几条只是我举例的，我没法创建和删除动作"）：新增 `POST /api/automation/rules`（新建，id 冲突 409）、`DELETE /api/automation/rules/{id}`（删除并清理该规则的冷却/计数/熔断/下次触发历史）、`PUT` 从"只改 enabled"扩展为可改 description/trigger/condition/action/guard；校验规则 id 格式、trigger.type、cron 合法性、动作存在性、guard 整数。前端自动化页新增「新建规则」按钮 + 每行「编辑 / 删除」，弹窗含触发方式、定时类型、动作下拉、条件键值行（可增删）与 guard。
+  ② **定时开关即时生效**（用户："那个启用关不掉，点击后刷新页面才能看到"）：根因是前端只更新了"规则表"的状态，没同步"定时任务表"（两张表读的是同一份规则）。现在两处一起更新，点一下立刻变，不用刷新。
+  ③ **规则表不再显示定时规则**（用户："为什么这个定时在条件中也显示"）：两张表按触发类型分开——「规则」只列 `inspection_completed` 条件规则，「定时任务」只列 `schedule` 规则。
+  ④ **新增定时类型「N 分钟后执行一次」**：`trigger = {type: "schedule", mode: "after", after_seconds: N, scope}`（与 `mode: "cron"` 并存）。语义是**一次性延迟**：创建/修改时按 `now + N` 排定，触发一次后清空 `next_run` 并记 `last_fired`，不再重复；前端定时任务表显示「N 分钟后执行一次」「已执行（时间）」并提供「重新计时」按钮（等价于重新保存规则触发重排）。cron 与 after 两种模式都支持「立即触发」与 scope。
+  ⑤ **修一个真 bug（flock 自锁）**：`store.delete_rule` 在持有文件锁时又调用了内部的 `update_history`（同线程二次 flock 不同 fd）→ 永久阻塞，把整个服务卡死（删除规则时必现）。已给 `automation/store.py` 的 `_locked()` 加同线程深度判断（与账号模块一致），嵌套只复用外层锁。
+  ⑥ 附带：`AUTOMATION_TICK_SECONDS` 环境变量可调定时检查间隔（默认 20s，测试用 1s）；`_tick_schedules` 的 after 分支与 cron 分支统一用本地 naive 时间，修掉一个 naive/aware 比较的 TypeError。
+  ⑦ 验证：**50 项断言全过** —— 规则 CRUD 17 项（新建/409/非法 id/非法 cron/未知动作/编辑改 cron 后 next_run 立即重算/停用/删除/重复删除 404/普通用户 403 等）、"N 秒后一次" 13 项（排期、到点触发、一次性不重复、重新计时可再触发、HTTP 建规则与非法参数 400、端到端触发 + 决策日志 + next_run 清空）、前端 10 项（规则表不含定时规则、定时开关点击即时生效且只发一个 PUT、新建弹窗与编辑/删除入口）、调度守卫回归 10 项（dry_run/冷却/上限/幂等/手动接管/暂停/长动作轮询/失败/五态审计）。另 `tsc` + `npm run build` 通过。
 - v0.9.6（commit `c5e028c`，已推送 origin/main）：**自动/定时执行动作系统**（触发层 → 规则层 → 调度层 → 执行层 → 审计层），首批四个动作：创建续算 / 提交作业 / 创建 NEB 文件 / 创建频率矫正。
   ① **触发层**：`automation/events.py` 事件总线（`queue.Queue` + 独立线程）。巡检在 `run_inspection()` 归档后**只投递 `inspection_completed` 事件**（每任务一条，负载含 task_id/status/converged/task_type/group_id/source_dir），**不在巡检里调动作**（避免 SSH 抖动连锁失败）；定时触发由零依赖 cron 线程每 20s 检查一次，命中即投递 `schedule` 事件（scope=all / project:X）。
   ② **规则层**：`data/config/rules/*.json`（一文件一规则，改动**立即生效不用重启**）；condition 支持精确匹配 / 列表 / 布尔，上下文由 `rules.build_context()` 提供（task_type、status、converged、group_type、group_role、frac_missing、initial_converged、final_converged、images_created、is_continuation…）。命中投递动作，**未命中写一条 skipped 审计并写明哪个条件不满足**。首次启动自动生成 4 条示例规则（未收敛→续算、收敛缺 frac→建频率、NEB 初末态收敛→建 NEB、每天 02:00 扫未收敛）。

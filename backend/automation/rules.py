@@ -125,11 +125,14 @@ def schedules() -> List[Dict[str, Any]]:
         if trigger_type(rule) != "schedule":
             continue
         trigger = rule.get("trigger") or {}
+        mode = str(trigger.get("mode") or ("cron" if trigger.get("cron") else "after"))
         out.append(
             {
                 "id": rule.get("id"),
                 "enabled": bool(rule.get("enabled")),
+                "mode": mode,
                 "cron": str(trigger.get("cron") or ""),
+                "after_seconds": trigger.get("after_seconds"),
                 "scope": str(trigger.get("scope") or "all"),
                 "action": rule.get("action"),
                 "condition": rule.get("condition") or {},

@@ -13,7 +13,14 @@ export interface AutomationRule {
   id: string;
   enabled: boolean;
   description?: string;
-  trigger: { type: string; cron?: string; scope?: string };
+  trigger: {
+    type: string;
+    /** 定时子类型：cron 周期 / after（N 秒后执行一次） */
+    mode?: 'cron' | 'after' | string;
+    cron?: string;
+    after_seconds?: number;
+    scope?: string;
+  };
   condition: Record<string, unknown>;
   action: string;
   guard: { cooldown_seconds?: number; max_runs_per_task?: number };
@@ -23,7 +30,11 @@ export interface AutomationRule {
 export interface AutomationSchedule {
   id: string;
   enabled: boolean;
+  /** cron = 按表达式周期；after = N 秒后执行一次（一次性） */
+  mode?: 'cron' | 'after' | string;
   cron: string;
+  after_seconds?: number | null;
+  last_fired_at?: string | null;
   scope: string;
   action: string;
   description?: string;
@@ -89,6 +100,32 @@ export function setAutomationRuleEnabled(id: string, enabled: boolean): Promise<
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),
   });
+}
+
+/** 新建规则（写 data/config/rules/<id>.json，立即生效） */
+export function createAutomationRule(rule: Partial<AutomationRule>): Promise<AutomationRule> {
+  return request('/automation/rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rule),
+  });
+}
+
+/** 修改规则（可改 description/trigger/condition/action/guard/enabled） */
+export function updateAutomationRule(
+  id: string,
+  patch: Partial<AutomationRule>,
+): Promise<AutomationRule> {
+  return request(`/automation/rules/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** 删除规则 */
+export function deleteAutomationRule(id: string): Promise<{ id: string }> {
+  return request(`/automation/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export function runAutomationRule(id: string): Promise<{ rule_id: string }> {

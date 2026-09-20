@@ -1,6 +1,7 @@
 """巡检结果存取：归档 check_results_*.json、按 task_id 合并、映射为前端展示行。"""
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -57,6 +58,50 @@ def collect_results() -> Dict[str, Dict[str, Any]]:
                     else entry
                 )
     return merged
+
+
+#: `collect_results()` 的短缓存：data/checks 有 20+MB，作业管理/总览每次请求都全量读代价太高。
+#: 巡检结束后调用 `invalidate_cache()` 立即失效。
+_MERGED_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+MERGED_CACHE_TTL = 30  # 秒
+
+
+def merged_results(force: bool = False) -> Dict[str, Dict[str, Any]]:
+    """带短缓存的 `collect_results()`（默认 30s）。"""
+    now = time.time()
+    cached = _MERGED_CACHE.get("data")
+    if not force and cached is not None and now - float(_MERGED_CACHE.get("at") or 0) < MERGED_CACHE_TTL:
+        return cached
+    data = collect_results()
+    _MERGED_CACHE["at"] = now
+    _MERGED_CACHE["data"] = data
+    return data
+
+
+def invalidate_cache() -> None:
+    """作废巡检结果缓存（巡检归档后调用）。"""
+    _MERGED_CACHE["data"] = None
+
+
+def task_check_summary(db: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """`{task_id: {status, message, checked_at, energy}}` —— 与巡检中心同一口径。
+
+    供作业管理等页面复用：那里的"任务状态"是数据库状态，而"低精度收敛"、
+    "计算完成但力未收敛"这类结论只存在于巡检结果里（落库状态仍可能是 completed）。
+    """
+    summary: Dict[str, Dict[str, Any]] = {}
+    for row in to_frontend_rows(db, merged_results()):
+        task_id = str(row.get("id") or "")
+        if not task_id:
+            continue
+        summary[task_id] = {
+            "status": row.get("status"),
+            "message": row.get("message"),
+            "checked_at": row.get("last_check_time"),
+            "energy": row.get("last_energy"),
+            "has_inspection": row.get("has_inspection"),
+        }
+    return summary
 
 
 def _merge_entry(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:

@@ -20,7 +20,15 @@ def _days_until(deadline: str) -> int:
         return 0
 
 
-def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
+def map_project(
+    project: Dict[str, Any], check_map: Dict[str, Dict[str, Any]] | None = None
+) -> Dict[str, Any]:
+    """项目 → 前端结构。
+
+    `check_map`（可选）是 `checks_store.task_check_summary()` 的结果：
+    任务状态是"数据库状态"，而"低精度收敛 / 计算完成但力未收敛"这类结论只存在于
+    巡检结果里，这里一并带给前端（作业管理页据此显示与巡检中心一致的告警）。
+    """
     tasks = project.get("tasks", []) or []
     completed = sum(1 for t in tasks if t.get("status") in ("completed", "archived"))
     progress = round(completed / len(tasks) * 100) if tasks else 0
@@ -73,6 +81,8 @@ def map_project(project: Dict[str, Any]) -> Dict[str, Any]:
                 "archived_at": task.get("archived_at") or None,
                 # 自由能组主任务：带上频率矫正子任务状态，供归档前提示使用
                 "frac_sibling": _frac_sibling(project, task),
+                # 最近一次巡检的结论（与巡检中心同一口径；没有巡检记录时为 None）
+                "check": (check_map or {}).get(_str(task.get("task_id"), "")),
             }
         )
 

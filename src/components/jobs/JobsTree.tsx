@@ -3,17 +3,25 @@ import type { DataNode } from 'antd/es/tree';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ApartmentOutlined,
+  CloseCircleFilled,
   ExperimentOutlined,
   FileOutlined,
   FireOutlined,
   FolderOpenOutlined,
   PlusOutlined,
   ThunderboltOutlined,
+  WarningFilled,
 } from '@ant-design/icons';
 import type { GroupMeta, Project, Task } from '../../types';
 import { GROUP_ROLE_LABELS, TASK_TYPE_LABELS } from '../../types';
 import StatusTag from '../common/StatusTag';
-import { sortTasksByStatus } from '../../utils/project';
+import {
+  checkNeedsAttention,
+  pickGroupCheck,
+  pickGroupStatus,
+  sortTasksByStatus,
+} from '../../utils/project';
+import type { TaskCheckSummary } from '../../types';
 import { formatStructureLabel } from '../../utils/project';
 
 interface Props {
@@ -32,6 +40,19 @@ interface Props {
   onAddStructure: (projectId: string, groupId: string) => void;
 }
 
+/** 巡检告警图标：低精度收敛 / 力未收敛 / 异常等（与巡检中心同一文案，悬停可看） */
+function checkIcon(check?: TaskCheckSummary | null) {
+  if (!checkNeedsAttention(check)) return null;
+  const error = check?.status === 'error';
+  return (
+    <Tooltip title={check?.message || '巡检异常'}>
+      <span className={`job-tree__check${error ? ' is-error' : ''}`}>
+        {error ? <CloseCircleFilled /> : <WarningFilled />}
+      </span>
+    </Tooltip>
+  );
+}
+
 function taskTitle(t: Task) {
   return (
     <Tooltip
@@ -41,6 +62,8 @@ function taskTitle(t: Task) {
     >
       <span className="job-tree__task">
         <span className="job-tree__task-name">{t.model_name}</span>
+        {/* 巡检结论只在指向告警图标时显示（行本身不展开巡检文案，避免误触/刷屏） */}
+        {checkIcon(t.check)}
         <StatusTag status={t.status} />
       </span>
     </Tooltip>
@@ -68,6 +91,8 @@ function freeEnergyChildren(tasks: Task[]): DataNode[] {
   return labels.map((label) => {
     const members = sortTasksByStatus(byLabel.get(label) ?? []);
     const first = members[0];
+    const groupStatus = pickGroupStatus(members);
+    const groupCheck = pickGroupCheck(members);
     return {
       key: `s:${first.group?.group_id}:${label}`,
       icon: (
@@ -80,7 +105,9 @@ function freeEnergyChildren(tasks: Task[]): DataNode[] {
           <span className="job-tree__task-name">
             {formatStructureLabel(label)}（结构优化 + 频率矫正）
           </span>
-          <span className="job-tree__count">{members.length}</span>
+          {/* 结构节点 = opt + frac 两个任务，显示两者里优先级最高的状态（红>黄>灰>归档） */}
+          {checkIcon(groupCheck)}
+          {groupStatus && <StatusTag status={groupStatus} />}
         </span>
       ),
       isLeaf: true,
@@ -134,12 +161,16 @@ function buildProjectChildren(
   const feNodes: DataNode[] = [];
   for (const [groupId, tasks] of groups) {
     if (tasks[0].group?.group_type !== 'free_energy') continue;
+    const groupStatus = pickGroupStatus(tasks);
+    const groupCheck = pickGroupCheck(tasks);
     feNodes.push({
       key: `g:${p.id}:${groupId}`,
       icon: <ApartmentOutlined style={{ color: 'var(--color-secondary)' }} />,
       title: (
         <span className="job-tree__cat-row">
           <span className="job-tree__group">{tasks[0].group?.name ?? '自由能组'}</span>
+          {checkIcon(groupCheck)}
+          {groupStatus && <StatusTag status={groupStatus} />}
           <span
             className="job-tree__add"
             title="添加结构"
@@ -181,11 +212,17 @@ function buildProjectChildren(
   const nebNodes: DataNode[] = [];
   for (const [groupId, tasks] of groups) {
     if (tasks[0].group?.group_type !== 'neb') continue;
+    const groupStatus = pickGroupStatus(tasks);
+    const groupCheck = pickGroupCheck(tasks);
     nebNodes.push({
       key: `g:${p.id}:${groupId}`,
       icon: <ThunderboltOutlined style={{ color: '#7b61d6' }} />,
       title: (
-        <span className="job-tree__group">{tasks[0].group?.name ?? 'NEB 组'}</span>
+        <span className="job-tree__cat-row">
+          <span className="job-tree__group">{tasks[0].group?.name ?? 'NEB 组'}</span>
+          {checkIcon(groupCheck)}
+          {groupStatus && <StatusTag status={groupStatus} />}
+        </span>
       ),
       children: sortTasksByStatus(tasks).map((t) => ({
         ...taskNode(t),

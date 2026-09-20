@@ -19,6 +19,7 @@ import { GROUP_ROLE_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS } from '../../t
 import { openTaskFolder } from '../../api/jobs';
 import type { TaskInputState } from '../../api/jobs';
 import StatusTag from '../common/StatusTag';
+import { checkNeedsAttention } from '../../utils/project';
 
 interface Props {
   task: Task;
@@ -245,7 +246,17 @@ export default function TaskOverview({
             {task.last_energy != null ? task.last_energy.toFixed(6) : '—'}
           </Descriptions.Item>
           <Descriptions.Item label="最近巡检" span={2}>
-            {task.last_check_time ? (
+            {task.check?.has_inspection ? (
+              <Space size={8} wrap>
+                <StatusTag status={task.check.status} kind="check" />
+                <span className={checkNeedsAttention(task.check) ? 'job-check-msg' : 'preview-note'}>
+                  {task.check.message}
+                </span>
+                {task.last_check_time && (
+                  <span className="path-cell">{task.last_check_time}</span>
+                )}
+              </Space>
+            ) : task.last_check_time ? (
               <span className="path-cell">{task.last_check_time}</span>
             ) : (
               <span className="preview-note">尚未巡检</span>

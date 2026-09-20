@@ -619,13 +619,30 @@ export default function Jobs() {
   };
 
   /** 同类型续算创建成功后：续算子任务不单独展示，仅提示续算目录信息 */
-  const handleSameTypeCreated = async (result: {
-    task_id: string;
-    con: string;
-    remote_dir: string;
-    warnings: string[];
-  }) => {
+  const handleSameTypeCreated = async (
+    result: {
+      task_id: string;
+      con: string;
+      remote_dir: string;
+      warnings: string[];
+    },
+    parentTaskId?: string,
+  ) => {
     await refreshProjects();
+    // 续算会把父任务"已应用"的草稿清掉（台账标 applied_in=conN），
+    // 这里必须重新读取它的输入状态，否则 INCAR/KPOINTS 的同步状态要刷新页面才更新
+    if (parentTaskId) {
+      try {
+        const state = await fetchTaskInput(parentTaskId);
+        setInputStates((prev) => ({ ...prev, [parentTaskId]: state }));
+        const parent = projects
+          .flatMap((p) => p.tasks)
+          .find((t) => t.task_id === parentTaskId);
+        if (parent) applyInputState(parent, state);
+      } catch {
+        /* 读取失败不阻塞续算成功提示 */
+      }
+    }
     message.success(`续算目录已创建：${result.con}（${result.remote_dir}）`);
   };
 

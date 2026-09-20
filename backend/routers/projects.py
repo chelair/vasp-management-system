@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from config import DATA_DIR, PROJECTS_DIR, load_servers, load_settings, load_task_registry
+from checks_store import task_check_summary
 from dates import now_iso
 from envelope import fail, ok
 from mappers import map_project
@@ -49,7 +50,12 @@ def _sync_enabled(settings: dict) -> bool:
 def list_projects():
     try:
         db = load_db()
-        return ok("查询成功", {"projects": [map_project(p) for p in db["projects"]]})
+        # 带上最近一次巡检结论（低精度收敛 / 力未收敛等），作业管理页与巡检中心同口径
+        check_map = task_check_summary(db)
+        return ok(
+            "查询成功",
+            {"projects": [map_project(p, check_map) for p in db["projects"]]},
+        )
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"查询项目失败：{e}"))
 

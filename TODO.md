@@ -1,7 +1,7 @@
 # 待办清单（TODO）
 
 > 创建时间：2026-08-24
-> 适用项目：`vasp-management-system`（v0.8.7）
+> 适用项目：`vasp-management-system`（v0.8.8）
 > 勾选约定：`[ ]` 未开始 · `[x]` 已完成
 
 # 发现问题
@@ -10,6 +10,14 @@
 > 原「自由能路径和 neb 路径重名时会自动合并」已修复，见「已完成（v0.8.6）」。
 
 ## 当前进度概览
+
+**已完成（v0.8.8，2026-09-19 · 状态显示修复）**
+
+- [x] 作业管理显示巡检告警：`/api/projects` 每个任务带 `check{status,message,checked_at}`（与巡检中心同文案），任务树加 ⚠/⛔ 图标（**悬停图标本身**才弹结论，任务名的 tooltip 不含巡检文案）、作业概览「最近巡检」行显示状态标签+完整结论（低精度收敛/力未收敛等）；`checks_store` 加 30s 结果缓存并在巡检后失效，避免每次请求全量读 checks
+- [x] 创建续算后 INCAR/KPOINTS 同步状态立即刷新（续算成功后再读一次父任务输入状态，不再需要刷新页面）
+- [x] 任务树自由能结构节点/组节点、NEB 组节点显示"最高优先级"状态颜色（异常>未收敛>运行>排队>待提交>完成>归档），不再只显示灰色计数
+
+
 
 **已完成（v0.8.7，2026-09-18 · 节点看板重构 + 本地镜像扁平化）**
 
@@ -569,6 +577,64 @@
     替换报告里的 `structure_views` / `structure_matrix`（v0.7.3 起报告与详情页共用同一版式）
   - 依赖：`ase`（pip 可选依赖，已在 `DEPENDENCIES.md` 登记）+ **POV-Ray 二进制**（非 pip，需单独安装/随包分发，注意跨平台与部署体积）
   - 待定：渲染耗时与缓存策略（建议按 CIF 哈希缓存到本地，批量生成报告时不重复渲染）
+
+### 11. 巡检异常规则引擎（搁置中，2026-09-20 用户决策）
+
+- [ ] **把巡检的异常判定从代码搬到可配置规则**：需求是"巡检时判断异常情况，例如离子步很多但力一直在震荡 → 该审视结构合理性"，但**异常种类很多、用户无法一次说全**，所以不写成 `if`，改成"指标 + 规则"两层（用户 2026-09-20：先搁置，记进 TODO）
+  - **照抄现成先例**：`backend/report_rules.py` + `defaults/report_rules.json` 已是声明式规则引擎（`when: all/any + field/op/value`、severity、模板文案 + advice、`max_items`、60s 缓存热更新，改 JSON 不用重启、不用动代码），搬一套成 `check_rules.json` 给巡检用
+  - **① 指标层（代码，只算不判断，零额外 SSH）**：现有 `force_history[{step,energy,max_force}]`、`neb_band_steps`、`force_max/force_rms/force_converged`、`precision`、`queue_status`、结构 CIF 已经够算出过程形态指标 —— 待补：`force_best`（历史最小最大力）、`stall_steps`（距最近刷新最优值的步数）、`rebound_count_lastN`（最近 N 步反弹次数）、`force_slope`/`force_std_lastN`、`energy_drift`/`energy_jump_max`、`max_displacement`、`lattice_change`、`running_hours`、`min_interatomic_distance`
+  - **② 判定层（data/config/check_rules.json）**：规则示例「力震荡」= `steps ≥ 60` **且** `rebound_count_last20 ≥ 4` **且** `force_max_ratio_to_best ≥ 0.8` → warning，建议检查初始结构/磁性/对称性或换更保守的 POTIM/IOPT；同类可扩展：停滞、能量跳变、力平台、结构漂移、原子过近、运行超时、NEB 能垒异常（Ea≈0/过大）、僵尸/挂起续算等
+  - **③ 输出层**：一条任务可命中多条 → 巡检结果带 `findings: [{rule_id, severity, category, message, advice}]`，任务级状态取最高 severity；巡检中心行显示最关键那条、详情页列全部；作业管理（v0.8.8 已接 `check.message`）与报告「异常与关注项」复用同一批
+  - **免打扰**：按「任务 + 规则」记已读/忽略，或规则加 `cooldown` / 只在"每 25 离子步桶推进"时提醒一次；数值阈值全部放在规则文件里便于自调
+  - **实施与验收方式**：第一步把现有硬编码判定（未收敛/低精度/挂起/文件标记）平移到 `check_rules.json` 并验证行为等价；第二步上 5–8 条通用规则；第三步**用历史数据回放**（`data/checks` 有 600+ 归档且含 `force_history`）校准阈值、检查误报，全程不碰远端
+
+### 12. 自动执行 / 大模型动作接口（设计已定，未实现；2026-09-20 审计）
+
+> 目标：支持「定时/自动执行某个动作」，并让大模型在拿到**巡检结果 + 异常汇总**后输出**动作执行命令**（续算、固定原子、创建 NEB…）。用户明确：先出审计与设计，实现待拍板。
+
+**现状审计（73 个接口 = 32 读 + 41 写）**
+
+- 写接口散布在 `jobs`(21) / `groups`(3) / `projects`(4) / `inspections`(3) / `reports`(2) / 配置类(8)，**参数形态不统一**（`{content}` / `{params}` / 空 body / `{atoms}` …）。
+- **没有**：统一动作目录、dry-run 前置校验（只有 `submit` 内嵌了五件套非空检查）、幂等键、异步 run 句柄、统一动作台账（仅 `jobs.py::_audit_log` 文本行，且只覆盖 部分动作）、审批闸门、通知出口。
+- **长动作同步阻塞**：`create-neb-files` 远端脚本 timeout 300s、`create-frac`/`build-ele-inputs` 180s、`generate-potcar` 120s、全局巡检 75–90s、`continuation` ≈3.5s。
+- **已有的自动化**：巡检定时（2h）/报告定时（24h，后台 60s 轮询）、提交成功后 2s 自动同步输入、归档后 1.5s 拉 OUTCAR/OSZICAR、巡检后作废并预热集群采集。
+- **已有的"给大模型"半成品**：`report_rules.json` 13 条声明式规则 → `risks[].advice` → `actions.items[{action_id,priority,task_id,action(自然语言),reason,link,risk_id}]` + `llm_context{purpose,key_findings,open_questions,data_references,constraints}` —— 但 `action` 只是句子，没有可执行的动作名与参数。
+
+**建议新增的接口**
+
+| 接口 | 作用 |
+| --- | --- |
+| `GET /actions` | 动作目录（JSON Schema）：动作名 / 参数 schema / 前置条件 / 风险级别 / 是否幂等 / 是否长任务 |
+| `POST /actions/{name}` | 统一执行入口：`{target, params, dry_run, idempotency_key, requested_by, reason}`；`dry_run=true` 只跑 preflight 并返回"将会发生什么"；高风险动作返回 `needs_approval` |
+| `GET /actions/runs/{run_id}` | 长动作轮询（accepted → running → done/failed） |
+| `POST /actions/runs/{run_id}/approve` / `/cancel` | 审批与取消 |
+| `GET /actions/ledger` | 动作台账（谁/为什么/参数/前后状态/结果），建议落 `data/actions/ledger.jsonl` |
+| `GET /observe/context?project=&task=` | 一次给出大模型输入：巡检 `findings[]` + 任务事实（force_history/analysis/precision/incar/kpoints）+ 集群快照 + 最近动作历史 |
+
+**动作清单（建议统一命名；括号内为现状）**
+
+- 观测：`observe.context`（缺）、`inspection.detail`（有）
+- 巡检：`inspection.run` / `inspection.run_single`（有接口，未动作化）
+- 输入：`task.input.sync`（有）、`task.input.set`（有底层 upload-incar/kpoints/poscar，建议只允许"参数档/白名单键"）
+- 结构/参数：`task.fix_atoms`（有 selective-dynamics，建议支持 by_index/by_element/by_z/by_displacement 策略）
+- 作业：`task.submit`（有 + 前置检查）、`task.stop`（有，**高风险**）、`task.resubmit`（缺）、`task.continuation`（有）、`task.archive`/`unarchive`（有，建议批量）
+- 流程：`frac.create`（有）、`ele.build`（有）、`neb.create`（有，需异步）、`neb.replan`（缺：改映像数/SPRING 重插值）
+- 报告/通知：`report.generate`（有）、`notify.send`（缺）
+
+**落地顺序**
+
+1. 动作目录 + 统一执行端点（包装现有写接口，内部实现先不动）+ 给 `continuation` / `selective-dynamics` / `create-neb-files` 补 preflight（dry-run）；
+2. 动作台账 + `idempotency_key` 去重 + 审批闸门（高风险动作 `needs_approval`）；
+3. 长动作异步化（`run_id` + 后台线程 + 轮询 + 失败重试）；
+4. 大模型闭环：`GET /observe/context` → 决策 → `POST /actions/{name}`，**先只放开低风险子集**。
+
+**待用户拍板（5 项）**
+
+1. 无人值守白名单：建议放开「巡检、输入同步、参数推送、续算、报告、通知」，`stop`(bkill)/删除/批量归档/改结构必须人工确认。
+2. 是否先"LLM 提议 → 人确认 → 执行"，稳定后再对白名单免审。
+3. 大模型改 INCAR 的边界：建议只允许选**预设参数档**，不允许任意键值。
+4. 台账位置与保留量：`data/actions/ledger.jsonl`，保留最近 N 条？
+5. 失败重试策略与通知渠道（UI / 邮件 / 企业微信 / 钉钉）。
 
 ---
 

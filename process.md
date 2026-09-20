@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-19 · 当前版本：v0.8.7（节点看板重构 + 本地镜像扁平化 + 集群采集合并 + vasp.lsf 生成 + POSCAR 同步/POTCAR/固定原子 + 提交前检查）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：**v0.8.8（尚未提交）**（续算后输入状态即时刷新 + 任务树组状态色 + 作业管理显示巡检告警）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -96,14 +96,18 @@ data/
 核数上限优先取 `blimits`；若想由系统配置固定一个上限（例如管理员给了口头配额），
 在 `settings.json` 写 `dashboard_total_cores: 200` 即可覆盖，界面会标注「系统配置手动指定」。
 
-### 项目盘点（2026-09-18，均 server1 / HS 根下，以 projects.json 为准）
+### 项目盘点（2026-09-20，均 server1 / HS 根下，以 projects.json 为准）
 
 | 项目 | 任务数 | 构成 | 状态与备注 |
 | --- | --- | --- | --- |
-| Ag_20260830 | 141（可见 63） | opt / neb / frac 混合 | 三条自由能路径 PATH1-3 + 同名 NEB 组（v0.8.6 修复的正是这里的路径列合并）；含 conN 续算子任务 |
+| Ag_20260830 | 142（可见 63） | opt / neb / frac 混合 | 三条自由能路径 PATH1-3 + 同名 NEB 组；含 conN 续算子任务；唯一在跑的项目 |
+| FS_Kaolin | 26（可见 16） | opt / ele | v0.8.4 迁移后新增；当前 2 个告警：`FS@Kaolin` 低精度收敛、`1_opt` 计算完成但力未收敛 |
 | Co_260902 | 53（可见 34） | opt 22 / neb 18 / frac 12 / ele 1 | 已关闭 |
-| TMDZYX | 34（可见 7） | opt 34 | 7 个过渡金属（Zn/Al/Co/Ti/Cu/Fe/Ni）各一条 opt + con1..con4 续算子任务；已关闭。**v0.5.0 之后新增，本项目尚未在其中任何目录做过破坏性测试** |
-| FS_Kaolin | 23（可见 16） | opt / ele | v0.8.4 迁移后新增；报告与本地镜像齐全 |
+| TMDZYX | 34（可见 7） | opt 34 | 7 个过渡金属各一条 opt + conN 续算子；已关闭 |
+
+- 巡检归档：`data/checks/` **678** 个 `check_results_*.json`（最近一轮 2026-09-20 20:02）；巡检列表 82 行（archived 68 / normal 5 / warning 2 / pending 7）。
+- 报告：`data/reports/index.json` **4 份**（每项目一份，同项目重生成覆盖）。
+- `GET /api/projects` 自 v0.8.8 起**每个任务附带 `check`**（最近一次巡检的 status/message/checked_at/energy），作业管理据它与巡检中心同口径显示告警。
 
 TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不占顶层展示，但参与提交/巡检定位。
 
@@ -169,7 +173,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`：分项目报告页——按项目生成 / 一键生成所有项目、**项目报告列表（每项目一份，同项目重生成直接覆盖）**、章节导航、Markdown 渲染（自写轻量渲染器，无第三方依赖，`chartResolver` 把 `charts/x.svg` 映射到 `/api/reports/project/{id}/files/x.svg`）；**正文只渲染图片，没有任何交互式组件或结构化数据视图**（v0.7.2 起"所见即所得"——前端看到的排版与导出 HTML/PDF 一致）；**导出按钮挂在「报告内容」标题行**，点击才展开章节勾选 Popover（下载 Markdown / 导出 HTML / 导出 PDF）。图里的看板版式（自由能 / NEB / 项目进度）由后端 `report_panels.py` 生成，与巡检详情页保持一致。
-- `components/jobs/`：**SelectiveDynamicsModal（固定原子：选中/元素/高度三规则 + 编号方式 + 可选同步远端）**、IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、**SubmitScriptPanel（vasp.lsf 生成：三组参数表单 + 8 段模板预览 + 写入远端）**、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
+- `components/jobs/`：**JobsTree（v0.8.8：自由能结构/组节点、NEB 组节点显示"成员最高优先级状态"`StatusTag`；带巡检告警的任务/组带 ⚠/⛔ 图标，**只有悬停图标本身**才弹出 `check.message`，行 tooltip 不含巡检文案）、TaskOverview（v0.8.8：「最近巡检」行显示 `检查状态标签 + 完整告警文案 + 时间`，与数据库状态并列）**、SelectiveDynamicsModal（固定原子：选中/元素/高度三规则 + 编号方式 + 可选同步远端）**、IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、**SubmitScriptPanel（vasp.lsf 生成：三组参数表单 + 8 段模板预览 + 写入远端）**、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
 - `utils/structure3d.ts`：3Dmol 数据工具（CIF 解析、VESTA 元素配色、共价半径算键）；3Dmol 库本地化于 `public/3dmol/3Dmol-min.js`（index.html 全局引入，无 npm 依赖）。
@@ -227,8 +231,10 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.8.7）
+## 7. 近期重要改动记录（v0.4.1 → v0.8.8）
 
+- v0.8.8（2026-09-20，待提交）：**三处状态/告警显示修复**（用户反馈）：① **创建续算后 INCAR/KPOINTS 同步状态不刷新**——`handleSameTypeCreated` 只调了 `refreshProjects()`，而续算会把父任务"已应用"的草稿清掉并把台账标成 `applied_in=conN`，界面拿的仍是旧 `input_state`，要刷新页面才更新；现在 `ContinuationModal` 把**发起续算的父任务 id** 一起回传，成功后额外 `GET /jobs/tasks/{id}/input` 重新读取该任务的输入状态并 `applyInputState()`（纯本地读取，不发 SSH）。② **任务树里自由能结构节点只有灰色计数"2"、看不到状态颜色**——新增 `utils/project.pickGroupStatus()`（关注度：异常(红) > 未收敛(黄) > 运行中(蓝) > 排队(青) > 待提交(灰) > 已完成(绿) > 已归档），自由能**结构节点**（opt+frac 两个任务）与**组节点**、NEB **组节点**都改为显示"成员里优先级最高"的 `StatusTag`，结构节点不再显示那个恒为 2 的灰色计数。jsdom 实测：completed+unconverged → 未收敛、archived+pending → 待提交（灰 > 归档）、都 archived → 已归档、zombied+running → 异常。
+  ③ **作业管理显示巡检告警**（用户问"作业管理里为什么不会像巡检中心那样显示『警告 低精度收敛 · 能量…』"）：根因是两边数据源不同 —— 作业管理读 `tasks[].status`（**数据库状态**，由提交/停止/巡检回填），而"低精度收敛 / 计算完成但力未收敛 / k 网格密度系数不足"这类是**巡检判定**的细分结论，只存在 `data/checks` 里（且低精度收敛按设计落库仍记 `completed`，不影响进度口径），所以作业管理里看不到。现在：`checks_store` 新增带 30s 短缓存的 `merged_results()`（原来是每次请求全量读 20+MB 的 checks，顺手提速）+ `task_check_summary()`（复用巡检中心同一套 `to_frontend_rows` 文案）+ `invalidate_cache()`（巡检归档后立即失效）；`GET /api/projects` 的每个任务多带一个 `check: {status, message, checked_at, energy, has_inspection}`；前端在**任务树**给带告警的任务/组加 ⚠/⛔ 图标（**只有悬停到图标本身才弹出完整结论**——行/任务名的 tooltip 保持只显示任务信息，红色=错误、琥珀=警告），在**作业概览**的「最近巡检」行显示 `警告/错误` 标签 + 完整结论（低精度收敛 · 能量 … · k 网格密度系数 13.63 ≤ 20…）+ 时间，与「状态」行的数据库状态并列显示。实测：接口 0.33s 返回、2 个任务带告警、jsdom 里任务树 2 个告警图标、概览行显示"警告 + 低精度收敛…"。
 - v0.8.7（commit `7df6a91`，已推送 origin/main）：**集群节点状态看板重构 + 本地镜像扁平化（去掉本地 conN / inputs）**。
   ① **看板重构**：作业管理「提交脚本」页原先的"队列拥堵卡片网格 + bhost 明细表"换成自研组件 `src/components/jobs/ClusterNodeBoard.tsx`——左侧**节点矩阵**（一个队列一行、格 = 节点，`radial-gradient` 七段透明度衰减 + 双层阴影，颜色按 `free/total` 从 4° 暖红连续映射到 142° 翠绿）、右侧**队列信息行**（状态圆点 / 队列名 / 节点数 chip / 三档渐变进度条 + 25/50/75 刻度 / 百分比 / 状态胶囊，阈值 80% / 45%），左右行高 14px、行距 8px 严格对齐；滚轮（纵横都映射横向、按 deltaMode 归一化、限幅 60px）与拖动（系数 0.5）走 target/curr 分离 + rAF 插值（`translate3d`，不用 CSS transition），底部 235×2px 滑动指示条同帧同步，Tooltip 事件委托只显示 节点名/队列名/已用·总核，视口 235px（14 格）+ `mask-image` 渐隐；样式为 `global.css` 的 `.cnb-*` 段，旧的 `.queue-card*` / `.node-core-cell*` 与 bhost 明细表一并删除。
   ② **本地镜像扁平化（用户决策，方案 B）**：本地每个任务**只有一份** `<任务目录>/files/`，取消 `inputs/` 快照目录与本地 `conN/` 骨架目录。`task_paths.strip_continuation_suffix()` 在本地路径解析时剥掉 `dir_path` 的 `/conN` 尾巴（**`dir_path` 字段本身保持 `.../conN`** —— 它是续算子任务的逻辑主键：重复登记 409 检查、远端目录推导都靠它）；同步 `build_snapshot` 用"远端最新计算目录"（`_newest_dir_with_file`，conN 优先）的四件套 INCAR/KPOINTS/POSCAR/CONTCAR **覆盖** `files/` 并生成 CIF，**有未生效草稿的文件跳过覆盖**（元数据仍按远端记录 + `protected: true`，界面"本次计算值"不受影响）；新增**归档静默拉取**：`POST /tasks/{id}/archive` 成功后后台线程 `download_archive_outputs()` 把最新含 OUTCAR 目录的 `OUTCAR`/`OSZICAR` 拉到 `files/`（失败只记审计日志，不影响归档）；新增迁移脚本 `scripts/flatten_local_mirror.py`（dry-run 默认 / `--apply`）：把 14 个 `inputs/` 合并进 `files/`（被覆盖与被跳过的文件先备份到 `data/backups/local_mirror_<时间戳>/`）并删除 131 个**确认不含任何文件**的空 conN 骨架目录。已实测（mock 远端 + 隔离数据目录）：同步取 con2 落到 `files/`、无 `inputs/`/`conN`、草稿保护的 INCAR 保留本地版本而元数据仍为远端 `-0.03`、归档拉到 OUTCAR+OSZICAR、续算子任务 `task_dir()` 解析到父任务目录。
@@ -344,6 +350,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 7. 常驻 shell 命令网关（可选提速，需专门设计）；后端“精度档”（低/中/高）机制未实现，仅前端概念；自由能路径汇总表（`free_energy_path_summary`）未落独立表，当前用巡检归档实时聚合。
 8. **总览可选增强**（v0.6.0 已交付主体，剩余为锦上添花）：队列预计等待时间估算、趋势图核数历史回溯（需要外部数据源）、集群健康按队列筛选、总览卡片自定义排序。
 9. **报告结构图渲染改用 ASE + POV-Ray**（2026-09-13 用户决策，**暂时搁置**）：当前 `report_charts.structure_views()` 是纯 Python 正交投影 SVG，效果差；后续用 ASE 读 POSCAR/CONTCAR/CIF + POV-Ray 渲染高质量结构图，替换报告里的 `structure_views` / `structure_matrix`。依赖 `ase`（pip 可选）+ **POV-Ray 二进制**（非 pip，需单独安装或随包分发），落地时要考虑渲染耗时与按 CIF 哈希缓存。**在换掉之前不要在这套 Python 投影图上继续投入**。
+10. **巡检异常规则引擎**（2026-09-20 用户决策，**暂时搁置**）：需求是巡检时判断"离子步很多但力一直震荡 → 结构是否合理"这类异常，但异常种类多、用户无法一次说全 → 不写成硬编码 `if`，改为「指标 + 规则」两层：① 指标层复用 `force_history` 等已有数据算出过程形态量（`force_best`/`stall_steps`/`rebound_count_lastN`/`force_slope`/`energy_drift`/`max_displacement`/`running_hours`…，零额外 SSH），② 判定层照搬 `report_rules.py` 的声明式规则（`when: all/any + field/op/value`，规则文件 `data/config/check_rules.json`，改 JSON 不用重启），③ 输出 `findings[{rule_id,severity,message,advice}]`（任务级状态取最高 severity），巡检中心/详情、作业管理（v0.8.8 已接 `check.message`）、报告「异常与关注项」共用。落地顺序：先平移现有硬编码判定验证等价 → 上 5–8 条通用规则 → **用 `data/checks` 历史回放校准阈值与误报**。详见 TODO.md §11。
+11. **自动执行 / 大模型动作接口**（2026-09-20 审计，**设计已定、尚未实现**）：为「定时执行 + 大模型决策后自动执行（续算/固定原子/建 NEB 等）」准备统一动作层。现状审计：73 个接口（32 读 / 41 写）散落在 jobs/projects/groups 路由，**没有统一动作目录、没有 dry-run 前置校验（只有 submit 内嵌五件套检查）、没有幂等键、长动作同步阻塞（NEB 创建远端 300s、巡检 75-90s）、没有统一动作台账（仅 `jobs.py::_audit_log` 文本行且只覆盖部分动作）、没有审批闸门与通知出口**；已有半成品：`report_rules.json`（13 条声明式规则）→ `risks[].advice` → `actions.items[{action_id,priority,task_id,action(自然语言),reason}]` + `llm_context{key_findings,open_questions,data_references,constraints}`。建议新增：`GET /actions`（动作目录，含参数 schema/前置/风险/幂等/是否长任务）、`POST /actions/{name}`（`dry_run` + `idempotency_key` + `requested_by/reason`）、`GET /actions/runs/{id}`（长动作轮询）、`/approve`·`/cancel`、`GET /actions/ledger`、`GET /observe/context`（一次给出巡检 findings + 任务事实 + 集群 + 动作历史，供大模型消费）。落地顺序：①动作目录+统一执行端点+给续算/固定原子/NEB 补 preflight → ②台账+幂等键+审批闸门 → ③异步 run+轮询+重试 → ④LLM 闭环（先只放开低风险动作）。**待用户拍板**：无人值守白名单、是否先全审、是否只允许选"参数档"而非任意 INCAR 键值、台账位置与保留量、失败重试与通知渠道。详见 TODO.md §12。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 
@@ -351,14 +359,17 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -3` 确认在 v0.8.5；`git status` 应干净（有未提交改动时先看 §7 末尾是否为「待提交」事项）。
-2. 读 `TODO.md` + `README.md`（SSH 约定章节）+ 本文件。
-3. 需要联调时（生产机 Linux）：`sudo systemctl restart vasp-manager` → 打开 `http://192.168.1.20:3001`（前端已构建在 `dist/`）与 `http://192.168.1.20:3001/docs`；改前端记得先 `npm run build`，需要热更新时才另开 `npm run dev`（5173）。部署细节见 §11。
-4. 用户对“默认参数 / 目录结构 / 作业号同步 / 巡检状态”等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。
-5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 package.json version 后 `git add -A && git commit && git push origin main`（本机 `git push` 走 `~/.ssh/config` 里的 `github.com → ssh.github.com:443` + `~/.ssh/id_github`，无需额外配置）。
-6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.8.8，尚未提交**（工作区有未提交改动，见下）；服务已重启并运行 v0.8.8 代码（`GET /api/health` 的 `startedAt` = 2026-09-20T20:13:26）；`npm run build` 已出。
 
----
+1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -3` → 应看到 `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` **当前有未提交改动**（v0.8.8）：
+   `TODO.md` · `process.md` · `package.json`(0.8.8) · `backend/{checks_store,inspection_runner,mappers}.py` · `backend/routers/projects.py` · `src/{types/index.ts,utils/project.ts,pages/Jobs.tsx}` · `src/components/jobs/{ContinuationModal,JobsTree,TaskOverview}.tsx` · `src/styles/global.css`。
+   → 用户说「git」时：按 §10.5 的写法提交为 `v0.8.8: …`，然后补一个 `docs: process.md 补 v0.8.8 commit 号` 的小提交。
+2. 读 `TODO.md`（§11 巡检异常规则引擎、§12 自动执行/大模型动作接口 —— 两项都已设计但**用户明确要求先搁置**）+ `README.md`（SSH 约定章节）+ 本文件。
+3. 需要联调时（生产机 Linux）：`sudo systemctl restart vasp-manager` → 打开 `http://192.168.1.20:3001`（前端已构建在 `dist/`）与 `http://192.168.1.20:3001/docs`；改前端记得先 `npm run build`，需要热更新时才另开 `npm run dev`（5173）。部署细节见 §11。
+4. 用户对"默认参数 / 目录结构 / 作业号同步 / 巡检状态"等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。**验证习惯**：本轮开发都用「隔离数据目录 + `VASP_SSH_MOCK=1` 的 mock 远端」或「服务器 `/tmp` 临时目录」做端到端验证（`/tmp/sd_test`、`/tmp/vm_*` 之类），前端用 jsdom 渲染断言（`/tmp/cnbtest` 下装了 jsdom，临时测试文件用完即删）。
+5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 `package.json` version 后 `git add -A && git commit && git push origin main`（本机 `git push` 走 `~/.ssh/config` 里的 `github.com → ssh.github.com:443` + `~/.ssh/id_github`，无需额外配置）。
+6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
+7. **下一步待用户拍板的两件事**（都已写进 TODO，等指令再动）：① 巡检异常规则引擎（TODO §11）；② 自动执行 / 大模型动作接口（TODO §12，含 5 个待决策项：无人值守白名单、是否先全审、是否只允许"参数档"、台账位置与保留、失败重试与通知渠道）。
 
 ## 11. 部署与运维（Linux 生产机）
 

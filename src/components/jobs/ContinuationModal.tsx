@@ -12,7 +12,7 @@ interface Props {
     con: string;
     remote_dir: string;
     warnings: string[];
-  }) => void;
+  }, /** 发起续算的父任务 id（用于刷新它的输入状态） */ parentTaskId: string) => void;
 }
 
 /** 同类型续算：按任务类型由后端分发（opt/frac 通用 conN、neb 映像续算、ele 不支持） */
@@ -41,7 +41,7 @@ export default function ContinuationModal({
           con: string;
           remote_dir: string;
           warnings: string[];
-        });
+        }, task.task_id);
       } else if (r.action === 'running') {
         modal.warning({
           title: '任务正在运行',

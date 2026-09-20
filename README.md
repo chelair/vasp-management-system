@@ -2,7 +2,7 @@
 
 基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
 
-当前版本（v0.8.5，运行在 Linux 生产机）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；
+当前版本（**v0.8.8，尚未提交**，运行在 Linux 生产机）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；作业管理已含自研集群节点看板、输入文件「同步到远端」、POSCAR 同步/生成 POTCAR/固定原子（Selective Dynamics）、vasp.lsf 八段式脚本生成与提交前非空检查，巡检结论（低精度收敛、力未收敛等）在作业管理同步显示；
 **项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池、结构 3D 视图与分项目报告生成均已接入真实后端**
 （Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
 总览页已是集群实时视图（bjobs 作业、blimits 核数配额、bhosts/bqueues 节点队列、df 存储），

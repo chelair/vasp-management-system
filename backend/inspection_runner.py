@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import ssh
-from checks_store import archive_results, record_run
+from checks_store import archive_results, invalidate_cache, record_run
 from cif_convert import convert_structure_to_cif
 from config import PROJECTS_DIR, load_servers
 from continuation import compute_g_correction
@@ -553,6 +553,8 @@ def run_inspection(
         "scope": "single" if task_id is not None else "global",
     }
     record_run(summary)
+    # 巡检归档后作废"最近巡检结论"缓存，让作业管理/总览立刻拿到新结论
+    invalidate_cache()
 
     # 全局巡检后静默刷新集群状态：作废快照缓存并后台预热（不阻塞返回）
     if task_id is None and not failures:

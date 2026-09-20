@@ -44,6 +44,15 @@ export interface InputSource {
 
 export type Workload = 'small' | 'medium' | 'large';
 
+/** 最近一次巡检结论（与巡检中心同一口径；未巡检为 null） */
+export interface TaskCheckSummary {
+  status: Exclude<CheckStatus, 'pending'>;
+  message: string;
+  checked_at?: string | null;
+  energy?: number | null;
+  has_inspection?: boolean;
+}
+
 export interface Task {
   task_id: string;
   task_type: TaskType;
@@ -72,6 +81,11 @@ export interface Task {
     model_name: string;
     status: TaskStatus;
   } | null;
+  /**
+   * 最近一次巡检结论：`低精度收敛`、`计算完成但力未收敛` 这类提示只存在于巡检结果里
+   * （数据库状态可能仍是 completed），作业管理页据此显示与巡检中心一致的告警。
+   */
+  check?: TaskCheckSummary | null;
   /** 所属计算流程组（独立任务为 null） */
   group?: GroupMeta | null;
   parent_task_id?: string | null;

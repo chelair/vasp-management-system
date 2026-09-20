@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Button, Tooltip } from 'antd';
-import { ClockCircleOutlined, MenuOutlined } from '@ant-design/icons';
+import { App, Button, Dropdown, Tooltip } from 'antd';
+import { ClockCircleOutlined, LogoutOutlined, MenuOutlined, UserOutlined } from '@ant-design/icons';
 import { useClock } from '../../hooks/useClock';
 import { useSSH } from '../../context/SSHContext';
+import { useAuth } from '../../context/AuthContext';
 import { fetchSshStatus } from '../../api/ssh';
 import type { SshStatus } from '../../api/ssh';
 
@@ -20,6 +21,8 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const clock = useClock();
   const navigate = useNavigate();
   const { activeServer } = useSSH();
+  const { user, isAdmin, logout } = useAuth();
+  const { modal } = App.useApp();
   const [backendStatus, setBackendStatus] = useState<SshStatus | null>(null);
   const title = TITLES[location.pathname] ?? 'VASP 计算项目管理系统';
 
@@ -104,6 +107,40 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
           <span>{clock.date}</span>
           <strong>{clock.time}</strong>
         </div>
+        <div className="topbar__divider" />
+        <Dropdown
+          trigger={['click']}
+          menu={{
+            items: [
+              {
+                key: 'who',
+                label: `${user?.username ?? '未登录'}${isAdmin ? ' · 管理员' : ''}`,
+                disabled: true,
+              },
+              { type: 'divider' },
+              { key: 'logout', icon: <LogoutOutlined />, label: '退出登录' },
+            ],
+            onClick: ({ key }) => {
+              if (key !== 'logout') return;
+              modal.confirm({
+                title: '退出登录',
+                content: '退出后当前 token 立即失效，需要重新输入账号密码。',
+                okText: '退出',
+                cancelText: '取消',
+                onOk: async () => {
+                  await logout();
+                  navigate('/login', { replace: true });
+                },
+              });
+            },
+          }}
+        >
+          <div className="topbar__user" role="button" tabIndex={0}>
+            <UserOutlined />
+            <span>{user?.username ?? '未登录'}</span>
+            {isAdmin && <span className="topbar__user-role">管理员</span>}
+          </div>
+        </Dropdown>
       </div>
     </header>
   );

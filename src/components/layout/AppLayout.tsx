@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { Alert } from 'antd';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
+import { request } from '../../api/client';
 
 /** 依赖提示条"已关闭"记录键：值为缺失依赖集合签名，集合不变则不再次弹出 */
 const DEPS_DISMISS_KEY = 'vasp.deps.banner.dismissed';
@@ -22,15 +23,12 @@ export default function AppLayout() {
   // 运行时后台检查 Python 依赖：缺失时提示安装命令（后端不可用时静默跳过）；
   // 关闭后记录签名，刷新或切换页面不再重复弹出
   useEffect(() => {
-    fetch('/api/deps')
-      .then((res) => res.json())
-      .then((body) => {
-        if (body?.success) {
-          const missing = (body.data.dependencies as Array<{
-            name: string;
-            purpose: string;
-            installed: boolean;
-          }>).filter((d) => !d.installed);
+    request<{
+      dependencies: Array<{ name: string; purpose: string; installed: boolean }>;
+    }>('/deps')
+      .then((data) => {
+        {
+          const missing = (data.dependencies ?? []).filter((d) => !d.installed);
           if (missing.length) {
             const signature = missing.map((d) => d.name).sort().join(',');
             let dismissed = false;
@@ -47,7 +45,7 @@ export default function AppLayout() {
         }
       })
       .catch(() => {
-        // 后端未启动时不提示
+        // 后端未启动 / 未登录时不提示
       });
   }, []);
 

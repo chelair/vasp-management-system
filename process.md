@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.8.9（输入文件逐项撤销/草稿回填 + 复制参数落草稿 + 任务选择弹窗 + POSCAR 选中原子坐标 + EFIELD/NCORE）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.0（登录认证上线：账号/会话底座 + 认证中间件 + 登录页）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -131,6 +131,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `main.py` | FastAPI app 装配、路由挂载、启动时后台预热 SSH 连接 |
 | `ssh.py` | **统一 SSH 连接池**：`run_remote`（exec）/ `upload_file` / `download_file` / `mkdir_remote` 共用一条常驻连接；Paramiko 传输层 keepalive 30s + 后台每 60s 应用层保活（echo ok 实测延迟写入连接池状态）、空闲 5min 回收、断线重连；`VASP_SSH_MOCK=1` 本地模拟模式。禁止业务代码自建 Paramiko 客户端 |
 | `config.py` | 读取 data/config 下各 JSON（servers/settings/task_registry/path_mapping），每次现读无缓存 |
+| `auth.py` | **账号与会话底座（v0.9.0）**：`hashlib.scrypt` + 随机 salt 的密码哈希、`secrets.token_urlsafe(32)` 的 token 生成与 **sha256 存盘**、用户/会话文件（`data/users/{users,sessions}.json`；原子写 + 文件锁 + 0600/0700）、滑动续期、`ensure_users_file()` 首次启动自动建默认管理员（随机密码打印 stdout 与日志） |
+| `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天 |
+| `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期）/列出/吊销（按 `session_id`） |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
 | `task_paths.py` | 任务目录推导、`is_continuation_task`、类型→顶层分类目录 |
 | `storage.py` | 文件型 DB：原子写 + 备份 + `update_task_status`（无流转白名单） |
@@ -232,8 +235,15 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.8.9）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.0）
 
+- v0.9.0（2026-09-20，待提交）：**账号体系 + 登录认证上线**（分两步做的，一次提交）。
+  ① **用户与会话底座**：`backend/auth.py`——`hashlib.scrypt`（n=2^14/r=8/p=1，16B salt）密码哈希、`secrets.token_urlsafe(32)` token + **服务端只存 sha256**、用户/会话文件落在 `data/users/{users,sessions}.json`（原子写 + `fcntl.flock` 跨进程锁 + 进程内 RLock，权限 0600/0700，**零新依赖**）；`ensure_users_file()` 首次启动自动建 `zouyuxi`(admin) 并把随机初始密码打印到 stdout 与日志；`scripts/set_password.py` 提供列出/建号/改密/禁用/启用/会话查看/强制下线；改密与禁用会**自动吊销该用户全部会话**。
+  ② **认证中间件**：`backend/middleware/auth.py` 全局拦截，白名单只有 `POST /api/auth/login` 与 `GET /api/health`；`/api/**`、`/docs`、`/openapi.json`、`/redoc` 未登录一律 401（统一 JSON 信封）；跳过 OPTIONS；token 支持 `Authorization: Bearer` / `X-Auth-Token` / `?token=` / Cookie，其中**后两者只对 GET/HEAD 生效**（写操作必须用请求头，避免 CSRF）；校验通过把 `user/session/token` 挂到 `request.state` 并做**滑动续期**（推到 now+14 天，漂移 ≥1h 才写盘）。
+  ③ **认证接口**：`POST /api/auth/login`（错密码 5 次/15 分钟限速，第 6 次 429；成功写 HttpOnly Cookie 方便浏览器直接打开 `/docs`）、`POST /api/auth/logout`（当前会话立即失效）、`GET /api/auth/me`、`POST /api/auth/tokens`（**仅 admin**，可指定 username/user_id、命名、`expires_days` 或长期有效）、`GET /api/auth/tokens`（admin 看全部，其他用户只看自己）、`DELETE /api/auth/tokens/{session_id}`（越权 403）。
+  ④ **前端**：新增登录页（用户名/密码/错误提示/保留 `?from=` 原地址）；`api/client.ts` 统一注入 `Authorization` 并在 401 时清 token 跳 `/login`（**登录接口自身的 401 不清已有登录态**，避免在登录页试错密码被登出）；`AuthContext` 启动时用 `/auth/me` 校验登录态；`App.tsx` 新增 `RequireAuth` 路由守卫；顶栏新增用户菜单（当前用户/管理员标识/退出登录）；`api/{projects,inspections,ssh}.ts` 里各自重复的 `request` 收敛到 `client.ts`，保证**所有**调用都带 token。
+  ⑤ 验证：后端 33 项真实 HTTP 验收（无 token 401、未登录读不到 `/docs` 与 `/openapi.json`、OPTIONS 放行、错密码 5 次后 429、登录/me 正常、Cookie 可读 `/docs` 但不能用于写操作、滑动续期生效、admin 签发/列出/吊销长期 token、非 admin 403、退出即失效、禁用用户 token 立即 401）；前端 11 项 jsdom 验收（请求头注入、401 清 token 与跳登录、路由守卫重定向并保留 `?from=`、登录页渲染、登录成功写 token、失败抛后端文案）；`tsc` + `npm run build` 通过。
+  ⑥ **影响面提醒**：认证上线后**所有脚本/curl/智能体调用都要带 token**（`Authorization: Bearer <token>`）；长期 token 用 `POST /api/auth/tokens` 签发；账号管理用 `python scripts/set_password.py`。生产机需 `sudo systemctl restart vasp-manager` 生效，首次启动会在 `data/users/users.json` 建 `zouyuxi`(admin) 并把随机密码写进 journalctl。
 - v0.8.9（commit `d029540`，已推送 origin/main）：**输入文件面板交互修复 + 复制参数落草稿 + 任务选择弹窗 + 电场/并行参数**。
   ① **INCAR 待生效修改可逐项撤销**（用户反馈"撤销一点所有都会撤销"）：横幅里每条待生效修改只撤销自己（= 该项回到本次计算值），多条时标题行提供「全部撤销」（按 INCAR / KPOINTS 逐个撤销）；**主开关依赖**——撤销 `LDAU` / `LDIPOL` 后若主开关不是 `.TRUE.`，整组依赖参数（`LDAUTYPE/LMAXMIX/LDAUL/LDAUU/LDAUJ`、`IDIPOL/DIPOL/EFIELD`）一并撤销，不会留下孤立 +U / 电场参数（`revertIncarPatch()`）；同时 `applyIncarGates()` 由"跳过整组"改为"**整组置空**"（空值即草稿的"撤销该项"语义），修掉"关掉 +U 再确认修改后，旧 `LDAU*` 仍留在草稿里、下次续算照样写入"的漏洞。
   ② **刷新页面后表单显示待生效草稿**（原来横幅列着待生效、下面却回到本次计算值 / 默认值）：新增 `incarFormParams(本次计算值 + 草稿)` 统一回填，「取消编辑」也回到该基线；并修掉"本地 `files/INCAR` 异步读取晚于输入状态返回、把刚改的草稿盖回同步旧值"的竞态（有远端快照时不再用本地镜像覆盖 INCAR，改用函数式 `setWorkspaces` 取最新状态）。
@@ -365,7 +375,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
 13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策，**先写待办、暂不实现自动执行**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。
-14. **账号 + 认证 + 授权**（2026-09-20 用户要求，**先给方案与清单**）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
+14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
+    - **第 1 步（用户与会话底座）与第 2 步（登录认证上线）已完成**：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 
@@ -373,7 +384,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.8.9，已提交并推送 origin/main**（`d029540`，工作区应干净）；本轮全是前端改动，后端仍是 `startedAt` = 2026-09-20T20:13:26 的那个进程（无需重启）；`npm run build` 已出。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.0，尚未提交**（账号体系 + 登录认证，后端需 `systemctl restart vasp-manager` 生效；首次启动会创建 `zouyuxi` admin 并打印随机密码）；`npm run build` 已出。
 
 1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。

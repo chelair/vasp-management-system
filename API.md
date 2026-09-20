@@ -18,38 +18,69 @@
 | 时间 | ISO 字符串（服务器时区 `Asia/Shanghai`） |
 | 任务状态 | `pending / queued / running / completed / unconverged / zombied / archived` |
 | 巡检状态 | `normal / warning / error / low_precision / pending / archived` |
-| 认证 | **现状：无鉴权**（内网/ZeroTier 内可直接调用，切勿暴露到公网）。规划见 §2 与 TODO §14 |
+| 认证 | **v0.9.0 起强制登录**：除 `POST /api/auth/login`、`GET /api/health` 外，所有 `/api/**` 与 `/docs`、`/openapi.json` 都要 `Authorization: Bearer <token>`，未登录一律 `401`。详见 §2 |
 | 阻塞 | 全部为**同步** HTTP；长动作耗时见各行动作表（最重 `create-neb-files` ≈ 300s、`create-frac` ≈ 180s） |
 | 幂等 | 目前仅 `submit`（重复提交 409）与 `continuation`（重复 conN 409）自带保护；**其余动作重复调用可能重复建目录/重复提交** |
 | 审计 | `data/audit_submit.log` 文本行（`_audit_log`），**只覆盖部分动作**（submit / continuation / create-frac / create-neb / upload-* / archive 等） |
 
 ```bash
-# 通用调用形态
-curl -s -X POST http://192.168.1.20:3001/api/jobs/tasks/<task_id>/submit
-curl -s http://192.168.1.20:3001/api/projects | jq '.data.projects[0].tasks[0]'
+# 先登录拿 token（脚本/智能体推荐用长期 token，见 §2）
+TOKEN=$(curl -s -X POST http://192.168.1.20:3001/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"zouyuxi","password":"<密码>"}' | jq -r '.data.token')
+
+# 之后每次调用都带头
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://192.168.1.20:3001/api/projects | jq '.data.projects[0].tasks[0]'
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  http://192.168.1.20:3001/api/jobs/tasks/<task_id>/submit
 ```
 
 ---
 
-## 2. 认证与授权（规划中，尚未实现）
+## 2. 认证与授权
 
-> 目标（用户要求）：**先登录才能调用系统**；**每个账号只能管理/查看自己创建的项目**。
-> 方案与实施清单见 [`TODO.md` §14](TODO.md)；落地后本文档所有接口都会多出下述约束。
+> **认证已上线（v0.9.0）**；**授权（按项目归属隔离）尚未实现** —— 目前所有登录用户都能看到全部项目（见 TODO §14 第 3/4 步）。
 
-| 接口 | 说明 |
-| --- | --- |
-| `POST /api/auth/login` | `{username, password}` → `{token, expires_at, user:{name, role}}` |
-| `POST /api/auth/logout` | 使当前 token 失效 |
-| `GET /api/auth/me` | 当前用户（前端启动时校验登录态） |
-| `POST /api/auth/tokens` | 生成**长期 token**（智能体/脚本专用，可设名称、有效期、scope） |
-| `GET/DELETE /api/auth/tokens` | 列出/吊销自己的 token |
+### 2.1 认证接口
 
-- 调用方（含智能体）统一带 `Authorization: Bearer <token>`；缺失/过期 → `401`；越权访问他人项目 → `403`。
-- 白名单（无需登录）：`POST /api/auth/login`、`GET /api/health`、前端静态资源。
-- 所有列表类接口按**项目归属**过滤；单对象接口校验 `project.owner == 当前用户`（`role=admin` 可看全部）。
-- HPC 侧仍是同一个 SSH 账号（`mdye@hpc.xmu.edu.cn`），鉴权只控制"谁看/改哪些项目"，不改变算力归属。
+| 接口 | 调用方式 | 说明 |
+| --- | --- | --- |
+| `POST /api/auth/login` | `{username, password, name?}` | 返回 `{token, expires_at, user, session}`；**失败限速 5 次 / 15 分钟**（第 6 次 `429`）；同时写 HttpOnly Cookie（仅供浏览器打开 `/docs`，只对 GET/HEAD 生效） |
+| `POST /api/auth/logout` | 带头即可 | 删除当前会话，**旧 token 立即失效** |
+| `GET /api/auth/me` | 带头即可 | `{user, session, is_admin}`，前端启动时校验登录态 |
+| `POST /api/auth/tokens` | `{username? \| user_id?, name?, expires_days?}`（**仅 admin**） | 签发长期 token（给脚本 / 智能体）；不传 `expires_days` 即长期有效；**明文只返回一次** |
+| `GET /api/auth/tokens` | 带头即可 | admin 看全部 token，其他用户只看自己的；返回 `session_id`（吊销时用） |
+| `DELETE /api/auth/tokens/{session_id}` | 带头即可 | 吊销指定 token；admin 可吊销任意，其他用户只能吊销自己的（否则 403） |
 
----
+### 2.2 调用约定
+
+- **请求头**：`Authorization: Bearer <token>`（推荐）。备用：`X-Auth-Token: <token>`。
+- **`?token=` 与 Cookie**：只对 `GET`/`HEAD` 生效（方便浏览器直接打开 `/docs?token=...`），**写操作必须用请求头**——这条规则是为了不引入 CSRF 面。
+- **会话有效期**：默认 14 天并**滑动续期**（每次请求把有效期推回 14 天，漂移 ≥1 小时才写盘）；长期 token 默认不过期，可随时吊销。
+- **失效场景**（都会返回 `401`）：token 不存在 / 已过期 / 已吊销 / 用户被禁用。改密与禁用会自动吊销该用户全部会话。
+- **退出登录后**：旧 token 立即不可用（服务端删除会话，不依赖前端）。
+- **日志/排障**：`sudo journalctl -u vasp-manager`；账号初始化（首次启动）会把随机初始密码打印到日志与 stdout。
+
+```bash
+# 签发一个给智能体的长期 token（admin）
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"username":"agent","name":"inspect-loop","expires_days":90}' \
+  http://192.168.1.20:3001/api/auth/tokens | jq -r '.data.token'
+```
+
+账号管理（生产机）：
+
+```bash
+python scripts/set_password.py                    # 列出用户
+python scripts/set_password.py <用户名>            # 建号/改密（交互输入）
+python scripts/set_password.py <用户名> --generate # 随机密码并打印
+python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其全部会话）
+```
+
+### 2.3 授权（待实现）
+
+规划：`project.owner` + `permissions.visible_projects/ensure_owner`，列表按归属过滤、单对象越权 403、`role` 分 `admin`/`user`/`agent`；HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。详见 TODO §14。
 
 ## 3. 只读接口（观测面）
 
@@ -228,7 +259,7 @@ body: {
 
 | 缺口 | 影响 | 建议 |
 | --- | --- | --- |
-| 无鉴权 | 谁都能调（含提交/删除） | 先做 TODO §14 的认证；智能体用**独立长期 token**（`role=agent`） |
+| ~~无鉴权~~ | v0.9.0 已解决 | 智能体用 `POST /api/auth/tokens` 签发的**长期 token**（可命名/设过期/随时吊销） |
 | 无 dry-run | 动作直接落盘/占算力 | 增加 `?dry_run=1`（只跑 preflight 返回"将会发生什么"） |
 | 无幂等键 | 重试可能重复建目录/重复提交 | 加 `Idempotency-Key` 请求头 |
 | 长动作同步阻塞 | 300s 占住连接、超时易重试 | 加 `run_id` + 轮询（异步执行） |

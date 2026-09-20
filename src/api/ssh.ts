@@ -1,6 +1,7 @@
 import { wait } from './client';
 import { mockServerConfigs } from '../data/mock/servers';
 import type { ConnectionTestResult, ServerConfig } from '../types';
+import { request } from './client';
 
 /**
  * SSH 服务器配置数据访问层。
@@ -56,20 +57,6 @@ function toBackend(cfg: ServerConfig): BackendServerEntry {
     queue_system: cfg.queueSystem,
     remote_base: cfg.remoteBase ?? null,
   };
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`/api${path}`, init);
-  } catch {
-    throw new Error('无法连接后端服务');
-  }
-  const body = await res.json().catch(() => null);
-  if (!res.ok || !body || body.success === false) {
-    throw new Error(body?.message ?? `请求失败（HTTP ${res.status}）`);
-  }
-  return body.data as T;
 }
 
 /** 读取本地 UI 状态缓存（连接/延迟/测试时间） */

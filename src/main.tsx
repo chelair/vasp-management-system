@@ -7,17 +7,20 @@ import 'antd/dist/reset.css';
 import './styles/global.css';
 import App from './App';
 import { SSHProvider } from './context/SSHContext';
+import { AuthProvider } from './context/AuthContext';
 import { themeConfig } from './theme';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ConfigProvider locale={zhCN} theme={themeConfig}>
       <AntdApp>
-        <SSHProvider>
-          <BrowserRouter>
+        <BrowserRouter>
+          <AuthProvider>
+            <SSHProvider>
             <App />
-          </BrowserRouter>
-        </SSHProvider>
+            </SSHProvider>
+          </AuthProvider>
+        </BrowserRouter>
       </AntdApp>
     </ConfigProvider>
   </React.StrictMode>,

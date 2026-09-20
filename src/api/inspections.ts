@@ -1,18 +1,5 @@
+import { request } from './client';
 import type { InspectionDetail, InspectionResult } from '../types';
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`/api${path}`, init);
-  } catch {
-    throw new Error('无法连接后端服务：请先运行 npm run server（端口 3001）');
-  }
-  const body = await res.json().catch(() => null);
-  if (!res.ok || !body || body.success === false) {
-    throw new Error(body?.message ?? `请求失败（HTTP ${res.status}）`);
-  }
-  return body.data as T;
-}
 
 export interface InspectionRejected {
   task_id: string;

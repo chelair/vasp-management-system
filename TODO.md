@@ -11,6 +11,13 @@
 
 ## 当前进度概览
 
+**已完成（v0.9.0，2026-09-20 · 账号体系 + 登录认证）**
+
+- [x] 账号与会话底座：`backend/auth.py`（scrypt 哈希、token 只存 sha256、`data/users/*.json` 原子写 + 文件锁、首次启动自动建 `zouyuxi` admin）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）
+- [x] 认证上线：全局中间件（白名单只有 `POST /api/auth/login`、`GET /api/health`；`/api/**` 与 `/docs`、`/openapi.json` 未登录 401；跳过 OPTIONS；Cookie/query 只对 GET 生效）+ `routers/auth.py` 六个接口（登录限速 5 次/15 分钟、登出、me、长期 token 签发/列出/吊销）+ 滑动续期 14 天
+- [x] 前端：登录页（保留 `?from=`）、`client.ts` 自动注入 token 与 401 跳登录、`AuthContext` + 路由守卫、顶栏用户菜单（当前用户/退出）
+
+
 **已完成（v0.8.9，2026-09-20 · 输入文件面板交互 + 复制/选择 + 电场并行参数）**
 
 - [x] INCAR 待生效修改**逐项撤销**（不再一撤全撤）+ 多条时「全部撤销」；撤销主开关（LDAU / LDIPOL）时整组依赖参数一并撤销（不会留下孤立 +U / 电场参数）；`applyIncarGates` 改为整组置空，修掉"关掉 +U 后旧草稿仍被写入下次续算"
@@ -707,8 +714,11 @@
 
 **实施清单（分 5 步，每步可独立验收）**
 
-- [ ] **① 用户与会话底座**：`backend/auth.py`（scrypt 哈希/校验、token 生成与校验、会话读写与清理、`require_user` / `require_admin` 依赖）+ `scripts/set_password.py`（管理员建号/改密/禁用；首次启动若无 `users.json` 则创建 `admin` 并把**随机初始密码打印到 journalctl 与 CLI**）
-- [ ] **② 认证上线（先认证、后授权）**：`backend/routers/auth.py`（`login`/`logout`/`me`/`tokens`）+ 全局中间件白名单 + `/docs` 保护；前端登录页、`request()` 注入 token、401 统一跳登录、顶栏用户菜单
+- [x] **① 用户与会话底座**（**2026-09-20 完成**）：`backend/auth.py`（scrypt 哈希/校验、token 生成与 sha256 存储、会话读写/清理、`authenticate`/`find_user`/`create_session`/`verify_token`/`revoke_*`、`ensure_users_file`）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（首次启动自动建 `zouyuxi`(admin)，随机密码打印到 stdout 与日志，并清理过期会话）。
+  - 数据文件按约定落到 `data/users/users.json`（`user_id/username/password_hash/role/enabled/created_at`）与 `data/users/sessions.json`（`token_hash/user_id/created_at/last_seen/expires_at/name`）；原子写 + `fcntl.flock`（跨进程）+ 进程内 RLock，权限 0600/0700；**零新依赖**。
+  - 附带语义：改密/禁用会**自动吊销该用户全部会话**（凭据变更即下线）；`list_sessions` 对外只回显 `token_hash` 前 12 位；`verify_token` 的 `last_seen` 每 5 分钟最多写一次。
+  - 验收（隔离数据目录 + mock SSH 启动真实 app，47 项断言全过）：首次启动建 admin/幂等、哈希含随机 salt、建号/改密/禁用/启用、旧密码与旧会话失效、token 只存哈希、过期清理、12 线程并发建号无丢失、CLI 全部子命令。
+- [x] **② 认证上线（先认证、后授权）**（**2026-09-20 完成，未提交**）：`backend/routers/auth.py`（`login`/`logout`/`me`/`tokens`）+ 全局中间件白名单 + `/docs` 保护；前端登录页、`request()` 注入 token、401 统一跳登录、顶栏用户菜单
   - 验收：无 token 调 `/api/projects` → `401`；登录后可正常用；错密码限速生效；`/docs` 未登录不可读
 - [ ] **③ 归属字段与迁移**：`projects.json` 增加 `owner`/`created_at`；`scripts/migrate_owners.py`（dry-run 默认，`--apply` 写入）把现有 4 个项目归给指定管理员；`mappers` 输出 `owner`
 - [ ] **④ 授权生效**：`backend/permissions.py`（`visible_projects` / `ensure_owner` / `ensure_task_owner`）接入 `projects / jobs(_resolve_task) / groups / free_energy / reports / inspections / dashboard`；`_audit_log` 增加 `username` 字段

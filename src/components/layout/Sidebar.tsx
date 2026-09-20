@@ -8,6 +8,7 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import BrandLogo from './BrandLogo';
+import { useAuth } from '../../context/AuthContext';
 
 const NAV_ITEMS = [
   { to: '/', label: '总览', icon: <AppstoreOutlined />, end: true },
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export default function Sidebar({ open, onNavigate }: Props) {
+  const { isAdmin } = useAuth();
   return (
     <aside className={`sidebar${open ? ' open' : ''}`}>
       <div className="sidebar__brand">
@@ -60,17 +62,21 @@ export default function Sidebar({ open, onNavigate }: Props) {
           VASP 官方文档
         </a>
 
-        <div className="nav-section-label">系统</div>
-        <NavLink
-          to="/ssh"
-          onClick={onNavigate}
-          className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-        >
-          <span className="nav-item__icon">
-            <ApiOutlined />
-          </span>
-          SSH 连接
-        </NavLink>
+        {isAdmin && (
+          <>
+            <div className="nav-section-label">系统</div>
+            <NavLink
+              to="/ssh"
+              onClick={onNavigate}
+              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+            >
+              <span className="nav-item__icon">
+                <ApiOutlined />
+              </span>
+              SSH 连接
+            </NavLink>
+          </>
+        )}
       </nav>
 
       <div className="sidebar__footer">

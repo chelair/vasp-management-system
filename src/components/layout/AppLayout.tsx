@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
-import { Alert } from 'antd';
+import { Alert, App } from 'antd';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
-import { request } from '../../api/client';
+import { request, setForbiddenHandler } from '../../api/client';
 
 /** 依赖提示条"已关闭"记录键：值为缺失依赖集合签名，集合不变则不再次弹出 */
 const DEPS_DISMISS_KEY = 'vasp.deps.banner.dismissed';
 
 export default function AppLayout() {
   const location = useLocation();
+  const { message } = App.useApp();
   const [navOpen, setNavOpen] = useState(false);
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
   const [depsSignature, setDepsSignature] = useState('');
@@ -19,6 +20,14 @@ export default function AppLayout() {
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
   }, [location.pathname]);
+
+  // 403（越权）统一轻提示：只提示，不跳登录页（第 5 步）
+  useEffect(() => {
+    setForbiddenHandler((text: string) => {
+      void message.warning(text || '无权访问');
+    });
+    return () => setForbiddenHandler(null);
+  }, [message]);
 
   // 运行时后台检查 Python 依赖：缺失时提示安装命令（后端不可用时静默跳过）；
   // 关闭后记录签名，刷新或切换页面不再重复弹出

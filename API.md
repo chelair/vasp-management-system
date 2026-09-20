@@ -88,7 +88,8 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 - **admin 专属**：`POST /inspections/run`（全局巡检）、`PUT /inspections/auto`（自动巡检开关）、全局配置写接口（`PUT /settings/root-paths`、`PUT /path-mapping`、`POST /path-mapping/rebase`、`PUT /ssh/config`、`POST /aux-molecules`）。
 - **集群级信息**（节点 / 队列 / 存储 / 趋势采样）不涉及项目归属，保持全局可见（`/dashboard/cluster-health`、`/jobs/nodes`）。
 - **审计**：写操作审计双写 —— `data/audit/actions.jsonl`（JSONL，含 `username`）+ 旧 `data/audit_submit.log`（原格式 + 行尾 `user=`）。
-- 仍未做：`role=agent` 的 token scope、多人共享项目（members）、前端按角色隐藏入口（第 5 步）。HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。
+- 前端（v0.9.3）：按角色隐藏入口（侧栏 SSH/全局配置、巡检开关与触发按钮），非 admin 强访问 `/ssh` 跳首页；**403 只弹轻提示、不跳登录页**。前端隐藏是体验优化，后端 403 才是防线。
+- 仍未做：`role=agent` 的 token scope、多人共享项目（members）、用户管理/日志/在线会话页、HTTPS。HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。
 
 ## 3. 只读接口（观测面）
 

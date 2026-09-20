@@ -30,6 +30,21 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/** 管理员路由：非 admin（或未登录）访问直接跳首页（第 5 步） */
+export function AdminRoute({ children }: { children: ReactNode }) {
+  const { isAdmin, user, ready } = useAuth();
+  if (!ready) {
+    return (
+      <div className="app-loading">
+        <Spin size="large" tip="正在校验登录状态…" />
+      </div>
+    );
+  }
+  if (!user) return <Navigate to="/login" replace />;
+  if (!isAdmin) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 export default function App() {
   const location = useLocation();
 
@@ -50,7 +65,14 @@ export default function App() {
           <Route path="/inspection" element={<Inspection />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/report" element={<Report />} />
-          <Route path="/ssh" element={<SSH />} />
+          <Route
+            path="/ssh"
+            element={
+              <AdminRoute>
+                <SSH />
+              </AdminRoute>
+            }
+          />
           <Route path="*" element={<Dashboard />} />
         </Route>
       </Routes>

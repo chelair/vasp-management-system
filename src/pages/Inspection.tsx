@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import {
   App,
@@ -209,6 +210,7 @@ const QUEUE_STATUS_LABELS: Record<string, string> = {
 };
 
 export default function Inspection() {
+  const { isAdmin } = useAuth();
   const { message } = App.useApp();
   const [searchParams, setSearchParams] = useSearchParams();
   const savedFilters = useMemo(loadSavedFilters, []);
@@ -828,29 +830,38 @@ export default function Inspection() {
                   : ' · 尚未巡检'}
                 {meta?.next_run_at ? ` · 下次 ${meta.next_run_at}` : ''}
               </span>
-              <Tooltip
-                title={
-                  meta?.scheduler?.last_error
-                    ? `上次自动巡检失败：${meta.scheduler.last_error}`
-                    : '距上次巡检超过间隔后自动执行全局巡检（后端后台线程）'
-                }
-              >
-                <Switch
-                  size="small"
-                  checked={meta?.enabled !== false}
-                  loading={autoSaving}
-                  onChange={handleToggleAuto}
-                />
-              </Tooltip>
+              {isAdmin ? (
+                <Tooltip
+                  title={
+                    meta?.scheduler?.last_error
+                      ? `上次自动巡检失败：${meta.scheduler.last_error}`
+                      : '距上次巡检超过间隔后自动执行全局巡检（后端后台线程）'
+                  }
+                >
+                  <Switch
+                    size="small"
+                    checked={meta?.enabled !== false}
+                    loading={autoSaving}
+                    onChange={handleToggleAuto}
+                  />
+                </Tooltip>
+              ) : (
+                // 普通用户只读状态，开关是 admin 专属入口（后端 403 兜底）
+                <Tooltip title="自动巡检开关由管理员维护">
+                  <span className="preview-note">仅管理员可修改</span>
+                </Tooltip>
+              )}
             </div>
-            <Button
-              type="primary"
-              icon={<ReloadOutlined />}
-              loading={triggering}
-              onClick={handleTrigger}
-            >
-              立即巡检
-            </Button>
+            {isAdmin && (
+              <Button
+                type="primary"
+                icon={<ReloadOutlined />}
+                loading={triggering}
+                onClick={handleTrigger}
+              >
+                立即巡检
+              </Button>
+            )}
             <Button
               icon={<ClearOutlined />}
               disabled={unreadCount === 0}

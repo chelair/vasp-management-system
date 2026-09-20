@@ -11,6 +11,15 @@
 
 ## 当前进度概览
 
+**已完成（v0.9.3，2026-09-20 · 第 5 步基础收尾：前端角色化 + 403 轻提示）**
+
+- [x] 顶栏显示用户名 + 角色标签；登录后与启动时都用 `/auth/me` 刷新角色
+- [x] 按角色隐藏入口：侧栏 SSH 连接（admin only）、巡检中心自动巡检开关与「立即巡检」、总览「触发全局巡检」与风险面板巡检按钮
+- [x] `/ssh` 路由守卫（`AdminRoute`）：非 admin 强访问直接跳首页
+- [x] 403 统一轻提示（不跳登录、不清 token、2 秒节流）；前端隐藏只是体验，后端 403 仍是防线
+- [x] 验证：15 项前端断言 + 第 4 步后端回归 11 项 + tsc/build 通过
+
+
 **已完成（v0.9.2，2026-09-20 · 授权生效：按项目归属过滤 + 越权 403）**
 
 - [x] `backend/permissions.py`：列表过滤 / 单对象校验 / `enforce_task` 唯一入口守卫 / 审计助手；403 统一信封（`PermissionDenied` 穿透各路由的 `except Exception`）
@@ -738,7 +747,7 @@
 - [x] **③ 归属字段与迁移**（**2026-09-20 完成，隔离目录已验证；生产数据迁移待用户确认后执行 `--apply`**）：`projects.json` 增加 `owner`/`created_at`；`scripts/migrate_owners.py`（dry-run 默认，`--apply` 写入）把现有 4 个项目归给指定管理员；`mappers` 输出 `owner`
 - [x] **④ 授权生效**（**2026-09-20 完成，隔离目录已验证；生产待确认后部署**）：`backend/permissions.py`（`visible_projects` / `ensure_owner` / `ensure_task_owner`）接入 `projects / jobs(_resolve_task) / groups / free_energy / reports / inspections / dashboard`；`_audit_log` 增加 `username` 字段
   - 验收：A 账号看不到 B 的项目（列表 + 单对象 + 巡检 + 报告 + 总览统计）；直接拿 B 的 task_id 调动作 → `403`；admin 可见全部
-- [ ] **⑤ 收尾**：前端角色化（隐藏他人项目、admin 多"全部项目"视图）、智能体长期 token（与 §13 白名单打通）、可选加固（HTTPS、在线会话与强制下线、密码策略、操作日志页）
+- [x] **⑤ 收尾（前端角色化 + 403 处理）**（**2026-09-20 完成，隔离目录已验证；生产待部署**）：前端角色化（隐藏他人项目、admin 多"全部项目"视图）、智能体长期 token（与 §13 白名单打通）、可选加固（HTTPS、在线会话与强制下线、密码策略、操作日志页）
 
 **兼容与回滚**
 

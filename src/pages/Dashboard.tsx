@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Card, Skeleton, Table, Tooltip } from 'antd';
+import { useAuth } from '../context/AuthContext';
 import type { ColumnsType } from 'antd/es/table';
 import {
   CheckCircleOutlined,
@@ -38,6 +39,7 @@ import '../components/dashboard/dashboard.css';
 const AUTO_REFRESH_MS = 30 * 60 * 1000;
 
 export default function Dashboard() {
+  const { isAdmin } = useAuth();
   const { message } = App.useApp();
   const navigate = useNavigate();
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
@@ -211,13 +213,15 @@ export default function Dashboard() {
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>
               新建项目
             </Button>
-            <Button
-              icon={<ThunderboltOutlined />}
-              loading={inspecting}
-              onClick={handleInspect}
-            >
-              触发全局巡检
-            </Button>
+            {isAdmin && (
+              <Button
+                icon={<ThunderboltOutlined />}
+                loading={inspecting}
+                onClick={handleInspect}
+              >
+                触发全局巡检
+              </Button>
+            )}
             <Tooltip title="重新执行 bjobs / bhosts / bqueues / df（约 2-4 秒）">
               <Button
                 icon={<ReloadOutlined />}
@@ -306,7 +310,7 @@ export default function Dashboard() {
             <RiskAlertsPanel
               summary={overview.riskAlerts}
               loading={loading}
-              onInspect={handleInspect}
+              onInspect={isAdmin ? handleInspect : undefined}
               inspecting={inspecting}
             />
             <ProjectProgressPanel

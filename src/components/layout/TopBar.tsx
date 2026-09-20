@@ -8,6 +8,13 @@ import { useAuth } from '../../context/AuthContext';
 import { fetchSshStatus } from '../../api/ssh';
 import type { SshStatus } from '../../api/ssh';
 
+/** 角色展示名（第 5 步：顶栏显示用户名 + 角色） */
+const ROLE_LABELS: Record<string, string> = {
+  admin: '管理员',
+  user: '普通用户',
+  agent: '智能体',
+};
+
 const TITLES: Record<string, string> = {
   '/': '总览',
   '/inspection': '巡检中心',
@@ -22,6 +29,7 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const navigate = useNavigate();
   const { activeServer } = useSSH();
   const { user, isAdmin, logout } = useAuth();
+  const roleLabel = ROLE_LABELS[String(user?.role ?? '')] ?? String(user?.role ?? '');
   const { modal } = App.useApp();
   const [backendStatus, setBackendStatus] = useState<SshStatus | null>(null);
   const title = TITLES[location.pathname] ?? 'VASP 计算项目管理系统';
@@ -83,17 +91,17 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
                   backendStatus?.lastUsedAt
                     ? `，最近使用 ${backendStatus.lastUsedAt.replace('T', ' ').slice(5, 19)}`
                     : ''
-                }（点击管理）`
+                }${isAdmin ? '（点击管理）' : '（仅管理员可管理）'}`
               : 'SSH 未连接，点击进行配置；系统会按需自动重连'
           }
         >
           <div
             className={`ssh-chip${connected ? '' : ' ssh-chip--off'}`}
-            onClick={() => navigate('/ssh')}
+            onClick={() => isAdmin && navigate('/ssh')}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') navigate('/ssh');
+              if (e.key === 'Enter' && isAdmin) navigate('/ssh');
             }}
           >
             <span className="ssh-dot" />
@@ -114,7 +122,7 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
             items: [
               {
                 key: 'who',
-                label: `${user?.username ?? '未登录'}${isAdmin ? ' · 管理员' : ''}`,
+                label: `${user?.username ?? '未登录'}${roleLabel ? ` · ${roleLabel}` : ''}`,
                 disabled: true,
               },
               { type: 'divider' },
@@ -138,7 +146,7 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
           <div className="topbar__user" role="button" tabIndex={0}>
             <UserOutlined />
             <span>{user?.username ?? '未登录'}</span>
-            {isAdmin && <span className="topbar__user-role">管理员</span>}
+            {roleLabel && <span className="topbar__user-role">{roleLabel}</span>}
           </div>
         </Dropdown>
       </div>

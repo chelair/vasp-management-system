@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.2（授权生效：按项目 owner 过滤 + 越权 403）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.3（第 5 步收尾：前端按角色隐藏入口 + 403 轻提示）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -237,8 +237,16 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.2）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.3）
 
+- v0.9.3（2026-09-20，待提交）：**第 5 步基础收尾——前端按角色隐藏入口 + 403 统一处理（纯前端，后端与数据结构零改动）**。
+  ① 角色来源：`AuthContext` 启动时用 `GET /api/auth/me` 取 `{username, role}`，**登录成功后也再拉一次 `/auth/me`**（以服务端为准）。
+  ② 顶栏用户菜单：显示用户名 + 角色标签（管理员 / 普通用户 / 智能体），保留退出登录；SSH 状态胶囊对非 admin 只显示状态（不跳转 `/ssh`），提示改为"仅管理员可管理"。
+  ③ 按角色隐藏入口：侧栏「系统 → SSH 连接」仅 admin 渲染（该页包含 SSH 配置与根目录/路径映射等全局配置）；巡检中心的**自动巡检开关**与「立即巡检」按钮仅 admin 渲染（普通用户看到只读的"仅管理员可修改"）；总览快捷操作「触发全局巡检」与风险面板里的巡检按钮仅 admin。
+  ④ 路由守卫：`App.tsx` 新增并导出 `AdminRoute`，`/ssh` 走它——非 admin 直接跳首页（`/`），不触发任何后端请求。
+  ⑤ 403 统一处理（`api/client.ts`）：收到 403 时调用注册的处理器弹**轻提示**（后端 `message`，兜底"无权访问"）并抛错，**不清理 token、不跳登录页**（避免"被当成没登录"）；同一时刻 2 秒内重复 403 只提示一次（防轮询刷屏）。提示由 `AppLayout` 通过 `setForbiddenHandler` 注册为 antd message。
+  ⑥ 验证（纯前端 + 隔离后端回归）：15 项 jsdom 断言 —— admin 侧栏有 SSH 入口、普通用户没有；顶栏角色标签（普通用户/管理员）；普通用户强访问 `/ssh` 被跳首页、admin 正常进入；403 触发轻提示且 token 不被清除、连续 403 只提示一次；登录态加载与退出登录后 token 清除。第 4 步后端回归 11 项抽查全过（admin 全可见、普通用户只见自己项目、越权项目/任务 403、巡检与总览按项目收敛、集群信息可见、admin 可访问他人项目）。`tsc` + `npm run build` 通过。
+  ⑦ 本步**不做**（后续单独开条目）：用户管理页、操作日志页、在线会话管理页、HTTPS、智能体接入（delegate_to / scope / 待确认队列）、多人共享项目（members）。
 - v0.9.2（commit `3038ae8`，已推送 origin/main）：**授权生效（账号体系第 4 步）——按项目 owner 过滤，越权一律 403**。
   ① 新增 `backend/permissions.py`（只做归属判断）：列表过滤 `visible_projects / visible_project_names`（admin 全可见，普通用户只看 `owner==自己`，大小写归一）、单对象 `ensure_project_owner / ensure_task_owner`（抛 `PermissionDenied`）、`enforce_task(task, db)`（唯一入口用）、审计助手 `current_username(request)`。认证中间件校验通过后把 user 写入 **contextvar**，供深层调用使用；后台线程没有登录用户时自动放行（内部流程不受影响）。
   ② **403 出口统一**：`main.py` 注册 `PermissionDenied` 异常处理器 → `403` + 统一 JSON 信封（不返回 404，避免探测资源是否存在）；各路由原有的 `except Exception` 会吞掉异常，已机械插入 `except permissions.PermissionDenied: raise`（12 个路由文件、87 处）保证穿透。
@@ -395,7 +403,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
 13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策，**先写待办、暂不实现自动执行**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。
 14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
-    - **第 1～4 步已完成**（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效）：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
+    - **第 1～5 步已完成**（含前端角色化收尾）（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效）：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 

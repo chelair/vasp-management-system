@@ -10,6 +10,15 @@ export const MOCK_DELAY = 600;
 /** token 在 localStorage 中的键（前端唯一来源；后端只存 sha256） */
 export const TOKEN_STORAGE_KEY = 'vasp.auth.token';
 
+/** 403（越权）处理回调：由 UI 层注册成轻提示，默认静默 */
+export type ForbiddenHandler = (message: string) => void;
+let forbiddenHandler: ForbiddenHandler | null = null;
+let lastForbiddenAt = 0;
+
+export function setForbiddenHandler(handler: ForbiddenHandler | null): void {
+  forbiddenHandler = handler;
+}
+
 export function wait(ms: number = MOCK_DELAY): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -76,6 +85,17 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       redirectToLogin();
     }
     throw new Error(body?.message ?? '未登录或登录已过期，请重新登录');
+  }
+  if (res.status === 403) {
+    // 越权：只弹轻提示，**绝不跳登录页**（否则用户会误以为没登录）。
+    // 2 秒内重复的 403 只提示一次，避免轮询接口刷屏。
+    const message = body?.message ?? '无权访问';
+    const now = Date.now();
+    if (now - lastForbiddenAt > 2000) {
+      lastForbiddenAt = now;
+      forbiddenHandler?.(message);
+    }
+    throw new Error(message);
   }
   if (!res.ok || !body || body.success === false) {
     const detail: string[] | undefined = body?.data?.errors;

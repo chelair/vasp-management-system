@@ -65,14 +65,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const result = await loginApi(username, password);
-    setToken(result.token);
-    setUser(result.user);
-    setSession(result.session);
-    setReady(true);
-    return result.user;
-  }, []);
+  const login = useCallback(
+    async (username: string, password: string) => {
+      const result = await loginApi(username, password);
+      setToken(result.token);
+      setUser(result.user);
+      setSession(result.session);
+      setReady(true);
+      // 登录后再跟一次 /auth/me：以服务端为准刷新 {username, role}（第 5 步）
+      try {
+        const me = await fetchMe();
+        setUser(me.user);
+        setSession(me.session);
+        return me.user;
+      } catch {
+        return result.user;
+      }
+    },
+    [],
+  );
 
   const logout = useCallback(async () => {
     try {

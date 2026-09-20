@@ -222,8 +222,14 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
     key: 'parallel',
     label: '并行与性能',
     params: [
-      { key: 'NCORE', label: 'NCORE', type: 'number', hint: '每核组核数（约 √节点核数）', defaultValue: '1' },
-      { key: 'KPAR', label: 'KPAR', type: 'number', hint: 'k 点并行数（≤ k 点数）', defaultValue: '' },
+      {
+        key: 'NCORE',
+        label: 'NCORE',
+        type: 'number',
+        hint: '每核组核数（2–4 常用，约 √每组核数）；留空即不写入 INCAR',
+        defaultValue: '',
+      },
+      { key: 'KPAR', label: 'KPAR', type: 'number', hint: 'k 点并行数（≤ k 点数，能整除更好）；留空即不写入', defaultValue: '' },
     ],
   },
 ];
@@ -249,8 +255,8 @@ export const INCAR_SWITCH_GROUPS: {
   {
     key: 'LDIPOL',
     label: '偶极矩修正',
-    keys: ['LDIPOL', 'IDIPOL', 'DIPOL'],
-    hint: '关闭时不写入 LDIPOL / IDIPOL / DIPOL',
+    keys: ['LDIPOL', 'IDIPOL', 'DIPOL', 'EFIELD'],
+    hint: '关闭时不写入 LDIPOL / IDIPOL / DIPOL / EFIELD',
   },
 ];
 
@@ -309,7 +315,8 @@ const INCAR_TEXT_CATEGORIES: GatedIncarCategory[] = [
     gate: 'LDIPOL',
     params: [
       { key: 'LDIPOL', label: 'LDIPOL', type: 'bool', hint: '偶极矩修正主开关', defaultValue: '.TRUE.' },
-      { key: 'IDIPOL', label: 'IDIPOL', type: 'enum', hint: '修正方向', defaultValue: '3', options: IDIPOL_OPTIONS },
+      { key: 'IDIPOL', label: 'IDIPOL', type: 'enum', hint: '修正方向（1/2/3 = a/b/c 方向）', defaultValue: '3', options: IDIPOL_OPTIONS },
+      { key: 'EFIELD', label: 'EFIELD', type: 'number', hint: '外加静电场（eV/Å，只填一个数值；方向由 IDIPOL 决定）', defaultValue: '' },
       { key: 'DIPOL', label: 'DIPOL', type: 'string', hint: '偶极矩参考点坐标（三个分量都填才写入）', defaultValue: '' },
     ],
   },
@@ -491,10 +498,62 @@ export function applyIncarGates(params: Record<string, string>): Record<string, 
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(params)) {
     const gate = gateOf.get(key);
-    if (gate && !isIncarTrue(params[gate] ?? '')) continue;
+    // 主开关关闭 → 整组参数**置空**（而不是"跳过"）：
+    // 下游都把空值当作"不写入"，草稿接口（set_incar_draft）也用空值表示
+    // "这项回到本次计算值"，所以关掉开关能顺带清掉之前存下的整组草稿，
+    // 不会出现"关掉 / 撤销 LDAU 后，下一次续算仍然写入 LDAUU/LDAUL…"。
+    if (gate && !isIncarTrue(params[gate] ?? '')) {
+      out[key] = '';
+      continue;
+    }
     out[key] = value;
   }
   return out;
+}
+
+/**
+ * 编辑器表单的基线参数 = **本次计算实际值 + 待生效草稿**。
+ *
+ * 刷新页面后草稿仍然存在（后端 input_state.draft），表单必须把它显示出来，
+ * 否则会出现"横幅列着待生效修改、下面的参数却回到已同步值"的不一致。
+ */
+export function incarFormParams(
+  taskType: TaskType,
+  snapshotParams?: Record<string, string> | null,
+  draftParams?: Record<string, string> | null,
+): Record<string, string> {
+  const draft = draftParams ?? {};
+  return snapshotParams
+    ? { ...snapshotParams, ...draft }
+    : { ...buildDefaultParams(taskType), ...draft };
+}
+
+/**
+ * 撤销**单项**待生效修改时发给后端的参数补丁（空值 = 回到本次计算值）。
+ *
+ * 依赖关系：被撤销的键属于带主开关的组（DFT+U / 偶极矩修正）时，
+ * 如果撤销后主开关不再是 `.TRUE.`，整组参数一起置空 ——
+ * 否则会出现"撤销了 LDAU，下一次续算却仍然写入 LDAUU/LDAUL/LDAUTYPE…"。
+ */
+export function revertIncarPatch(
+  key: string,
+  draftParams?: Record<string, string> | null,
+  snapshotParams?: Record<string, string> | null,
+): Record<string, string> {
+  const draft = draftParams ?? {};
+  const snapshot = snapshotParams ?? {};
+  const patch: Record<string, string> = { [key]: '' };
+  const group = INCAR_SWITCH_GROUPS.find((item) => item.keys.includes(key));
+  if (!group) return patch;
+  // 撤销后该键回到"本次计算值"，据此判断主开关是否仍然打开
+  const master =
+    key === group.key
+      ? String(snapshot[group.key] ?? '')
+      : String(draft[group.key] ?? snapshot[group.key] ?? '');
+  if (!isIncarTrue(master)) {
+    for (const groupKey of group.keys) patch[groupKey] = '';
+  }
+  return patch;
 }
 
 /** 打开 DFT+U 时的默认元素表：第一个元素给 U（LDAUL=2 / LDAUU=4.0），其余不加 U */

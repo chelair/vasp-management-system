@@ -778,6 +778,8 @@ export interface ContinuationPayload {
 export interface TaskRef {
   projectId: string;
   projectName: string;
+  /** 所属项目是否已关闭（已关闭项目的作业在选择列表里折叠到最后） */
+  projectClosed?: boolean;
   taskId: string;
   taskName: string;
   taskType: TaskType;

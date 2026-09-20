@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { App, Button, Card, Descriptions, Empty, Segmented, Select, Tag, Tooltip, Upload } from 'antd';
+import { App, Button, Card, Descriptions, Empty, Segmented, Tag, Tooltip, Upload } from 'antd';
 import {
   CloudUploadOutlined,
   CopyOutlined,
@@ -9,18 +9,20 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { TaskRef } from '../../types';
-import { TASK_TYPE_LABELS } from '../../types';
 import { parsePoscar } from '../../utils/poscar';
 import type { TaskInputState } from '../../api/jobs';
 import { generatePotcar, uploadPoscar } from '../../api/jobs';
 import Structure3DFrame, { type AtomRef } from './Structure3DFrame';
 import SelectiveDynamicsModal from './SelectiveDynamicsModal';
+import TaskPickerModal from './TaskPickerModal';
 
 interface Props {
   taskId: string;
   poscarContent: string | null;
   poscarPath: string | null;
   copyTargets: TaskRef[];
+  /** 复制来源选择里默认展开的项目（一般是当前任务所在项目） */
+  copyDefaultProjectId?: string;
   /** 输入文件状态：POSCAR/CONTCAR 的 CIF 与结构摘要都来自这里 */
   input: TaskInputState | null;
   onImport: (content: string) => void;
@@ -38,6 +40,7 @@ export default function PoscarPanel({
   poscarContent,
   poscarPath,
   copyTargets,
+  copyDefaultProjectId,
   input,
   onImport,
   onCopyFromTask,
@@ -47,7 +50,7 @@ export default function PoscarPanel({
 }: Props) {
   const { message } = App.useApp();
   const [showRaw, setShowRaw] = useState(false);
-  const [copyFrom, setCopyFrom] = useState<string | undefined>(undefined);
+  const [copyOpen, setCopyOpen] = useState(false);
   /** POSCAR = 提交时的输入结构（不会变）；CONTCAR = 这次计算的最新结构 */
   const [view, setView] = useState<'poscar' | 'contcar'>('poscar');
   const [selectedAtoms, setSelectedAtoms] = useState<AtomRef[]>([]);
@@ -226,6 +229,7 @@ export default function PoscarPanel({
               onClickAtom={handleClickAtom}
               onBoxSelect={handleBoxSelect}
               onClearSelection={() => setSelectedAtoms([])}
+              showSelectedCoords
             />
           </div>
           <div className="s3d-editor__side">
@@ -347,36 +351,31 @@ export default function PoscarPanel({
             </Button>
           </Upload>
           <div className="job-import-sep">或</div>
-          <Select
-            style={{ minWidth: 260 }}
-            placeholder="从其他任务复制 POSCAR"
-            value={copyFrom}
-            onChange={(v: string) => {
-              setCopyFrom(v);
-              onCopyFromTask(v);
-            }}
-            options={copyTargets.map((t) => ({
-              value: t.taskId,
-              label: `${t.projectName} / ${t.taskName}（${TASK_TYPE_LABELS[t.taskType] ?? t.taskType}）`,
-            }))}
-          />
-          {copyFrom && (
-            <Button
-              icon={<CopyOutlined />}
-              onClick={() => {
-                onCopyFromTask(copyFrom);
-                message.success('已从选中任务复制 POSCAR');
-              }}
-            >
-              复制
-            </Button>
-          )}
+          <Button icon={<CopyOutlined />} onClick={() => setCopyOpen(true)}>
+            从其他任务复制
+          </Button>
         </div>
         <div className="job-file-loc">
           <span>当前文件</span>
           <code>{poscarPath ?? '尚未导入（当前为示例数据）'}</code>
         </div>
       </Card>
+
+      <TaskPickerModal
+        open={copyOpen}
+        mode="single"
+        title="从其他任务复制 POSCAR"
+        targets={copyTargets}
+        defaultExpandedIds={copyDefaultProjectId ? [copyDefaultProjectId] : []}
+        hint="选择结构来源作业（只取该任务的 POSCAR，不改动其他输入文件）"
+        okText="复制"
+        onCancel={() => setCopyOpen(false)}
+        onConfirm={(ids) => {
+          setCopyOpen(false);
+          onCopyFromTask(ids[0]);
+          message.success('已从选中任务复制 POSCAR');
+        }}
+      />
 
       <Card
         size="small"

@@ -27,6 +27,18 @@ interface Props {
   /** 框选（Shift + 拖拽）：atoms = 框内原子；additive=true 表示 Ctrl/⌘+Shift（并入当前选择） */
   onBoxSelect: (atoms: AtomRef[], additive: boolean) => void;
   onClearSelection: () => void;
+  /** 在结构图左上角显示选中原子的分数坐标（灰色小字，默认关闭） */
+  showSelectedCoords?: boolean;
+}
+
+/** 左上角坐标块最多显示几行，超出折叠成"…另 N 个原子" */
+const COORD_MAX_ROWS = 8;
+
+/** 分数坐标统一 4 位小数；顺手把 `-0.0000` 归一成 `0.0000` */
+function formatCoord(value: number | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  const text = value.toFixed(4);
+  return text === '-0.0000' ? '0.0000' : text;
 }
 
 /**
@@ -42,6 +54,7 @@ export default function Structure3DFrame({
   onClickAtom,
   onBoxSelect,
   onClearSelection,
+  showSelectedCoords = false,
 }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
@@ -131,6 +144,26 @@ export default function Structure3DFrame({
 
   const structure = useMemo(() => (cif ? parseCif(cif) : null), [cif]);
   structureRef.current = structure;
+
+  /**
+   * 左上角"选中原子坐标"：取 CIF（= vasp2cif 从 POSCAR/CONTCAR 转出）里的分数坐标，
+   * 与 POSCAR 坐标行一一对应，按 POSCAR 序号排序后逐行显示。
+   */
+  const selectedCoords = useMemo(() => {
+    if (!showSelectedCoords || !structure) return [];
+    return [...selected]
+      .sort((a, b) => a.poscarIndex - b.poscarIndex)
+      .map((atom) => {
+        const parsed = structure.atoms[atom.index];
+        return {
+          key: `${atom.element}-${atom.poscarIndex}`,
+          label: `${atom.element}${atom.poscarIndex}`,
+          coords: parsed
+            ? [formatCoord(parsed.fx), formatCoord(parsed.fy), formatCoord(parsed.fz)].join('  ')
+            : '—',
+        };
+      });
+  }, [showSelectedCoords, structure, selected]);
 
   /** 每个元素一套球棍/空间填充样式 */
   function elementStyle(element: string, s: number, ball: boolean) {
@@ -486,6 +519,23 @@ export default function Structure3DFrame({
           )}
           {shiftHeld && !band && <div className="s3d-editor__band-hint">按住拖动框选原子</div>}
         </div>
+        {/* 选中原子坐标（灰色小字，不拦截鼠标事件，不影响点选/框选） */}
+        {selectedCoords.length > 0 && (
+          <div className="s3d-editor__coords">
+            <div className="s3d-editor__coords-title">选中原子 · 分数坐标</div>
+            {selectedCoords.slice(0, COORD_MAX_ROWS).map((item) => (
+              <div className="s3d-editor__coord-row" key={item.key}>
+                <span className="s3d-editor__coord-label">{item.label}</span>
+                <span>{item.coords}</span>
+              </div>
+            ))}
+            {selectedCoords.length > COORD_MAX_ROWS && (
+              <div className="s3d-editor__coords-more">
+                …另 {selectedCoords.length - COORD_MAX_ROWS} 个原子
+              </div>
+            )}
+          </div>
+        )}
         {!cif && (
           <div className="s3d-editor__empty">
             <Empty

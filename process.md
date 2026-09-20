@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.8.8（续算后输入状态即时刷新 + 任务树组状态色 + 作业管理显示巡检告警）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.8.9（输入文件逐项撤销/草稿回填 + 复制参数落草稿 + 任务选择弹窗 + POSCAR 选中原子坐标 + EFIELD/NCORE）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -174,6 +174,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`：分项目报告页——按项目生成 / 一键生成所有项目、**项目报告列表（每项目一份，同项目重生成直接覆盖）**、章节导航、Markdown 渲染（自写轻量渲染器，无第三方依赖，`chartResolver` 把 `charts/x.svg` 映射到 `/api/reports/project/{id}/files/x.svg`）；**正文只渲染图片，没有任何交互式组件或结构化数据视图**（v0.7.2 起"所见即所得"——前端看到的排版与导出 HTML/PDF 一致）；**导出按钮挂在「报告内容」标题行**，点击才展开章节勾选 Popover（下载 Markdown / 导出 HTML / 导出 PDF）。图里的看板版式（自由能 / NEB / 项目进度）由后端 `report_panels.py` 生成，与巡检详情页保持一致。
 - `components/jobs/`：**JobsTree（v0.8.8：自由能结构/组节点、NEB 组节点显示"成员最高优先级状态"`StatusTag`；带巡检告警的任务/组带 ⚠/⛔ 图标，**只有悬停图标本身**才弹出 `check.message`，行 tooltip 不含巡检文案）、TaskOverview（v0.8.8：「最近巡检」行显示 `检查状态标签 + 完整告警文案 + 时间`，与数据库状态并列）**、SelectiveDynamicsModal（固定原子：选中/元素/高度三规则 + 编号方式 + 可选同步远端）**、IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、**SubmitScriptPanel（vasp.lsf 生成：三组参数表单 + 8 段模板预览 + 写入远端）**、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
+- `components/jobs/`（v0.8.9 补充）：**TaskPickerList / TaskPickerModal**（项目分组折叠 + 搜索 + 已关闭项目折到最后；INCAR 复制用多选、POSCAR 复制用单选，取代原 `CopyParamsModal`）；`IncarEditor` 支持**逐项撤销**待生效修改、偶极矩卡片新增单值 `EFIELD`；`PoscarPanel` 的「从其他任务复制」改为弹窗，结构图左上角显示**选中原子分数坐标**（`Structure3DFrame.showSelectedCoords`）。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
 - `utils/poscar.ts`：POSCAR 解析、k 网格推荐、`buildKpoints`（**纯 ASCII 输出**）。
 - `utils/structure3d.ts`：3Dmol 数据工具（CIF 解析、VESTA 元素配色、共价半径算键）；3Dmol 库本地化于 `public/3dmol/3Dmol-min.js`（index.html 全局引入，无 npm 依赖）。
@@ -231,8 +232,17 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.8.8）
+## 7. 近期重要改动记录（v0.4.1 → v0.8.9）
 
+- v0.8.9（2026-09-20，待提交）：**输入文件面板交互修复 + 复制参数落草稿 + 任务选择弹窗 + 电场/并行参数**。
+  ① **INCAR 待生效修改可逐项撤销**（用户反馈"撤销一点所有都会撤销"）：横幅里每条待生效修改只撤销自己（= 该项回到本次计算值），多条时标题行提供「全部撤销」（按 INCAR / KPOINTS 逐个撤销）；**主开关依赖**——撤销 `LDAU` / `LDIPOL` 后若主开关不是 `.TRUE.`，整组依赖参数（`LDAUTYPE/LMAXMIX/LDAUL/LDAUU/LDAUJ`、`IDIPOL/DIPOL/EFIELD`）一并撤销，不会留下孤立 +U / 电场参数（`revertIncarPatch()`）；同时 `applyIncarGates()` 由"跳过整组"改为"**整组置空**"（空值即草稿的"撤销该项"语义），修掉"关掉 +U 再确认修改后，旧 `LDAU*` 仍留在草稿里、下次续算照样写入"的漏洞。
+  ② **刷新页面后表单显示待生效草稿**（原来横幅列着待生效、下面却回到本次计算值 / 默认值）：新增 `incarFormParams(本次计算值 + 草稿)` 统一回填，「取消编辑」也回到该基线；并修掉"本地 `files/INCAR` 异步读取晚于输入状态返回、把刚改的草稿盖回同步旧值"的竞态（有远端快照时不再用本地镜像覆盖 INCAR，改用函数式 `setWorkspaces` 取最新状态）。
+  ③ **「复制 INCAR 参数到其他作业」真正生效**（原来只改前端会话状态，切到目标任务被快照 / 默认值覆盖，看起来"复制没成功、框里还是默认值"）：现在逐个目标任务写入**待生效草稿**（`PUT /jobs/tasks/{id}/input/draft`，前端封装 `copyIncarParamsToTasks`），并把返回的输入状态回填，打开目标任务立刻看到复制来的参数（可逐项撤销，续算时应用；也可在目标任务点「同步到远端」立即生效）；单个任务失败不影响其它任务，提示区分全成功 / 部分成功 / 全失败。
+  ④ **任务选择弹窗重做**（作业一多平铺列表越来越长）：新增 `TaskPickerList`（按项目分组、可折叠、带搜索，**已关闭项目折成一块排在最后、展开即见成员**）+ `TaskPickerModal`（单选 / 多选通用），INCAR 复制（多选）与 POSCAR「从其他任务复制」（原平铺 Select → 单选弹窗）共用；`TaskRef` 新增 `projectClosed`；删除 `CopyParamsModal`，样式由 `.copy-params__*` 迁到 `.task-picker__*`。
+  ⑤ **POSCAR 3D 视图左上角显示选中原子分数坐标**（灰色小字）：`Structure3DFrame.showSelectedCoords`，按 POSCAR 序号排序、4 位小数、`-0.0000` 归一为 `0.0000`，超过 8 个折叠成"…另 N 个原子"，`pointer-events: none` 不影响点选 / Shift 框选 / 双击空白取消；`Structure3DAtom` 保留 CIF 的 `fx/fy/fz`。
+  ⑥ **偶极矩修正卡片新增 `EFIELD`（单值）**：VASP 官方定义 EFIELD 只接受**一个数值**、方向由 `IDIPOL` 决定（1/2/3 = a/b/c），单位 eV/Å；实现为单个数值输入框，位置在 `IDIPOL` 之后、`DIPOL` 之前，提示实时显示"将写入 EFIELD = 0.1（eV/Å，方向 = IDIPOL 3）"；随 `LDIPOL` 开关联动（关闭 / 撤销主开关时一并撤销），数值走共用格式化（`1e-2` → `1E-2`）。提示注明 VASP 的电场方向定义与常见约定相反（电子沿电场方向移动）。
+  ⑦ **`NCORE` 默认留空（不写入 INCAR）**：前端 `src/data/mock/incar.ts` 默认值 `1` → 空，`data/config/task_registry.json` 四种任务类型的 `default_incar` 删除 `NCORE`（该文件每次现读、无需重启；**只影响之后新建的任务 / 建组**，已有任务文件不动）。编辑器提示同时更新为"2–4 常用；留空即不写入"。
+  ⑧ 验证（全部离线）：`tsc` + `npm run build` 通过；jsdom / SSR 断言累计 60+ 项（逐项撤销只回滚一项、主开关依赖、草稿回填与竞态、复制落草稿的请求体与失败隔离、任务选择弹窗折叠 / 搜索 / 已关闭项目位置 / 单选多选、POSCAR 坐标格式、EFIELD 单值与开关联动、NCORE 默认空），后端用真实 registry + `input_state` 纯函数断言草稿 / 台账 / 默认 INCAR 行为；临时测试目录用后即删。
 - v0.8.8（commit `46276d1`，已推送 origin/main）：**三处状态/告警显示修复**（用户反馈）：① **创建续算后 INCAR/KPOINTS 同步状态不刷新**——`handleSameTypeCreated` 只调了 `refreshProjects()`，而续算会把父任务"已应用"的草稿清掉并把台账标成 `applied_in=conN`，界面拿的仍是旧 `input_state`，要刷新页面才更新；现在 `ContinuationModal` 把**发起续算的父任务 id** 一起回传，成功后额外 `GET /jobs/tasks/{id}/input` 重新读取该任务的输入状态并 `applyInputState()`（纯本地读取，不发 SSH）。② **任务树里自由能结构节点只有灰色计数"2"、看不到状态颜色**——新增 `utils/project.pickGroupStatus()`（关注度：异常(红) > 未收敛(黄) > 运行中(蓝) > 排队(青) > 待提交(灰) > 已完成(绿) > 已归档），自由能**结构节点**（opt+frac 两个任务）与**组节点**、NEB **组节点**都改为显示"成员里优先级最高"的 `StatusTag`，结构节点不再显示那个恒为 2 的灰色计数。jsdom 实测：completed+unconverged → 未收敛、archived+pending → 待提交（灰 > 归档）、都 archived → 已归档、zombied+running → 异常。
   ③ **作业管理显示巡检告警**（用户问"作业管理里为什么不会像巡检中心那样显示『警告 低精度收敛 · 能量…』"）：根因是两边数据源不同 —— 作业管理读 `tasks[].status`（**数据库状态**，由提交/停止/巡检回填），而"低精度收敛 / 计算完成但力未收敛 / k 网格密度系数不足"这类是**巡检判定**的细分结论，只存在 `data/checks` 里（且低精度收敛按设计落库仍记 `completed`，不影响进度口径），所以作业管理里看不到。现在：`checks_store` 新增带 30s 短缓存的 `merged_results()`（原来是每次请求全量读 20+MB 的 checks，顺手提速）+ `task_check_summary()`（复用巡检中心同一套 `to_frontend_rows` 文案）+ `invalidate_cache()`（巡检归档后立即失效）；`GET /api/projects` 的每个任务多带一个 `check: {status, message, checked_at, energy, has_inspection}`；前端在**任务树**给带告警的任务/组加 ⚠/⛔ 图标（**只有悬停到图标本身才弹出完整结论**——行/任务名的 tooltip 保持只显示任务信息，红色=错误、琥珀=警告），在**作业概览**的「最近巡检」行显示 `警告/错误` 标签 + 完整结论（低精度收敛 · 能量 … · k 网格密度系数 13.63 ≤ 20…）+ 时间，与「状态」行的数据库状态并列显示。实测：接口 0.33s 返回、2 个任务带告警、jsdom 里任务树 2 个告警图标、概览行显示"警告 + 低精度收敛…"。
 - v0.8.7（commit `7df6a91`，已推送 origin/main）：**集群节点状态看板重构 + 本地镜像扁平化（去掉本地 conN / inputs）**。
@@ -359,7 +369,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.8.8，已提交并推送 origin/main**（`46276d1`，工作区应干净）；服务已重启并运行 v0.8.8 代码（`GET /api/health` 的 `startedAt` = 2026-09-20T20:13:26）；`npm run build` 已出。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.8.9，尚未提交**（改动见 §7 v0.8.9 条目，全部前端）；后端仍是 v0.8.8 代码（`GET /api/health` 的 `startedAt` = 2026-09-20T20:13:26，本轮未改 backend，无需重启）；`npm run build` 已出。
 
 1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。

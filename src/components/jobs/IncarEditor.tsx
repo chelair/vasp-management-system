@@ -82,7 +82,7 @@ interface Props {
   pendingKeys: string[];
   /** 确认修改：把与快照不同的参数写入草稿（下次续算生效） */
   onConfirmParams: (params: Record<string, string>) => void;
-  /** 取消修改：回到快照值 */
+  /** 取消修改：回到「本次计算值 + 待生效修改」（只丢弃本次编辑过程中的改动） */
   onResetToSnapshot: () => void;
   /** 「同步到远端」成功后回传刷新过的输入状态（草稿/台账/本次计算值） */
   onStatePushed?: (state: TaskInputState) => void;
@@ -408,7 +408,7 @@ export default function IncarEditor({
     setParams(ldauArrayParams(rows.length > 0 ? rows : []));
   };
 
-  /* ---------- 偶极矩修正卡片：主开关 + IDIPOL + DIPOL 三分量 ---------- */
+  /* ---------- 偶极矩修正卡片：主开关 + IDIPOL + EFIELD（单值）+ DIPOL 三分量 ---------- */
 
   const dipoleEnabled = isIncarTrue(params.LDIPOL ?? '');
   const dipoleLocked = !editing || !dipoleEnabled;
@@ -424,13 +424,15 @@ export default function IncarEditor({
   const toggleDipole = (on: boolean) => {
     if (!on) {
       setDipolParts(['', '', '']);
-      // 关闭：清空整组参数 → 生成/上传的 INCAR 都不含 LDIPOL / IDIPOL / DIPOL
-      setParams({ LDIPOL: '', IDIPOL: '', DIPOL: '' });
+      // 关闭：清空整组参数 → 生成/上传的 INCAR 都不含 LDIPOL / IDIPOL / DIPOL / EFIELD
+      setParams({ LDIPOL: '', IDIPOL: '', DIPOL: '', EFIELD: '' });
       return;
     }
     setParams({
       LDIPOL: '.TRUE.',
       IDIPOL: String(params.IDIPOL ?? '').trim() || '3',
+      // EFIELD 只有一个数值（方向由 IDIPOL 决定），开关打开时保持已填的值
+      EFIELD: String(params.EFIELD ?? '').trim(),
       DIPOL: joinDipol(dipolParts),
     });
   };
@@ -602,8 +604,8 @@ export default function IncarEditor({
             !editing
               ? '点右上角「修改参数」后可编辑'
               : dipoleEnabled
-                ? '关闭：不写入 LDIPOL / IDIPOL / DIPOL'
-                : '打开：写入 LDIPOL = .TRUE.（DIPOL 三分量都填才写入）'
+                ? '关闭：不写入 LDIPOL / IDIPOL / DIPOL / EFIELD'
+                : '打开：写入 LDIPOL = .TRUE.；EFIELD 填了就加上（方向由 IDIPOL 决定）'
           }
         >
           <Switch size="small" checked={dipoleEnabled} disabled={!editing} onChange={toggleDipole} />
@@ -629,6 +631,28 @@ export default function IncarEditor({
         </div>
         <div className="job-incar-field">
           <div className="job-incar-field__label">
+            <Tooltip title="外加静电场，单位 eV/Å；只填一个数值（正负号决定方向，VASP 的电场定义与常见约定相反：电子沿电场方向移动），方向由 IDIPOL 决定">
+              <span>EFIELD</span>
+            </Tooltip>
+          </div>
+          <div className="job-incar-field__control">
+            <SciInput
+              value={String(params.EFIELD ?? '')}
+              placeholder="留空 = 不施加外场"
+              disabled={dipoleLocked}
+              onChange={(value) => setParam('EFIELD', value)}
+            />
+            <div className="job-field-hint">
+              {!dipoleEnabled
+                ? '开关关闭时不写入 EFIELD'
+                : String(params.EFIELD ?? '').trim()
+                  ? `将写入 EFIELD = ${String(params.EFIELD).trim()}（eV/Å，方向 = IDIPOL ${String(params.IDIPOL ?? '').trim() || '3'}）`
+                  : '留空则不施加外场；填数值后按 IDIPOL 的方向施加'}
+            </div>
+          </div>
+        </div>
+        <div className="job-incar-field">
+          <div className="job-incar-field__label">
             <Tooltip title="偶极矩参考点坐标；三个分量都填写才写入 INCAR">
               <span>DIPOL</span>
             </Tooltip>
@@ -648,9 +672,11 @@ export default function IncarEditor({
               ))}
             </div>
             <div className="job-field-hint">
-              {joinDipol(dipolParts)
-                ? `将写入 DIPOL = ${joinDipol(dipolParts)}`
-                : '三个分量都填写后才会写入 DIPOL'}
+              {!dipoleEnabled
+                ? '开关关闭时不写入 DIPOL'
+                : joinDipol(dipolParts)
+                  ? `将写入 DIPOL = ${joinDipol(dipolParts)}`
+                  : '三个分量都填写后才会写入 DIPOL'}
             </div>
           </div>
         </div>
@@ -733,7 +759,9 @@ export default function IncarEditor({
                   setEditing(false);
                 }}
               >
-                取消
+                <Tooltip title="放弃本次编辑，回到本次计算值 + 已有的待生效修改">
+                  <span>取消</span>
+                </Tooltip>
               </Button>
             </>
           ) : (
@@ -757,7 +785,7 @@ export default function IncarEditor({
         }
         description={
           editing
-            ? '留空的参数不会写入 INCAR；已修改的参数会高亮显示，可随时在顶部横幅里撤销。'
+            ? '留空的参数不会写入 INCAR；已修改的参数会高亮显示，可在顶部横幅里逐项撤销（撤销主开关会连带撤销整组依赖参数）。'
             : '点右上角「修改参数」解锁编辑；低/中/高精度会自动填充推荐参数。'
         }
       />

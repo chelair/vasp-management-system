@@ -446,6 +446,28 @@ export function revertTaskInputDraft(taskId: string, file: 'INCAR' | 'KPOINTS'):
   });
 }
 
+/**
+ * 把同一套 INCAR 参数写入多个任务的待生效草稿（「复制到其他作业」）。
+ *
+ * 逐个任务调用草稿接口（后端按任务各自与「本次计算值」比对生成台账），
+ * 单个失败不影响其它任务：返回项里 `state === null` 表示该任务写入失败。
+ */
+export async function copyIncarParamsToTasks(
+  taskIds: string[],
+  params: Record<string, string>,
+): Promise<{ taskId: string; state: TaskInputState | null }[]> {
+  return Promise.all(
+    taskIds.map(async (taskId) => {
+      try {
+        const state = await saveTaskInputDraft(taskId, { file: 'INCAR', params });
+        return { taskId, state };
+      } catch {
+        return { taskId, state: null };
+      }
+    }),
+  );
+}
+
 /** PDOS 分析：远端 vaspkit 111/113/115 生成文件并回传本地 */
 export async function analyzePdos(
   taskId: string,

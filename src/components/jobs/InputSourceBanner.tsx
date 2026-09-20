@@ -1,22 +1,32 @@
 import { Button, Card, Tag, Tooltip } from 'antd';
 import { ReloadOutlined, RollbackOutlined, SyncOutlined } from '@ant-design/icons';
-import type { TaskInputState } from '../../api/jobs';
+import type { TaskInputChange, TaskInputState } from '../../api/jobs';
 
 interface Props {
   input: TaskInputState | null;
   syncing?: boolean;
   onSync: () => void;
-  onRevert: (file: 'INCAR' | 'KPOINTS') => void;
+  /** 撤销单项待生效修改（只回滚这一项；主开关的依赖参数会一起回滚） */
+  onRevertChange: (change: TaskInputChange) => void;
+  /** 撤销这些文件的全部待生效修改（按传入顺序逐个撤销） */
+  onRevertFiles: (files: ('INCAR' | 'KPOINTS')[]) => void;
 }
 
 /**
  * 输入文件来源横幅（v0.8.2）：本次计算参数从哪来、什么时候同步的、
  * 有哪些改动待生效（改动只在下一次续算时应用，不改运行中的作业）。
  */
-export default function InputSourceBanner({ input, syncing, onSync, onRevert }: Props) {
+export default function InputSourceBanner({
+  input,
+  syncing,
+  onSync,
+  onRevertChange,
+  onRevertFiles,
+}: Props) {
   const source = input?.source ?? null;
   const pending = (input?.changes ?? []).filter((c) => !c.applied_at);
   const applied = input?.last_applied?.items ?? [];
+  const pendingFiles = Array.from(new Set(pending.map((c) => c.file)));
 
   return (
     <Card size="small" className="job-card input-source">
@@ -42,6 +52,16 @@ export default function InputSourceBanner({ input, syncing, onSync, onRevert }: 
         <div className="input-source__pending">
           <div className="input-source__pending-title">
             <ReloadOutlined /> 待生效修改 {pending.length} 项 · 将在<b>下次续算</b>时写入新目录
+            {pending.length > 1 && (
+              <Button
+                type="link"
+                size="small"
+                icon={<RollbackOutlined />}
+                onClick={() => onRevertFiles(pendingFiles)}
+              >
+                全部撤销
+              </Button>
+            )}
           </div>
           {pending.map((c) => (
             <div key={`${c.file}-${c.key}`} className="input-source__change">
@@ -52,14 +72,19 @@ export default function InputSourceBanner({ input, syncing, onSync, onRevert }: 
               <span className="input-source__change-val">{c.from || '—'}</span>
               <span className="input-source__change-arrow">→</span>
               <span className="input-source__change-val input-source__change-val--new">{c.to}</span>
-              <Button
-                type="text"
-                size="small"
-                icon={<RollbackOutlined />}
-                onClick={() => onRevert(c.file)}
+              <Tooltip
+                title={`只撤销这一项（${c.key} 回到本次计算值）`}
+                placement="left"
               >
-                撤销
-              </Button>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<RollbackOutlined />}
+                  onClick={() => onRevertChange(c)}
+                >
+                  撤销
+                </Button>
+              </Tooltip>
             </div>
           ))}
         </div>

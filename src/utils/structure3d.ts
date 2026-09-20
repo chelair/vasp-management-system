@@ -5,9 +5,17 @@
 
 export interface Structure3DAtom {
   element: string;
+  /** 笛卡尔坐标（Å），3Dmol 渲染与成键计算用 */
   x: number;
   y: number;
   z: number;
+  /**
+   * 分数坐标（CIF 的 `_atom_site_fract_*` 原值，与 POSCAR 坐标行一致），
+   * 供 3D 视图左上角显示"选中原子坐标"用；缺失时界面显示 —。
+   */
+  fx?: number;
+  fy?: number;
+  fz?: number;
 }
 
 export interface Structure3D {
@@ -220,7 +228,7 @@ export function parseCif(text: string): Structure3D | null {
     if (!Number.isFinite(fx) || !Number.isFinite(fy) || !Number.isFinite(fz)) break;
     const el = String(get('_atom_site_type_symbol') || get('_atom_site_label') || 'X');
     const cart = matVec(lattice, [fx, fy, fz]);
-    atoms.push({ element: el, x: cart[0], y: cart[1], z: cart[2] });
+    atoms.push({ element: el, x: cart[0], y: cart[1], z: cart[2], fx, fy, fz });
     countsMap[el] = (countsMap[el] || 0) + 1;
   }
   if (!atoms.length) return null;

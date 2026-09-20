@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Card, Empty, Input, InputNumber, Modal, Tabs } from 'antd';
 import { Space } from 'antd';
@@ -25,12 +25,13 @@ import {
   createFracFiles,
   archiveTask,
   unarchiveTask,
+  copyIncarParamsToTasks,
   fetchTaskInput,
   revertTaskInputDraft,
   saveTaskInputDraft,
   syncTaskInput,
 } from '../api/jobs';
-import type { TaskFileEntry, TaskInputState } from '../api/jobs';
+import type { TaskFileEntry, TaskInputChange, TaskInputState } from '../api/jobs';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import JobsTree from '../components/jobs/JobsTree';
@@ -40,7 +41,7 @@ import PoscarPanel from '../components/jobs/PoscarPanel';
 import IncarEditor from '../components/jobs/IncarEditor';
 import KpointsPanel from '../components/jobs/KpointsPanel';
 import SubmitScriptPanel from '../components/jobs/SubmitScriptPanel';
-import CopyParamsModal from '../components/jobs/CopyParamsModal';
+import TaskPickerModal from '../components/jobs/TaskPickerModal';
 import ContinuationModal from '../components/jobs/ContinuationModal';
 import EleInputModal from '../components/jobs/EleInputModal';
 import NebFilesModal from '../components/jobs/NebFilesModal';
@@ -53,7 +54,9 @@ import {
   applyIncarGates,
   buildDefaultParams,
   buildIncarText,
+  incarFormParams,
   parseIncarContent,
+  revertIncarPatch,
 } from '../data/mock/incar';
 import { buildInputFiles } from '../data/mock/vaspFiles';
 import type {
@@ -122,6 +125,9 @@ export default function Jobs() {
   const [loadedDisk, setLoadedDisk] = useState<Record<string, boolean>>({});
   /** 输入文件状态（远端快照 + 草稿 + 变更台账），按任务缓存 */
   const [inputStates, setInputStates] = useState<Record<string, TaskInputState>>({});
+  /** 同上，供异步回调读取最新值（避免闭包里拿到旧状态） */
+  const inputStatesRef = useRef(inputStates);
+  inputStatesRef.current = inputStates;
   const [inputSyncing, setInputSyncing] = useState<string | null>(null);
   const [clusterSnapshot, setClusterSnapshot] = useState<ClusterSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
@@ -315,6 +321,16 @@ export default function Jobs() {
   }, [selectedTask, selectedStructure, selectedNebGroup]);
 
   /** 选中任务/结构/组时，自动读取本地目录中已有的 POSCAR / INCAR / KPOINTS */
+  /** 读本地镜像文件；不存在或读取失败返回 null（不打扰用户） */
+  const readLocalFile = async (taskId: string, name: string) => {
+    try {
+      const { content } = await fetchTaskFile(taskId, name);
+      return content;
+    } catch {
+      return null;
+    }
+  };
+
   useEffect(() => {
     for (const task of focusTasks) {
       const taskId = task.task_id;
@@ -327,39 +343,31 @@ export default function Jobs() {
       if (!names.has('POSCAR') && !names.has('INCAR') && !names.has('KPOINTS')) continue;
       setLoadedDisk((prev) => ({ ...prev, [taskId]: true }));
       void (async () => {
-        const patch: Partial<JobWorkspace> = {};
-        if (names.has('POSCAR')) {
-          try {
-            const { content } = await fetchTaskFile(taskId, 'POSCAR');
-            patch.poscarContent = content;
-            patch.poscarPath = `${task.local_dir}/files/POSCAR`;
-          } catch {
-            // 读取失败时保持空状态，用户可手动导入
+        const poscarText = names.has('POSCAR') ? await readLocalFile(taskId, 'POSCAR') : null;
+        const kpointsText = names.has('KPOINTS') ? await readLocalFile(taskId, 'KPOINTS') : null;
+        // INCAR：只在**没有远端快照**时才用本地镜像兜底。有快照时编辑器以
+        // 「本次计算值 + 待生效草稿」为准（applyInputState 已回填），本地
+        // files/INCAR 是同步时的旧值，覆盖回来会让人以为"刚改的草稿没了"。
+        const incarText =
+          names.has('INCAR') && !inputStatesRef.current[taskId]?.files?.INCAR?.params
+            ? await readLocalFile(taskId, 'INCAR')
+            : null;
+        const parsedIncar = incarText ? parseIncarContent(incarText) : null;
+        setWorkspaces((prev) => {
+          // 用函数式更新取最新 workspace：异步返回时可能已被 applyInputState 回填过
+          const base = prev[taskId] ?? makeWorkspace(task);
+          const next: JobWorkspace = { ...base };
+          if (poscarText != null) {
+            next.poscarContent = poscarText;
+            next.poscarPath = `${task.local_dir}/files/POSCAR`;
           }
-        }
-        if (names.has('KPOINTS')) {
-          try {
-            const { content } = await fetchTaskFile(taskId, 'KPOINTS');
-            patch.kpointsContent = content;
-          } catch {
-            // 忽略
+          if (kpointsText != null) next.kpointsContent = kpointsText;
+          if (parsedIncar) {
+            next.incarParams = { ...base.incarParams, ...parsedIncar };
+            next.precision = 'custom';
           }
-        }
-        if (names.has('INCAR')) {
-          try {
-            const { content } = await fetchTaskFile(taskId, 'INCAR');
-            const parsed = parseIncarContent(content);
-            const base = workspaces[taskId] ?? makeWorkspace(task);
-            patch.incarParams = { ...base.incarParams, ...parsed };
-            patch.precision = 'custom';
-          } catch {
-            // 忽略
-          }
-        }
-        setWorkspaces((prev) => ({
-          ...prev,
-          [taskId]: { ...(prev[taskId] ?? makeWorkspace(task)), ...patch },
-        }));
+          return { ...prev, [taskId]: next };
+        });
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -376,22 +384,26 @@ export default function Jobs() {
   /** 用输入文件状态（远端快照）回填编辑器：参数 = 默认值 + 本次计算实际参数 */
   const applyInputState = useCallback((task: Task, state: TaskInputState) => {
     setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
-    const snapshotParams = state.files?.INCAR?.params ?? {};
+    const snapshotParams = state.files?.INCAR?.params ?? null;
+    const draftParams = state.draft?.INCAR ?? null;
     const kpointsText = state.files?.KPOINTS?.text ?? null;
     const poscarText = state.files?.POSCAR?.text ?? null;
     setWorkspaces((prev) => {
       const base = prev[task.task_id] ?? makeWorkspace(task);
-      const hasSnapshotParams = !!state.files?.INCAR?.params;
       return {
         ...prev,
         [task.task_id]: {
           ...base,
-          snapshotParams,
-          // 有远端快照时**只显示本次计算真正用到的参数**（缺省值不掺进来，
-          // 否则会把"远端没写、编辑器有默认值"的参数误判成已修改）
-          incarParams: hasSnapshotParams
-            ? { ...snapshotParams }
-            : { ...buildDefaultParams(task.task_type as TaskType) },
+          snapshotParams: snapshotParams ?? {},
+          // 本次计算真正用到的参数 + 待生效草稿：有远端快照时缺省值不掺进来
+          // （否则会把"远端没写、编辑器有默认值"的参数误判成已修改），
+          // 同时**必须把草稿盖上**，否则刷新页面后表单回到已同步值、
+          // 与顶部横幅里的"待生效修改"自相矛盾。
+          incarParams: incarFormParams(
+            task.task_type as TaskType,
+            snapshotParams,
+            draftParams,
+          ),
           kpointsContent: kpointsText ?? base.kpointsContent,
           poscarContent: poscarText ?? base.poscarContent,
           precision: 'custom',
@@ -455,21 +467,64 @@ export default function Jobs() {
     }
   };
 
-  /** 取消编辑：回到本次计算的参数值 */
+  /** 取消编辑：回到「本次计算值 + 待生效修改」（草稿是已确认的修改，不属于本次编辑） */
   const handleResetParams = (task: Task) => {
-    const snapshotParams = inputStates[task.task_id]?.files?.INCAR?.params ?? {};
+    const state = inputStates[task.task_id];
     patchWorkspace(task.task_id, {
-      incarParams: { ...buildDefaultParams(task.task_type as TaskType), ...snapshotParams },
+      incarParams: incarFormParams(
+        task.task_type as TaskType,
+        state?.files?.INCAR?.params ?? null,
+        state?.draft?.INCAR ?? null,
+      ),
     });
   };
 
-  /** 撤销某个文件的待生效修改 */
-  const handleRevertDraft = async (task: Task, file: 'INCAR' | 'KPOINTS') => {
+  /** 撤销某（几）个文件的全部待生效修改；按顺序请求，最后一个 state 即最终状态 */
+  const handleRevertDraft = async (task: Task, files: ('INCAR' | 'KPOINTS')[]) => {
+    if (files.length === 0) return;
     try {
-      const state = await revertTaskInputDraft(task.task_id, file);
-      setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
-      if (file === 'INCAR') handleResetParams(task);
-      message.success(`已撤销 ${file} 的参数修改`);
+      let state = inputStates[task.task_id];
+      for (const file of files) {
+        state = await revertTaskInputDraft(task.task_id, file);
+      }
+      if (state) applyInputState(task, state);
+      message.success(`已撤销 ${files.join(' / ')} 的全部待生效修改`);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '撤销失败');
+    }
+  };
+
+  /**
+   * 撤销**单项**待生效修改：只回滚这一项，其余修改保持不变。
+   *
+   * - INCAR：向后端提交"该键置空"的补丁（空值 = 回到本次计算值）；
+   *   如果撤销的是带主开关那一组（DFT+U / 偶极矩修正），主开关关掉时
+   *   整组依赖参数一起置空，避免下次续算仍写入 LDAUU 之类的孤立参数。
+   * - KPOINTS：只有 k 网格一项，等价于整文件撤销。
+   */
+  const handleRevertChange = async (task: Task, change: TaskInputChange) => {
+    const current = inputStates[task.task_id];
+    if (!current) return;
+    try {
+      if (change.file === 'KPOINTS') {
+        const state = await revertTaskInputDraft(task.task_id, 'KPOINTS');
+        applyInputState(task, state);
+        message.success('已撤销 KPOINTS 的修改');
+        return;
+      }
+      const patch = revertIncarPatch(
+        change.key,
+        current.draft?.INCAR ?? {},
+        current.files?.INCAR?.params ?? {},
+      );
+      const state = await saveTaskInputDraft(task.task_id, { file: 'INCAR', params: patch });
+      applyInputState(task, state);
+      const extra = Object.keys(patch).length - 1;
+      message.success(
+        extra > 0
+          ? `已撤销 ${change.key}，依赖的 ${extra} 个参数一并撤销`
+          : `已撤销 ${change.key}`,
+      );
     } catch (err) {
       message.error(err instanceof Error ? err.message : '撤销失败');
     }
@@ -502,6 +557,7 @@ export default function Jobs() {
           .map((t) => ({
             projectId: p.id,
             projectName: p.name,
+            projectClosed: !!p.closed,
             taskId: t.task_id,
             taskName: t.model_name,
             taskType: t.task_type as TaskType,
@@ -806,24 +862,44 @@ export default function Jobs() {
     message.success('预设已删除');
   };
 
-  const handleCopyParams = (targets: TaskRef[], task?: Task | null) => {
+  /**
+   * 复制当前 INCAR 参数到其他作业。
+   *
+   * 修复（v0.8.9）：原来只改前端会话状态，切到目标任务时会被「本次计算值 /
+   * 默认值」覆盖，看起来像"复制没生效、框里还是默认值"。现在与「确认修改」
+   * 同一口径——**把参数写成目标任务的待生效草稿**（下次续算写入，也可在目标
+   * 任务点「同步到远端」立即生效），并把返回的输入状态回填，打开就能看到。
+   */
+  const handleCopyParams = async (targets: TaskRef[], task?: Task | null) => {
     const t = task ?? selectedTask;
     const ws = t ? workspaces[t.task_id] ?? makeWorkspace(t) : null;
     if (!ws) return;
-    const params = { ...ws.incarParams };
-    setWorkspaces((prev) => {
-      const next = { ...prev };
-      for (const t of targets) {
-        const real = projects
-          .flatMap((p) => p.tasks)
-          .find((x) => x.task_id === t.taskId);
-        const base = next[t.taskId] ?? makeWorkspace(real ?? defaultTaskFor(t.taskId));
-        next[t.taskId] = { ...base, incarParams: params, precision: 'custom' };
-      }
-      return next;
-    });
     setCopyParamsOpen(false);
-    message.success(`INCAR 参数已同步到 ${targets.length} 个作业（会话内）`);
+    // 主开关关闭的整组参数（DFT+U / 偶极矩修正）不写入，与「确认修改」一致
+    const params = applyIncarGates({ ...ws.incarParams });
+    const results = await copyIncarParamsToTasks(
+      targets.map((x) => x.taskId),
+      params,
+    );
+    const allTasks = projects.flatMap((p) => p.tasks);
+    let ok = 0;
+    for (const { taskId, state } of results) {
+      if (!state) continue;
+      ok += 1;
+      const real = allTasks.find((x) => x.task_id === taskId);
+      // 回填目标任务：表单显示「本次计算值 + 刚复制的待生效修改」
+      if (real) applyInputState(real, state);
+      else setInputStates((prev) => ({ ...prev, [taskId]: state }));
+    }
+    if (ok === targets.length) {
+      message.success(
+        `已把当前参数记为 ${ok} 个作业的待生效修改（下次续算写入；在目标任务点「同步到远端」可立即生效）`,
+      );
+    } else if (ok > 0) {
+      message.warning(`已写入 ${ok}/${targets.length} 个作业，其余失败请重试`);
+    } else {
+      message.error('复制失败：未能写入任何作业');
+    }
   };
 
   /** 导入 POSCAR：写入本地任务目录 files/POSCAR，并同步会话状态 */
@@ -1005,7 +1081,8 @@ export default function Jobs() {
                         input={inputStates[task.task_id] ?? null}
                         syncing={inputSyncing === task.task_id}
                         onSync={() => void handleSyncInput(task)}
-                        onRevert={(file) => void handleRevertDraft(task, file)}
+                        onRevertChange={(c) => void handleRevertChange(task, c)}
+                        onRevertFiles={(files) => void handleRevertDraft(task, files)}
                       />
                       <PoscarPanel
                         key={task.task_id}
@@ -1013,6 +1090,7 @@ export default function Jobs() {
                         poscarContent={ws.poscarContent}
                         poscarPath={ws.poscarPath}
                         copyTargets={copyTargets}
+                        copyDefaultProjectId={selectedProjectId ?? undefined}
                         input={inputStates[task.task_id] ?? null}
                         onRemoteChanged={() => void handleRemoteFilesChanged(task)}
                         onStatePushed={(state) => applyInputState(task, state)}
@@ -1038,7 +1116,8 @@ export default function Jobs() {
                   input={inputStates[task.task_id] ?? null}
                   syncing={inputSyncing === task.task_id}
                   onSync={() => void handleSyncInput(task)}
-                  onRevert={(file) => void handleRevertDraft(task, file)}
+                  onRevertChange={(c) => void handleRevertChange(task, c)}
+                  onRevertFiles={(files) => void handleRevertDraft(task, files)}
                 />
                 <IncarEditor
                   key={task.task_id}
@@ -1068,7 +1147,8 @@ export default function Jobs() {
                   input={inputStates[task.task_id] ?? null}
                   syncing={inputSyncing === task.task_id}
                   onSync={() => void handleSyncInput(task)}
-                  onRevert={(file) => void handleRevertDraft(task, file)}
+                  onRevertChange={(c) => void handleRevertChange(task, c)}
+                  onRevertFiles={(files) => void handleRevertDraft(task, files)}
                 />
                 <KpointsPanel
                   key={task.task_id}
@@ -1377,11 +1457,19 @@ export default function Jobs() {
         onCreated={() => void refreshProjects()}
       />
 
-      <CopyParamsModal
+      <TaskPickerModal
         open={copyParamsOpen}
+        mode="multiple"
+        title="复制 INCAR 参数到其他作业"
         targets={copyTargets}
+        defaultExpandedIds={selectedProjectId ? [selectedProjectId] : []}
+        hint="当前参数将记为所选任务的待生效修改（下次续算写入，也可逐个点「同步到远端」立即生效）"
+        okText={(n) => `同步到 ${n} 个作业`}
         onCancel={() => setCopyParamsOpen(false)}
-        onConfirm={handleCopyParams}
+        onConfirm={(ids) => {
+          const picked = new Set(ids);
+          void handleCopyParams(copyTargets.filter((t) => picked.has(t.taskId)));
+        }}
       />
 
       <Modal

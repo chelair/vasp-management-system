@@ -238,7 +238,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.1）
 
-- v0.9.1（2026-09-20，待提交）：**项目归属字段与迁移（账号体系第 3 步，只加字段、不做过滤）**。
+- v0.9.1（commit `482620a`，已推送 origin/main）：**项目归属字段与迁移（账号体系第 3 步，只加字段、不做过滤）**。
   ① 数据结构：`data/projects.json` 每个项目增加 `owner`（归属用户名，小写归一）与 `created_at`（已有项目保留原值，缺失才补）；**不改任何已有字段名**。
   ② 新建项目：`POST /api/projects` 从 `request.state.user` 取用户名写入 `owner`（admin 替别人建项目留到后续，本步不做参数）。
   ③ 序列化：`mappers.map_project` 输出 `owner` 与 `created_at`（同时保留原有 `createdAt`），前端 `Project` 类型新增 `owner`。

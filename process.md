@@ -473,6 +473,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
     - **第 1～5 步已完成**（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效 / 前端角色化收尾），并在 v0.9.5 做了登录审计与安全加固：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
 
+15. **自动化按项目归属鉴权**（2026-09-21 用户要求，**先写待办、暂不动代码**）：自动化系统目前**只对管理员开放**（`/api/actions/*`、`/api/automation/*` 全部 `ensure_admin`；前端 `/automation` 走 `AdminRoute`），规则是全局的、动作用系统身份执行（审计 `username=automation`），**因此规则命中后不做项目归属校验**。后续开放给普通用户时必须补：① 规则带 `owner`（历史规则视为 admin/全局）；② 创建/编辑时非 admin 只能选 `visible_projects()` 内的作用对象（越权 403）；③ **执行期**用规则 owner 再校验一次任务归属（不通过 → `blocked`，不执行、不消耗冷却与执行次数，防止项目迁移/共享后跑到别人的数据上）；④ 巡检事件按 owner 过滤、定时 `scope=all` 语义改为"owner 可见的全部项目"；⑤ 决策日志/运行记录带 `rule_owner`/`requested_by` 并按可见性过滤；⑥ 与 §13 的 `role=agent` token scope 收敛到同一个 `permissions` 校验入口。方案、落地顺序与验收标准详见 TODO.md §15。
+
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 
 ---

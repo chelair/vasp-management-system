@@ -822,6 +822,40 @@
 - 回滚方式：`git revert` 对应提交 + `systemctl restart vasp-manager`。**不做"运行时关闭鉴权"的开关**（避免留后门）；排障期如确需临时放开，只在隔离测试实例上用独立数据目录。
 - 顺序建议：**先认证（②）让系统"必须登录"，再授权（③④）做项目隔离**；③ 的迁移脚本在授权上线前跑完，避免上线即"看不到任何项目"。
 
+### 15. 自动化按项目归属鉴权（2026-09-21 用户要求：**先写待办，暂不动代码**）
+
+> 原话："这里自动化暂时只对管理员开放。后续要接入鉴权，防止自动化执行到不属于自己的项目（先写到todo）"。
+
+**现状（2026-09-21，v0.9.12）**
+
+- 自动化系统（`/api/actions/*`、`/api/automation/*`）**全部是 admin-only**：后端每个接口都走 `permissions.ensure_admin`，前端「自动化」页与 `/automation` 路由走 `AdminRoute`，侧栏入口也只对 admin 渲染。
+- 规则是**全局**的（`data/config/rules/*.json` 不带归属），动作以系统身份执行：审计里 `username="automation"`，因此**规则命中后不会做项目归属校验** —— 只有 admin 能配置规则这一点在兜底。
+- 风险：一旦把自动化开放给普通用户，若不校验归属，A 用户可写一条规则对 **B 的项目**执行续算/提交（等于越权写）；而且如果只在创建规则时校验，之后目标项目被移交/共享也会漏。
+
+**目标**
+
+普通用户也能用自动化（自己的规则作用于自己的项目），且**创建期与执行期都要校验归属**；admin 仍可维护对所有项目生效的全局规则。
+
+**设计要点（建议实现顺序）**
+
+1. **规则归属**：`data/config/rules/*.json` 增加 `owner`（用户名；缺失视为 admin/全局的历史规则）。改动更小的备选：在 `data/config/automation.json` 里加 `rule_owners: {rule_id: username}` 映射。
+2. **创建/编辑校验**：`owner` 取当前登录用户（admin 可显式指定他人的规则）；非 admin 提交的"作用对象"（具体项目 / 任务 / 组）必须落在 `permissions.visible_projects()` 内，越权直接 403（复用 `ensure_project_owner`）。
+3. **执行期校验（最关键）**：调度层在 `preflight` 之前，用**规则 owner 作为行动人**再校验一次任务归属（`permissions.ensure_task_owner(task, {"username": rule_owner})`）；不通过 → 审计 `blocked`（reason 写明"不属于规则所属用户的项目"），**不执行、不消耗冷却、不计入执行次数**。这样即使项目后来被移交/共享，也不会跑到别人的数据上。
+4. **事件过滤**：巡检事件按 task 匹配规则时，先按规则 owner 过滤；不属于 owner 的任务直接 skip 并写 `skipped` 审计。
+5. **定时 scope 语义**：`scope=project:<名>` 只允许 owner 可见的项目；`scope=all` 表示"owner 可见的全部项目"（而不是全库）。
+6. **前端**：自动化页对普通用户开放后只列自己的规则；「作用对象」下拉只给 `visible_projects`；admin 保留"全部规则"视图；`AdminRoute` 改为登录即可访问（页面内再按角色收敛）。
+7. **审计与可见性**：决策日志/运行记录增加 `rule_owner`、`requested_by`（谁创建、谁手动触发），`/api/automation/decisions`、`/api/automation/runs` 对非 admin 只返回自己规则的记录。
+8. **迁移**：历史规则无 owner → 视为 admin/全局保持不变；可选脚本 `scripts/migrate_rule_owners.py`（dry-run 默认，`--owner zouyuxi --apply` 补归属）。
+9. **与 §12/§13 打通**：智能体长期 token（`role=agent`）同样需要 owner/scope，动作层应把"token scope 校验 + 项目归属校验"收敛到同一个 `permissions` 入口，避免两套规则打架。
+
+**验收（将来实现时）**
+
+- 普通用户创建规则时，作用对象只能选自己的项目/任务/组；直接构造他人项目的条件 → 403。
+- 用 admin 把某条普通用户规则的目标改成他人项目后，该规则执行被 `blocked`（执行期校验兜住），审计有明确 reason，且不消耗冷却/计数。
+- A 用户的规则在任何情况下都不会对 B 的项目产生动作（决策日志可查 blocked）。
+- 非 admin 的决策日志/运行记录只包含自己的规则；admin 不受影响。
+- 未开放前（当前状态）保持 admin-only 不变：后端 403、前端隐藏入口。
+
 ---
 
 ## 已知限制（2026-09-13 更新）

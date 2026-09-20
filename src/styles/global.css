@@ -3308,6 +3308,21 @@ body.is-atom-selecting * {
   line-height: 16px;
 }
 
+/* 项目归属（第 3 步）：项目树里的小标签，不做权限判断，仅展示 */
+.job-tree__owner {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #e8effb;
+  color: #5b7bb8;
+  font-size: 11px;
+  line-height: 16px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- 总览：已关闭项目折叠区（与卡片风格统一，v0.6.3） ---------- */
 
 .project-closed-block {

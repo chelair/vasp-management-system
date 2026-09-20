@@ -11,6 +11,12 @@
 
 ## 当前进度概览
 
+**已完成（v0.9.1，2026-09-20 · 项目归属字段与迁移）**
+
+- [x] `projects.json` 每个项目加 `owner` / `created_at`；新建项目自动把 `owner` 写成当前登录用户；`mappers` 输出这两个字段；前端项目树显示归属标签（仅展示，不参与权限判断）
+- [x] `scripts/migrate_owners.py`：dry-run 默认 / `--apply` 前带时间戳备份 / 幂等（已有 owner 跳过）/ `--data-dir` 隔离 / owner 不存在时报错；隔离目录 26 项断言 + 前端 4 项断言通过
+
+
 **已完成（v0.9.0，2026-09-20 · 账号体系 + 登录认证）**
 
 - [x] 账号与会话底座：`backend/auth.py`（scrypt 哈希、token 只存 sha256、`data/users/*.json` 原子写 + 文件锁、首次启动自动建 `zouyuxi` admin）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）
@@ -720,7 +726,7 @@
   - 验收（隔离数据目录 + mock SSH 启动真实 app，47 项断言全过）：首次启动建 admin/幂等、哈希含随机 salt、建号/改密/禁用/启用、旧密码与旧会话失效、token 只存哈希、过期清理、12 线程并发建号无丢失、CLI 全部子命令。
 - [x] **② 认证上线（先认证、后授权）**（**2026-09-20 完成，未提交**）：`backend/routers/auth.py`（`login`/`logout`/`me`/`tokens`）+ 全局中间件白名单 + `/docs` 保护；前端登录页、`request()` 注入 token、401 统一跳登录、顶栏用户菜单
   - 验收：无 token 调 `/api/projects` → `401`；登录后可正常用；错密码限速生效；`/docs` 未登录不可读
-- [ ] **③ 归属字段与迁移**：`projects.json` 增加 `owner`/`created_at`；`scripts/migrate_owners.py`（dry-run 默认，`--apply` 写入）把现有 4 个项目归给指定管理员；`mappers` 输出 `owner`
+- [x] **③ 归属字段与迁移**（**2026-09-20 完成，隔离目录已验证；生产数据迁移待用户确认后执行 `--apply`**）：`projects.json` 增加 `owner`/`created_at`；`scripts/migrate_owners.py`（dry-run 默认，`--apply` 写入）把现有 4 个项目归给指定管理员；`mappers` 输出 `owner`
 - [ ] **④ 授权生效**：`backend/permissions.py`（`visible_projects` / `ensure_owner` / `ensure_task_owner`）接入 `projects / jobs(_resolve_task) / groups / free_energy / reports / inspections / dashboard`；`_audit_log` 增加 `username` 字段
   - 验收：A 账号看不到 B 的项目（列表 + 单对象 + 巡检 + 报告 + 总览统计）；直接拿 B 的 task_id 调动作 → `403`；admin 可见全部
 - [ ] **⑤ 收尾**：前端角色化（隐藏他人项目、admin 多"全部项目"视图）、智能体长期 token（与 §13 白名单打通）、可选加固（HTTPS、在线会话与强制下线、密码策略、操作日志页）

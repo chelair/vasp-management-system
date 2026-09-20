@@ -318,6 +318,11 @@ export default function JobsTree({
       >
         <span className="job-tree__project">
           <span>{p.name}</span>
+          {p.owner && (
+            <Tooltip title={`项目归属：${p.owner}`}>
+              <span className="job-tree__owner">{p.owner}</span>
+            </Tooltip>
+          )}
           <span className="job-tree__count">{p.tasks.length}</span>
           {p.closed && <span className="job-tree__closed">已关闭</span>}
         </span>

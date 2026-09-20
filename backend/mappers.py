@@ -99,6 +99,9 @@ def map_project(
         # 项目关闭（归档）：需要项目下可见任务全部归档后才允许，只影响展示排序与折叠
         "closed": project.get("closed") is True,
         "closedAt": _str(project.get("closed_at"), "") or None,
+        # 归属（第 3 步）：只输出字段，权限过滤留到第 4 步
+        "owner": _str(project.get("owner"), "") or None,
+        "created_at": _str(project.get("created_at"), "") or None,
         "createdAt": _str(project.get("created_at"), project.get("project_id", "")),
         "updatedAt": updated_at,
         "tasks": mapped_tasks,

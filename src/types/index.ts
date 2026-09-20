@@ -97,6 +97,8 @@ export interface Task {
 export interface Project {
   id: string;
   name: string;
+  /** 项目归属用户名（第 3 步：新建项目自动记当前登录用户；过滤留待第 4 步） */
+  owner?: string | null;
   description: string;
   deadline: string;
   workload: Workload;

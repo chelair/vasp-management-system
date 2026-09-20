@@ -5,9 +5,10 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+import auth
 from config import DATA_DIR, PROJECTS_DIR, load_servers, load_settings, load_task_registry
 from checks_store import task_check_summary
 from dates import now_iso
@@ -61,9 +62,12 @@ def list_projects():
 
 
 @router.post("")
-def create_project(payload: AddProjectPayload):
+def create_project(payload: AddProjectPayload, request: Request):
     try:
         p = payload.project
+        # 归属（第 3 步）：新建项目自动记当前登录用户（用户名归一化，与账号模块一致）
+        current = getattr(request.state, "user", None) or {}
+        owner = auth.normalize_username(current.get("username")) or None
         settings = load_settings()
         servers = load_servers()
         registry = load_task_registry()
@@ -96,6 +100,7 @@ def create_project(payload: AddProjectPayload):
 
         project = {
             **p.model_dump(),
+            "owner": owner,
             "workload": priority["workload"],
             "urgency": priority["urgency"],
             "priority_quadrant": priority["quadrant"],

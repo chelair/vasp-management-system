@@ -80,6 +80,8 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 
 ### 2.3 授权（待实现）
 
+> 第 3 步（v0.9.1）已完成字段准备：项目带 `owner`/`created_at`，新建项目自动归属；**但列表与单对象仍未过滤**（所有登录用户都能看到全部项目）。
+
 规划：`project.owner` + `permissions.visible_projects/ensure_owner`，列表按归属过滤、单对象越权 403、`role` 分 `admin`/`user`/`agent`；HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。详见 TODO §14。
 
 ## 3. 只读接口（观测面）
@@ -88,7 +90,7 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 
 | 接口 | 参数 | 关键返回 | 用途 |
 | --- | --- | --- | --- |
-| `GET /projects` | — | `projects[]`：`id/name/closed/closedAt/progress/tasks[]`；每个任务含 `task_id/model_name/task_type/status/dir_path/remote_dir/job_id/last_energy/last_check_time` 与 **`check{status,message,checked_at,energy,has_inspection}`**（v0.8.8 起，与巡检中心同口径） | 全量盘点、判断"哪些任务该续算/该收尾" |
+| `GET /projects` | — | `projects[]`：`id/name/**owner**/**created_at**/closed/closedAt/progress/tasks[]`；每个任务含 `task_id/model_name/task_type/status/dir_path/remote_dir/job_id/last_energy/last_check_time` 与 **`check{status,message,checked_at,energy,has_inspection}`**（v0.8.8 起，与巡检中心同口径） | 全量盘点、判断"哪些任务该续算/该收尾" |
 | `GET /task-types` | — | 四种任务类型与默认参数、子类型 | 校验动作参数 |
 | `GET /servers` | — | 服务器名/主机/队列系统/节点分组 | 多服务器扩展 |
 | `GET /health` | — | `uptime/startedAt`（判断后端是否已重启） | 健康检查 |
@@ -214,7 +216,7 @@ body: {
 | 作业 | `POST /jobs/tasks/{id}/upload-poscar` · `/upload-kpoints` · `/upload-submit-script` · `/generate-potcar` | 写远端最新目录，同名先备份 `old_*` |
 | 作业 | `POST /jobs/tasks/{id}/input/sync` | 从远端重新取回四件套（1 exec + 4 SFTP；会覆盖本地镜像，有草稿的文件跳过） |
 | 作业 | `PATCH /jobs/tasks/{id}` · `DELETE /jobs/tasks/{id}` | 重命名 / 删除（本地进回收站，**远端不删**） |
-| 项目 | `POST /projects` · `POST /projects/{id}/close` · `/reopen` · `DELETE /projects/{id}` | 关闭要求可见任务全部归档 |
+| 项目 | `POST /projects` · `POST /projects/{id}/close` · `/reopen` · `DELETE /projects/{id}` | 关闭要求可见任务全部归档；新建项目自动写 `owner`=当前登录用户（v0.9.1） |
 | 组 | `POST /groups` · `POST /groups/{id}/structures` · `POST /groups/tasks` | 建自由能/NEB 组、加结构、建独立任务 |
 | 报告 | `POST /reports/project/generate` (`{project_id?, all?}`) · `GET /reports/project/list` · `/{id}` · `/{id}/structured` · `/{id}/markdown` · `/{id}/export.html` · `DELETE /{id}` | 分项目报告（同项目重生成覆盖） |
 | 配置 | `PUT /settings/root-paths` · `PUT /path-mapping` · `POST /path-mapping/rebase` · `PUT /ssh/config` · `POST /ssh/test` | 运维类，**权限敏感** |

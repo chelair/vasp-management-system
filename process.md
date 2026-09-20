@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.0（登录认证上线：账号/会话底座 + 认证中间件 + 登录页）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.1（项目归属字段 owner/created_at + 迁移脚本；认证 v0.9.0 已上线）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -42,7 +42,8 @@ sudo journalctl -u vasp-manager -f       # 实时日志
 
 ```
 data/
-├── projects.json              # 项目/任务主库（dir_path、remote_dir 均为相对根目录的路径）
+├── projects.json              # 项目/任务主库（dir_path、remote_dir 均为相对根目录的路径；
+│                              #  v0.9.1 起每个项目含 owner / created_at，新建项目自动写 owner）
 ├── backups/                   # projects.json 自动备份（20 份）+ 迁移前备份
 ├── checks/                    # 巡检归档 check_results_*.json + runs.json
 ├── dashboard/
@@ -235,8 +236,16 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.0）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.1）
 
+- v0.9.1（2026-09-20，待提交）：**项目归属字段与迁移（账号体系第 3 步，只加字段、不做过滤）**。
+  ① 数据结构：`data/projects.json` 每个项目增加 `owner`（归属用户名，小写归一）与 `created_at`（已有项目保留原值，缺失才补）；**不改任何已有字段名**。
+  ② 新建项目：`POST /api/projects` 从 `request.state.user` 取用户名写入 `owner`（admin 替别人建项目留到后续，本步不做参数）。
+  ③ 序列化：`mappers.map_project` 输出 `owner` 与 `created_at`（同时保留原有 `createdAt`），前端 `Project` 类型新增 `owner`。
+  ④ 前端展示：作业管理项目树的项目名后加一个归属小标签（`.job-tree__owner`，悬停显示完整归属）；没有 owner 的项目不显示标签，不影响布局。**仅展示，不参与任何权限判断**。
+  ⑤ 迁移脚本 `scripts/migrate_owners.py`：默认 dry-run 只打印；`--apply` 才写，写前把 `projects.json` 备份成 `projects.json.bak.YYYYmmdd_HHMMSS`（不覆盖旧备份），落盘仍走原有原子写 + 文件锁；**幂等**（已有 owner 的项目跳过、不覆盖）；`--data-dir` 支持隔离目录；归属用户不在 `users.json` 里时直接报错（`--force` 可跳过），避免把名字写错导致将来"谁都看不到"。
+  ⑥ 验证（隔离数据目录）：迁移 26 项断言（dry-run 不写文件、apply 只改缺 owner 的 3/4 个项目、已有 owner 不被覆盖、`project_id` 不变、备份文件名带时间戳且内容是迁移前状态、重复 apply 输出"无需修改"且不产生新备份、owner 不存在时拒绝写入）+ HTTP 端到端（登录后 `GET /api/projects` 每个项目都带 `owner`/`created_at`；admin 与普通用户各建一个项目，`owner` 分别等于各自的登录名；**两个账号看到的项目数一致**、巡检与总览行为不变）+ 前端 4 项 jsdom 断言（项目树渲染 owner 标签、无 owner 不占位、项目名正常）。
+  ⑦ 本步**不做**：列表按 owner 过滤、单对象越权 403、`_resolve_task` 加校验、巡检/报告/总览按可见项目过滤、前端按角色隐藏入口、多人共享项目（members）——全部留给第 4/5 步。
 - v0.9.0（commit `840f544`，已推送 origin/main）：**账号体系 + 登录认证上线**（分两步做的，一次提交）。
   ① **用户与会话底座**：`backend/auth.py`——`hashlib.scrypt`（n=2^14/r=8/p=1，16B salt）密码哈希、`secrets.token_urlsafe(32)` token + **服务端只存 sha256**、用户/会话文件落在 `data/users/{users,sessions}.json`（原子写 + `fcntl.flock` 跨进程锁 + 进程内 RLock，权限 0600/0700，**零新依赖**）；`ensure_users_file()` 首次启动自动建 `zouyuxi`(admin) 并把随机初始密码打印到 stdout 与日志；`scripts/set_password.py` 提供列出/建号/改密/禁用/启用/会话查看/强制下线；改密与禁用会**自动吊销该用户全部会话**。
   ② **认证中间件**：`backend/middleware/auth.py` 全局拦截，白名单只有 `POST /api/auth/login` 与 `GET /api/health`；`/api/**`、`/docs`、`/openapi.json`、`/redoc` 未登录一律 401（统一 JSON 信封）；跳过 OPTIONS；token 支持 `Authorization: Bearer` / `X-Auth-Token` / `?token=` / Cookie，其中**后两者只对 GET/HEAD 生效**（写操作必须用请求头，避免 CSRF）；校验通过把 `user/session/token` 挂到 `request.state` 并做**滑动续期**（推到 now+14 天，漂移 ≥1h 才写盘）。
@@ -376,7 +385,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
 13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策，**先写待办、暂不实现自动执行**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。
 14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
-    - **第 1 步（用户与会话底座）与第 2 步（登录认证上线）已完成**：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。
+    - **第 1 步（用户与会话底座）、第 2 步（登录认证上线）、第 3 步（归属字段与迁移）已完成**：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）已给项目加 `owner/created_at` 并让新建项目自动归属，**仍未做可见性过滤**。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 

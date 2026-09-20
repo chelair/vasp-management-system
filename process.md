@@ -243,7 +243,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.6）
 
-- v0.9.6（2026-09-20，待提交）：**自动/定时执行动作系统**（触发层 → 规则层 → 调度层 → 执行层 → 审计层），首批四个动作：创建续算 / 提交作业 / 创建 NEB 文件 / 创建频率矫正。
+- v0.9.6（commit `c5e028c`，已推送 origin/main）：**自动/定时执行动作系统**（触发层 → 规则层 → 调度层 → 执行层 → 审计层），首批四个动作：创建续算 / 提交作业 / 创建 NEB 文件 / 创建频率矫正。
   ① **触发层**：`automation/events.py` 事件总线（`queue.Queue` + 独立线程）。巡检在 `run_inspection()` 归档后**只投递 `inspection_completed` 事件**（每任务一条，负载含 task_id/status/converged/task_type/group_id/source_dir），**不在巡检里调动作**（避免 SSH 抖动连锁失败）；定时触发由零依赖 cron 线程每 20s 检查一次，命中即投递 `schedule` 事件（scope=all / project:X）。
   ② **规则层**：`data/config/rules/*.json`（一文件一规则，改动**立即生效不用重启**）；condition 支持精确匹配 / 列表 / 布尔，上下文由 `rules.build_context()` 提供（task_type、status、converged、group_type、group_role、frac_missing、initial_converged、final_converged、images_created、is_continuation…）。命中投递动作，**未命中写一条 skipped 审计并写明哪个条件不满足**。首次启动自动生成 4 条示例规则（未收敛→续算、收敛缺 frac→建频率、NEB 初末态收敛→建 NEB、每天 02:00 扫未收敛）。
   ③ **调度层**：动作队列（pending/running/done）+ 2 个工作线程；三条并发控制——任务级互斥（进程内锁 + `data/locks/task_*.lock` 文件锁）、冷却期（`guard.cooldown_seconds`，示例规则续算 1800s、NEB 3600s）、执行上限（`guard.max_runs_per_task`）；另有**幂等指纹**（task+action+params 的 sha256）、**用户手动接管跳过**（审计里 5 分钟内有真实用户名的操作则不碰）、**失败熔断**（同规则连续失败 N 次自动进 `disabled_rules`）、**全局暂停立即生效**（`automation.json: enabled`）。
@@ -433,7 +433,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.5，已提交并推送**（`dc66312`；v0.9.0 登录认证 / v0.9.1 归属字段 / v0.9.2 授权过滤 / v0.9.3 前端角色化 / v0.9.5 账号审计与安全加固）；`npm run build` 已出（dist 为 v0.9.3 前端，本版无前端改动）。**生产机仍是 22:53 启动的 v0.9.0 进程**，需 `sudo systemctl restart vasp-manager` 部署 v0.9.1~v0.9.3，并建议随后跑一次 `scripts/migrate_owners.py --owner zouyuxi --apply` 给现有 4 个项目补 owner。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
+> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.6，已提交并推送**（`c5e028c`）；生产机仍是较早的后端进程，**需要 `sudo systemctl restart vasp-manager`** 才能加载 v0.9.6（自动化系统）。重启后 `data/config/automation.json` 与 `data/config/rules/*.json` 会自动生成，**示例规则默认启用**（想先观察可把 `dry_run` 打开）。前端 dist 已含「自动化」页（v0.9.6 重新构建）。**生产机仍是 22:53 启动的 v0.9.0 进程**，需 `sudo systemctl restart vasp-manager` 部署 v0.9.1~v0.9.3，并建议随后跑一次 `scripts/migrate_owners.py --owner zouyuxi --apply` 给现有 4 个项目补 owner。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
 
 1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。

@@ -306,20 +306,6 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         "guard": {"cooldown_seconds": 1800, "max_runs_per_task": 2},
     },
     {
-        "id": "neb-both-ends-converged",
-        "enabled": True,
-        "description": "NEB 初末态都已收敛但还没建映像 → 创建 NEB 计算文件",
-        "trigger": {"type": "inspection_completed"},
-        "condition": {
-            "task_type": "neb",
-            "initial_converged": True,
-            "final_converged": True,
-            "images_created": False,
-        },
-        "action": "neb.create",
-        "guard": {"cooldown_seconds": 3600, "max_runs_per_task": 2},
-    },
-    {
         "id": "nightly-unconverged-scan",
         "enabled": True,
         "description": "每天 02:00 扫描未收敛任务并续算",

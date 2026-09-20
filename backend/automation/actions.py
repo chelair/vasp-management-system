@@ -129,6 +129,7 @@ def _neb_payload(project: Dict[str, Any], task: Dict[str, Any], params: Dict[str
     return payload
 
 
+#: 暂未启用（用户 2026-09-21 要求先从动作目录里去掉，实现保留，需要时加回 ACTIONS 即可）
 class _NebCreate(ActionSpec):
     def preflight(self, task_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         project, task = load_task(task_id)
@@ -158,17 +159,6 @@ ACTIONS: Dict[str, ActionSpec] = {
         label="创建频率矫正文件",
         description="从结构优化最新输出生成 frac 输入文件（CONTCAR→POSCAR / POTCAR / KPOINTS）。",
         long_running=True,
-    ),
-    "neb.create": _NebCreate(
-        name="neb.create",
-        label="创建 NEB 计算文件",
-        description="初末态都收敛后用 nebmake.pl 生成 NEB 映像文件；参数缺省时按组内 role 推导。",
-        long_running=True,
-        params_help={
-            "initial_opt_task_id": "初态 opt 任务（缺省按组内 group_role=initial_opt 推导）",
-            "final_opt_task_id": "末态 opt 任务（缺省按组内 group_role=final_opt 推导）",
-            "num_images": "映像数，默认 3",
-        },
     ),
 }
 

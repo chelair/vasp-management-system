@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space } from 'antd';
+import { App, Button, Checkbox, Collapse, Form, Input, InputNumber, Modal, Select, Space } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import type { ActionCatalogItem, AutomationRule } from '../../api/automation';
+import {
+  RULE_TARGET_OPTIONS,
+  buildRuleCondition,
+  inferRuleTarget,
+  type RuleTargetType,
+} from '../../utils/ruleTarget';
 
 /** condition 里可用的字段（来自后端 rules.build_context()） */
 const CONDITION_KEYS = [
@@ -32,6 +38,8 @@ interface Props {
   /** 传入表示编辑；不传表示新建 */
   rule?: AutomationRule | null;
   actions: ActionCatalogItem[];
+  /** 可选项目名（"指定项目"下拉） */
+  projects?: string[];
   onCancel: () => void;
   onSubmit: (payload: Partial<AutomationRule>) => Promise<void>;
 }
@@ -54,7 +62,7 @@ function formatValue(value: unknown): string {
 }
 
 /** 规则新建 / 编辑弹窗（v0.9.7） */
-export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: Props) {
+export default function RuleModal({ open, rule, actions, projects = [], onCancel, onSubmit }: Props) {
   const { message } = App.useApp();
   const [form] = Form.useForm();
   const [rows, setRows] = useState<CondRow[]>([]);
@@ -64,6 +72,9 @@ export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: P
   );
   /** 定时子类型：cron 周期 / N 秒后执行一次（一次性） */
   const [scheduleMode, setScheduleMode] = useState<'cron' | 'after'>('cron');
+  /** 作用对象（项目 / opt 任务 / 自由能组）——显式选择，不再让人直接填条件 */
+  const [target, setTarget] = useState<RuleTargetType>('project');
+  const [targetProject, setTargetProject] = useState<string | undefined>(undefined);
   const seq = useMemo(() => ({ current: 0 }), []);
 
   useEffect(() => {
@@ -85,9 +96,14 @@ export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: P
       max_runs_per_task: rule?.guard?.max_runs_per_task ?? 5,
       enabled: rule?.enabled ?? true,
     });
+    const inferred = inferRuleTarget(rule?.condition);
+    setTarget(inferred.target);
+    setTargetProject(inferred.project ?? (rule?.trigger?.scope?.startsWith('project:')
+      ? rule?.trigger?.scope?.slice('project:'.length)
+      : undefined));
     seq.current = 0;
     setRows(
-      Object.entries(rule?.condition ?? {}).map(([key, value]) => ({
+      Object.entries(inferred.extra).map(([key, value]) => ({
         id: (seq.current += 1),
         key,
         value: formatValue(value),
@@ -98,25 +114,27 @@ export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: P
   const submit = async () => {
     try {
       const values = await form.validateFields();
-      const condition: Record<string, unknown> = {};
+      const extra: Record<string, unknown> = {};
       for (const row of rows) {
         const key = row.key.trim();
         if (!key || row.value.trim() === '') continue;
-        condition[key] = parseValue(row.value);
+        extra[key] = parseValue(row.value);
       }
+      const isSchedule = triggerType === 'schedule';
+      const { condition, scope } = buildRuleCondition(target, targetProject, extra, isSchedule);
       const payload: Partial<AutomationRule> = {
         id: String(values.id).trim(),
         description: values.description ?? '',
         enabled: values.enabled,
         trigger:
           triggerType === 'schedule' && scheduleMode === 'cron'
-            ? { type: 'schedule', mode: 'cron', cron: String(values.cron).trim(), scope: String(values.scope).trim() || 'all' }
+            ? { type: 'schedule', mode: 'cron', cron: String(values.cron).trim(), scope: scope || 'all' }
             : triggerType === 'schedule'
               ? {
                   type: 'schedule',
                   mode: 'after',
                   after_seconds: Math.max(1, Math.round(Number(values.after_minutes ?? 30) * 60)),
-                  scope: String(values.scope).trim() || 'all',
+                  scope: scope || 'all',
                 }
               : { type: 'inspection_completed' },
         condition,
@@ -203,9 +221,7 @@ export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: P
                   <InputNumber min={1} step={5} style={{ width: '100%' }} addonAfter="分钟" />
                 </Form.Item>
               )}
-              <Form.Item name="scope" label="范围" style={{ width: 150 }}>
-                <Input placeholder="all 或 project:项目名" />
-              </Form.Item>
+
             </>
           )}
           <Form.Item name="action" label="动作" style={{ width: 220 }} rules={[{ required: true }]}>
@@ -213,6 +229,32 @@ export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: P
               options={actions.map((a) => ({ value: a.name, label: `${a.label}（${a.name}）` }))}
             />
           </Form.Item>
+        </Space>
+
+        <Space size={12} style={{ display: 'flex' }} align="start">
+          <Form.Item label="作用对象" style={{ width: 220 }}>
+            <Select
+              value={target}
+              onChange={(v) => setTarget(v as RuleTargetType)}
+              options={RULE_TARGET_OPTIONS.map((o) => ({
+                value: o.value,
+                label: o.label,
+                title: o.hint,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="指定项目（可选）" style={{ width: 220 }}>
+            <Select
+              allowClear
+              placeholder="全部项目"
+              value={targetProject}
+              onChange={(v) => setTargetProject(v as string | undefined)}
+              options={projects.map((name) => ({ value: name, label: name }))}
+            />
+          </Form.Item>
+          <span className="preview-note" style={{ lineHeight: '30px' }}>
+            {RULE_TARGET_OPTIONS.find((o) => o.value === target)?.hint}
+          </span>
         </Space>
 
         <Space size={12} style={{ display: 'flex' }} align="start">
@@ -227,10 +269,21 @@ export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: P
           </Form.Item>
         </Space>
 
-        <div className="job-field-hint" style={{ marginBottom: 6 }}>
-          条件（全部满足才触发；值支持 <code>true/false</code>、逗号分隔列表、数字或字符串）
-        </div>
-        {rows.map((row) => (
+        <Collapse
+          ghost
+          size="small"
+          items={[
+            {
+              key: 'extra',
+              label: `附加条件（可选）${rows.length ? ` · 已填 ${rows.length} 条` : ''}`,
+              children: (
+                <>
+                  <div className="job-field-hint" style={{ marginBottom: 6 }}>
+                    在"作用对象"之上再加条件（全部满足才触发）；值支持 <code>true/false</code>、
+                    逗号分隔列表、数字或字符串，例如 <code>status=unconverged</code>、
+                    <code>frac_missing=true</code>
+                  </div>
+                  {rows.map((row) => (
           <Space key={row.id} size={8} style={{ display: 'flex', marginBottom: 6 }} align="start">
             <Select
               showSearch
@@ -259,16 +312,21 @@ export default function RuleModal({ open, rule, actions, onCancel, onSubmit }: P
             />
           </Space>
         ))}
-        <Button
-          size="small"
-          type="dashed"
-          icon={<PlusOutlined />}
-          onClick={() =>
-            setRows((prev) => [...prev, { id: (seq.current += 1), key: '', value: '' }])
-          }
-        >
-          添加条件
-        </Button>
+                  <Button
+                    size="small"
+                    type="dashed"
+                    icon={<PlusOutlined />}
+                    onClick={() =>
+                      setRows((prev) => [...prev, { id: (seq.current += 1), key: '', value: '' }])
+                    }
+                  >
+                    添加条件
+                  </Button>
+                </>
+              ),
+            },
+          ]}
+        />
       </Form>
     </Modal>
   );

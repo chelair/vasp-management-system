@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-21 · 当前版本：v0.9.7（自动化：规则增删改 + 定时"N 分钟后执行一次" + 开关即时生效）
+> 生成时间：2026-08-29 · 最近更新：2026-09-21 · 当前版本：v0.9.8（规则改「选作用对象」+ 下架 neb.create 动作）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -133,7 +133,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `ssh.py` | **统一 SSH 连接池**：`run_remote`（exec）/ `upload_file` / `download_file` / `mkdir_remote` 共用一条常驻连接；Paramiko 传输层 keepalive 30s + 后台每 60s 应用层保活（echo ok 实测延迟写入连接池状态）、空闲 5min 回收、断线重连；`VASP_SSH_MOCK=1` 本地模拟模式。禁止业务代码自建 Paramiko 客户端 |
 | `config.py` | 读取 data/config 下各 JSON（servers/settings/task_registry/path_mapping），每次现读无缓存 |
 | `auth.py` | **账号与会话底座（v0.9.0）**：`hashlib.scrypt` + 随机 salt 的密码哈希、`secrets.token_urlsafe(32)` 的 token 生成与 **sha256 存盘**、用户/会话文件（`data/users/{users,sessions}.json`；原子写 + 文件锁 + 0600/0700）、滑动续期、`ensure_users_file()` 首次启动自动建默认管理员（随机密码打印 stdout 与日志） |
-| `automation/` | **自动/定时执行动作系统（v0.9.6）**：`store.py`（automation.json 开关 / `config/rules/*.json` 规则 / `action_history.json` 冷却·计数·幂等指纹·规则失败 / `action_runs.json` 运行记录，原子写 + 文件锁）、`events.py`（事件总线：**巡检只发事件**，独立线程消费）、`rules.py`（`build_context` 任务上下文 + condition 匹配 + 定时 scope 解析）、`cron.py`（零依赖 5 段 cron 解析与 next_after）、`actions.py`（动作目录：preflight + 执行，复用 `routers.jobs.core_*`）、`scheduler.py`（队列/工作线程、任务级文件锁、冷却、执行上限、幂等指纹、失败熔断、全局暂停、dry_run、长动作 run_id）、`audit.py`（写 `actions.jsonl`，五态 success/failed/skipped/blocked/dry_run）、`service.py`（挂 lifespan 启停） |
+| `automation/` | **自动/定时执行动作系统（v0.9.6，动作目录 v0.9.8 起为 3 个：续算/提交/频率矫正）**：`store.py`（automation.json 开关 / `config/rules/*.json` 规则 / `action_history.json` 冷却·计数·幂等指纹·规则失败 / `action_runs.json` 运行记录，原子写 + 文件锁）、`events.py`（事件总线：**巡检只发事件**，独立线程消费）、`rules.py`（`build_context` 任务上下文 + condition 匹配 + 定时 scope 解析）、`cron.py`（零依赖 5 段 cron 解析与 next_after）、`actions.py`（动作目录：preflight + 执行，复用 `routers.jobs.core_*`）、`scheduler.py`（队列/工作线程、任务级文件锁、冷却、执行上限、幂等指纹、失败熔断、全局暂停、dry_run、长动作 run_id）、`audit.py`（写 `actions.jsonl`，五态 success/failed/skipped/blocked/dry_run）、`service.py`（挂 lifespan 启停） |
 | `routers/automation.py` | **动作与自动化接口（v0.9.6，仅 admin）**：`GET/POST /api/actions[/{name}]`、`GET /api/actions/runs/{run_id}`、`/api/automation/{status,settings,rules,rules/{id},rules/{id}/run,reload,decisions,runs}` |
 | `routers/jobs.py`（v0.9.6） | 四个业务核心抽成 `core_continuation / core_submit / core_create_frac / core_create_neb`（+ `ActionError`），**HTTP 接口与自动化动作层共用同一份实现**；submit 支持 `dry_run=True`（脚本跑到检查就退出，不 bsub、不改状态） |
 | `ssh.py`（v0.9.6） | mock 模式增强：除 `python3 <脚本>` 外，支持 `echo <b64> \| base64 -d \| bash`（路径单遍重写到模拟根、把 `<模拟根>/_mock_bin` 放进 PATH），**仅 mock 生效**，用于离线端到端验证提交/续算等 bash 脚本 |
@@ -241,8 +241,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.7）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.8）
 
+- v0.9.8（2026-09-21，待提交）：**新建规则改成交互式「选作用对象」+ 下架 neb.create 动作**。
+  ① **作用对象显式选择**（用户："可选针对项目/opt 任务/自由能组，要做成更易交互的，而不是藏在条件里"）：弹窗新增「作用对象」下拉——项目 / opt 任务（结构优化）/ 自由能组，以及「指定项目（可选）」；映射规则见 `src/utils/ruleTarget.ts`（纯函数、可单测）：项目 → 条件为空；opt 任务 → `condition.task_type="opt"`；自由能组 → `condition.group_type="free_energy"`；指定项目时**条件规则**写 `condition.project`、**定时规则**写 `trigger.scope="project:<名>"`。原来的键值条件编辑器降级为折叠的「附加条件（可选）」，编辑既有规则时按条件**反推**作用对象并回填。
+  ② **下架 `neb.create`**（用户："neb计算文件创建那个先去掉吧"）：从动作目录（`ACTIONS`）里移除，`GET /api/actions` 只剩 `task.continuation / task.submit / frac.create`，新建/编辑规则时选不到；后端对 `action="neb.create"` 直接 400（未知动作）。实现类 `_NebCreate` 保留在 `automation/actions.py`（注释注明暂未启用），需要时加回注册表即可。
+  ③ 默认规则同步去掉 NEB 那条（`neb-both-ends-converged` 从 `DEFAULT_RULES` 移除），并清理生产数据里已存在的那份规则文件（动作下架后它已无法执行）。
+  ④ 验证：后端 7 项（动作目录只剩 3 个、neb.create 规则被拒 400、默认规则不含 NEB、三类作用对象及组合都能建、定时+指定项目 → scope=project:ProjX）+ 前端 15 项（映射函数 9 项：三种作用对象、定时 scope、附加条件合并、反推回填；弹窗交互 6 项：作用对象/指定项目/附加条件折叠区、编辑回填自由能组、动作下拉有创建续算且**没有 NEB**）。`tsc` + `npm run build` 通过。
 - v0.9.7（commit `83aa554`，已推送 origin/main）：**自动化系统按用户反馈修复 + 新增"定时后执行"类型**。
   ① **规则可增删改**（用户："这几条只是我举例的，我没法创建和删除动作"）：新增 `POST /api/automation/rules`（新建，id 冲突 409）、`DELETE /api/automation/rules/{id}`（删除并清理该规则的冷却/计数/熔断/下次触发历史）、`PUT` 从"只改 enabled"扩展为可改 description/trigger/condition/action/guard；校验规则 id 格式、trigger.type、cron 合法性、动作存在性、guard 整数。前端自动化页新增「新建规则」按钮 + 每行「编辑 / 删除」，弹窗含触发方式、定时类型、动作下拉、条件键值行（可增删）与 guard。
   ② **定时开关即时生效**（用户："那个启用关不掉，点击后刷新页面才能看到"）：根因是前端只更新了"规则表"的状态，没同步"定时任务表"（两张表读的是同一份规则）。现在两处一起更新，点一下立刻变，不用刷新。

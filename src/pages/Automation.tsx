@@ -4,6 +4,7 @@ import { PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/i
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import RuleModal from '../components/automation/RuleModal';
+import { fetchProjects } from '../api/projects';
 import {
   createAutomationRule,
   deleteAutomationRule,
@@ -60,6 +61,7 @@ export default function Automation() {
   const [actionCatalog, setActionCatalog] = useState<ActionCatalogItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<AutomationRule | null>(null);
+  const [projectNames, setProjectNames] = useState<string[]>([]);
 
   const load = useCallback(
     async (notify = false) => {
@@ -90,11 +92,14 @@ export default function Automation() {
     void load();
   }, [load]);
 
-  // 动作目录只拉一次（新建/编辑规则弹窗的下拉选项）
+  // 动作目录与项目列表只拉一次（规则弹窗的下拉选项）
   useEffect(() => {
     fetchActionCatalog()
       .then((catalog) => setActionCatalog(catalog.actions ?? []))
       .catch(() => setActionCatalog([]));
+    fetchProjects()
+      .then((list) => setProjectNames(list.map((p) => p.name)))
+      .catch(() => setProjectNames([]));
   }, []);
 
   const paused = settings ? !settings.enabled : false;
@@ -521,6 +526,7 @@ export default function Automation() {
         open={modalOpen}
         rule={editingRule}
         actions={actionCatalog}
+        projects={projectNames}
         onCancel={() => {
           setModalOpen(false);
           setEditingRule(null);

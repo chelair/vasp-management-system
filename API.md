@@ -243,7 +243,7 @@ body: {
 | 接口 | 参数 | 说明 |
 | --- | --- | --- |
 | `GET /api/actions` | — | 动作目录：名称 / 说明 / 是否长动作 / 参数提示 |
-| `POST /api/actions/{action_name}` | `{task_id?, params?, dry_run?, idempotency_key?, wait?}` | `task.continuation` / `task.submit` / `neb.create` / `frac.create` |
+| `POST /api/actions/{action_name}` | `{task_id?, params?, dry_run?, idempotency_key?, wait?}` | `task.continuation` / `task.submit` / `frac.create`（`neb.create` v0.9.8 起暂未启用，调用返回 400） |
 | `GET /api/actions/runs/{run_id}` | — | 长动作轮询：`running / success / failed / skipped` + result |
 | `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则 + 计数 |
 | `GET/PUT /api/automation/settings` | `{enabled?, dry_run?, schedules_enabled?, failure_threshold?}` | 改完**立即生效**（enabled=false 即全局暂停） |
@@ -264,7 +264,18 @@ body: {
 - `task.continuation` 的**业务结果**在 `result.action`：只有 `created` 才算创建成功，
   `running` / `input_complete_but_not_finished` / `input_incomplete` 一律按 `skipped` 记账。
 
-规则文件：`data/config/rules/<id>.json`（一文件一规则）
+规则文件：`data/config/rules/<id>.json`（一文件一规则）。前端配置规则时先选**作用对象**，
+再（可选）加附加条件，映射关系：
+
+| 作用对象 | condition | 备注 |
+| --- | --- | --- |
+| 项目 | `{}` | 项目下所有任务；"指定项目"时条件规则写 `condition.project` |
+| opt 任务（结构优化） | `{"task_type": "opt"}` | |
+| 自由能组 | `{"group_type": "free_energy"}` | 含路径里的 frac 子任务 |
+| 定时规则的"指定项目" | 写 `trigger.scope = "project:<名>"` | 不指定即 `all` |
+
+附加条件（可折叠）用于更细的判定，例如 `status=unconverged`、`converged=false`、
+`frac_missing=true`、`initial_converged=true` 等（字段与 `rules.build_context()` 对齐）。
 
 ```json
 {

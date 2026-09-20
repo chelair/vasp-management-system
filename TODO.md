@@ -647,6 +647,80 @@
 4. 台账位置与保留量：`data/actions/ledger.jsonl`，保留最近 N 条？
 5. 失败重试策略与通知渠道（UI / 邮件 / 企业微信 / 钉钉）。
 
+### 13. 智能体闭环：巡检 → 判断 → 执行（2026-09-20 用户决策：先写待办，**暂不实现自动执行**）
+
+> 用户目标（原话）："我想做的就是巡检 - 根据结果判断下一个步骤 - 执行，很简单"。
+> 约束：**尽量把对系统的影响降到最低**——只读为主、动作最少、可回放、可一键停。
+
+**接口面已就绪**：`API.md`（v0.8.9 新建，观测面 + 执行面 + 闭环建议 + 缺口清单）。现有端点足够支撑闭环，缺的是"策略 + 受控执行 + 台账"。
+
+**设计（三层，互不侵入现有业务代码）**
+
+1. **观测层（已可用，零改动）**：`POST /api/inspections/run`（或等自动巡检）→ `GET /api/inspections`（每个任务一行结论）→ 细节用 `GET /api/inspections/{task_id}`（`force_history` / `neb_barrier` / `precision`）；项目面 `GET /api/projects`（任务自带 `check` 摘要）。
+2. **判断层（新增，纯只读）**：规则放 `data/config/agent_rules.json`（照搬 `report_rules.py` 的声明式 `when: all/any + field/op/value` 写法，改 JSON 不用重启），输出 `[{task_id, action, reason, evidence}]`。
+3. **执行层（新增，受控）**：白名单动作 + `dry_run` + 幂等键 + 冷却时间 + 台账；**动作内部直接复用现有函数/端点**，不复制业务逻辑。
+
+**低影响原则（写进策略默认值）**
+
+- 默认**只读判断**；动作白名单先只放开 `inspection.run`、`task.continuation`、`task.input.draft`、`frac.create`、`report.generate`；
+  `task.submit` / `task.stop` / `task.archive` / 删除 / 改远端文件 **必须人工确认**。
+- 每个任务每轮巡检最多 1 个动作；同任务动作冷却 ≥ 巡检间隔（默认 2h）。
+- 业务字段判成功：`continuation` 必须 `action="created"`；巡检必须 `failed_batches` 为空；HTTP 200 不算成功。
+- 全部动作写 `data/agent/actions.jsonl`（时间 / 触发依据 run_id + 结论 / 动作 / 参数 / 结果 / 是否 dry-run）。
+- 调度器默认**关闭**，需在设置里显式开启（复用 `inspection_scheduler` 的后台线程模式）。
+
+**落地顺序**
+
+- [x] 写 `API.md`（观测面 + 执行面 + 闭环建议 + 缺口）——v0.8.9
+- [ ] `data/config/agent_rules.json` 草案（先只定义 5–8 条"下一步建议"规则，纯数据）
+- [ ] `GET /api/agent/status`（只读）：给定 `project/task` 返回"建议动作 + 依据 + 前置是否满足"，**零副作用**
+- [ ] `POST /api/agent/execute`：`{action, target, params, dry_run, idempotency_key}`；先只实现白名单 2 个动作（`inspection.run`、`task.continuation`）+ dry-run（复用现成 preflight）
+- [ ] 台账 `data/agent/actions.jsonl` + `GET /api/agent/actions`（回放/审计）
+- [ ] 可选：`agent_scheduler`（默认关）与简单管理页（开关 / 冷却 / 白名单 / 最近动作）
+- [ ] 与 §14 打通：智能体用**独立长期 token**（`role=agent`），只允许白名单动作
+
+### 14. 账号 + 认证 + 授权（2026-09-20 用户要求：先方案与清单，**暂不动代码**）
+
+> 用户要求：① **认证**——客机必须登录后才能操作系统，否则无法调用；② **授权**——每个账号只能管理和查看**自己创建的项目**。
+
+**方案总览**
+
+| 层 | 方案 | 说明 |
+| --- | --- | --- |
+| 用户存储 | `data/config/users.json` | `{username, password_hash(scrypt), salt, role, created_at, disabled}`；**零新依赖**（`hashlib.scrypt`） |
+| 会话存储 | `data/config/sessions.json` | 只存 `token` 的 `sha256` + username + 过期时间 + last_seen（`data/` 泄露也拿不到可用 token） |
+| 认证 | `POST /api/auth/login` → `Bearer token` | 登录换取随机 token（`secrets.token_urlsafe(32)`）；滑动过期默认 14 天；失败限速（5 次/15 分钟） |
+| 认证入口 | FastAPI 中间件 + 白名单 | 对 `/api/*` **除白名单外一律 401**；白名单仅 `POST /api/auth/login`、`GET /api/health`；`/docs`、`/openapi.json` 也要保护 |
+| 长期 token | `POST /api/auth/tokens` | 给智能体/脚本用（可命名、可设有效期、可吊销）；`GET/DELETE /api/auth/tokens` 自查自撤 |
+| 授权模型 | `project.owner` + 角色 | `admin` 看全部；`user` 只看/改自己的；`agent` 只允许白名单动作、无 UI |
+| 授权实现 | `permissions.py` 统一入口 | `visible_projects(db, user)`（列表过滤）+ `ensure_owner/ensure_task_owner`（单对象校验，越权 403） |
+| 前端 | 登录页 + token 注入 | `request()` 统一带 `Authorization`；401 → 跳登录；顶栏显示用户名/退出；按角色隐藏入口 |
+
+**为什么不选 JWT**：本项目是文件型存储、单机部署、需要"立即吊销"能力（改密/下线/智能体 token 作废）；服务端会话表零依赖、语义直白，比 JWT + 吊销列表更简单可靠。
+
+**授权要覆盖的查询面（容易漏）**
+
+- 列表：`GET /projects`、`GET /inspections`、`GET /inspections/meta`、`GET /dashboard/*`、`GET /reports/project/list`、`GET /reports/groups*`、`GET /free-energy/{gid}/summary`、`GET /jobs/nodes`、`GET /aux-molecules`。
+- 单对象：`POST /jobs/**`（关键：`jobs.py::_resolve_task(task_id)` 是所有作业动作的唯一入口，**在它里面加 owner 校验即可覆盖提交/续算/上传/归档等全部写操作**）、`/groups/{gid}`、`/reports/project/{report_id}`、`/inspections/{task_id}`、`/projects/{id}`。
+- 全局派生数据：`data/checks/*`（巡检归档按 task_id 索引，需 join 任务 owner）、`data/dashboard/core_history.json`（集群采样，项目聚合要按可见项目过滤）、`data/audit_submit.log`。
+- 共享资源：SSH 仍是**同一个 HPC 账号**（`mdye`）→ 鉴权只解决"谁能看/改哪些项目"，不解决"算力配额隔离"；若将来要按人隔离 HPC 凭据，另立条目。
+
+**实施清单（分 5 步，每步可独立验收）**
+
+- [ ] **① 用户与会话底座**：`backend/auth.py`（scrypt 哈希/校验、token 生成与校验、会话读写与清理、`require_user` / `require_admin` 依赖）+ `scripts/set_password.py`（管理员建号/改密/禁用；首次启动若无 `users.json` 则创建 `admin` 并把**随机初始密码打印到 journalctl 与 CLI**）
+- [ ] **② 认证上线（先认证、后授权）**：`backend/routers/auth.py`（`login`/`logout`/`me`/`tokens`）+ 全局中间件白名单 + `/docs` 保护；前端登录页、`request()` 注入 token、401 统一跳登录、顶栏用户菜单
+  - 验收：无 token 调 `/api/projects` → `401`；登录后可正常用；错密码限速生效；`/docs` 未登录不可读
+- [ ] **③ 归属字段与迁移**：`projects.json` 增加 `owner`/`created_at`；`scripts/migrate_owners.py`（dry-run 默认，`--apply` 写入）把现有 4 个项目归给指定管理员；`mappers` 输出 `owner`
+- [ ] **④ 授权生效**：`backend/permissions.py`（`visible_projects` / `ensure_owner` / `ensure_task_owner`）接入 `projects / jobs(_resolve_task) / groups / free_energy / reports / inspections / dashboard`；`_audit_log` 增加 `username` 字段
+  - 验收：A 账号看不到 B 的项目（列表 + 单对象 + 巡检 + 报告 + 总览统计）；直接拿 B 的 task_id 调动作 → `403`；admin 可见全部
+- [ ] **⑤ 收尾**：前端角色化（隐藏他人项目、admin 多"全部项目"视图）、智能体长期 token（与 §13 白名单打通）、可选加固（HTTPS、在线会话与强制下线、密码策略、操作日志页）
+
+**兼容与回滚**
+
+- 加鉴权后**所有脚本/自动化/智能体都要带 token**（含本文档 §13 的动作）；上线前先准备好给每个外部调用方发 token。
+- 回滚方式：`git revert` 对应提交 + `systemctl restart vasp-manager`。**不做"运行时关闭鉴权"的开关**（避免留后门）；排障期如确需临时放开，只在隔离测试实例上用独立数据目录。
+- 顺序建议：**先认证（②）让系统"必须登录"，再授权（③④）做项目隔离**；③ 的迁移脚本在授权上线前跑完，避免上线即"看不到任何项目"。
+
 ---
 
 ## 已知限制（2026-09-13 更新）

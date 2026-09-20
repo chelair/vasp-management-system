@@ -1,7 +1,7 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
 > 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.8.9（输入文件逐项撤销/草稿回填 + 复制参数落草稿 + 任务选择弹窗 + POSCAR 选中原子坐标 + EFIELD/NCORE）
-> 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` 直接接续开发。
+> 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
 > 版本号、改动记录（§7）、待办状态（§9）与数据现状（§2）。发现文档与代码不一致时，以代码为准并立即回来改文档。
@@ -363,6 +363,10 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 10. **巡检异常规则引擎**（2026-09-20 用户决策，**暂时搁置**）：需求是巡检时判断"离子步很多但力一直震荡 → 结构是否合理"这类异常，但异常种类多、用户无法一次说全 → 不写成硬编码 `if`，改为「指标 + 规则」两层：① 指标层复用 `force_history` 等已有数据算出过程形态量（`force_best`/`stall_steps`/`rebound_count_lastN`/`force_slope`/`energy_drift`/`max_displacement`/`running_hours`…，零额外 SSH），② 判定层照搬 `report_rules.py` 的声明式规则（`when: all/any + field/op/value`，规则文件 `data/config/check_rules.json`，改 JSON 不用重启），③ 输出 `findings[{rule_id,severity,message,advice}]`（任务级状态取最高 severity），巡检中心/详情、作业管理（v0.8.8 已接 `check.message`）、报告「异常与关注项」共用。落地顺序：先平移现有硬编码判定验证等价 → 上 5–8 条通用规则 → **用 `data/checks` 历史回放校准阈值与误报**。详见 TODO.md §11。
 11. **自动执行 / 大模型动作接口**（2026-09-20 审计，**设计已定、尚未实现**）：为「定时执行 + 大模型决策后自动执行（续算/固定原子/建 NEB 等）」准备统一动作层。现状审计：73 个接口（32 读 / 41 写）散落在 jobs/projects/groups 路由，**没有统一动作目录、没有 dry-run 前置校验（只有 submit 内嵌五件套检查）、没有幂等键、长动作同步阻塞（NEB 创建远端 300s、巡检 75-90s）、没有统一动作台账（仅 `jobs.py::_audit_log` 文本行且只覆盖部分动作）、没有审批闸门与通知出口**；已有半成品：`report_rules.json`（13 条声明式规则）→ `risks[].advice` → `actions.items[{action_id,priority,task_id,action(自然语言),reason}]` + `llm_context{key_findings,open_questions,data_references,constraints}`。建议新增：`GET /actions`（动作目录，含参数 schema/前置/风险/幂等/是否长任务）、`POST /actions/{name}`（`dry_run` + `idempotency_key` + `requested_by/reason`）、`GET /actions/runs/{id}`（长动作轮询）、`/approve`·`/cancel`、`GET /actions/ledger`、`GET /observe/context`（一次给出巡检 findings + 任务事实 + 集群 + 动作历史，供大模型消费）。落地顺序：①动作目录+统一执行端点+给续算/固定原子/NEB 补 preflight → ②台账+幂等键+审批闸门 → ③异步 run+轮询+重试 → ④LLM 闭环（先只放开低风险动作）。**待用户拍板**：无人值守白名单、是否先全审、是否只允许选"参数档"而非任意 INCAR 键值、台账位置与保留量、失败重试与通知渠道。详见 TODO.md §12。
 
+12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
+13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策，**先写待办、暂不实现自动执行**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。
+14. **账号 + 认证 + 授权**（2026-09-20 用户要求，**先给方案与清单**）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
+
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 
 ---
@@ -378,7 +382,10 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 4. 用户对"默认参数 / 目录结构 / 作业号同步 / 巡检状态"等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。**验证习惯**：本轮开发都用「隔离数据目录 + `VASP_SSH_MOCK=1` 的 mock 远端」或「服务器 `/tmp` 临时目录」做端到端验证（`/tmp/sd_test`、`/tmp/vm_*` 之类），前端用 jsdom 渲染断言（`/tmp/cnbtest` 下装了 jsdom，临时测试文件用完即删）。
 5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 `package.json` version 后 `git add -A && git commit && git push origin main`（本机 `git push` 走 `~/.ssh/config` 里的 `github.com → ssh.github.com:443` + `~/.ssh/id_github`，无需额外配置）。
 6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
-7. **下一步待用户拍板的两件事**（都已写进 TODO，等指令再动）：① 巡检异常规则引擎（TODO §11）；② 自动执行 / 大模型动作接口（TODO §12，含 5 个待决策项：无人值守白名单、是否先全审、是否只允许"参数档"、台账位置与保留、失败重试与通知渠道）。
+7. **待用户拍板 / 排期中**（都已写进 TODO，等指令再动）：
+   ① 巡检异常规则引擎（TODO §11）；② 自动执行 / 大模型动作接口（TODO §12，含 5 个待决策项）；
+   ③ **智能体闭环（巡检→判断→执行）**（TODO §13，用户 2026-09-20 决策：先只写待办与接口文档，暂不实现自动执行；最低影响优先）；
+   ④ **账号 + 认证 + 授权**（TODO §14，用户 2026-09-20 要求：先方案与清单）——先登录才能调用系统，每个账号只能管理/查看自己创建的项目。
 
 ## 11. 部署与运维（Linux 生产机）
 

@@ -6,6 +6,8 @@
 **项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池、结构 3D 视图与分项目报告生成均已接入真实后端**
 （Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
 总览页已是集群实时视图（bjobs 作业、blimits 核数配额、bhosts/bqueues 节点队列、df 存储），
+接口文档（面向自动化 / 智能体接入，含观测面与执行面、调用参数与前置条件）见 [`API.md`](./API.md)；跨窗口交接说明见 [`process.md`](./process.md)。
+
 **前端不再有 Mock 数据**（`src/data/mock/` 仅保留编辑器默认参数与 VASP 输入文件模板）。
 
 > 跨窗口交接看 `process.md`（版本、改动记录、已知坑、待办）；`TODO.md` 为历史清单，个别条目已过时。

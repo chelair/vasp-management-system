@@ -11,6 +11,15 @@
 
 ## 当前进度概览
 
+**已完成（v0.9.2，2026-09-20 · 授权生效：按项目归属过滤 + 越权 403）**
+
+- [x] `backend/permissions.py`：列表过滤 / 单对象校验 / `enforce_task` 唯一入口守卫 / 审计助手；403 统一信封（`PermissionDenied` 穿透各路由的 `except Exception`）
+- [x] projects / jobs（`_resolve_task`+`_resolve_task_dir` 覆盖 26 个 task 接口）/ groups / free-energy / reports / project-reports / inspections / dashboard 全部接入；新增 `GET /api/projects/{id}`（越权 403）
+- [x] 额外加固：全局配置写接口（settings 根目录、path-mapping、ssh 配置、辅助分子新增）收为 admin-only
+- [x] 审计双写：新增 `data/audit/actions.jsonl`（带 username），旧 `audit_submit.log` 保持兼容
+- [x] 验证：隔离实例 34 项 HTTP 断言 + 前端 4 项 jsdom 断言 + tsc/build 通过
+
+
 **已完成（v0.9.1，2026-09-20 · 项目归属字段与迁移）**
 
 - [x] `projects.json` 每个项目加 `owner` / `created_at`；新建项目自动把 `owner` 写成当前登录用户；`mappers` 输出这两个字段；前端项目树显示归属标签（仅展示，不参与权限判断）
@@ -727,7 +736,7 @@
 - [x] **② 认证上线（先认证、后授权）**（**2026-09-20 完成，未提交**）：`backend/routers/auth.py`（`login`/`logout`/`me`/`tokens`）+ 全局中间件白名单 + `/docs` 保护；前端登录页、`request()` 注入 token、401 统一跳登录、顶栏用户菜单
   - 验收：无 token 调 `/api/projects` → `401`；登录后可正常用；错密码限速生效；`/docs` 未登录不可读
 - [x] **③ 归属字段与迁移**（**2026-09-20 完成，隔离目录已验证；生产数据迁移待用户确认后执行 `--apply`**）：`projects.json` 增加 `owner`/`created_at`；`scripts/migrate_owners.py`（dry-run 默认，`--apply` 写入）把现有 4 个项目归给指定管理员；`mappers` 输出 `owner`
-- [ ] **④ 授权生效**：`backend/permissions.py`（`visible_projects` / `ensure_owner` / `ensure_task_owner`）接入 `projects / jobs(_resolve_task) / groups / free_energy / reports / inspections / dashboard`；`_audit_log` 增加 `username` 字段
+- [x] **④ 授权生效**（**2026-09-20 完成，隔离目录已验证；生产待确认后部署**）：`backend/permissions.py`（`visible_projects` / `ensure_owner` / `ensure_task_owner`）接入 `projects / jobs(_resolve_task) / groups / free_energy / reports / inspections / dashboard`；`_audit_log` 增加 `username` 字段
   - 验收：A 账号看不到 B 的项目（列表 + 单对象 + 巡检 + 报告 + 总览统计）；直接拿 B 的 task_id 调动作 → `403`；admin 可见全部
 - [ ] **⑤ 收尾**：前端角色化（隐藏他人项目、admin 多"全部项目"视图）、智能体长期 token（与 §13 白名单打通）、可选加固（HTTPS、在线会话与强制下线、密码策略、操作日志页）
 

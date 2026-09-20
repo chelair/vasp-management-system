@@ -10,11 +10,12 @@ import re
 import tempfile
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Request, Body
 from fastapi.responses import JSONResponse
 
 from config import CONFIG_DIR, load_servers
 from envelope import fail, ok
+import permissions
 from ssh import _acquire_client, _mock_enabled, get_pool_status, run_remote
 
 router = APIRouter(prefix="/ssh", tags=["ssh"])
@@ -39,6 +40,8 @@ def ssh_status():
     """常驻 SSH 连接池状态（顶栏真实连接指示）。"""
     try:
         return ok("查询成功", get_pool_status())
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"查询 SSH 状态失败：{e}"))
 
@@ -54,6 +57,8 @@ def ssh_test(payload: dict = Body(default={})):
 
     try:
         servers = load_servers()
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取 SSH 配置失败：{e}"))
     name = str((payload or {}).get("server") or "").strip()
@@ -83,6 +88,8 @@ def ssh_test(payload: dict = Body(default={})):
             raise RuntimeError(
                 (r.get("stderr") or r.get("stdout") or "").strip() or "命令执行失败"
             )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=502, content=fail(f"SSH 测试失败：{e}"))
     return ok(
@@ -140,12 +147,18 @@ def get_config():
             "查询成功",
             {"servers": [_to_public(name, cfg) for name, cfg in servers.items()]},
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取 SSH 配置失败：{e}"))
 
 
 @router.put("/config")
-def put_config(payload: dict):
+def put_config(payload: dict, request: Request):
+    """保存 SSH 服务器配置（**仅 admin**：这是全局配置，不属于任何项目）。"""
+    permissions.ensure_admin(
+        getattr(request.state, "user", None), "只有管理员可以修改 SSH 配置"
+    )
     if not isinstance(payload, dict) or not isinstance(payload.get("servers"), list):
         return JSONResponse(
             status_code=400, content=fail("请求体必须包含 servers 列表")
@@ -203,6 +216,8 @@ def put_config(payload: dict):
 
     try:
         _atomic_write_servers(new_servers)
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"写入 SSH 配置失败：{e}"))
     return ok(

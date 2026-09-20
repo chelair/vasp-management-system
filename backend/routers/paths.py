@@ -10,11 +10,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from config import CONFIG_DIR, PROJECT_ROOT, PROJECTS_DIR, load_path_mapping, load_servers
 from envelope import fail, ok
+import permissions
 from storage import load_db, save_db
 
 router = APIRouter(prefix="/path-mapping", tags=["path-mapping"])
@@ -70,14 +71,17 @@ def _sync_servers_remote_base(remote_roots: Dict[str, Any]) -> None:
 def get_mapping():
     try:
         return ok("查询成功", load_path_mapping())
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取路径映射失败：{e}"))
 
 
 @router.put("")
-def put_mapping(payload: dict):
-    """保存路径映射；同步更新 servers.json 的 remote_base 保持一致。"""
+def put_mapping(payload: dict, request: Request):
+    """保存路径映射；同步更新 servers.json 的 remote_base 保持一致（**仅 admin**）。"""
     try:
+        permissions.ensure_admin(getattr(request.state, "user", None), "只有管理员可以修改路径映射")
         local_root = str(payload.get("local_root", "")).strip()
         remote_roots = payload.get("remote_roots")
         if not local_root:
@@ -91,14 +95,17 @@ def put_mapping(payload: dict):
             "路径映射已保存",
             {"local_root": local_root, "remote_roots": remote_roots},
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"保存路径映射失败：{e}"))
 
 
 @router.post("/rebase")
-def rebase_paths():
-    """按当前映射批量重算所有任务的 remote_dir / dir_path。"""
+def rebase_paths(request: Request):
+    """按当前映射批量重算所有任务的 remote_dir / dir_path（**仅 admin**）。"""
     try:
+        permissions.ensure_admin(getattr(request.state, "user", None), "只有管理员可以批量重算路径")
         mapping = load_path_mapping()
         raw_root = str(mapping["local_root"])
         local_root = (
@@ -131,5 +138,7 @@ def rebase_paths():
             "路径已重算",
             {"updated": updated, "skipped": skipped, "mapping": mapping},
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"路径重算失败：{e}"))

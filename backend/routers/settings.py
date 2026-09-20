@@ -4,11 +4,13 @@
 对应关系固化在 data/config/path_mapping.json。
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Request
 from fastapi.responses import JSONResponse
 
 from config import load_path_mapping
 from envelope import fail, ok
+import permissions
+import permissions
 from routers.paths import _atomic_write, _sync_servers_remote_base
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -22,14 +24,17 @@ def get_root_paths():
             "查询成功",
             {"local_root": m.get("local_root"), "remote_roots": m.get("remote_roots", {})},
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取根目录配置失败：{e}"))
 
 
 @router.put("/root-paths")
-def put_root_paths(payload: dict):
-    """修改本地/远端根目录；合并写入配置文件并同步 servers.json remote_base。"""
+def put_root_paths(payload: dict, request: Request):
+    """修改本地/远端根目录；合并写入配置文件并同步 servers.json remote_base（**仅 admin**）。"""
     try:
+        permissions.ensure_admin(getattr(request.state, "user", None), "只有管理员可以修改根目录配置")
         current = load_path_mapping()
         local_root = payload.get("local_root")
         remote_roots = payload.get("remote_roots")
@@ -50,5 +55,7 @@ def put_root_paths(payload: dict):
                 "remote_roots": current.get("remote_roots", {}),
             },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"保存根目录配置失败：{e}"))

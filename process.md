@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.1（项目归属字段 owner/created_at + 迁移脚本；认证 v0.9.0 已上线）
+> 生成时间：2026-08-29 · 最近更新：2026-09-20 · 当前版本：v0.9.2（授权生效：按项目 owner 过滤 + 越权 403）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -133,6 +133,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `ssh.py` | **统一 SSH 连接池**：`run_remote`（exec）/ `upload_file` / `download_file` / `mkdir_remote` 共用一条常驻连接；Paramiko 传输层 keepalive 30s + 后台每 60s 应用层保活（echo ok 实测延迟写入连接池状态）、空闲 5min 回收、断线重连；`VASP_SSH_MOCK=1` 本地模拟模式。禁止业务代码自建 Paramiko 客户端 |
 | `config.py` | 读取 data/config 下各 JSON（servers/settings/task_registry/path_mapping），每次现读无缓存 |
 | `auth.py` | **账号与会话底座（v0.9.0）**：`hashlib.scrypt` + 随机 salt 的密码哈希、`secrets.token_urlsafe(32)` 的 token 生成与 **sha256 存盘**、用户/会话文件（`data/users/{users,sessions}.json`；原子写 + 文件锁 + 0600/0700）、滑动续期、`ensure_users_file()` 首次启动自动建默认管理员（随机密码打印 stdout 与日志） |
+| `permissions.py` | **归属判断（v0.9.2）**：`visible_projects/visible_project_names`（列表过滤）、`ensure_project_owner/ensure_task_owner`（单对象，越权抛 `PermissionDenied` → 全局 403）、`enforce_task`（给 `jobs._resolve_task` 这类唯一入口用，从认证中间件写入的 contextvar 取用户，**后台线程无用户时自动放行**）、`current_username` 审计助手。**只做归属判断，不含业务逻辑** |
 | `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天 |
 | `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期）/列出/吊销（按 `session_id`） |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
@@ -236,8 +237,17 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.1）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.2）
 
+- v0.9.2（2026-09-20，待提交）：**授权生效（账号体系第 4 步）——按项目 owner 过滤，越权一律 403**。
+  ① 新增 `backend/permissions.py`（只做归属判断）：列表过滤 `visible_projects / visible_project_names`（admin 全可见，普通用户只看 `owner==自己`，大小写归一）、单对象 `ensure_project_owner / ensure_task_owner`（抛 `PermissionDenied`）、`enforce_task(task, db)`（唯一入口用）、审计助手 `current_username(request)`。认证中间件校验通过后把 user 写入 **contextvar**，供深层调用使用；后台线程没有登录用户时自动放行（内部流程不受影响）。
+  ② **403 出口统一**：`main.py` 注册 `PermissionDenied` 异常处理器 → `403` + 统一 JSON 信封（不返回 404，避免探测资源是否存在）；各路由原有的 `except Exception` 会吞掉异常，已机械插入 `except permissions.PermissionDenied: raise`（12 个路由文件、87 处）保证穿透。
+  ③ **作业动作全覆盖**：`jobs._resolve_task` / `_resolve_task_dir` 是全部 task 级接口的唯一入口，在这里统一校验 → 一次覆盖提交、续算、上传 INCAR/KPOINTS/POSCAR/vasp.lsf、生成频率矫正、创建 NEB、改参数草稿、归档、删除、读取文件等 26 个接口；另新增 `GET /api/projects/{project_id}` 单项目接口（越权 403）以补齐"单项目读"入口。
+  ④ **各模块接入**：projects（列表过滤 + 关闭/重开/删除/详情校验）、groups（建组/加结构/建独立任务）、free-energy（路径汇总）、reports（组列表按可见项目过滤 + 组数据校验）、project-reports（列表过滤、生成范围收窄、详情/结构化/Markdown/HTML/图表/删除全部校验）、inspections（列表按 task→project 过滤、单任务巡检与详情校验、`POST /inspections/run` 与 `PUT /inspections/auto` **仅 admin**）、dashboard（`overview/cores-usage/risk-alerts` 按可见项目过滤，`cluster-health/trend/jobs/nodes` 等集群级信息保持全局）。
+  ⑤ **额外加固（超出本步清单，已单独标注）**：全局配置类**写**接口收为 admin-only —— `PUT /settings/root-paths`、`PUT /path-mapping`、`POST /path-mapping/rebase`、`PUT /ssh/config`、`POST /aux-molecules`（这些不属于任何项目，普通用户不应能改）。
+  ⑥ **审计**：`jobs._audit_log` **双写** —— 新格式 JSONL `data/audit/actions.jsonl`（`at/username/project/task_id/remote_dir/command/result`）+ 旧文本 `data/audit_submit.log` 保持原格式且行尾追加 `user=`（总览趋势的"提交作业数"仍从旧文件回溯统计，不能停写；这是对"只写 JSONL"的偏差，已在报告里说明）。
+  ⑦ 验证（隔离数据目录 + 真实 HTTP，未碰生产）：34 项断言 —— admin 看全部 4 个项目；普通用户只看到自己 2 个；越权访问项目详情/删除、提交作业、续算、upload-incar、create-frac、create-neb、读他人任务文件、改他人草稿、读他人报告 → 全部 403 且数据无变化；巡检列表/报告列表/总览统计/核数项目维度只含自己的项目；集群级信息（cluster-health、jobs/nodes）仍可见；admin 能访问普通用户的项目与任务；非 admin 触发全局巡检/改自动巡检/改 SSH 配置 → 403；审计 JSONL 带 username。前端 4 项 jsdom 断言（过滤后的项目/任务列表正常渲染、无他人项目残留）+ `tsc` + `npm run build` 通过。
+  ⑧ 本步**不做**（留给第 5 步）：前端按角色隐藏入口、智能体 token 的 scope、待确认队列、HTTPS/在线会话管理/密码策略、多人共享项目（members）。
 - v0.9.1（commit `482620a`，已推送 origin/main）：**项目归属字段与迁移（账号体系第 3 步，只加字段、不做过滤）**。
   ① 数据结构：`data/projects.json` 每个项目增加 `owner`（归属用户名，小写归一）与 `created_at`（已有项目保留原值，缺失才补）；**不改任何已有字段名**。
   ② 新建项目：`POST /api/projects` 从 `request.state.user` 取用户名写入 `owner`（admin 替别人建项目留到后续，本步不做参数）。
@@ -385,7 +395,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
 13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策，**先写待办、暂不实现自动执行**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。
 14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
-    - **第 1 步（用户与会话底座）、第 2 步（登录认证上线）、第 3 步（归属字段与迁移）已完成**：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）已给项目加 `owner/created_at` 并让新建项目自动归属，**仍未做可见性过滤**。
+    - **第 1～4 步已完成**（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效）：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
 
 TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史条目较多，部分已过时）。
 

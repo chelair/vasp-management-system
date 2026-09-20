@@ -15,6 +15,7 @@ from dates import now_iso
 from envelope import fail, ok
 from mappers import map_project
 from models import AddProjectPayload
+import permissions
 from paths import resolve_remote_path, to_local_rel, to_remote_rel
 from priority import compute_priority
 from ssh import mkdir_remote
@@ -48,15 +49,49 @@ def _sync_enabled(settings: dict) -> bool:
 
 
 @router.get("")
-def list_projects():
+def list_projects(request: Request):
+    """项目列表：按归属过滤（admin 全部可见，普通用户只看自己的项目）。"""
     try:
         db = load_db()
+        user = getattr(request.state, "user", None)
         # 带上最近一次巡检结论（低精度收敛 / 力未收敛等），作业管理页与巡检中心同口径
         check_map = task_check_summary(db)
         return ok(
             "查询成功",
-            {"projects": [map_project(p, check_map) for p in db["projects"]]},
+            {
+                "projects": [
+                    map_project(p, check_map) for p in permissions.visible_projects(db, user)
+                ]
+            },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:
+        return JSONResponse(status_code=500, content=fail(f"查询项目失败：{e}"))
+
+
+def _find_project(db, project_id: str):
+    return next(
+        (p for p in db.get("projects", []) if p.get("project_id") == project_id),
+        None,
+    )
+
+
+@router.get("/{project_id}")
+def get_project(project_id: str, request: Request):
+    """单个项目详情（第 4 步）：非 owner 且非 admin → 403。"""
+    try:
+        db = load_db()
+        project = _find_project(db, project_id)
+        if project is None:
+            return JSONResponse(status_code=404, content=fail("项目不存在"))
+        permissions.ensure_project_owner(project, getattr(request.state, "user", None))
+        return ok(
+            "查询成功",
+            {"project": map_project(project, task_check_summary(db))},
+        )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"查询项目失败：{e}"))
 
@@ -142,6 +177,8 @@ def create_project(payload: AddProjectPayload, request: Request):
         dir_existed_before = project_dir.exists()
         try:
             _create_local_dirs(project_dir, project["tasks"])
+        except permissions.PermissionDenied:
+            raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception as e:
             _rollback_local_dirs(project_dir, dir_existed_before)
             return JSONResponse(
@@ -154,6 +191,8 @@ def create_project(payload: AddProjectPayload, request: Request):
                 for task in project["tasks"]:
                     # remote_dir 为相对路径，必须拼接远程根目录后再创建，否则会建到服务器 home 下
                     mkdir_remote(p.server, resolve_remote_path(p.server, task["remote_dir"]))
+            except permissions.PermissionDenied:
+                raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
             except Exception as e:
                 _rollback_local_dirs(project_dir, dir_existed_before)
                 return JSONResponse(
@@ -178,12 +217,14 @@ def create_project(payload: AddProjectPayload, request: Request):
         except ValueError as e:
             _rollback_local_dirs(project_dir, dir_existed_before)
             return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"服务器内部错误：{e}"))
 
 
 @router.post("/{project_id}/close")
-def close_project(project_id: str):
+def close_project(project_id: str, request: Request):
     """关闭项目：前提是项目下（可见）任务全部已关闭（归档）。
 
     关闭只改项目元数据（closed / closed_at），本地与远端文件都不动；
@@ -191,12 +232,10 @@ def close_project(project_id: str):
     """
     try:
         db = load_db()
-        project = next(
-            (p for p in db.get("projects", []) if p.get("project_id") == project_id),
-            None,
-        )
+        project = _find_project(db, project_id)
         if project is None:
             return JSONResponse(status_code=404, content=fail("项目不存在"))
+        permissions.ensure_project_owner(project, getattr(request.state, "user", None))
         if project.get("closed"):
             return JSONResponse(status_code=409, content=fail("项目已经关闭"))
         remaining = [
@@ -224,12 +263,14 @@ def close_project(project_id: str):
             "项目已关闭",
             {"project_id": project_id, "project_name": str(project.get("name") or "")},
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"关闭项目失败：{e}"))
 
 
 @router.post("/{project_id}/reopen")
-def reopen_project(project_id: str):
+def reopen_project(project_id: str, request: Request):
     """重新打开项目：清除 closed 标记（任务状态不变）。"""
     try:
         with db_transaction() as db:
@@ -239,16 +280,19 @@ def reopen_project(project_id: str):
             )
             if target is None:
                 return JSONResponse(status_code=404, content=fail("项目不存在"))
+            permissions.ensure_project_owner(target, getattr(request.state, "user", None))
             target["closed"] = False
             target.pop("closed_at", None)
             name = str(target.get("name") or "")
         return ok("项目已重新打开", {"project_id": project_id, "project_name": name})
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"重新打开项目失败：{e}"))
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: str):
+def delete_project(project_id: str, request: Request):
     """删除项目：本地项目目录移入回收站 data/trash/，数据库移除（远端目录不自动删除）。"""
     try:
         db = load_db()
@@ -258,6 +302,7 @@ def delete_project(project_id: str):
         )
         if project is None:
             return JSONResponse(status_code=404, content=fail("项目不存在"))
+        permissions.ensure_project_owner(project, getattr(request.state, "user", None))
         name = str(project.get("name", ""))
         trash_path = None
         project_dir = PROJECTS_DIR / name
@@ -276,5 +321,7 @@ def delete_project(project_id: str):
                 "local_trash": str(trash_path) if trash_path else None,
             },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"删除项目失败：{e}"))

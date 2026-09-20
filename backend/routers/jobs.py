@@ -9,6 +9,7 @@
 
 import base64
 from datetime import datetime
+import json
 import os
 import re
 import shutil
@@ -43,6 +44,7 @@ from continuation import (
 from dates import now_iso
 from envelope import fail, ok
 from incar import modify_incar
+import permissions
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
 import ssh
 from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
@@ -110,6 +112,8 @@ def cluster_nodes(refresh: bool = False):
         server_name = next(iter(servers.keys()), "server1")
         snapshot = build_node_snapshot(server_name, use_cache=not refresh)
         return ok("查询成功", snapshot)
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -118,21 +122,30 @@ def cluster_nodes(refresh: bool = False):
 
 
 def _resolve_task_dir(task_id: str) -> Path:
-    """按 task_id 定位任务本地目录（项目库 -> 任务字段）。"""
+    """按 task_id 定位任务本地目录（项目库 -> 任务字段）；顺带做归属校验。"""
     db = load_db()
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
             if task.get("task_id") == task_id:
+                permissions.enforce_task(task, db)
                 return task_dir(str(project.get("name", "")), task)
     raise LookupError(f"任务 {task_id} 不存在")
 
 
-def _resolve_task(task_id: str):
-    """返回 (project, task)，任务不存在时抛 LookupError。"""
+def _resolve_task(task_id: str, *, enforce: bool = True):
+    """返回 (project, task)，任务不存在时抛 LookupError。
+
+    **这是所有作业动作的唯一入口**：在这里统一做归属校验（第 4 步）——
+    非 owner 且非 admin 抛 `PermissionDenied`（→ 403），一次性覆盖提交 / 续算 /
+    上传输入文件 / 生成 frac / 创建 NEB / 归档 / 删除等全部 task 级接口。
+    `enforce=False` 供后台线程等内部调用显式跳过（此时 contextvar 里也没有用户）。
+    """
     db = load_db()
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
             if task.get("task_id") == task_id:
+                if enforce:
+                    permissions.enforce_task(task, db)
                 return project, task
     raise LookupError(f"任务 {task_id} 不存在")
 
@@ -209,6 +222,8 @@ def _prepare_remote_write(
         result = ssh.run_remote(
             server, f"echo {script_b64} | base64 -d | bash", timeout=60
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception:  # noqa: BLE001 - 定位失败回退主目录写入
         return remote_dir, False
     out = str(result.get("stdout") or "")
@@ -230,15 +245,49 @@ def _open_in_explorer(path: str) -> None:
 
 
 def _audit_log(project: str, task_id: str, remote_dir: str, command: str, result: str) -> None:
-    """提交操作审计日志（操作者、时间、任务、命令、结果）。"""
+    """写操作审计（第 4 步起带用户名）。
+
+    双写：
+    - **JSONL**：`data/audit/actions.jsonl`，每行一条结构化记录（新格式，便于后续
+      智能体/审计页消费）；
+    - **旧文本**：`data/audit_submit.log` 保持原格式（只在行尾追加 `user=`），
+      因为总览趋势的"提交作业数"仍从它回溯统计，不能停写。
+    """
+    username = permissions.context_username() or "-"
+    timestamp = datetime.now().isoformat(timespec="seconds")
     try:
         AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(AUDIT_LOG, "a", encoding="utf-8") as f:
             f.write(
-                f"[{datetime.now().isoformat(timespec='seconds')}] project={project} "
-                f"task={task_id} dir={remote_dir} cmd={command} result={result}\n"
+                f"[{timestamp}] project={project} "
+                f"task={task_id} dir={remote_dir} cmd={command} result={result} user={username}\n"
             )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception:  # noqa: BLE001 - 审计日志失败不影响提交
+        pass
+    try:
+        jsonl = DATA_DIR / "audit" / "actions.jsonl"
+        jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with open(jsonl, "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "at": timestamp,
+                        "username": username,
+                        "project": project,
+                        "task_id": task_id,
+                        "remote_dir": remote_dir,
+                        "command": command,
+                        "result": result,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -268,6 +317,8 @@ def list_task_files(task_id: str):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取任务目录失败：{e}"))
 
@@ -289,6 +340,8 @@ def read_task_file(task_id: str, filename: str):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取 {filename} 失败：{e}"))
 
@@ -310,6 +363,8 @@ def write_task_file(task_id: str, filename: str, payload: FileWritePayload):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"写入 {filename} 失败：{e}"))
 
@@ -326,6 +381,8 @@ def open_task_folder(task_id: str):
         return ok("已打开文件夹", {"path": str(target)})
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"打开文件夹失败：{e}"))
 
@@ -433,6 +490,8 @@ def create_same_type_continuation(task_id: str):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建续算失败：{e}"))
 
@@ -485,6 +544,8 @@ def create_frac(task_id: str, payload: dict = Body(default={})):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建频率矫正失败：{e}"))
 
@@ -539,6 +600,8 @@ def build_ele(task_id: str, payload: dict = Body(default={})):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"构建电子结构输入失败：{e}"))
 
@@ -609,6 +672,8 @@ def create_neb(task_id: str, payload: dict = Body(default={})):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建 NEB 计算文件失败：{e}"))
 
@@ -678,6 +743,8 @@ def rename_task(task_id: str, payload: RenameTaskPayload):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"重命名失败：{e}"))
 
@@ -720,6 +787,8 @@ def delete_task(task_id: str):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"删除任务失败：{e}"))
 
@@ -818,6 +887,8 @@ def submit_task(task_id: str):
     try:
         script_b64 = base64.b64encode(preflight.encode("utf-8")).decode("ascii")
         result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=90)
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001 - SSH 连接类错误统一返回 502
         return JSONResponse(
             status_code=502,
@@ -878,6 +949,8 @@ def submit_task(task_id: str):
                 "queued",
                 {"job_id": new_job_id},
             )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001 - 状态落库失败不影响已提交事实
         _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")
 
@@ -958,6 +1031,8 @@ def archive_task(task_id: str):
                             "was_completed": sibling_prev == "completed",
                         }
                     )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"关闭任务失败：{e}"))
     # 归档后静默拉回最新计算目录的 OUTCAR / OSZICAR 到本地镜像（失败不影响归档）
@@ -1037,6 +1112,8 @@ def unarchive_task(task_id: str):
                             "new_status": sibling_restore,
                         }
                     )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"重新打开任务失败：{e}"))
     return ok(
@@ -1078,6 +1155,8 @@ def stop_task(task_id: str):
             f'bash -c "source {profile} >/dev/null 2>&1; bkill {job_id}"',
             timeout=60,
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001 - SSH 连接类错误
         return JSONResponse(
             status_code=502,
@@ -1095,6 +1174,8 @@ def stop_task(task_id: str):
     try:
         with db_transaction() as db:
             update_task_status(db, project["name"], task_id, "pending")
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001 - 状态落库失败不影响停止事实
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"DB_WARN: {e}")
     _audit_log(
@@ -1206,6 +1287,8 @@ def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, A
     if poscar_cif is None:
         try:
             poscar_cif = read_or_convert_cif(project, task, "POSCAR")
+        except permissions.PermissionDenied:
+            raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception:  # noqa: BLE001 - 转换失败不阻塞面板
             poscar_cif = None
     contcar_cif = read_snapshot_cif(task, "CONTCAR")
@@ -1269,6 +1352,8 @@ def _schedule_input_sync(project_name: str, task_id: str, delay: float = 2.0) ->
                 "input-sync",
                 f"OK kind=submit job={task.get('job_id')}",
             )
+        except permissions.PermissionDenied:
+            raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception as e:  # noqa: BLE001 - 后台同步失败只记审计
             _audit_log(project_name, task_id, "", "input-sync", f"FAILED: {e}")
 
@@ -1309,6 +1394,8 @@ def _schedule_archive_outputs(
                 f"OK saved={','.join(result.get('saved') or []) or '-'} "
                 f"missing={','.join(result.get('missing') or []) or '-'}",
             )
+        except permissions.PermissionDenied:
+            raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception as e:  # noqa: BLE001 - 后台下载失败只记审计
             _audit_log(project_name, task_id, "", "archive-outputs", f"FAILED: {e}")
 
@@ -1325,6 +1412,8 @@ def read_task_input(task_id: str):
         return ok("查询成功", _input_payload(project, task))
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取输入文件状态失败：{e}"))
 
@@ -1340,6 +1429,8 @@ def sync_task_input(task_id: str, payload: dict = Body(default={})):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except (ValueError, RuntimeError) as e:
         return JSONResponse(status_code=400, content=fail(f"同步失败：{e}"))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"同步输入文件失败：{e}"))
 
@@ -1373,6 +1464,8 @@ def update_task_input_draft(task_id: str, payload: dict = Body(default={})):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"保存参数草稿失败：{e}"))
 
@@ -1396,6 +1489,8 @@ def revert_task_input_draft(task_id: str, file_name: str):
         return ok(f"已撤销 {target} 的参数修改", _input_payload(project, updated))
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"撤销参数修改失败：{e}"))
 
@@ -1416,6 +1511,8 @@ def upload_incar(task_id: str, payload: dict = Body(default={})):
         if batch_path:
             try:
                 latest = _remote_latest_con(server, remote_dir, batch_path)
+            except permissions.PermissionDenied:
+                raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
             except Exception:  # noqa: BLE001 - 定位失败回退主目录
                 latest = ""
         work_dir = f"{remote_dir}/{latest}" if latest else remote_dir
@@ -1462,6 +1559,8 @@ def upload_incar(task_id: str, payload: dict = Body(default={})):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"上传 INCAR 失败：{e}"))
 
@@ -1622,6 +1721,8 @@ def apply_selective_dynamics(task_id: str, payload: dict = Body(default={})):
         return JSONResponse(status_code=404, content=fail(str(e)))
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=504, content=fail("生成超时（60s）"))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"生成 Selective Dynamics 失败：{e}"))
 
@@ -1667,6 +1768,8 @@ def upload_poscar(task_id: str, payload: dict = Body(default={})):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"上传 POSCAR 失败：{e}"))
 
@@ -1734,6 +1837,8 @@ def generate_potcar(task_id: str):
         result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=120)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001 - SSH 连接类错误
         return JSONResponse(
             status_code=502,
@@ -1837,6 +1942,8 @@ def upload_submit_script(task_id: str, payload: dict = Body(default={})):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             local_path = str(target)
+        except permissions.PermissionDenied:
+            raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception:  # noqa: BLE001 - 本地镜像写失败不影响远端结果
             local_path = ""
 
@@ -1859,6 +1966,8 @@ def upload_submit_script(task_id: str, payload: dict = Body(default={})):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"写入提交脚本失败：{e}"))
 
@@ -1878,6 +1987,8 @@ def upload_kpoints(task_id: str, payload: dict = Body(default={})):
         if batch_path:
             try:
                 latest = _remote_latest_con(server, remote_dir, batch_path)
+            except permissions.PermissionDenied:
+                raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
             except Exception:  # noqa: BLE001 - 定位失败回退主目录
                 latest = ""
         work_dir = f"{remote_dir}/{latest}" if latest else remote_dir
@@ -1913,6 +2024,8 @@ def upload_kpoints(task_id: str, payload: dict = Body(default={})):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"上传 KPOINTS 失败：{e}"))
 
@@ -1994,6 +2107,8 @@ def analyze_pdos(task_id: str, payload: dict = Body(default={})):
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"PDOS 分析失败：{e}"))
 
@@ -2012,6 +2127,8 @@ def calculate_correction(task_id: str, payload: dict = Body(default={"temperatur
         temperature = float(payload.get("temperature", 298.15))
         try:
             correction = compute_g_correction(server, remote_dir, temperature)
+        except permissions.PermissionDenied:
+            raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception as e:  # noqa: BLE001 - 计算失败返回明确错误
             return JSONResponse(status_code=500, content=fail(str(e)))
         with db_transaction() as db:
@@ -2034,5 +2151,7 @@ def calculate_correction(task_id: str, payload: dict = Body(default={"temperatur
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"计算矫正项失败：{e}"))

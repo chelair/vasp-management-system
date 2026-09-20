@@ -12,6 +12,7 @@ from config import PROJECT_ROOT, ensure_data_dirs, load_servers
 from dependencies import INSTALL_HINT, check_dependencies
 from envelope import fail
 from middleware.auth import install as install_auth_middleware
+from permissions import PermissionDenied
 from routers import auth as auth_router
 from routers import auxiliary as aux
 from routers import free_energy
@@ -138,6 +139,12 @@ async def validation_handler(_, exc: RequestValidationError):
         status_code=400,
         content=fail("输入校验失败，请按错误信息修改后重试", {"errors": errors}),
     )
+
+
+@app.exception_handler(PermissionDenied)
+async def permission_handler(_, exc: PermissionDenied):
+    """越权统一 403（统一 JSON 信封；不返回 404，避免探测资源是否存在）。"""
+    return JSONResponse(status_code=403, content=fail(exc.message or "无权访问"))
 
 
 app.include_router(meta.router, prefix="/api")

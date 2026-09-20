@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -21,6 +21,7 @@ from config import PROJECTS_DIR, load_settings, load_task_registry
 from aux_molecules import add_aux_molecule, get_aux
 from dates import now_iso
 from envelope import fail, ok
+import permissions
 from paths import remote_root, to_local_rel, to_remote_rel
 from storage import load_db, save_db
 from task_paths import CATEGORY_DIRS
@@ -149,12 +150,14 @@ def _try_remote_mkdir(server: str, remote_dir: str) -> Optional[str]:
 
         ssh.mkdir_remote(server, remote_dir)
         return None
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001 - 远程失败不阻塞本地创建
         return f"远程目录创建失败：{e}"
 
 
 @router.post("")
-def create_group(payload: dict):
+def create_group(payload: dict, request: Request):
     """创建自由能组或 NEB 组，自动生成组内任务、目录与默认输入文件。"""
     try:
         db = load_db()
@@ -164,6 +167,7 @@ def create_group(payload: dict):
         )
         if project is None:
             return JSONResponse(status_code=400, content=fail("项目不存在"))
+        permissions.ensure_project_owner(project, getattr(request.state, "user", None))
         group_type = payload.get("group_type")
         if group_type not in ("free_energy", "neb"):
             return JSONResponse(status_code=400, content=fail("group_type 仅支持 free_energy / neb"))
@@ -326,12 +330,14 @@ def create_group(payload: dict):
                 "warnings": warnings,
             },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建组失败：{e}"))
 
 
 @router.post("/{group_id}/structures")
-def add_group_structures(group_id: str, payload: AddStructuresPayload):
+def add_group_structures(group_id: str, payload: AddStructuresPayload, request: Request):
     """为自由能组添加结构（自动生成 struct_N+1 的 opt+frac）。"""
     try:
         db = load_db()
@@ -343,6 +349,13 @@ def add_group_structures(group_id: str, payload: AddStructuresPayload):
         ]
         if not group_tasks:
             return JSONResponse(status_code=404, content=fail("组不存在"))
+        owner_project = next(
+            (p for p in db.get("projects", []) if any(
+                (t.get("group") or {}).get("group_id") == group_id for t in p.get("tasks", [])
+            )),
+            None,
+        )
+        permissions.ensure_project_owner(owner_project, getattr(request.state, "user", None))
         project = next(
             p for p in db["projects"]
             if any(t in p["tasks"] for t in group_tasks)
@@ -413,12 +426,14 @@ def add_group_structures(group_id: str, payload: AddStructuresPayload):
                 "task_ids": [t["task_id"] for t in new_tasks],
             },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"添加结构失败：{e}"))
 
 
 @router.post("/tasks")
-def create_independent_task(payload: IndependentTaskPayload):
+def create_independent_task(payload: IndependentTaskPayload, request: Request):
     """创建独立任务（group=None），目录位于 <项目>/<模型名>。"""
     try:
         registry = load_task_registry()
@@ -435,6 +450,7 @@ def create_independent_task(payload: IndependentTaskPayload):
         project = next((p for p in db["projects"] if p["name"] == payload.project), None)
         if project is None:
             return JSONResponse(status_code=400, content=fail("项目不存在"))
+        permissions.ensure_project_owner(project, getattr(request.state, "user", None))
         if any(t.get("model_name") == payload.model_name for t in project["tasks"]):
             return JSONResponse(status_code=400, content=fail("项目中已存在同名任务"))
 
@@ -458,5 +474,7 @@ def create_independent_task(payload: IndependentTaskPayload):
         _register_tasks(db, project["name"], [task])
         save_db(db)
         return ok("独立任务已创建", {"task_id": task["task_id"], "dir_path": task["dir_path"]})
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建独立任务失败：{e}"))

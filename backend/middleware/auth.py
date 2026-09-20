@@ -22,6 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 import auth
+import permissions
 
 #: 免登录白名单：`(方法, 路径)`
 WHITELIST: Tuple[Tuple[str, str], ...] = (
@@ -103,6 +104,8 @@ async def auth_middleware(request: Request, call_next):
     request.state.user = user
     request.state.user_id = user.get("user_id")
     request.state.username = user.get("username")
+    # 供深层调用（jobs._resolve_task 等"唯一入口"）做归属校验用
+    permissions.set_current_user(user)
     return await call_next(request)
 
 

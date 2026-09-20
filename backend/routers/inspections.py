@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
 from checks_store import collect_results, list_runs, to_frontend_rows
@@ -12,6 +12,7 @@ from cif_convert import read_neb_image_cifs, read_or_convert_cif
 from config import load_settings, load_servers
 from continuation import _remote_latest_con
 from envelope import fail, ok
+import permissions
 from inspection_scheduler import scheduler_status, update_schedule
 from inspection_runner import run_inspection
 from paths import resolve_remote_path
@@ -24,12 +25,21 @@ router = APIRouter(prefix="/inspections", tags=["inspections"])
 
 
 @router.get("")
-def list_inspections():
-    """巡检结果列表（按任务合并最近一次结果，供巡检中心页面展示）。"""
+def list_inspections(request: Request):
+    """巡检结果列表（按任务合并最近一次结果，供巡检中心页面展示）。
+
+    第 4 步：`data/checks/*` 是全局归档、不带项目信息，返回前按 task→project
+    映射过滤出当前用户可见的项目（admin 全部）。
+    """
     try:
         db = load_db()
         merged = collect_results()
-        return ok("查询成功", {"results": to_frontend_rows(db, merged)})
+        rows = to_frontend_rows(db, merged)
+        names = permissions.visible_project_names(db, getattr(request.state, "user", None))
+        rows = [r for r in rows if str(r.get("project_name") or "") in names]
+        return ok("查询成功", {"results": rows})
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取巡检结果失败：{e}"))
 
@@ -52,45 +62,67 @@ def inspection_meta():
                 "scheduler": status,
             },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取巡检配置失败：{e}"))
 
 
 @router.put("/auto")
-def update_auto_inspection(payload: dict = Body(default={})):
+def update_auto_inspection(request: Request, payload: dict = Body(default={})):
     """开关自动巡检 / 调整间隔（写入 settings.json，调度线程下一轮生效）。"""
     try:
+        permissions.ensure_admin(
+            getattr(request.state, "user", None), "只有管理员可以修改自动巡检设置"
+        )
         return ok("自动巡检设置已保存", update_schedule(payload))
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"保存自动巡检设置失败：{e}"))
 
 
 @router.post("/run")
 def trigger_inspection(
+    request: Request,
     payload: dict = Body(default={"project_name": None, "task_id": None}),
 ):
-    """立即巡检：可选限定项目或任务。"""
+    """立即巡检：可选限定项目或任务（第 4 步起**仅 admin** 可触发全局巡检）。"""
     project_name: Optional[str] = payload.get("project_name")
     task_id: Optional[str] = payload.get("task_id")
     try:
+        permissions.ensure_admin(
+            getattr(request.state, "user", None), "只有管理员可以触发全局巡检"
+        )
         summary = run_inspection(project_name=project_name, task_id=task_id)
         return ok("巡检完成", summary)
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"巡检失败：{e}"))
 
 
 @router.post("/run-single/{task_id}")
-def run_single_inspection(task_id: str):
-    """单任务巡检：对该任务执行完整检查、回填、归档。"""
+def run_single_inspection(task_id: str, request: Request):
+    """单任务巡检：对该任务执行完整检查、回填、归档（需任务归属）。"""
     try:
+        db = load_db()
+        owner = None
+        for project in db.get("projects", []):
+            for task in project.get("tasks", []):
+                if task.get("task_id") == task_id:
+                    owner = project
+        permissions.ensure_project_owner(owner, getattr(request.state, "user", None))
         summary = run_inspection(task_id=task_id)
         return ok("巡检完成", summary)
     except ValueError as e:
         return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"巡检失败：{e}"))
 
@@ -210,6 +242,8 @@ def _check_remote_files(server: str, remote_dir: str, filenames) -> dict:
         out = r.get("stdout", "")
         for i, name in enumerate(filenames):
             result[name] = f"OK_{i}" in out
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception:  # noqa: BLE001 - 检查失败视为不可用
         for name in filenames:
             result[name] = False
@@ -252,7 +286,7 @@ def _run_nebef(server: str, remote_dir: str):
 
 
 @router.get("/{task_id}")
-def inspection_detail(task_id: str):
+def inspection_detail(task_id: str, request: Request):
     """单任务巡检详情：能量/力曲线数据 + 结构分析（晶格对比 + VESTA 渲染图）。"""
     try:
         db = load_db()
@@ -271,6 +305,7 @@ def inspection_detail(task_id: str):
                 break
         if pair is None:
             return JSONResponse(status_code=404, content=fail("未找到任务"))
+        permissions.ensure_project_owner(pair[0], getattr(request.state, "user", None))
         project, task = pair
 
         # 自由能组结构优化详情：附带其频率矫正子任务的巡检数据（列表不单独展示 frac）
@@ -335,6 +370,8 @@ def inspection_detail(task_id: str):
             neb_dir = task_remote_dir(project.get("server"), task).rstrip("/")
             try:
                 neb_barrier = _run_nebef(project.get("server"), neb_dir)
+            except permissions.PermissionDenied:
+                raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
             except Exception:  # noqa: BLE001 - 实时运行失败不影响详情
                 neb_barrier = None
 
@@ -367,5 +404,7 @@ def inspection_detail(task_id: str):
                 "neb_barrier": neb_barrier,
             },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取巡检详情失败：{e}"))

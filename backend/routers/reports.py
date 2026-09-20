@@ -9,12 +9,13 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from config import PROJECTS_DIR
 from aux_molecules import get_aux, list_aux_molecules
 from envelope import fail, ok
+import permissions
 from storage import load_db
 from task_paths import task_files_dir
 from task_paths import task_dir
@@ -63,12 +64,14 @@ def _group_tasks(db: Dict[str, Any], group_id: str):
 
 
 @router.get("/groups")
-def list_groups():
+def list_groups(request: Request):
     """列出所有计算流程组（含角色任务数量）。"""
     try:
         db = load_db()
+        # 只看得到自己项目的组（admin 全部）
+        visible = permissions.visible_projects(db, getattr(request.state, "user", None))
         groups: Dict[str, Dict[str, Any]] = {}
-        for project in db.get("projects", []):
+        for project in visible:
             for task in project.get("tasks", []):
                 g = task.get("group")
                 if not isinstance(g, dict) or not g.get("group_id"):
@@ -98,18 +101,24 @@ def list_groups():
                 entry["roles"][role] = entry["roles"].get(role, 0) + 1
                 entry["task_count"] += 1
         return ok("查询成功", {"groups": list(groups.values())})
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"查询组失败：{e}"))
 
 
 @router.get("/groups/{group_id}/data")
-def group_data(group_id: str):
+def group_data(group_id: str, request: Request):
     """聚合单个组的结构化数据：自由能台阶图 / NEB 能垒图。"""
     try:
         db = load_db()
         rows = _group_tasks(db, group_id)
         if not rows:
             return JSONResponse(status_code=404, content=fail("组不存在"))
+        owner_project = next(
+            (p for p in db.get("projects", []) if p.get("name") == rows[0][0]), None
+        )
+        permissions.ensure_project_owner(owner_project, getattr(request.state, "user", None))
         group_type = rows[0][1].get("group", {}).get("group_type")
         project_name = rows[0][0]
 
@@ -246,5 +255,7 @@ def group_data(group_id: str):
                 "neb": data,
             },
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取组数据失败：{e}"))

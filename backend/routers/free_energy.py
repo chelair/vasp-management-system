@@ -1,16 +1,17 @@
 """自由能路径汇总：按 group_id 聚合路径上各中间体的能量与矫正项。"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from envelope import fail, ok
+import permissions
 from storage import load_db
 
 router = APIRouter(prefix="/free-energy", tags=["free-energy"])
 
 
 @router.get("/{group_id}/summary")
-def free_energy_summary(group_id: str):
+def free_energy_summary(group_id: str, request: Request):
     """返回自由能路径汇总：各中间体 DFT 能量、矫正项、自由能及状态。"""
     try:
         db = load_db()
@@ -22,6 +23,8 @@ def free_energy_summary(group_id: str):
                     opt_tasks.append((project, task))
         if not opt_tasks:
             return JSONResponse(status_code=404, content=fail("自由能路径不存在"))
+        # 归属校验（第 4 步）：组属于哪个项目就按哪个项目校验
+        permissions.ensure_project_owner(opt_tasks[0][0], getattr(request.state, "user", None))
 
         group_name = opt_tasks[0][1].get("group", {}).get("name", group_id)
         structures = []
@@ -73,5 +76,7 @@ def free_energy_summary(group_id: str):
             "查询成功",
             {"group_id": group_id, "name": group_name, "structures": structures},
         )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取自由能路径汇总失败：{e}"))

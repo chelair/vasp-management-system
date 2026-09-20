@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cluster_probe
 from checks_store import CHECKS_DIR, collect_results, list_runs, to_frontend_rows
@@ -379,11 +379,19 @@ def build_trend(days: int = TREND_DAYS) -> Dict[str, Any]:
 # ------------------------------------------------------------------ 本地聚合
 
 
-def _completed_stats() -> Dict[str, Any]:
+def _completed_stats(db: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """今日/昨日「新完成」任务数：当天巡检观察到 completed 且前一天未完成的任务。
 
     按检查文件 mtime 归日（归档文件即一轮巡检的产物），任务去重。
+    `db` 不为 None 时只统计该项目集合下的任务（第 4 步：普通用户只看自己的）。
     """
+    allowed: Optional[set] = None
+    if db is not None:
+        allowed = {
+            str(t.get("task_id"))
+            for p in db.get("projects", [])
+            for t in p.get("tasks", [])
+        }
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     prev = today - timedelta(days=2)
@@ -410,7 +418,10 @@ def _completed_stats() -> Dict[str, Any]:
             continue
         for entry in entries:
             if entry.get("status") == "completed" and entry.get("task_id"):
-                seen[key].add(str(entry["task_id"]))
+                task_id = str(entry["task_id"])
+                if allowed is not None and task_id not in allowed:
+                    continue
+                seen[key].add(task_id)
     today_new = seen["today"] - seen["yesterday"]
     yesterday_new = seen["yesterday"] - seen["prev"]
     return {
@@ -678,32 +689,32 @@ def build_project_progress(db: Dict[str, Any]) -> List[Dict[str, Any]]:
     return result
 
 
-def local_bundle(refresh: bool = False) -> Dict[str, Any]:
-    """本地聚合结果（风险任务 / 趋势 / 项目进度 / 完成统计），缓存 60 秒。
-
-    巡检归档目录有数百个结果文件，逐个读取约 1-2 秒，因此整体缓存。
-    """
-    global _local_cache
-    now = time.time()
-    if (
-        not refresh
-        and _local_cache["data"]
-        and now - _local_cache["at"] < LOCAL_CACHE_TTL
-    ):
-        return _local_cache["data"]
+def _visible_db(project_names: Optional[Set[str]]) -> Dict[str, Any]:
+    """按可见项目名过滤项目库（None = 不过滤；admin 走 None）。"""
     db = load_db()
-    month = datetime.now().strftime("%Y-%m")
+    if project_names is None:
+        return db
+    return {
+        **db,
+        "projects": [
+            p for p in db.get("projects", []) if str(p.get("name") or "") in project_names
+        ],
+    }
+
+
+def _build_local_bundle(db: Dict[str, Any], month: str, at: float) -> Dict[str, Any]:
+    """本地聚合结果（项目进度 / 风险 / 完成统计）；db 决定统计范围。"""
     all_tasks = [
         t
         for p in db.get("projects", [])
         for t in p.get("tasks", [])
         if not is_continuation_task(t)
     ]
-    bundle = {
+    return {
         "riskAlerts": build_risk_alerts(db),
         "trend": build_trend(),
         "projectProgress": build_project_progress(db),
-        "completed": _completed_stats(),
+        "completed": _completed_stats(db),
         "stats": {
             "projects": len(db.get("projects", [])),
             "projectsThisMonth": sum(
@@ -715,17 +726,49 @@ def local_bundle(refresh: bool = False) -> Dict[str, Any]:
             "queued": sum(1 for t in all_tasks if t.get("status") == "queued"),
             "totalTasks": len(all_tasks),
         },
-        "at": now,
+        "at": at,
     }
+
+
+def local_bundle(
+    refresh: bool = False, project_names: Optional[Set[str]] = None
+) -> Dict[str, Any]:
+    """本地聚合结果（风险任务 / 趋势 / 项目进度 / 完成统计），缓存 60 秒。
+
+    巡检归档目录有数百个结果文件，逐个读取约 1-2 秒，因此整体缓存。
+
+    第 4 步：`project_names` 不为 None 时按可见项目过滤（普通用户）——
+    各用户可见集合不同，这条路径不走全局缓存，直接现算；admin 传 None 走缓存。
+    """
+    global _local_cache
+    now = time.time()
+    month = datetime.now().strftime("%Y-%m")
+    if project_names is not None:
+        return _build_local_bundle(_visible_db(project_names), month, now)
+    if (
+        not refresh
+        and _local_cache["data"]
+        and now - _local_cache["at"] < LOCAL_CACHE_TTL
+    ):
+        return _local_cache["data"]
+    bundle = _build_local_bundle(load_db(), month, now)
     _local_cache = {"at": now, "data": bundle}
     return bundle
 
 
-def build_overview(server_name: str, refresh: bool = False) -> Dict[str, Any]:
-    """总览页聚合数据（顶部统计 + 运行任务 + 核数 + 集群 + 风险 + 项目进度 + 趋势）。"""
+def build_overview(
+    server_name: str,
+    refresh: bool = False,
+    project_names: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
+    """总览页聚合数据（顶部统计 + 运行任务 + 核数 + 集群 + 风险 + 项目进度 + 趋势）。
+
+    `project_names` 不为 None 时只统计当前用户可见的项目（第 4 步）；
+    集群级信息（节点 / 队列 / 存储 / 提交趋势）保持全局。
+    """
     snapshot = cluster_snapshot(server_name, refresh=refresh)
-    local = local_bundle(refresh=refresh)
-    db = load_db()
+    local = local_bundle(refresh=refresh, project_names=project_names)
+    db = _visible_db(project_names)
     risks = local["riskAlerts"]
     completed = local["completed"]
     base = local["stats"]
@@ -801,9 +844,11 @@ def recent_tasks(db: Dict[str, Any], limit: int = 8) -> List[Dict[str, Any]]:
     return result
 
 
-def cached_overview(server_name: str, refresh: bool = False) -> Dict[str, Any]:
+def cached_overview(
+    server_name: str, refresh: bool = False, project_names: Optional[Set[str]] = None
+) -> Dict[str, Any]:
     """兼容入口：集群快照与本地聚合各自带缓存。"""
-    return build_overview(server_name, refresh=refresh)
+    return build_overview(server_name, refresh=refresh, project_names=project_names)
 
 
 def invalidate_cluster_cache(

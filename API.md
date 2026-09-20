@@ -18,6 +18,7 @@
 | 时间 | ISO 字符串（服务器时区 `Asia/Shanghai`） |
 | 任务状态 | `pending / queued / running / completed / unconverged / zombied / archived` |
 | 巡检状态 | `normal / warning / error / low_precision / pending / archived` |
+| 授权 | **v0.9.2 起按项目归属过滤**：普通用户只能看到/操作 `owner` 是自己的项目，越权一律 `403`（不返回 404）；admin 全可见。详见 §2.3 |
 | 认证 | **v0.9.0 起强制登录**：除 `POST /api/auth/login`、`GET /api/health` 外，所有 `/api/**` 与 `/docs`、`/openapi.json` 都要 `Authorization: Bearer <token>`，未登录一律 `401`。详见 §2 |
 | 阻塞 | 全部为**同步** HTTP；长动作耗时见各行动作表（最重 `create-neb-files` ≈ 300s、`create-frac` ≈ 180s） |
 | 幂等 | 目前仅 `submit`（重复提交 409）与 `continuation`（重复 conN 409）自带保护；**其余动作重复调用可能重复建目录/重复提交** |
@@ -78,11 +79,16 @@ python scripts/set_password.py <用户名> --generate # 随机密码并打印
 python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其全部会话）
 ```
 
-### 2.3 授权（待实现）
+### 2.3 授权（v0.9.2 已生效）
 
-> 第 3 步（v0.9.1）已完成字段准备：项目带 `owner`/`created_at`，新建项目自动归属；**但列表与单对象仍未过滤**（所有登录用户都能看到全部项目）。
-
-规划：`project.owner` + `permissions.visible_projects/ensure_owner`，列表按归属过滤、单对象越权 403、`role` 分 `admin`/`user`/`agent`；HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。详见 TODO §14。
+- **归属模型**：项目带 `owner`（用户名）+ `created_at`；新建项目自动把 `owner` 写成当前登录用户；角色 `admin` 全可见，其他用户只能看到/操作自己的项目。
+- **列表类**：`GET /projects`、`GET /inspections`、`GET /reports/groups`、`GET /reports/project/list`、`GET /dashboard/overview`、`GET /dashboard/cores-usage`、`GET /dashboard/risk-alerts` 等只返回当前用户可见的项目 / 任务 / 报告 / 巡检行 / 统计。
+- **单对象类**：越权访问一律 **403**（统一信封 `{"success": false, "message": "无权访问该项目"/"无权访问该任务"}`），**不返回 404**，避免探测资源是否存在。
+- **写操作**：全部校验（提交 / 续算 / 上传输入文件 / 生成 frac / 创建 NEB / 归档 / 删除 / 改草稿 …），实现集中在 `jobs._resolve_task`（所有 task 级接口的唯一入口）。
+- **admin 专属**：`POST /inspections/run`（全局巡检）、`PUT /inspections/auto`（自动巡检开关）、全局配置写接口（`PUT /settings/root-paths`、`PUT /path-mapping`、`POST /path-mapping/rebase`、`PUT /ssh/config`、`POST /aux-molecules`）。
+- **集群级信息**（节点 / 队列 / 存储 / 趋势采样）不涉及项目归属，保持全局可见（`/dashboard/cluster-health`、`/jobs/nodes`）。
+- **审计**：写操作审计双写 —— `data/audit/actions.jsonl`（JSONL，含 `username`）+ 旧 `data/audit_submit.log`（原格式 + 行尾 `user=`）。
+- 仍未做：`role=agent` 的 token scope、多人共享项目（members）、前端按角色隐藏入口（第 5 步）。HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。
 
 ## 3. 只读接口（观测面）
 
@@ -216,7 +222,7 @@ body: {
 | 作业 | `POST /jobs/tasks/{id}/upload-poscar` · `/upload-kpoints` · `/upload-submit-script` · `/generate-potcar` | 写远端最新目录，同名先备份 `old_*` |
 | 作业 | `POST /jobs/tasks/{id}/input/sync` | 从远端重新取回四件套（1 exec + 4 SFTP；会覆盖本地镜像，有草稿的文件跳过） |
 | 作业 | `PATCH /jobs/tasks/{id}` · `DELETE /jobs/tasks/{id}` | 重命名 / 删除（本地进回收站，**远端不删**） |
-| 项目 | `POST /projects` · `POST /projects/{id}/close` · `/reopen` · `DELETE /projects/{id}` | 关闭要求可见任务全部归档；新建项目自动写 `owner`=当前登录用户（v0.9.1） |
+| 项目 | `POST /projects` · `GET /projects/{id}` · `POST /projects/{id}/close` · `/reopen` · `DELETE /projects/{id}` | 关闭要求可见任务全部归档；新建项目自动写 `owner`=当前登录用户（v0.9.1） |
 | 组 | `POST /groups` · `POST /groups/{id}/structures` · `POST /groups/tasks` | 建自由能/NEB 组、加结构、建独立任务 |
 | 报告 | `POST /reports/project/generate` (`{project_id?, all?}`) · `GET /reports/project/list` · `/{id}` · `/{id}/structured` · `/{id}/markdown` · `/{id}/export.html` · `DELETE /{id}` | 分项目报告（同项目重生成覆盖） |
 | 配置 | `PUT /settings/root-paths` · `PUT /path-mapping` · `POST /path-mapping/rebase` · `PUT /ssh/config` · `POST /ssh/test` | 运维类，**权限敏感** |

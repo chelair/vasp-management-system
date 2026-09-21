@@ -243,7 +243,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.13）
 
-- v0.9.13（2026-09-21，排查"续算建了 conN 但没提交"后的修复）：**规则 `follow_up_action` 保存链路修通 + 未知字段不再静默丢弃**。
+- v0.9.13（commit `0065e41`，已推送 origin/main；2026-09-21 排查"续算建了 conN 但没提交"后的修复）：**规则 `follow_up_action` 保存链路修通 + 未知字段不再静默丢弃**。
   **现象**：用户在自动化页给规则勾了「执行成功后自动提交作业」，界面看着正常，但自动化只创建了续算目录（`FS@Kaolin@E` 的 `con1`、`FS_Kaolin/free_energy/ABS/1` 的 `con3`）却没有提交。
   **根因一（主因，代码 bug）**：`PUT /api/automation/rules/{id}` 的可改字段白名单 `editable` **漏了 `follow_up_action`**。于是：① 规则在 v0.9.12 之前的后端上新建时该字段被丢弃；② v0.9.12 之后**用"编辑"也补不回来**（PUT 会把没进白名单的字段过滤掉），所以页面上勾了再保存，落盘仍是 `null`。现场证据：`data/config/rules/26657.json` 的 `follow_up_action` 是 `null`，而 22:28:18 的规则更新审计里"改动字段"列表没有 `follow_up_action`。
   **根因二**：`_validate_rule` 只校验已知字段的取值，**顶层未知/拼错字段既不报错也不落盘**（API.md 早已声称会 400，实际没有）。现象就是"界面上填了却没生效"，很难查。

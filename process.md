@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.17）
 
-- v0.9.17（2026-09-21，用户："**导入 / 复制 POSCAR** 支持 cif 文件"）：**「导入 POSCAR」支持 `.cif`（自动转成 POSCAR 再导入）**，另附命令行工具。
+- v0.9.17（commit `fcbb6f8`，已推送 origin/main；2026-09-21 用户："**导入 / 复制 POSCAR** 支持 cif 文件"）：**「导入 POSCAR」支持 `.cif`（自动转成 POSCAR 再导入）**，另附命令行工具。
   ① 后端新增 `backend/cif_reader.py`（**零依赖、标准库**）：晶胞参数（容忍 `3.6150(2)` 这类不确定度写法）→ 晶格矢量（a 沿 x 的常规约定）；坐标支持 `_atom_site_fract_x/y/z` 与 `_atom_site_Cartn_x/y/z`（笛卡尔自动用晶格逆矩阵换算）；**只给不对称单元时按对称操作展开**（`_symmetry_equiv_pos_as_xyz` / `_space_group_symop_operation_xyz`，支持 `1/2+x` 这种平移），展开后按 1e-4 分数坐标去重；元素优先取 `_atom_site_type_symbol`，没有就从标签推（`O1`→O、`Fe2+`→Fe）；占据数≠1 的原子照留但回 warning（POSCAR 表达不了部分占据）；只声明空间群名却没有对称操作列表时也给 warning。输出按元素分组（VASP 要求同元素连续）、计数行与元素行严格对应、`Direct` 分数坐标。
   ② 新接口 `POST /api/tools/cif-to-poscar`（`backend/routers/meta.py`，纯文本转换不落盘、走统一鉴权）：`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；解析不了返回 400 带中文原因（"没有找到完整的晶胞参数" 等）。
   ③ 前端：`PoscarPanel` 的文件选择 `accept` 加 `.cif`，选到 CIF（**按扩展名或按内容特征判断**，`utils/poscar.looksLikeCif`）时先调转换接口，再走原来的 `onImport`（导入后照常可以"同步到远端"和"生成 POTCAR"），提示里带上原子数与元素；卡片里加了一行说明。

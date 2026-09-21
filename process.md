@@ -241,8 +241,16 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.12）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.13）
 
+- v0.9.13（2026-09-21，排查"续算建了 conN 但没提交"后的修复）：**规则 `follow_up_action` 保存链路修通 + 未知字段不再静默丢弃**。
+  **现象**：用户在自动化页给规则勾了「执行成功后自动提交作业」，界面看着正常，但自动化只创建了续算目录（`FS@Kaolin@E` 的 `con1`、`FS_Kaolin/free_energy/ABS/1` 的 `con3`）却没有提交。
+  **根因一（主因，代码 bug）**：`PUT /api/automation/rules/{id}` 的可改字段白名单 `editable` **漏了 `follow_up_action`**。于是：① 规则在 v0.9.12 之前的后端上新建时该字段被丢弃；② v0.9.12 之后**用"编辑"也补不回来**（PUT 会把没进白名单的字段过滤掉），所以页面上勾了再保存，落盘仍是 `null`。现场证据：`data/config/rules/26657.json` 的 `follow_up_action` 是 `null`，而 22:28:18 的规则更新审计里"改动字段"列表没有 `follow_up_action`。
+  **根因二**：`_validate_rule` 只校验已知字段的取值，**顶层未知/拼错字段既不报错也不落盘**（API.md 早已声称会 400，实际没有）。现象就是"界面上填了却没生效"，很难查。
+  **根因三**：PUT 给定时规则重排下次触发时只传了 cron，**漏传 `after_seconds`**，导致「N 秒后执行一次」的规则一旦被编辑/重新启用就算不出下次触发（`cron=""` → CronError）。
+  **修复**：① `backend/routers/automation.py` 新增 `RULE_FIELDS` / `EDITABLE_FIELDS` 常量，`EDITABLE_FIELDS` 含 `follow_up_action`；② 新增 `_unknown_rule_fields()`，POST 与 PUT 都做白名单校验，未知字段直接 **400** 并列出可用字段；③ PUT 重排时把 `after_seconds` 一起传给 `prime_schedule`；④ `scheduler.prime_schedule` 在调用方没给参数时**回落到读规则文件**（兜住历史调用与后续新增调用）。
+  **验证**（隔离数据目录 + `VASP_SSH_MOCK` + 真实 HTTP，15 项全通过）：新建规则落盘 / PUT 可关闭 / **PUT 可打开**（原 bug 核心）/ 只改 `enabled` 不丢字段 / POST 与 PUT 未知字段 400 / after 规则新建与编辑后都有下次触发 / 端到端「续算 `created` → 接力 `task.submit` 成功拿到 job_id、父任务转 queued、con1 五件套 + WAVECAR 齐全」。
+  **现场处置**：重启后端后，在自动化页把规则重新勾选保存即可（旧进程保存会被丢字段）；已建好但未提交的 `con3` 直接手动提交（提交会自动定位最新 `conN`）。
 - v0.9.12（commit `43d1640`，已推送 origin/main）：**规则支持"动作成功后自动提交作业"接力**（用户："提交作业作为勾选项放在动作后面，因为创建续算完成后一般都会接着提交"）。
   ① 规则新增可选字段 `follow_up_action`：弹窗里在「动作」右边多了勾选项「执行成功后自动提交作业」，勾上即写 `follow_up_action="task.submit"`；主动作本身就是"提交作业"时该勾选项禁用（不会重复提交）。规则列表的"动作"列会显示接力关系（如 `task.continuation → task.submit`）。
   ② 执行语义（`automation/scheduler.py`）：**只有主动作成功才接力**——续算返回 `action != created`（记 skipped，例如 `input_incomplete`）或主动作失败时，后续提交不会执行；接力动作以 `trigger="follow_up"`、`trigger_id=<主动作 run_id>` 记账，同样受 `guard` 的冷却/上限约束。手动动作入口 `POST /api/actions/{name}` 也支持 `follow_up` 参数。
@@ -421,6 +429,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 8. 已知注意事项 / 坑
 
+- **自动化规则加字段时三处必须同时改**（v0.9.13 踩坑）：`routers/automation.py` 的 `RULE_FIELDS`（新建/编辑校验白名单）与 `EDITABLE_FIELDS`（`PUT` 能覆盖的字段）、前端 `RuleModal.tsx` 提交的 payload、以及消费点 `automation/events.py`。v0.9.13 之前 `EDITABLE_FIELDS` 漏了 `follow_up_action`，表现为"界面上勾了保存不生效"（只有新建规则才写得进去，编辑永远写不进）；另外顶层未知/拼错字段原本会被静默丢弃，现在会直接 400 并列出可用字段（排查这类"配置没生效"先看这两处）。
 - **3Dmol 视图的两个硬性要求**（v0.6.10 踩坑）：① 承载 3Dmol 的容器必须有 `position: relative`（+ `overflow: hidden`），否则画布绝对定位到页面左上角、盖出一块白色遮挡（opt 的 `.s3d-canvas`、NEB 的 `.neb3d__canvas` 都已遵守）；② 给某类任务新增专属 `analysis` 载荷时，**必须同时给它一个独立的渲染分支**——不能让它落到 `StructurePanel`（它按 opt 字段访问 `files/poscar/warnings`，字段缺失会抛错白屏）。新增任务类型分析时请照此处理。
 - **后端没有 3Dmol（v0.7.2 澄清）**：`public/3dmol/3Dmol-min.js` 是**浏览器端 JS 库**（WebGL 渲染），Python 后端无法直接用；报告里的静态“三视图”是 `report_charts.structure_views()` 用纯 Python 做的正交投影 SVG。若要做真实静态 3D 渲染（带透视/材质），需要引入 headless 浏览器或 Node 端渲染，属于新增依赖，**动手前先问用户**。
 - **报告图表函数的参数键必须与结构化字段名对齐**（v0.7.2 踩坑）：`report_builder.py` 传给 `report_charts` 的字典键必须与图表函数读取的键一致，否则图表静默画出空图（不出数据、不报错）。已修两处：`free_energy_ev`（`step_chart` 原读 `free_energy`）、`relative_energy_ev`（`neb_barrier_chart` 原读 `relative`）。另外 `build_report()` 的 `charts` 是 `{文件名: SVG 文本}` 字典——**引用图片要用 `"charts/<名字>.svg"` 字符串**，不要写成 `charts.get('x.svg')`，否则会把整段 SVG 文本当成路径写进 Markdown。

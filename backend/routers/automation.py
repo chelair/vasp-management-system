@@ -32,6 +32,29 @@ router = APIRouter(tags=["actions"])
 
 RULE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 
+#: 规则里允许出现的字段（多写/拼错的字段直接 400，避免"界面上填了却没生效"）
+RULE_FIELDS = {
+    "id",
+    "enabled",
+    "description",
+    "trigger",
+    "condition",
+    "action",
+    "guard",
+    "follow_up_action",
+}
+
+#: 修改（PUT）时允许覆盖的字段
+EDITABLE_FIELDS = {
+    "enabled",
+    "description",
+    "trigger",
+    "condition",
+    "action",
+    "guard",
+    "follow_up_action",
+}
+
 
 def _require_admin(request: Request) -> None:
     permissions.ensure_admin(
@@ -39,8 +62,21 @@ def _require_admin(request: Request) -> None:
     )
 
 
+def _unknown_rule_fields(payload: Dict[str, Any]) -> list:
+    """规则里多写 / 拼错的字段（拼错直接报错，避免"界面上填了却没生效"）。"""
+    return sorted(
+        str(k) for k in payload if str(k) not in RULE_FIELDS and not str(k).startswith("_")
+    )
+
+
 def _validate_rule(rule: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
     """规则校验（新建/修改共用）：返回 (规范化规则, 错误信息)。"""
+    unknown_fields = _unknown_rule_fields(rule)
+    if unknown_fields:
+        return {}, (
+            f"规则里有不支持的字段：{', '.join(unknown_fields)}"
+            f"（可用：{', '.join(sorted(RULE_FIELDS))}）"
+        )
     rule_id = str(rule.get("id") or "").strip()
     if not RULE_ID_PATTERN.match(rule_id):
         return {}, "规则 id 只能用小写字母、数字、点、下划线、短横线（2-64 位）"
@@ -294,12 +330,12 @@ def create_automation_rule(request: Request, payload: dict = Body(default={})):
             created = store.create_rule(rule)
         except KeyError as e:
             return JSONResponse(status_code=409, content=fail(str(e)))
-        if (rule.get("trigger") or {}).get("type") == "schedule":
-            trigger = rule.get("trigger") or {}
+        rule_trigger = rule.get("trigger") or {}
+        if rule_trigger.get("type") == "schedule":
             scheduler.prime_schedule(
                 rule["id"],
-                trigger.get("cron"),
-                trigger.get("after_seconds"),
+                rule_trigger.get("cron"),
+                rule_trigger.get("after_seconds"),
             )
         audit.write(
             action="automation.rule",
@@ -318,14 +354,27 @@ def create_automation_rule(request: Request, payload: dict = Body(default={})):
 
 @router.put("/automation/rules/{rule_id}")
 def update_automation_rule(rule_id: str, request: Request, payload: dict = Body(default={})):
-    """修改规则：`enabled` 开关，或传完整字段（description/trigger/condition/action/guard）做编辑。"""
+    """修改规则：`enabled` 开关，或传完整字段做编辑。
+
+    可覆盖字段见 `EDITABLE_FIELDS`（含 `follow_up_action`；早期版本漏列它，
+    导致"执行成功后自动提交作业"勾选后保存不生效）。
+    """
     try:
         _require_admin(request)
         existing = store.find_rule(rule_id)
         if existing is None:
             return JSONResponse(status_code=404, content=fail(f"规则不存在：{rule_id}"))
         body = payload or {}
-        editable = {"enabled", "description", "trigger", "condition", "action", "guard"}
+        unknown_fields = _unknown_rule_fields(body)
+        if unknown_fields:
+            return JSONResponse(
+                status_code=400,
+                content=fail(
+                    f"规则里有不支持的字段：{', '.join(unknown_fields)}"
+                    f"（可用：{', '.join(sorted(RULE_FIELDS))}）"
+                ),
+            )
+        editable = EDITABLE_FIELDS
         if not (set(body) & editable):
             return JSONResponse(
                 status_code=400,
@@ -339,8 +388,14 @@ def update_automation_rule(rule_id: str, request: Request, payload: dict = Body(
         if error:
             return JSONResponse(status_code=400, content=fail(error))
         saved = store.save_rule({**rule, "_file": existing.get("_file")})
-        if (rule.get("trigger") or {}).get("type") == "schedule":
-            scheduler.prime_schedule(rule["id"], str((rule["trigger"] or {}).get("cron") or ""))
+        rule_trigger = rule.get("trigger") or {}
+        if rule_trigger.get("type") == "schedule":
+            # mode=after 的规则要按"多少秒后一次"重新计时（漏传会算不出下次触发时间）
+            scheduler.prime_schedule(
+                rule["id"],
+                rule_trigger.get("cron"),
+                rule_trigger.get("after_seconds"),
+            )
         # 手动启用时把熔断标记也清掉（否则会被 disabled_rules 挡住）
         if body.get("enabled"):
             settings = store.load_settings()

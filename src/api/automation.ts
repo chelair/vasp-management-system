@@ -113,7 +113,7 @@ export function createAutomationRule(rule: Partial<AutomationRule>): Promise<Aut
   });
 }
 
-/** 修改规则（可改 description/trigger/condition/action/guard/enabled） */
+/** 修改规则（可改 description/trigger/condition/action/guard/enabled/follow_up_action） */
 export function updateAutomationRule(
   id: string,
   patch: Partial<AutomationRule>,

@@ -676,6 +676,12 @@ def prime_schedule(
     after_seconds: Optional[int] = None,
 ) -> Optional[str]:
     """新建/修改定时规则后立刻算出下次触发时间（"xx 秒后一次"同时清除已执行标记）。"""
+    if not cron_expr and not after_seconds:
+        # 调用方没给参数时，从规则文件里取（避免 cron/after 两种模式漏传导致算不出下次触发）
+        rule = store.find_rule(schedule_id) or {}
+        rule_trigger = rule.get("trigger") or {}
+        cron_expr = str(rule_trigger.get("cron") or "")
+        after_seconds = rule_trigger.get("after_seconds")
     if after_seconds:
         # 与 cron 分支 / `_tick_schedules()` 的 datetime.now() 保持同一表示（本地 naive），
         # 否则 naive 与 aware 比较会抛 TypeError

@@ -253,8 +253,8 @@ body: {
 | `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则 + 计数 |
 | `GET/PUT /api/automation/settings` | `{enabled?, dry_run?, schedules_enabled?, failure_threshold?}` | 改完**立即生效**（enabled=false 即全局暂停） |
 | `GET /api/automation/rules` | — | 规则列表 |
-| `POST /api/automation/rules` | 规则对象 | 新建规则（id 冲突 409；校验 id/cron/动作/guard） |
-| `PUT /api/automation/rules/{id}` | `{enabled?, description?, trigger?, condition?, action?, guard?}` | 修改规则（改 cron / after_seconds 后**立即重排下次触发**） |
+| `POST /api/automation/rules` | 规则对象 | 新建规则（id 冲突 409；校验 id/cron/动作/guard + 顶层字段白名单） |
+| `PUT /api/automation/rules/{id}` | `{enabled?, description?, trigger?, condition?, action?, guard?, follow_up_action?}` | 修改规则（改 cron / after_seconds 后**立即重排下次触发**） |
 | `DELETE /api/automation/rules/{id}` | — | 删除规则（含其冷却/计数/熔断/下次触发历史） |
 | `POST /api/automation/rules/{id}/run` | — | 立即触发一条定时规则（不等 cron） |
 | `GET /api/automation/decisions?limit=` | — | 决策日志（五态） |
@@ -289,6 +289,12 @@ body: {
 
 > 条件字段有**白名单**：`rules.CONDITION_KEYS`（与 `build_context()` 输出对齐）。
 > 写错字段名会被 400 拒绝并列出可用字段，不会出现"规则静默永不命中"。
+
+> **规则顶层字段也有白名单**（`routers.automation.RULE_FIELDS` = `id / enabled / description / trigger /
+> condition / action / guard / follow_up_action`）：新建与编辑时多写或拼错字段一律 **400**，
+> 不会静默丢弃。可用字段在编辑接口里是 `EDITABLE_FIELDS`（同上，但 `id` 不可改）。
+> ⚠️ **维护提醒**：给规则加新字段时，`RULE_FIELDS`、`EDITABLE_FIELDS`、前端 `RuleModal` 的
+> payload 要一起改 —— v0.9.13 之前 `EDITABLE_FIELDS` 漏了 `follow_up_action`，导致"勾了保存不生效"。
 
 ```json
 {

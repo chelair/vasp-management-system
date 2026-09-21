@@ -21,6 +21,7 @@ import {
   toFormValue,
   buildFreeEnergyGroupTree,
   buildOptTaskTree,
+  buildNebTaskTree,
   type RuleTargetType,
   type TaskRefLite,
 } from '../../utils/ruleTarget';
@@ -80,6 +81,7 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
   );
   /** 任务/组都做成"项目 → 组 → 任务"的树，避免长列表里翻找 */
   const optTaskTree = useMemo(() => buildOptTaskTree(refs), [refs]);
+  const nebTaskTree = useMemo(() => buildNebTaskTree(refs), [refs]);
   const freeEnergyGroupTree = useMemo(() => buildFreeEnergyGroupTree(refs), [refs]);
 
   useEffect(() => {
@@ -446,7 +448,9 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
                 ? '具体项目（可多选；留空 = 全部）'
                 : target === 'opt'
                   ? '具体 opt 任务（可多选；留空 = 该项目下全部 opt）'
-                  : '具体自由能组（可多选；留空 = 全部自由能组）'
+                  : target === 'neb'
+                    ? '具体 NEB 任务（可多选；留空 = 该项目下全部 NEB）'
+                    : '具体自由能组（可多选；留空 = 全部自由能组）'
             }
             style={{ width: 420 }}
           >
@@ -472,6 +476,20 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
                 value={tasks}
                 onChange={(value) => setTasks((value as string[]) ?? [])}
                 treeData={optTaskTree}
+                maxTagCount="responsive"
+              />
+            )}
+            {target === 'neb' && (
+              <TreeSelect
+                multiple
+                allowClear
+                showSearch
+                treeDefaultExpandAll={false}
+                treeNodeFilterProp="title"
+                placeholder="按 项目 → NEB 组 → 任务 选择（可直接搜索任务名）"
+                value={tasks}
+                onChange={(value) => setTasks((value as string[]) ?? [])}
+                treeData={nebTaskTree}
                 maxTagCount="responsive"
               />
             )}

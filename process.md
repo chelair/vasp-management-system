@@ -241,8 +241,14 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.14）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.15）
 
+- v0.9.15（2026-09-21，用户："neb 任务创建续算也支持一下吧，毕竟也就是点一下续算+提交"）：**自动化规则的作用对象新增「NEB 任务（路径计算）」** —— NEB 也能一条规则搞定"续算 → 自动提交"。
+  ① 之前作用对象只有 项目 / opt 任务 / 自由能组：想管 NEB 只能选"项目"，但那会把同项目下的 opt / 自由能任务一起卷进来（等于不该续算的也续算）。
+  ② 前端 `src/utils/ruleTarget.ts`：`RuleTargetType` 加 `neb`；`RULE_TARGET_OPTIONS` 加「NEB 任务（路径计算）」；`selectionToCondition` 生成 `task_type=neb` + `task_id`（定时规则同样按所选任务反查项目算 scope）；`conditionToSelection` 能反推回 NEB 作用对象（编辑老规则不丢）；树结构把 opt / NEB 合并成同一个 `buildTaskTree(refs, taskType)`，新增 `buildNebTaskTree()`（**项目 → NEB 组 → NEB 任务**，只列 `task_type=neb` 的主任务，不含端点 IS/FS，也不会列 conN 续算子任务）。
+  ③ **后端无需改动**：`task.continuation` 本来就支持 opt / neb（`_Continuation.preflight` + `core_continuation` 的 NEB 分支：最新 conN 优先、端点 POSCAR+OUTCAR 固定、中间映像 CONTCAR→POSCAR、各映像 WAVECAR 随续算移动）；提交侧 `_submit_preflight_lines("neb", …)` 按 INCAR 的 `IMAGES` 逐个检查映像 POSCAR；接力提交与 opt 同路径（父任务 → 自动定位最新 conN）。
+  ④ 典型规则：作用对象 = NEB 任务 → 附加条件 `status=未收敛/异常` + `NEB 初态已收敛=是` + `NEB 末态已收敛=是` → 动作"创建续算" → 勾"执行成功后自动提交作业"。
+  ⑤ 验证：`ruleTarget` 纯函数 16 项（NEB 选择→condition / 定时 scope 单项目与跨项目 / 编辑回填 / 树只含 neb 且不含 opt 与 IS·FS / 老的 opt·自由能规则行为不变）；`RuleModal` jsdom 真渲染 5 项（编辑 NEB 规则时作用对象回填「NEB 任务（路径计算）」、具体对象是 NEB 任务树、附加条件回填、勾选项回显已勾）；后端隔离 e2e 11 项（规则条件真命中 NEB 任务 → 续算 created `con1` 且映像 00..04 齐备、端点带 OUTCAR → 接力提交拿到 job_id）；`tsc` + `npm run build` 通过。
 - v0.9.14（commit `311623d`，已推送 origin/main；2026-09-21 用户报"还是勾不上啊"）：**`GET /api/automation/status` 逐字段投影规则时漏了 `follow_up_action`** → 前端自动化页读的正是这个接口，于是：① 规则表「动作」列看不到 `→ task.submit`；② **编辑弹窗每次打开，勾选项都回显成"未勾"**（`rule.follow_up_action === 'task.submit'` 恒为 false）。用户勾选→保存→重开还是未勾，看起来就像"勾不上"，30 秒内反复保存了 4 次（22:37:03 / 06 / 10 / 33，4 条"更新规则"审计都在）。
   **注意**：v0.9.13 修的是"保存不进去"（PUT 白名单漏字段），这次是"保存进去了但读不回来"——两处是**同一条链路上的两个断点**，文件里其实早就写成了 `task.submit`（`data/config/rules/26657.json` 可证）。
   **修复**：`automation_status()` 的规则投影补 `follow_up_action`，并在该处加注释提醒"这是逐字段投影，漏字段 = 前端永远看不到"（`_schedule_rows()` 供定时任务表用的是同一份 `status.rules`，一并受益）。

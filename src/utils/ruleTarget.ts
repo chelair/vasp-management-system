@@ -9,7 +9,7 @@
  * 本文件是纯函数（可单测），字段口径与后端 `automation/rules.build_context()` 对齐。
  */
 
-export type RuleTargetType = 'project' | 'opt' | 'free_energy';
+export type RuleTargetType = 'project' | 'opt' | 'neb' | 'free_energy';
 
 export interface RuleTargetOption {
   value: RuleTargetType;
@@ -20,6 +20,7 @@ export interface RuleTargetOption {
 export const RULE_TARGET_OPTIONS: RuleTargetOption[] = [
   { value: 'project', label: '项目', hint: '项目下的所有任务' },
   { value: 'opt', label: 'opt 任务（结构优化）', hint: '只看结构优化任务，可挑具体任务' },
+  { value: 'neb', label: 'NEB 任务（路径计算）', hint: '只看 NEB 路径计算任务（neb），可挑具体任务' },
   { value: 'free_energy', label: '自由能组', hint: '只看自由能路径，可挑具体路径组' },
 ];
 
@@ -64,6 +65,11 @@ export function selectionToCondition(
 
   if (target === 'opt') {
     condition.task_type = 'opt';
+    const picked = oneOrMany(tasks);
+    if (picked !== undefined) condition.task_id = picked;
+    scopeProjects = refs.filter((t) => tasks.includes(t.task_id)).map((t) => t.project);
+  } else if (target === 'neb') {
+    condition.task_type = 'neb';
     const picked = oneOrMany(tasks);
     if (picked !== undefined) condition.task_id = picked;
     scopeProjects = refs.filter((t) => tasks.includes(t.task_id)).map((t) => t.project);
@@ -119,12 +125,15 @@ export function conditionToSelection(
   } else if (source.task_type === 'opt') {
     target = 'opt';
     delete source.task_type;
+  } else if (source.task_type === 'neb') {
+    target = 'neb';
+    delete source.task_type;
   }
 
   if (target === 'free_energy') {
     groups = asList(source.group_id);
     delete source.group_id;
-  } else if (target === 'opt') {
+  } else if (target === 'opt' || target === 'neb') {
     tasks = asList(source.task_id);
     delete source.task_id;
   }
@@ -241,14 +250,11 @@ function sortBy<T>(items: T[], key: (item: T) => string): T[] {
   return [...items].sort((a, b) => key(a).localeCompare(key(b), 'zh-Hans-CN'));
 }
 
-/**
- * opt 任务的树：项目 → （自由能/NEB 组 或 独立任务）→ 任务叶子。
- * 任务多的时候用 TreeSelect + 搜索就不会乱。
- */
-export function buildOptTaskTree(refs: TaskRefLite[]): PickerTreeNode[] {
+/** 按「项目 → 组 或 独立任务 → 任务」组织任务叶子（opt / NEB 共用） */
+function buildTaskTree(refs: TaskRefLite[], taskType: string): PickerTreeNode[] {
   const byProject = new Map<string, TaskRefLite[]>();
   for (const ref of refs) {
-    if (ref.task_type !== 'opt') continue;
+    if (ref.task_type !== taskType) continue;
     const list = byProject.get(ref.project) ?? [];
     list.push(ref);
     byProject.set(ref.project, list);
@@ -280,6 +286,19 @@ export function buildOptTaskTree(refs: TaskRefLite[]): PickerTreeNode[] {
     });
   }
   return tree;
+}
+
+/**
+ * opt 任务的树：项目 → （自由能/NEB 组 或 独立任务）→ 任务叶子。
+ * 任务多的时候用 TreeSelect + 搜索就不会乱。
+ */
+export function buildOptTaskTree(refs: TaskRefLite[]): PickerTreeNode[] {
+  return buildTaskTree(refs, 'opt');
+}
+
+/** NEB 路径计算任务的树：项目 → NEB 组 → NEB 任务叶子（v0.9.15） */
+export function buildNebTaskTree(refs: TaskRefLite[]): PickerTreeNode[] {
+  return buildTaskTree(refs, 'neb');
 }
 
 /** 自由能组的树：项目 → 路径组（叶子） */

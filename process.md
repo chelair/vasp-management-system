@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.18）
 
-- v0.9.18（2026-09-21，用户："**复制 INCAR 参数到其他作业** 好像有点问题，点击后直接远端运行 cp"）：**排查结论 + 文案修正**。
+- v0.9.18（commit `fcbacd0`，已推送 origin/main；2026-09-21 用户："**复制 INCAR 参数到其他作业** 好像有点问题，点击后直接远端运行 cp"）：**排查结论 + 文案修正**。
   **排查（隔离环境 + mock 远端实测，8 项全过）**：这个按钮**不会碰任何远端文件** —— 前端 `copyIncarParamsToTasks` 就是对每个目标任务 `PUT /api/jobs/tasks/{id}/input/draft`（`file=INCAR`），后端只把参数写进该任务的 `input_state.draft`（本地 JSON，原子写），一个远端命令都不发。实测：源/目标远端 INCAR 的 sha256 前后完全一致、`audit_submit.log` 全程为空、目标远端 INCAR 内容保持它自己的旧值。
   真正会动远端 INCAR 的只有两处（都带 `old_INCAR` 备份、也都是**基于对方远端旧文件做参数合并**，不是整文件覆盖）：① 编辑器的「同步到远端」（`upload-incar`：`modify_incar(远端旧 INCAR, params)` 后写回）；② 下一次续算建 conN 时应用草稿（`cp` 旧 INCAR 到新目录 → 按草稿改）。
   **易混点（本次修掉）**：选择弹窗的确认按钮原来写的是「同步到 N 个作业」，容易让人以为会写远端 → 改成「**记为 N 个作业的待生效修改**」，提示也写清"只写待生效修改（不碰任何远端文件）"。

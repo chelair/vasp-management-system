@@ -243,7 +243,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.16）
 
-- v0.9.16（2026-09-21，用户报"远端打回重算后远端是 con1、本地到 con5 就报错"）：**续算登记改成"按远端实际编号对齐 + 同路径复用"**。
+- v0.9.16（commit `3740e43`，已推送 origin/main；2026-09-21 用户报"远端打回重算后远端是 con1、本地到 con5 就报错"）：**续算登记改成"按远端实际编号对齐 + 同路径复用"**。
   **现象**：自动化决策日志里 `task.continuation` 失败 —— "续算目录 con2 已登记，请勿重复创建"（Ag@Al2O3_neb 那条）。
   **根因**：`core_continuation` 的 `conN` 是**远端扫出来的**（脚本里 `while [ -d con$N ]` 保证远端该编号不存在），但登记前还会查"本地是否已有同 `dir_path` 的记录"，命中就报 409。用户**手动打回重算**（远端清到 con1、本地还留着 con2..con5）之后，远端重新算出来的 con2 与本地旧记录撞路径 → 自动化直接被 409 卡死。
   **修复**（`routers/jobs.py::core_continuation`）：命中同路径记录时**复用**它（远端这个 conN 就是本次脚本刚建好的），状态回 `pending`、清 `job_id` 与续算标记、覆盖 `input_source`，备注写明"远端重算后复用本地已登记记录（原状态：xxx）"；原记录若是归档状态则一并清掉 `archived_from/archived_at`。返回值新增 `reused: true` / `previous_status`，`message` 写明"远端编号回退，复用本地已登记的 conN 记录"，自动化审计里一眼能看出来。

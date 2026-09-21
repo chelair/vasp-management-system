@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.19）
 
-- v0.9.19（2026-09-21，两件事一起发）：**①「复制 INCAR 参数到其他作业」在自由能/NEB 组页面点不动（静默无响应）**；**②「排队中」不再判成巡检警告**。
+- v0.9.19（commit `20faac4`，已推送 origin/main；2026-09-21，两件事一起发）：**①「复制 INCAR 参数到其他作业」在自由能/NEB 组页面点不动（静默无响应）**；**②「排队中」不再判成巡检警告**。
   **① 根因**：自由能结构页 / NEB 组页渲染的是**组内子任务**的详情，而选组时页面把 `selectedTaskId` 置成了 `null`（`handleSelectStructure` / `handleSelectGroup` / `handleSelectTask` 的 NEB 分支都会 `setSelectedTaskId(null)`）。「复制到其他作业」原来只从全局 `selectedTask` 取来源作业 → 取到 `null` 后 `if (!ws) return;` **静默返回**：弹窗不关、没有提示、一个请求都不发 —— 表现就是"点了没反应、像卡住"。
   修复：① 打开弹窗时**显式记住来源作业**（新增 `copyParamsSource`，`onCopyToOthers` 里 `setCopyParamsSource(task)`）；② `handleCopyParams` 改成 `task ?? copyParamsSource ?? selectedTask`，取不到就 `message.error` 明确报错（不再静默）；③ 来源作业从可选目标里排除，数量统计按过滤后的列表算。
   回归测试（jsdom 真渲染整个作业管理页 + 打桩 fetch，12 项全过）：进入 NEB 组页面 → 切到 INCAR 标签 → 点「复制到其他作业」→ 选一个目标 → 确认，断言**确实发出了 `PUT /api/jobs/tasks/task_target/input/draft`** 且请求体带当前参数、页面出现成功提示；来源作业（组页面的 NEB 标签）不在可选列表里。**同一套用例在旧代码上复现了原症状**（确认按钮显示"记为 1 个作业"但零请求、无提示）。

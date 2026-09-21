@@ -241,8 +241,14 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.15）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.16）
 
+- v0.9.16（2026-09-21，用户报"远端打回重算后远端是 con1、本地到 con5 就报错"）：**续算登记改成"按远端实际编号对齐 + 同路径复用"**。
+  **现象**：自动化决策日志里 `task.continuation` 失败 —— "续算目录 con2 已登记，请勿重复创建"（Ag@Al2O3_neb 那条）。
+  **根因**：`core_continuation` 的 `conN` 是**远端扫出来的**（脚本里 `while [ -d con$N ]` 保证远端该编号不存在），但登记前还会查"本地是否已有同 `dir_path` 的记录"，命中就报 409。用户**手动打回重算**（远端清到 con1、本地还留着 con2..con5）之后，远端重新算出来的 con2 与本地旧记录撞路径 → 自动化直接被 409 卡死。
+  **修复**（`routers/jobs.py::core_continuation`）：命中同路径记录时**复用**它（远端这个 conN 就是本次脚本刚建好的），状态回 `pending`、清 `job_id` 与续算标记、覆盖 `input_source`，备注写明"远端重算后复用本地已登记记录（原状态：xxx）"；原记录若是归档状态则一并清掉 `archived_from/archived_at`。返回值新增 `reused: true` / `previous_status`，`message` 写明"远端编号回退，复用本地已登记的 conN 记录"，自动化审计里一眼能看出来。
+  **明确边界（用户 2026-09-21 明确要求）**：打回重算是**用户手动操作**，系统不参与、不清理、也不动远端；本地那些"远端已不存在"的旧记录**保持原样**（它们状态多为 `pending`，本来就不参与巡检）。编号永远以远端为准。
+  **验证**（隔离数据目录 + mock 远端，15 项全过）：本地登记到 con4、远端只剩 con1 → 续算不再 409，建 `con2` 并复用本地 `con2` 记录（无重复行、状态回 pending、job_id 清空、备注记录原状态）；把 con2 补成"跑完的目录"后再续算 → 复用 `con3`；本地记录数始终不变。
 - v0.9.15（commit `a684541`，已推送 origin/main；2026-09-21 用户："neb 任务创建续算也支持一下吧，毕竟也就是点一下续算+提交"）：**自动化规则的作用对象新增「NEB 任务（路径计算）」** —— NEB 也能一条规则搞定"续算 → 自动提交"。
   ① 之前作用对象只有 项目 / opt 任务 / 自由能组：想管 NEB 只能选"项目"，但那会把同项目下的 opt / 自由能任务一起卷进来（等于不该续算的也续算）。
   ② 前端 `src/utils/ruleTarget.ts`：`RuleTargetType` 加 `neb`；`RULE_TARGET_OPTIONS` 加「NEB 任务（路径计算）」；`selectionToCondition` 生成 `task_type=neb` + `task_id`（定时规则同样按所选任务反查项目算 scope）；`conditionToSelection` 能反推回 NEB 作用对象（编辑老规则不丢）；树结构把 opt / NEB 合并成同一个 `buildTaskTree(refs, taskType)`，新增 `buildNebTaskTree()`（**项目 → NEB 组 → NEB 任务**，只列 `task_type=neb` 的主任务，不含端点 IS/FS，也不会列 conN 续算子任务）。

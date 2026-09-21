@@ -373,13 +373,55 @@ def core_continuation(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str
 
     db = load_db()
     proj = next(p for p in db["projects"] if p["name"] == project["name"])
-    if any(t.get("dir_path") == local_dir for t in proj["tasks"]):
-        raise ActionError(409, f"续算目录 {con} 已登记，请勿重复创建")
     # create_continuation 会把应用过的草稿写进 task["input_state"]，必须一起落库
     if task.get("input_state") is not None:
         parent = next((t for t in proj["tasks"] if t.get("task_id") == task_id), None)
         if parent is not None:
             parent["input_state"] = task["input_state"]
+
+    existing = next((t for t in proj["tasks"] if t.get("dir_path") == local_dir), None)
+    if existing is not None:
+        # 远端"打回重算"：远端可能只剩 con1，而本地已登记到 con5 —— 这时远端重新数出来的
+        # conN 会跟本地旧记录撞路径。远端这个目录刚刚就在本次脚本里建好，所以**复用**这条记录
+        # （对齐远端真实编号），而不是报 409 把自动化卡死。
+        previous = str(existing.get("status") or "") or "未知"
+        existing.update(
+            {
+                "task_type": sub_task["task_type"],
+                "subtype": sub_task["subtype"],
+                "status": "pending",
+                "last_energy": None,
+                "last_check_time": None,
+                "job_id": None,
+                "notes": (
+                    f"由 {task.get('model_name')} 同类型续算创建（{con}）；"
+                    f"远端重算后复用本地已登记记录（原状态：{previous}）"
+                ),
+                "continuation_ready": False,
+                "continuation_dir": None,
+                "remote_dir": rel_remote,
+                "parent_task_id": task_id,
+                "input_source": sub_task["input_source"],
+                "updated_at": now,
+            }
+        )
+        # 复用 = 这条记录重新开始算，归档标记要清掉（否则状态/归档信息自相矛盾）
+        existing.pop("archived_from", None)
+        existing.pop("archived_at", None)
+        save_db(db)
+        return {
+            **result,
+            "task_id": existing["task_id"],
+            "local_dir": local_dir,
+            "remote_dir": rel_remote,
+            "reused": True,
+            "previous_status": previous,
+            "message": (
+                f"已创建续算目录 {con}（远端编号回退，复用本地已登记的 {con} 记录，"
+                f"原状态：{previous}）"
+            ),
+        }
+
     proj["tasks"].append(sub_task)
     save_db(db)
 

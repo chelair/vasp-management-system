@@ -268,6 +268,26 @@ export async function uploadSubmitScript(
 }
 
 /**
+ * CIF → POSCAR（v0.9.17）：「导入 POSCAR」选到 .cif 时先把结构转成 VASP 格式再导入。
+ * 纯文本转换，后端不落盘（晶胞 / 分数坐标 / 对称操作展开都在后端做）。
+ */
+export async function convertCifToPoscar(content: string): Promise<{
+  poscar: string;
+  elements: string[];
+  counts: number[];
+  atoms: number;
+  cell: { a: number; b: number; c: number; alpha: number; beta: number; gamma: number };
+  formula: string;
+  warnings: string[];
+}> {
+  return request('/tools/cif-to-poscar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+}
+
+/**
  * 上传 POSCAR 到远端最新目录（v0.8.8）：
  * 旧文件备份为 `old_POSCAR`，同时同步一份到本地镜像 `files/POSCAR`。
  */

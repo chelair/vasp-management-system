@@ -1,10 +1,11 @@
-"""元信息接口：健康检查 / 服务器列表 / 任务类型 / 依赖检查。"""
+"""元信息接口：健康检查 / 服务器列表 / 任务类型 / 依赖检查 / 结构文件转换。"""
 
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
+import cif_reader
 from config import load_servers, load_task_registry
 from dates import now_iso
 from dependencies import INSTALL_HINT, check_dependencies
@@ -77,3 +78,22 @@ def deps():
         "依赖检查完成",
         {"dependencies": check_dependencies(), "install_hint": INSTALL_HINT},
     )
+
+
+@router.post("/tools/cif-to-poscar")
+def cif_to_poscar(payload: dict = Body(default={})):
+    """CIF → POSCAR（「导入 POSCAR」支持 .cif 文件时用）。
+
+    body：`{content, filename?}`；返回 `{poscar, elements, counts, atoms, cell, formula, warnings}`。
+    纯文本转换，不写任何文件；失败返回 400 并给出面向用户的说明。
+    """
+    try:
+        content = str((payload or {}).get("content") or "")
+        if not content.strip():
+            return JSONResponse(status_code=400, content=fail("请提供 CIF 文件内容（content）"))
+        poscar, info = cif_reader.cif_to_poscar(content)
+        return ok(f"CIF 已转换为 POSCAR（{info['atoms']} 个原子）", {"poscar": poscar, **info})
+    except cif_reader.CifError as e:
+        return JSONResponse(status_code=400, content=fail(f"CIF 转换失败：{e}"))
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"CIF 转换失败：{e}"))

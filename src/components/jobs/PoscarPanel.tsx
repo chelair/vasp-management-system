@@ -9,9 +9,9 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { TaskRef } from '../../types';
-import { parsePoscar } from '../../utils/poscar';
+import { looksLikeCif, parsePoscar } from '../../utils/poscar';
 import type { TaskInputState } from '../../api/jobs';
-import { generatePotcar, uploadPoscar } from '../../api/jobs';
+import { convertCifToPoscar, generatePotcar, uploadPoscar } from '../../api/jobs';
 import Structure3DFrame, { type AtomRef } from './Structure3DFrame';
 import SelectiveDynamicsModal from './SelectiveDynamicsModal';
 import TaskPickerModal from './TaskPickerModal';
@@ -164,19 +164,37 @@ export default function PoscarPanel({
     setSelectedAtoms((prev) => prev.filter((a) => !drop.has(a.index)));
   };
 
-  const readFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result ?? '');
-      if (!parsePoscar(text)) {
-        message.error('无法解析该文件，请确认是合法的 POSCAR / VASP 结构文件');
-        return;
+  const readFile = async (file: File) => {
+    let text = '';
+    try {
+      text = await file.text();
+    } catch {
+      message.error('读取文件失败');
+      return;
+    }
+    if (looksLikeCif(file.name, text)) {
+      try {
+        const converted = await convertCifToPoscar(text);
+        if (!parsePoscar(converted.poscar)) {
+          message.error('CIF 转换结果无法解析，请把该文件发给管理员排查');
+          return;
+        }
+        onImport(converted.poscar);
+        const note = converted.warnings.length ? `；注意：${converted.warnings[0]}` : '';
+        message.success(
+          `CIF 已转换为 POSCAR 并导入（${converted.atoms} 个原子：${converted.elements.join('/')}）${note}`,
+        );
+      } catch (err) {
+        message.error(err instanceof Error ? err.message : 'CIF 转换失败');
       }
-      onImport(text);
-      message.success('POSCAR 已导入并保存到本地任务目录');
-    };
-    reader.onerror = () => message.error('读取文件失败');
-    reader.readAsText(file);
+      return;
+    }
+    if (!parsePoscar(text)) {
+      message.error('无法解析该文件，请确认是合法的 POSCAR / VASP 结构文件或 CIF 文件');
+      return;
+    }
+    onImport(text);
+    message.success('POSCAR 已导入并保存到本地任务目录');
   };
 
   return (
@@ -339,10 +357,10 @@ export default function PoscarPanel({
       <Card size="small" title="导入 / 复制 POSCAR" className="job-card mt-16">
         <div className="job-import-row">
           <Upload
-            accept=".POSCAR,.poscar,.vasp,.CONTCAR,.contcar"
+            accept=".POSCAR,.poscar,.vasp,.CONTCAR,.contcar,.cif"
             showUploadList={false}
             beforeUpload={(file) => {
-              readFile(file as unknown as File);
+              void readFile(file as unknown as File);
               return false;
             }}
           >
@@ -358,6 +376,10 @@ export default function PoscarPanel({
         <div className="job-file-loc">
           <span>当前文件</span>
           <code>{poscarPath ?? '尚未导入（当前为示例数据）'}</code>
+        </div>
+        <div className="job-field-hint">
+          支持 POSCAR / CONTCAR（VASP 结构文件）与 <b>CIF</b>（自动转换：晶胞参数、分数/笛卡尔坐标、
+          对称操作展开；部分占据会提示）。
         </div>
       </Card>
 

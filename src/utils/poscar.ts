@@ -120,6 +120,15 @@ export function recommendKgrid(
   return [g(lengths.a), g(lengths.b), g(lengths.c)];
 }
 
+/** 是不是 CIF 文件：按扩展名，或按内容特征（CIF 标签）判断 */
+export function looksLikeCif(filename: string, text: string): boolean {
+  if (/\.cif$/i.test(String(filename || '').trim())) return true;
+  const head = String(text || '').slice(0, 8000);
+  const hasTag = /(^|\n)\s*(_cell_length_a|_atom_site_fract_x|_atom_site_label|_symmetry_equiv_pos_as_xyz)/i.test(head);
+  const hasBlock = /(^|\n)\s*(data_|loop_|#)/i.test(head);
+  return hasTag && hasBlock;
+}
+
 /** 生成 KPOINTS 文件内容 */
 export function buildKpoints(
   comment: string,

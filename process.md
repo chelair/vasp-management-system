@@ -151,6 +151,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `dashboard.py` | **总览聚合**：单次 SSH 合并查询（bjobs/blimits/df/bhosts/bqueues）+ 解析 + 5 分钟缓存（`dashboard_cache_seconds`）+ 集群采样历史 + 运行作业↔任务映射 + 核数按项目聚合 + 风险预警 + 项目进度 + 近 7 天趋势 |
 | `continuation.py` | **续算与文件构建核心**：opt/NEB 续算（单次 base64 远程脚本 + 池化 SFTP 上传 + 活跃作业保护）、`create_frac_files`（opt→frac）、`build_ele_inputs`（ele 输入构建）、`create_neb_files`（IS/FS→NEB 映像 + nebmake.pl）、矫正项 vaspkit 501 |
 | `incar.py` | `modify_incar` 统一 INCAR 参数修改（大小写/空格/布尔兼容、重复合并、缺失追加） |
+| `cif_reader.py` | **CIF → POSCAR（v0.9.17，零依赖标准库）**：解析晶胞参数（容忍 `5.430(2)` 这类 esd）、`_atom_site_fract_*` / `_atom_site_Cartn_*`（笛卡尔自动换算）、对称操作（`_symmetry_equiv_pos_as_xyz` / `_space_group_symop_operation_xyz`，只给不对称单元时展开并去重）、元素列或从标签推元素；输出元素分组、`Direct` 分数坐标的 VASP POSCAR。页面「导入 POSCAR」与 `scripts/cif2poscar.py` 共用这一份实现 |
 | `cluster_status.py` | bhost/bqueues/节点分组快照 |
 | `structure_analysis.py` | 结构对比（晶格/原子位移）；`vesta_render.py` 已停用（不再被调用，VESTA PNG 渲染由 3Dmol 替代） |
 | `aux_molecules.py` | 辅助分子全局目录与注册表 |
@@ -241,8 +242,14 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.16）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.17）
 
+- v0.9.17（2026-09-21，用户："**导入 / 复制 POSCAR** 支持 cif 文件"）：**「导入 POSCAR」支持 `.cif`（自动转成 POSCAR 再导入）**，另附命令行工具。
+  ① 后端新增 `backend/cif_reader.py`（**零依赖、标准库**）：晶胞参数（容忍 `3.6150(2)` 这类不确定度写法）→ 晶格矢量（a 沿 x 的常规约定）；坐标支持 `_atom_site_fract_x/y/z` 与 `_atom_site_Cartn_x/y/z`（笛卡尔自动用晶格逆矩阵换算）；**只给不对称单元时按对称操作展开**（`_symmetry_equiv_pos_as_xyz` / `_space_group_symop_operation_xyz`，支持 `1/2+x` 这种平移），展开后按 1e-4 分数坐标去重；元素优先取 `_atom_site_type_symbol`，没有就从标签推（`O1`→O、`Fe2+`→Fe）；占据数≠1 的原子照留但回 warning（POSCAR 表达不了部分占据）；只声明空间群名却没有对称操作列表时也给 warning。输出按元素分组（VASP 要求同元素连续）、计数行与元素行严格对应、`Direct` 分数坐标。
+  ② 新接口 `POST /api/tools/cif-to-poscar`（`backend/routers/meta.py`，纯文本转换不落盘、走统一鉴权）：`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；解析不了返回 400 带中文原因（"没有找到完整的晶胞参数" 等）。
+  ③ 前端：`PoscarPanel` 的文件选择 `accept` 加 `.cif`，选到 CIF（**按扩展名或按内容特征判断**，`utils/poscar.looksLikeCif`）时先调转换接口，再走原来的 `onImport`（导入后照常可以"同步到远端"和"生成 POTCAR"），提示里带上原子数与元素；卡片里加了一行说明。
+  ④ 新增 `scripts/cif2poscar.py`（命令行，复用同一实现）：`python scripts/cif2poscar.py x.cif -o POSCAR` / `--info` 只看摘要。
+  ⑤ 验证：`cif_reader` 27 项（NaCl 常规写法 / Fm-3m 对称展开成 4 个 Cu / esd / 六方胞+笛卡尔坐标换算+部分占据 warning / `1/2` 分数写法 / 缺角度默认 90 / 只有空间群名给提示 / 三类错误分支 / **生成的 POSCAR 能被 `vasp2cif.py` 反解**）；接口 e2e 7 项（登录 200、4 个原子、要素齐全、缺原子坐标 400、空内容 400、未登录 401）；前端 `looksLikeCif` 6 项（扩展名大小写、内容识别、POSCAR 不误判）+ `tsc` + `npm run build`。
 - v0.9.16（commit `3740e43`，已推送 origin/main；2026-09-21 用户报"远端打回重算后远端是 con1、本地到 con5 就报错"）：**续算登记改成"按远端实际编号对齐 + 同路径复用"**。
   **现象**：自动化决策日志里 `task.continuation` 失败 —— "续算目录 con2 已登记，请勿重复创建"（Ag@Al2O3_neb 那条）。
   **根因**：`core_continuation` 的 `conN` 是**远端扫出来的**（脚本里 `while [ -d con$N ]` 保证远端该编号不存在），但登记前还会查"本地是否已有同 `dir_path` 的记录"，命中就报 409。用户**手动打回重算**（远端清到 con1、本地还留着 con2..con5）之后，远端重新算出来的 con2 与本地旧记录撞路径 → 自动化直接被 409 卡死。

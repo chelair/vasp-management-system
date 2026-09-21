@@ -241,8 +241,12 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.13）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.14）
 
+- v0.9.14（2026-09-21，用户报"还是勾不上啊"）：**`GET /api/automation/status` 逐字段投影规则时漏了 `follow_up_action`** → 前端自动化页读的正是这个接口，于是：① 规则表「动作」列看不到 `→ task.submit`；② **编辑弹窗每次打开，勾选项都回显成"未勾"**（`rule.follow_up_action === 'task.submit'` 恒为 false）。用户勾选→保存→重开还是未勾，看起来就像"勾不上"，30 秒内反复保存了 4 次（22:37:03 / 06 / 10 / 33，4 条"更新规则"审计都在）。
+  **注意**：v0.9.13 修的是"保存不进去"（PUT 白名单漏字段），这次是"保存进去了但读不回来"——两处是**同一条链路上的两个断点**，文件里其实早就写成了 `task.submit`（`data/config/rules/26657.json` 可证）。
+  **修复**：`automation_status()` 的规则投影补 `follow_up_action`，并在该处加注释提醒"这是逐字段投影，漏字段 = 前端永远看不到"（`_schedule_rows()` 供定时任务表用的是同一份 `status.rules`，一并受益）。
+  **验证**：隔离数据目录 + mock 远端 + 真实 HTTP 11 项全过（新建落盘 / PUT 可开可关 / status.rules 与 /automation/rules 都带该字段 / 未知字段 400 / 续算 created → 接力提交拿到 job_id → 父任务转 queued）；另用 jsdom 真渲染 `RuleModal` 断言 4 项：规则带该字段时勾选项**回显已勾**、点一下能勾上（不弹回）、再点能取消、主动作为"提交作业"时禁用。
 - v0.9.13（commit `0065e41`，已推送 origin/main；2026-09-21 排查"续算建了 conN 但没提交"后的修复）：**规则 `follow_up_action` 保存链路修通 + 未知字段不再静默丢弃**。
   **现象**：用户在自动化页给规则勾了「执行成功后自动提交作业」，界面看着正常，但自动化只创建了续算目录（`FS@Kaolin@E` 的 `con1`、`FS_Kaolin/free_energy/ABS/1` 的 `con3`）却没有提交。
   **根因一（主因，代码 bug）**：`PUT /api/automation/rules/{id}` 的可改字段白名单 `editable` **漏了 `follow_up_action`**。于是：① 规则在 v0.9.12 之前的后端上新建时该字段被丢弃；② v0.9.12 之后**用"编辑"也补不回来**（PUT 会把没进白名单的字段过滤掉），所以页面上勾了再保存，落盘仍是 `null`。现场证据：`data/config/rules/26657.json` 的 `follow_up_action` 是 `null`，而 22:28:18 的规则更新审计里"改动字段"列表没有 `follow_up_action`。
@@ -429,7 +433,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 8. 已知注意事项 / 坑
 
-- **自动化规则加字段时三处必须同时改**（v0.9.13 踩坑）：`routers/automation.py` 的 `RULE_FIELDS`（新建/编辑校验白名单）与 `EDITABLE_FIELDS`（`PUT` 能覆盖的字段）、前端 `RuleModal.tsx` 提交的 payload、以及消费点 `automation/events.py`。v0.9.13 之前 `EDITABLE_FIELDS` 漏了 `follow_up_action`，表现为"界面上勾了保存不生效"（只有新建规则才写得进去，编辑永远写不进）；另外顶层未知/拼错字段原本会被静默丢弃，现在会直接 400 并列出可用字段（排查这类"配置没生效"先看这两处）。
+- **自动化规则加字段时四处必须同时改**（v0.9.13 / v0.9.14 连着踩的坑）：① `routers/automation.py` 的 `RULE_FIELDS`（新建/编辑校验白名单）；② 同文件的 `EDITABLE_FIELDS`（`PUT` 能覆盖的字段）；③ **`automation_status()` 里那份规则投影**（逐字段列 key，前端自动化页读的是它 —— 漏 key = 界面上永远看不到/回显不出来）；④ 前端 `RuleModal.tsx` 提交的 payload（消费点在 `automation/events.py`）。两次事故：v0.9.13 漏了 ② → "勾了保存不生效"；v0.9.14 漏了 ③ → "保存成功了但重开弹窗还是未勾"。现在顶层未知/拼错字段会直接 400 并列出可用字段。排查"配置没生效"先按这两类分：**写不进**（②）还是**读不回**（③）。
 - **3Dmol 视图的两个硬性要求**（v0.6.10 踩坑）：① 承载 3Dmol 的容器必须有 `position: relative`（+ `overflow: hidden`），否则画布绝对定位到页面左上角、盖出一块白色遮挡（opt 的 `.s3d-canvas`、NEB 的 `.neb3d__canvas` 都已遵守）；② 给某类任务新增专属 `analysis` 载荷时，**必须同时给它一个独立的渲染分支**——不能让它落到 `StructurePanel`（它按 opt 字段访问 `files/poscar/warnings`，字段缺失会抛错白屏）。新增任务类型分析时请照此处理。
 - **后端没有 3Dmol（v0.7.2 澄清）**：`public/3dmol/3Dmol-min.js` 是**浏览器端 JS 库**（WebGL 渲染），Python 后端无法直接用；报告里的静态“三视图”是 `report_charts.structure_views()` 用纯 Python 做的正交投影 SVG。若要做真实静态 3D 渲染（带透视/材质），需要引入 headless 浏览器或 Node 端渲染，属于新增依赖，**动手前先问用户**。
 - **报告图表函数的参数键必须与结构化字段名对齐**（v0.7.2 踩坑）：`report_builder.py` 传给 `report_charts` 的字典键必须与图表函数读取的键一致，否则图表静默画出空图（不出数据、不报错）。已修两处：`free_energy_ev`（`step_chart` 原读 `free_energy`）、`relative_energy_ev`（`neb_barrier_chart` 原读 `relative`）。另外 `build_report()` 的 `charts` 是 `{文件名: SVG 文本}` 字典——**引用图片要用 `"charts/<名字>.svg"` 字符串**，不要写成 `charts.get('x.svg')`，否则会把整段 SVG 文本当成路径写进 Markdown。

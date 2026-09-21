@@ -250,7 +250,7 @@ body: {
 | `GET /api/actions` | — | 动作目录：名称 / 说明 / 是否长动作 / 参数提示 |
 | `POST /api/actions/{action_name}` | `{task_id?, params?, dry_run?, idempotency_key?, wait?}` | `task.continuation` / `task.submit` / `frac.create`（`neb.create` v0.9.8 起暂未启用，调用返回 400） |
 | `GET /api/actions/runs/{run_id}` | — | 长动作轮询：`running / success / failed / skipped` + result |
-| `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则 + 计数 |
+| `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则（含 `follow_up_action`）+ 计数 |
 | `GET/PUT /api/automation/settings` | `{enabled?, dry_run?, schedules_enabled?, failure_threshold?}` | 改完**立即生效**（enabled=false 即全局暂停） |
 | `GET /api/automation/rules` | — | 规则列表 |
 | `POST /api/automation/rules` | 规则对象 | 新建规则（id 冲突 409；校验 id/cron/动作/guard + 顶层字段白名单） |
@@ -293,8 +293,11 @@ body: {
 > **规则顶层字段也有白名单**（`routers.automation.RULE_FIELDS` = `id / enabled / description / trigger /
 > condition / action / guard / follow_up_action`）：新建与编辑时多写或拼错字段一律 **400**，
 > 不会静默丢弃。可用字段在编辑接口里是 `EDITABLE_FIELDS`（同上，但 `id` 不可改）。
-> ⚠️ **维护提醒**：给规则加新字段时，`RULE_FIELDS`、`EDITABLE_FIELDS`、前端 `RuleModal` 的
-> payload 要一起改 —— v0.9.13 之前 `EDITABLE_FIELDS` 漏了 `follow_up_action`，导致"勾了保存不生效"。
+> ⚠️ **维护提醒**：给规则加新字段时，**四处**要一起改 —— `RULE_FIELDS`（校验白名单）、
+> `EDITABLE_FIELDS`（PUT 可覆盖）、`GET /api/automation/status` 里对规则的**逐字段投影**
+> （前端自动化页读的是它，漏字段 = 界面上看不到/回显不出来）、前端 `RuleModal` 的 payload。
+> 两次真实事故：v0.9.13 漏 `EDITABLE_FIELDS` → "勾了保存不生效"；v0.9.14 漏 status 投影 →
+> "保存成功了但重开弹窗还是未勾"。
 
 ```json
 {

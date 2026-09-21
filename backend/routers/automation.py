@@ -251,6 +251,9 @@ def automation_status(request: Request):
                         "trigger": r.get("trigger"),
                         "condition": r.get("condition"),
                         "action": r.get("action"),
+                        # ⚠️ 这里是**逐字段**投影：漏字段 = 前端永远看不到它
+                        # （v0.9.13 漏了 follow_up_action → 编辑弹窗里勾选项永远回显成未勾）
+                        "follow_up_action": r.get("follow_up_action") or None,
                         "guard": r.get("guard"),
                         "failures": int(history["rule_failures"].get(str(r.get("id"))) or 0),
                     }

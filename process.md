@@ -242,8 +242,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.18）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.19）
 
+- v0.9.19（2026-09-21，两件事一起发）：**①「复制 INCAR 参数到其他作业」在自由能/NEB 组页面点不动（静默无响应）**；**②「排队中」不再判成巡检警告**。
+  **① 根因**：自由能结构页 / NEB 组页渲染的是**组内子任务**的详情，而选组时页面把 `selectedTaskId` 置成了 `null`（`handleSelectStructure` / `handleSelectGroup` / `handleSelectTask` 的 NEB 分支都会 `setSelectedTaskId(null)`）。「复制到其他作业」原来只从全局 `selectedTask` 取来源作业 → 取到 `null` 后 `if (!ws) return;` **静默返回**：弹窗不关、没有提示、一个请求都不发 —— 表现就是"点了没反应、像卡住"。
+  修复：① 打开弹窗时**显式记住来源作业**（新增 `copyParamsSource`，`onCopyToOthers` 里 `setCopyParamsSource(task)`）；② `handleCopyParams` 改成 `task ?? copyParamsSource ?? selectedTask`，取不到就 `message.error` 明确报错（不再静默）；③ 来源作业从可选目标里排除，数量统计按过滤后的列表算。
+  回归测试（jsdom 真渲染整个作业管理页 + 打桩 fetch，12 项全过）：进入 NEB 组页面 → 切到 INCAR 标签 → 点「复制到其他作业」→ 选一个目标 → 确认，断言**确实发出了 `PUT /api/jobs/tasks/task_target/input/draft`** 且请求体带当前参数、页面出现成功提示；来源作业（组页面的 NEB 标签）不在可选列表里。**同一套用例在旧代码上复现了原症状**（确认按钮显示"记为 1 个作业"但零请求、无提示）。
+  **② 排队中 → 正常**（用户确认"正常"）：`checks_store._to_row()` 原来把 `queue_status == "PEND"` 与 `"UNKNOWN"` 一起判成 `warning`，于是**刚提交、还在排队的作业在巡检列表/作业管理/总览风险清单里都亮"警告"**。现在 `PEND` 判 `normal`（信息列仍是"排队中"、类别列仍是"队列"），`SSUSP`（挂起）与 `UNKNOWN`（查不到队列状态，bjobs 没信息）仍按警告处理。测试 13 项：排队中→正常/挂起→警告/UNKNOWN→警告/运行中→正常/未收敛→警告/僵尸→错误/归档→关闭/低精度→警告/完成但力未收敛→警告/文件缺失→警告。
 - v0.9.18（commit `fcbacd0`，已推送 origin/main；2026-09-21 用户："**复制 INCAR 参数到其他作业** 好像有点问题，点击后直接远端运行 cp"）：**排查结论 + 文案修正**。
   **排查（隔离环境 + mock 远端实测，8 项全过）**：这个按钮**不会碰任何远端文件** —— 前端 `copyIncarParamsToTasks` 就是对每个目标任务 `PUT /api/jobs/tasks/{id}/input/draft`（`file=INCAR`），后端只把参数写进该任务的 `input_state.draft`（本地 JSON，原子写），一个远端命令都不发。实测：源/目标远端 INCAR 的 sha256 前后完全一致、`audit_submit.log` 全程为空、目标远端 INCAR 内容保持它自己的旧值。
   真正会动远端 INCAR 的只有两处（都带 `old_INCAR` 备份、也都是**基于对方远端旧文件做参数合并**，不是整文件覆盖）：① 编辑器的「同步到远端」（`upload-incar`：`modify_incar(远端旧 INCAR, params)` 后写回）；② 下一次续算建 conN 时应用草稿（`cp` 旧 INCAR 到新目录 → 按草稿改）。
@@ -457,6 +462,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 8. 已知注意事项 / 坑
 
+- **组页面里 `selectedTask` 是 `null`**（v0.9.19 踩坑，新增"依赖当前作业"的功能时必看）：自由能结构页 / NEB 组页渲染的是**组内子任务**的详情（`renderTaskDetail(task)`），但选组时页面会 `setSelectedTaskId(null)`，所以 `selectedTask` 取不到东西——**新写页面级处理函数时必须把 `task` 显式传进来（或像 `copyParamsSource` 那样在打开弹窗时记住来源作业），不要只依赖 `selectedTask`**；取不到时也**不要静默 return**，要给用户明确提示，否则就是"点了没反应"。「复制 INCAR 参数到其他作业」踩过一次。
 - **自动化规则加字段时四处必须同时改**（v0.9.13 / v0.9.14 连着踩的坑）：① `routers/automation.py` 的 `RULE_FIELDS`（新建/编辑校验白名单）；② 同文件的 `EDITABLE_FIELDS`（`PUT` 能覆盖的字段）；③ **`automation_status()` 里那份规则投影**（逐字段列 key，前端自动化页读的是它 —— 漏 key = 界面上永远看不到/回显不出来）；④ 前端 `RuleModal.tsx` 提交的 payload（消费点在 `automation/events.py`）。两次事故：v0.9.13 漏了 ② → "勾了保存不生效"；v0.9.14 漏了 ③ → "保存成功了但重开弹窗还是未勾"。现在顶层未知/拼错字段会直接 400 并列出可用字段。排查"配置没生效"先按这两类分：**写不进**（②）还是**读不回**（③）。
 - **3Dmol 视图的两个硬性要求**（v0.6.10 踩坑）：① 承载 3Dmol 的容器必须有 `position: relative`（+ `overflow: hidden`），否则画布绝对定位到页面左上角、盖出一块白色遮挡（opt 的 `.s3d-canvas`、NEB 的 `.neb3d__canvas` 都已遵守）；② 给某类任务新增专属 `analysis` 载荷时，**必须同时给它一个独立的渲染分支**——不能让它落到 `StructurePanel`（它按 opt 字段访问 `files/poscar/warnings`，字段缺失会抛错白屏）。新增任务类型分析时请照此处理。
 - **后端没有 3Dmol（v0.7.2 澄清）**：`public/3dmol/3Dmol-min.js` 是**浏览器端 JS 库**（WebGL 渲染），Python 后端无法直接用；报告里的静态“三视图”是 `report_charts.structure_views()` 用纯 Python 做的正交投影 SVG。若要做真实静态 3D 渲染（带透视/材质），需要引入 headless 浏览器或 Node 端渲染，属于新增依赖，**动手前先问用户**。

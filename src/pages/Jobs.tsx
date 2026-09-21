@@ -154,6 +154,8 @@ export default function Jobs() {
   const [addStructGroup, setAddStructGroup] = useState<string | null>(null);
   const [addStructCount, setAddStructCount] = useState(1);
   const [copyParamsOpen, setCopyParamsOpen] = useState(false);
+  /** 复制 INCAR 参数的**来源作业**（组页面里 selectedTask 为 null，必须显式记住） */
+  const [copyParamsSource, setCopyParamsSource] = useState<Task | null>(null);
   const [genTask, setGenTask] = useState<Task | null>(null);
   const [generating, setGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
@@ -871,14 +873,25 @@ export default function Jobs() {
    * 任务点「同步到远端」立即生效），并把返回的输入状态回填，打开就能看到。
    */
   const handleCopyParams = async (targets: TaskRef[], task?: Task | null) => {
-    const t = task ?? selectedTask;
+    // 来源作业：显式传入 > 打开弹窗时记住的 > 当前选中的（自由能/NEB 组页面里 selectedTask 是 null）
+    const t = task ?? copyParamsSource ?? selectedTask;
     const ws = t ? workspaces[t.task_id] ?? makeWorkspace(t) : null;
-    if (!ws) return;
+    if (!t || !ws) {
+      // 以前这里是静默 return：弹窗不关、没有提示、也不发请求，看起来像"点了没反应"
+      message.error('没找到要复制的来源作业，请重新打开该作业的 INCAR 页再试');
+      return;
+    }
     setCopyParamsOpen(false);
+    // 来源作业自己不能当目标（组页面里可能被列进去）
+    const effective = targets.filter((x) => x.taskId !== t.task_id);
+    if (effective.length === 0) {
+      message.warning('请至少选择一个目标任务');
+      return;
+    }
     // 主开关关闭的整组参数（DFT+U / 偶极矩修正）不写入，与「确认修改」一致
     const params = applyIncarGates({ ...ws.incarParams });
     const results = await copyIncarParamsToTasks(
-      targets.map((x) => x.taskId),
+      effective.map((x) => x.taskId),
       params,
     );
     const allTasks = projects.flatMap((p) => p.tasks);
@@ -891,12 +904,12 @@ export default function Jobs() {
       if (real) applyInputState(real, state);
       else setInputStates((prev) => ({ ...prev, [taskId]: state }));
     }
-    if (ok === targets.length) {
+    if (ok === effective.length) {
       message.success(
         `已把当前参数记为 ${ok} 个作业的待生效修改（下次续算写入；在目标任务点「同步到远端」可立即生效）`,
       );
     } else if (ok > 0) {
-      message.warning(`已写入 ${ok}/${targets.length} 个作业，其余失败请重试`);
+      message.warning(`已写入 ${ok}/${effective.length} 个作业，其余失败请重试`);
     } else {
       message.error('复制失败：未能写入任何作业');
     }
@@ -1128,7 +1141,11 @@ export default function Jobs() {
                   onApplyPreset={(pr) => handleApplyPreset(pr, task)}
                   onSavePreset={(n) => handleSavePreset(n, task)}
                   onDeletePreset={handleDeletePreset}
-                  onCopyToOthers={() => setCopyParamsOpen(true)}
+                  onCopyToOthers={() => {
+                    // 组页面（自由能结构 / NEB 组）里 selectedTask 是 null，来源作业必须显式记住
+                    setCopyParamsSource(task);
+                    setCopyParamsOpen(true);
+                  }}
                   snapshotParams={ws.snapshotParams ?? {}}
                   pendingKeys={Object.keys(inputStates[task.task_id]?.draft?.INCAR ?? {})}
                   onConfirmParams={(p) => void handleConfirmParams(task, p)}
@@ -1461,13 +1478,16 @@ export default function Jobs() {
         open={copyParamsOpen}
         mode="multiple"
         title="复制 INCAR 参数到其他作业"
-        targets={copyTargets}
+        targets={copyTargets.filter((t) => t.taskId !== copyParamsSource?.task_id)}
         defaultExpandedIds={selectedProjectId ? [selectedProjectId] : []}
         hint={
           '只写"待生效修改"（不碰任何远端文件）：目标作业下次续算时写入，也可在目标作业上点「同步到远端」立即生效'
         }
         okText={(n) => `记为 ${n} 个作业的待生效修改`}
-        onCancel={() => setCopyParamsOpen(false)}
+        onCancel={() => {
+          setCopyParamsOpen(false);
+          setCopyParamsSource(null);
+        }}
         onConfirm={(ids) => {
           const picked = new Set(ids);
           void handleCopyParams(copyTargets.filter((t) => picked.has(t.taskId)));

@@ -265,7 +265,9 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         check_status = "warning"
     elif warning_markers:
         check_status = "warning"
-    elif queue in ("PEND", "UNKNOWN") and status not in ("completed", "running"):
+    # 排队中（PEND）算正常等待，不再报警告（v0.9.19 用户确认："排队中就是正常"）；
+    # 只有"查不到队列状态"（UNKNOWN，bjobs 拿不到信息）才提示
+    elif queue == "UNKNOWN" and status not in ("completed", "running"):
         check_status = "warning"
     else:
         check_status = "normal"

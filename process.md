@@ -243,7 +243,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.15）
 
-- v0.9.15（2026-09-21，用户："neb 任务创建续算也支持一下吧，毕竟也就是点一下续算+提交"）：**自动化规则的作用对象新增「NEB 任务（路径计算）」** —— NEB 也能一条规则搞定"续算 → 自动提交"。
+- v0.9.15（commit `a684541`，已推送 origin/main；2026-09-21 用户："neb 任务创建续算也支持一下吧，毕竟也就是点一下续算+提交"）：**自动化规则的作用对象新增「NEB 任务（路径计算）」** —— NEB 也能一条规则搞定"续算 → 自动提交"。
   ① 之前作用对象只有 项目 / opt 任务 / 自由能组：想管 NEB 只能选"项目"，但那会把同项目下的 opt / 自由能任务一起卷进来（等于不该续算的也续算）。
   ② 前端 `src/utils/ruleTarget.ts`：`RuleTargetType` 加 `neb`；`RULE_TARGET_OPTIONS` 加「NEB 任务（路径计算）」；`selectionToCondition` 生成 `task_type=neb` + `task_id`（定时规则同样按所选任务反查项目算 scope）；`conditionToSelection` 能反推回 NEB 作用对象（编辑老规则不丢）；树结构把 opt / NEB 合并成同一个 `buildTaskTree(refs, taskType)`，新增 `buildNebTaskTree()`（**项目 → NEB 组 → NEB 任务**，只列 `task_type=neb` 的主任务，不含端点 IS/FS，也不会列 conN 续算子任务）。
   ③ **后端无需改动**：`task.continuation` 本来就支持 opt / neb（`_Continuation.preflight` + `core_continuation` 的 NEB 分支：最新 conN 优先、端点 POSCAR+OUTCAR 固定、中间映像 CONTCAR→POSCAR、各映像 WAVECAR 随续算移动）；提交侧 `_submit_preflight_lines("neb", …)` 按 INCAR 的 `IMAGES` 逐个检查映像 POSCAR；接力提交与 opt 同路径（父任务 → 自动定位最新 conN）。

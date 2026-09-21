@@ -242,8 +242,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.17）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.18）
 
+- v0.9.18（2026-09-21，用户："**复制 INCAR 参数到其他作业** 好像有点问题，点击后直接远端运行 cp"）：**排查结论 + 文案修正**。
+  **排查（隔离环境 + mock 远端实测，8 项全过）**：这个按钮**不会碰任何远端文件** —— 前端 `copyIncarParamsToTasks` 就是对每个目标任务 `PUT /api/jobs/tasks/{id}/input/draft`（`file=INCAR`），后端只把参数写进该任务的 `input_state.draft`（本地 JSON，原子写），一个远端命令都不发。实测：源/目标远端 INCAR 的 sha256 前后完全一致、`audit_submit.log` 全程为空、目标远端 INCAR 内容保持它自己的旧值。
+  真正会动远端 INCAR 的只有两处（都带 `old_INCAR` 备份、也都是**基于对方远端旧文件做参数合并**，不是整文件覆盖）：① 编辑器的「同步到远端」（`upload-incar`：`modify_incar(远端旧 INCAR, params)` 后写回）；② 下一次续算建 conN 时应用草稿（`cp` 旧 INCAR 到新目录 → 按草稿改）。
+  **易混点（本次修掉）**：选择弹窗的确认按钮原来写的是「同步到 N 个作业」，容易让人以为会写远端 → 改成「**记为 N 个作业的待生效修改**」，提示也写清"只写待生效修改（不碰任何远端文件）"。
+  **待用户确认（登记 TODO §17）**：要不要给这个弹窗加一个「同时同步到远端」勾选项（勾上就对每个目标任务立刻跑一次 upload-incar，同样先备份 `old_INCAR`）；现状默认只写草稿，避免误改别人正在跑的输入。
 - v0.9.17（commit `fcbb6f8`，已推送 origin/main；2026-09-21 用户："**导入 / 复制 POSCAR** 支持 cif 文件"）：**「导入 POSCAR」支持 `.cif`（自动转成 POSCAR 再导入）**，另附命令行工具。
   ① 后端新增 `backend/cif_reader.py`（**零依赖、标准库**）：晶胞参数（容忍 `3.6150(2)` 这类不确定度写法）→ 晶格矢量（a 沿 x 的常规约定）；坐标支持 `_atom_site_fract_x/y/z` 与 `_atom_site_Cartn_x/y/z`（笛卡尔自动用晶格逆矩阵换算）；**只给不对称单元时按对称操作展开**（`_symmetry_equiv_pos_as_xyz` / `_space_group_symop_operation_xyz`，支持 `1/2+x` 这种平移），展开后按 1e-4 分数坐标去重；元素优先取 `_atom_site_type_symbol`，没有就从标签推（`O1`→O、`Fe2+`→Fe）；占据数≠1 的原子照留但回 warning（POSCAR 表达不了部分占据）；只声明空间群名却没有对称操作列表时也给 warning。输出按元素分组（VASP 要求同元素连续）、计数行与元素行严格对应、`Direct` 分数坐标。
   ② 新接口 `POST /api/tools/cif-to-poscar`（`backend/routers/meta.py`，纯文本转换不落盘、走统一鉴权）：`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；解析不了返回 400 带中文原因（"没有找到完整的晶胞参数" 等）。

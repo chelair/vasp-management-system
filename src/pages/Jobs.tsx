@@ -1463,8 +1463,10 @@ export default function Jobs() {
         title="复制 INCAR 参数到其他作业"
         targets={copyTargets}
         defaultExpandedIds={selectedProjectId ? [selectedProjectId] : []}
-        hint="当前参数将记为所选任务的待生效修改（下次续算写入，也可逐个点「同步到远端」立即生效）"
-        okText={(n) => `同步到 ${n} 个作业`}
+        hint={
+          '只写"待生效修改"（不碰任何远端文件）：目标作业下次续算时写入，也可在目标作业上点「同步到远端」立即生效'
+        }
+        okText={(n) => `记为 ${n} 个作业的待生效修改`}
         onCancel={() => setCopyParamsOpen(false)}
         onConfirm={(ids) => {
           const picked = new Set(ids);

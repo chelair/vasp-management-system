@@ -243,7 +243,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.14）
 
-- v0.9.14（2026-09-21，用户报"还是勾不上啊"）：**`GET /api/automation/status` 逐字段投影规则时漏了 `follow_up_action`** → 前端自动化页读的正是这个接口，于是：① 规则表「动作」列看不到 `→ task.submit`；② **编辑弹窗每次打开，勾选项都回显成"未勾"**（`rule.follow_up_action === 'task.submit'` 恒为 false）。用户勾选→保存→重开还是未勾，看起来就像"勾不上"，30 秒内反复保存了 4 次（22:37:03 / 06 / 10 / 33，4 条"更新规则"审计都在）。
+- v0.9.14（commit `311623d`，已推送 origin/main；2026-09-21 用户报"还是勾不上啊"）：**`GET /api/automation/status` 逐字段投影规则时漏了 `follow_up_action`** → 前端自动化页读的正是这个接口，于是：① 规则表「动作」列看不到 `→ task.submit`；② **编辑弹窗每次打开，勾选项都回显成"未勾"**（`rule.follow_up_action === 'task.submit'` 恒为 false）。用户勾选→保存→重开还是未勾，看起来就像"勾不上"，30 秒内反复保存了 4 次（22:37:03 / 06 / 10 / 33，4 条"更新规则"审计都在）。
   **注意**：v0.9.13 修的是"保存不进去"（PUT 白名单漏字段），这次是"保存进去了但读不回来"——两处是**同一条链路上的两个断点**，文件里其实早就写成了 `task.submit`（`data/config/rules/26657.json` 可证）。
   **修复**：`automation_status()` 的规则投影补 `follow_up_action`，并在该处加注释提醒"这是逐字段投影，漏字段 = 前端永远看不到"（`_schedule_rows()` 供定时任务表用的是同一份 `status.rules`，一并受益）。
   **验证**：隔离数据目录 + mock 远端 + 真实 HTTP 11 项全过（新建落盘 / PUT 可开可关 / status.rules 与 /automation/rules 都带该字段 / 未知字段 400 / 续算 created → 接力提交拿到 job_id → 父任务转 queued）；另用 jsdom 真渲染 `RuleModal` 断言 4 项：规则带该字段时勾选项**回显已勾**、点一下能勾上（不弹回）、再点能取消、主动作为"提交作业"时禁用。

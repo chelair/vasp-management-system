@@ -185,7 +185,8 @@
 - [x] 「文件结构」改为**同步状态**：最新（绿）/ 过时（黄）/ 有修改待提交（高亮）；POTCAR·submit.sh 标"不参与同步"；**去掉 WAVECAR**
 - [x] POSCAR 原子：单击选中、**Ctrl/⌘ 多选**、**Shift 拖拽框选**（Ctrl+Shift 并入）；选中标签**自动合并区间**（Al1-3 Al6-7）；序号与 POSCAR 坐标行一致（1 起）
 - [x] POSCAR ⇄ CONTCAR 切换**保持同一视角**（不再重置）；POSCAR 不参与远端修改（固定原子功能搁置）
-- [x] NEB 映像**只取 CONTCAR**（不回退 POSCAR）；NEB 映像任务详情去掉 POSCAR 页签
+- [x] NEB 映像**中间态只取 CONTCAR**（不回退 POSCAR）；NEB 映像任务详情去掉 POSCAR 页签
+      —— **v0.9.24 修正**：端点映像（最小/最大编号）远端只有 POSCAR、没有 CONTCAR，之前被整体跳过导致本地 00/04 一直是旧结构；现在端点缺 CONTCAR 时回退用 POSCAR（端点的 POSCAR 是优化后的初/末态，不是插值）
 - [x] 布尔参数支持 `.T./.F.` 等价写法（`LWAVE = .T.` 能正确勾选，且不误判为"已修改"）；含空格的多值参数（DIPOL/MAGMOM）完整保留
 - [x] 只在实际改动时写文件：上传远端先比对快照；续算 INCAR 只在参数真变化时写回
 - [x] 续算不再往 INCAR 写注释（乱码）；修正 KPOINTS 网格行行首空格、INCAR 每续算一次多一个 `\r`

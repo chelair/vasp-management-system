@@ -242,8 +242,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.23）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.24）
 
+- v0.9.24（2026-09-22，用户："前端自动化审计只显示重点就行，也是做滑动折叠，显示100条；为啥 Ag@Al2O3—neb 中的映像00和04是错的，我检查了远端是对的，巡检不会带回来吗"）：两件事。
+  **① NEB 端点映像缺 CONTCAR 时改用 POSCAR（修"00/04 是错的"）**。真相（真实远端实测 Ag PATH2 = Ag@Al2O3）：NEB 的**端点映像只有 `OUTCAR + POSCAR`、没有 CONTCAR**（`01/02/03` 这些中间映像才有 CONTCAR 17435 B），而 v0.8.3 定的规则是"缺 CONTCAR 就跳过、不回退 POSCAR"（防止把 nebmake 插值出的初始结构当成优化后结构）→ **端点每次同步都被跳过**，本地 `files/neb_images/00`、`04` 一直留着 9-13 的旧结构（sha 与远端 POSCAR 不同，3D 看板自然就是错的）。修法（`inspection_runner._sync_neb_image_structures`）：远端脚本先算出最小/最大编号映像，**端点在缺 CONTCAR 时回退 POSCAR**（端点的 POSCAR 就是 IS/FS 优化后的结构，不是插值；`@@@IMG:<img>:<来源文件>` 会把来源带回），中间映像仍只认 CONTCAR。markers 里会写明"端点 00、04 没有 CONTCAR，用 POSCAR（优化后的初/末态）"。
+  处置：用修好的逻辑对 Ag 的 NEB 组补跑了一次（远端只读）——PATH2 的 `00/04` 现在与远端 `00/POSCAR`、`04/POSCAR` 的 **sha256 完全一致**（`dda3da0e…` / `91bbe097…`，替换掉 9-13 的旧文件），CIF 一并重生成（`read_neb_image_cifs()` 每次请求现读文件，刷新页面即可看到正确端点）；PATH3 内容本来就与远端一致（只是时间戳旧）。之后每次巡检都会自动保持。
+  **② 自动化页「决策日志」默认只看重点**：卡片右上角加「只看重点」开关（默认开）+ 计数（如"重点 12 条 / 共 100 条（最多取最近 100 条）"）。重点 = 动作**真的执行过**的记录（`success / failed / blocked / dry_run`）；`skipped` 是"每个任务逐条说明为什么没命中"，一条规则扫一遍能刷十几行，默认折叠隐藏，关掉开关即可查看。表格改为 `pagination={false}` + `scroll={{ y: 320 }}`：**固定高度内滚动、表头吸顶**（与总览的运行任务面板同一套"滑动折叠"体验），一次最多渲染后端取回的最近 100 条。
+  验证：① 端点规则单测 6 项（端点 00/04 缺 CONTCAR → 用 POSCAR；有 CONTCAR 的用 CONTCAR；中间映像 02 缺 CONTCAR → 跳过不回退；CIF 只对有来源的生成；markers 文案）+ 真实远端 PATH2/PATH3 复核（sha 一致）；② 前端 `tsc` + `npm run build` 通过。
 - v0.9.23（commit `19e21f3`，已推送 origin/main；2026-09-22 排查"为什么 PATH1 没有下载"时发现并修掉）：**`_list_remote_dirs` 的远端脚本退出码陷阱（会让 NEB 归档在真实远端必然失败）**。
   根因：v0.9.21 新增的列目录脚本写成 `for d in "$RD"/pat; do [ -d "$d" ] && basename "$d"; done` ——
   ① glob 的**最后一个匹配项若是普通文件**时（真实远端 neb 目录里就有 `670641.err` / `670641.out` 这类作业日志，按字典序排在 `04` 之后），最后一条命令返回 1 → `run_remote` 的 `exit_code=1` → 被当成"远端列目录失败"抛错；

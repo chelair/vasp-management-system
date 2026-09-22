@@ -58,6 +58,8 @@ export default function Automation() {
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [schedules, setSchedules] = useState<AutomationSchedule[]>([]);
   const [decisions, setDecisions] = useState<AutomationDecision[]>([]);
+  /** 决策日志：默认只看"重点"（动作真的执行了：成功/失败/被拦/演练），未命中(skipped)默认折叠隐藏 */
+  const [decisionFocusOnly, setDecisionFocusOnly] = useState(true);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [actionCatalog, setActionCatalog] = useState<ActionCatalogItem[]>([]);
@@ -433,6 +435,16 @@ export default function Automation() {
     },
   ];
 
+  /**
+   * 决策日志的"重点"：动作**真的执行过**的记录（成功 / 失败 / 被拦 / 演练）。
+   * `skipped` 是"每个任务逐条说明为什么没命中"，一条规则扫一遍能刷十几行，默认折叠掉。
+   */
+  const focusedDecisions = useMemo(() => {
+    if (!decisionFocusOnly) return decisions;
+    const focus = new Set(['success', 'failed', 'blocked', 'dry_run']);
+    return decisions.filter((d) => focus.has(String(d.status)));
+  }, [decisions, decisionFocusOnly]);
+
   const runColumns = [
     { title: 'run_id', dataIndex: 'run_id', width: 220, render: (v: string) => <code>{v}</code> },
     { title: '动作', dataIndex: 'action', width: 150 },
@@ -560,14 +572,40 @@ export default function Automation() {
         />
       </Card>
 
-      <Card size="small" title="决策日志" className="job-card" style={{ marginBottom: 14 }}>
+      <Card
+        size="small"
+        title="决策日志"
+        className="job-card"
+        style={{ marginBottom: 14 }}
+        extra={
+          <Space size={14}>
+            <span className="preview-note">
+              {decisionFocusOnly
+                ? `重点 ${focusedDecisions.length} 条 / 共 ${decisions.length} 条（最多取最近 100 条）`
+                : `共 ${decisions.length} 条（最多取最近 100 条）`}
+            </span>
+            <Space size={6}>
+              <Tooltip title="只显示动作真的执行过的记录；关掉后连「每个任务为什么没命中」的明细一起看">
+                <span className="preview-note">只看重点</span>
+              </Tooltip>
+              <Switch size="small" checked={decisionFocusOnly} onChange={setDecisionFocusOnly} />
+            </Space>
+          </Space>
+        }
+      >
         <Table
           size="small"
           rowKey={(d) => `${d.at}-${d.action}-${d.task_id ?? ''}`}
           loading={loading}
-          dataSource={decisions}
+          dataSource={focusedDecisions}
           columns={decisionColumns}
-          pagination={{ pageSize: 20, size: 'small' }}
+          pagination={false}
+          scroll={{ y: 320 }}
+          locale={{
+            emptyText: decisionFocusOnly
+              ? '暂无重点记录（关闭「只看重点」可查看未命中明细）'
+              : '暂无记录',
+          }}
         />
       </Card>
 

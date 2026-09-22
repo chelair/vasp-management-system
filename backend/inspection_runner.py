@@ -276,6 +276,14 @@ def _merge_notes(existing: Optional[str], markers: List[str]) -> str:
 NEB_IMAGE_DIR = "images"
 
 
+def _neb_source_note(from_poscar: List[str]) -> str:
+    """同步结果的来源说明：哪些端点用了 POSCAR（缺 CONTCAR）。"""
+    if not from_poscar:
+        return "，全部取 CONTCAR"
+    ordered = sorted(from_poscar, key=lambda x: int(x) if x.isdigit() else 999)
+    return f"；端点 {'、'.join(ordered)} 没有 CONTCAR，用 POSCAR（优化后的初/末态）"
+
+
 def _sync_neb_image_structures(
     project: Dict[str, Any],
     task: Dict[str, Any],
@@ -283,7 +291,12 @@ def _sync_neb_image_structures(
 ) -> List[str]:
     """同步 NEB 各映像的**优化后结构**（IS → 中间态 → FS），生成 CIF。
 
-    - 每个数字映像目录取 CONTCAR（优化后几何），没有 CONTCAR 时退回 POSCAR；
+    - 中间映像取 CONTCAR（优化后几何）；**缺 CONTCAR 的中间映像跳过**，不回退 POSCAR
+      —— 中间映像的 POSCAR 是 nebmake 插值出来的初始结构，当成"优化后结构"展示会误导
+      （2026-09-15 用户要求）；
+    - **端点映像（最小 / 最大编号）例外**：端点的 POSCAR 就是初/末态优化后的结构（不是插值），
+      所以缺 CONTCAR 时**回退用 POSCAR**（2026-09-22 修：之前端点缺 CONTCAR 会被整体跳过，
+      本地一直留着上一次同步的旧结构 —— Ag@Al2O3 的 00/04 就是这么错的）；
     - 用**单次远端 bash 脚本**把各映像结构 base64 回传（避免 N 次 SSH 往返）；
     - 原始结构写入 <任务>/files/neb_images/<label>，CIF 写入
       <任务>/reports/structure/images/<label>.cif（覆盖旧结果，失败保留旧文件）。
@@ -299,15 +312,18 @@ def _sync_neb_image_structures(
         [
             "set -e",
             f'BASE="{con_dir}"',
+            # 端点 = 最小/最大编号的映像目录（端点 POSCAR 是优化后的初/末态，可以当结构用）
+            "FIRST=$(find \"$BASE\" -maxdepth 1 -type d -name '[0-9]*' -printf '%f\\n' 2>/dev/null | sort -n | head -1)",
+            "LAST=$(find \"$BASE\" -maxdepth 1 -type d -name '[0-9]*' -printf '%f\\n' 2>/dev/null | sort -n | tail -1)",
             'for d in "$BASE"/[0-9]*; do',
             '  [ -d "$d" ] || continue',
             '  img=$(basename "$d")',
-            # 只取 CONTCAR（优化后的结构）；缺 CONTCAR 的映像直接跳过，
-            # 不再回退 POSCAR —— 映像的 POSCAR 是 nebmake 插值出来的初始结构，
-            # 当成"优化后结构"展示会误导（2026-09-15 用户要求）
             '  f="$d/CONTCAR"',
+            '  if [ ! -s "$f" ] && { [ "$img" = "$FIRST" ] || [ "$img" = "$LAST" ]; }; then',
+            '    f="$d/POSCAR"',
+            '  fi',
             '  [ -s "$f" ] || continue',
-            '  echo "@@@IMG:$img:CONTCAR"',
+            '  echo "@@@IMG:$img:$(basename "$f")"',
             '  base64 "$f" | tr -d "\\n"',
             '  echo',
             "done",
@@ -326,23 +342,26 @@ def _sync_neb_image_structures(
     cif_dir.mkdir(parents=True, exist_ok=True)
 
     labels: List[str] = []
+    from_poscar: List[str] = []
     current: Optional[str] = None
+    source = "CONTCAR"
     buffer: List[str] = []
     sections: List[tuple] = []
     for line in result["stdout"].splitlines():
         if line.startswith("@@@IMG:"):
             if current:
-                sections.append((current, "".join(buffer)))
+                sections.append((current, "".join(buffer), source))
             parts = line.split(":")
             current = parts[1] if len(parts) > 1 else ""
+            source = parts[2] if len(parts) > 2 else "CONTCAR"
             buffer = []
             continue
         if current:
             buffer.append(line.strip())
     if current:
-        sections.append((current, "".join(buffer)))
+        sections.append((current, "".join(buffer), source))
 
-    for label, payload in sections:
+    for label, payload, source in sections:
         if not payload:
             continue
         try:
@@ -357,14 +376,14 @@ def _sync_neb_image_structures(
         out = cif_dir / f"{label}.cif"
         if convert_structure_to_cif(raw_path, out, overwrite=True):
             labels.append(label)
+            if source == "POSCAR":
+                from_poscar.append(label)
         else:
             markers.append(f"映像 {label} CIF 转换失败（保留上一次结果）")
 
     if labels:
         labels.sort(key=lambda x: int(x) if x.isdigit() else 999)
-        markers.append(
-            f"NEB 映像结构已同步：{labels[0]}–{labels[-1]}（共 {len(labels)} 个，只取 CONTCAR）"
-        )
+        markers.append(f"NEB 映像结构已同步：{labels[0]}–{labels[-1]}（共 {len(labels)} 个{_neb_source_note(from_poscar)}）")
     else:
         markers.append("未取到任何 NEB 映像结构（目录为空，或映像还没有 CONTCAR）")
     return markers

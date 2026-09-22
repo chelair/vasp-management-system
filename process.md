@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.20）
 
-- v0.9.20（2026-09-22，用户："本地的 NEB 没有什么有价值的，你把分支改好，但是远端不要动，Ag 本地的其他俩 free 和 opt 也不要动"）：**本地 NEB 分类目录统一成小写 `neb`（纯本地迁移，远端零改动）**。
+- v0.9.20（commit `f5d7901`，已推送 origin/main；2026-09-22，用户："本地的 NEB 没有什么有价值的，你把分支改好，但是远端不要动，Ag 本地的其他俩 free 和 opt 也不要动"）：**本地 NEB 分类目录统一成小写 `neb`（纯本地迁移，远端零改动）**。
   背景：TODO「发现问题」第一条 —— Windows 大小写不敏感时期 Ag 的 NEB 分支落成了大写 `NEB/`，Linux 上又补了软链接 `neb → NEB` 兜着，于是同一个分支两个名字；`projects.json` 里 **67 条** `dir_path` 写的是大写 `NEB`，而它们的 `remote_dir` 一直是小写 `neb`（远端本来就是小写）。
   做法：新增 `scripts/migrate_neb_case.py`（**dry-run 默认，不 import ssh、不连任何远端**，只处理 `<local_root>/<项目>/NEB`）——
   ① 删掉指向 `NEB` 的软链接 `neb`；② 真目录 `NEB` 改名 `neb`（同层 rename，1.8M 的树瞬时完成、内容一字不动）；③ 把 `dir_path` 里 `NEB` 段改成 `neb`（只改路径字段：`notes` 里的 "NEB 映像…" 散文不动、`remote_dir`/`input_source` 等远端路径一律不动）；④ 写库走 `save_db`（自动备份到 `data/backups/`）；⑤ 复核里把"续算子任务的 `.../conN`"识别为**逻辑路径**（本地本来就不建 conN 目录），不算缺失。

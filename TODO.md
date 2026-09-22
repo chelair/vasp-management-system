@@ -6,7 +6,9 @@
 
 # 发现问题
 
-> 本地neb目录到底采用NEB还是neb？只保留一个neb吧；
+> ~~本地neb目录到底采用NEB还是neb？只保留一个neb吧；~~ → **已解决（v0.9.20）**：本地统一成小写
+> `neb`（真目录 `NEB` 改名 + 删掉软链接 + 改写 67 条 `dir_path`），工具 `scripts/migrate_neb_case.py`；
+> **远端一律没动**，`Ag/free_energy` 与 `Ag/opt` 也确认未被动（inode + mtime 前后一致）。
 > 归档时要同步的文件有CONTCAR、INCAR、KPOINTS、POSCAR、OUTCAR、OSZICAR；
 > 对于neb作业，本地归档后文件目录结构应该是files/【INCAR、KPOINTS、0X/【POSCAR、CONTCAR、OUTCAR、OSZICAR】】
 

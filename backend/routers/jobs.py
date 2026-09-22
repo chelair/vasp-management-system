@@ -1460,13 +1460,26 @@ def _schedule_archive_outputs(
             if project is None or task is None:
                 return
             result = download_archive_outputs(str(project.get("server") or ""), task)
+            images = result.get("images") or []
+            image_saved = result.get("image_saved") or []
+            image_missing = result.get("image_missing") or []
+            extra = ""
+            if images:
+                extra = (
+                    f" images={len(images)} img_saved={len(image_saved)}"
+                    f" img_missing={len(image_missing)}"
+                )
+            elif image_missing:
+                extra = f" img_missing={len(image_missing)}"
+            if result.get("overwrote_draft"):
+                extra += f" overwrote_draft={','.join(result['overwrote_draft'])}"
             _audit_log(
                 project_name,
                 task_id,
                 str(result.get("source_dir") or ""),
                 "archive-outputs",
                 f"OK saved={','.join(result.get('saved') or []) or '-'} "
-                f"missing={','.join(result.get('missing') or []) or '-'}",
+                f"missing={','.join(result.get('missing') or []) or '-'}{extra}",
             )
         except permissions.PermissionDenied:
             raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉

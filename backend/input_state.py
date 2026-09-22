@@ -30,8 +30,12 @@ from task_paths import task_dir
 
 SNAPSHOT_FILES = ("INCAR", "KPOINTS", "POSCAR", "CONTCAR")
 CIF_FILES = ("POSCAR", "CONTCAR")
-#: 归档（关闭任务）时静默拉回本地的输出文件
-ARCHIVE_OUTPUT_FILES = ("OUTCAR", "OSZICAR")
+#: 归档（关闭任务）时静默拉回本地的文件：普通任务取"最新计算目录"下的这些文件
+#: （2026-09-22 用户口径：CONTCAR、INCAR、KPOINTS、POSCAR、OUTCAR、OSZICAR）
+ARCHIVE_OUTPUT_FILES = ("CONTCAR", "INCAR", "KPOINTS", "POSCAR", "OUTCAR", "OSZICAR")
+#: NEB 任务归档：共享文件放 `files/`，各映像 `00..NN` 的这四个文件放 `files/<映像号>/`
+ARCHIVE_NEB_SHARED = ("INCAR", "KPOINTS")
+ARCHIVE_NEB_IMAGE_FILES = ("POSCAR", "CONTCAR", "OUTCAR", "OSZICAR")
 
 
 # --------------------------------------------------------------------- 解析
@@ -242,6 +246,32 @@ def _download_mirror_file(
         return False
 
 
+def _list_remote_dirs(server: str, remote_dir: str, pattern: str) -> List[str]:
+    """远端列出匹配 `pattern` 的**目录名**（如 `[0-9]*` 映像、`con[0-9]*` 续算目录）。"""
+    if ssh.mock_enabled():
+        base = ssh.mock_local_path(remote_dir)
+        if not base.is_dir():
+            return []
+        names = [p.name for p in base.glob(pattern) if p.is_dir()]
+    else:
+        script = (
+            f'RD="{remote_dir}"; [ -d "$RD" ] || exit 0; '
+            f'for d in "$RD"/{pattern}; do [ -d "$d" ] && basename "$d"; done'
+        )
+        result = ssh.run_remote(server, f"bash -c '{script}'", timeout=30)
+        if result.get("exit_code") != 0:
+            raise RuntimeError(
+                (result.get("stderr") or result.get("stdout") or "远端列目录失败").strip()[:200]
+            )
+        names = [ln.strip() for ln in str(result.get("stdout") or "").splitlines() if ln.strip()]
+
+    def _index(name: str) -> int:
+        digits = "".join(ch for ch in name if ch.isdigit())
+        return int(digits or 0)
+
+    return sorted(set(names), key=_index)
+
+
 def pending_files(task: Dict[str, Any]) -> set:
     """有"未生效草稿"的文件名集合（这些文件同步时不覆盖本地副本）。"""
     state = task.get("input_state") or {}
@@ -333,10 +363,44 @@ def build_snapshot(
     }
 
 
-def download_archive_outputs(server: str, task: Dict[str, Any]) -> Dict[str, Any]:
-    """归档时静默拉回"最新计算目录"的 OUTCAR / OSZICAR 到本地镜像。
+def _archive_one_dir(
+    server: str,
+    task: Dict[str, Any],
+    source_dir: str,
+    names: Tuple[str, ...],
+    *,
+    subdir: str = "",
+    drafted: Optional[set] = None,
+) -> Tuple[List[str], List[str], List[str]]:
+    """把 `source_dir`（可选 `subdir` 子目录）下的若干文件下到本地镜像。
 
-    目录选择：优先含 OUTCAR 的最大编号 conN，否则任务主目录。
+    返回 `(saved, missing, overwrote_draft)`：第三项是"这次覆盖了本地有未生效草稿的副本"
+    的文件名（归档留档要真实，所以照下，但要在审计里标出来）。
+    """
+    saved: List[str] = []
+    missing: List[str] = []
+    overwrote: List[str] = []
+    for name in names:
+        remote_path = f"{source_dir}/{subdir}/{name}" if subdir else f"{source_dir}/{name}"
+        local_name = f"{subdir}/{name}" if subdir else name
+        if _download_mirror_file(server, task, remote_path, local_name):
+            saved.append(local_name)
+            if drafted and local_name in drafted:
+                overwrote.append(local_name)
+        else:
+            missing.append(local_name)
+    return saved, missing, overwrote
+
+
+def download_archive_outputs(server: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    """归档（关闭任务）时静默把"本次计算用到的文件"拉回本地镜像。
+
+    - **普通任务**（opt / frac / ele…）：取"最新计算目录"（含 OUTCAR 的最大编号 conN，否则主目录），
+      拉 `CONTCAR / INCAR / KPOINTS / POSCAR / OUTCAR / OSZICAR`（存在才下）；
+    - **NEB 任务**：共享文件 `INCAR / KPOINTS` 放 `files/`，各映像 `00..NN` 的
+      `POSCAR / CONTCAR / OUTCAR / OSZICAR` 放 `files/<映像号>/`
+      （源目录 = 最大编号 conN，无则任务主目录）。
+
     单文件失败只记录、不抛错 —— 归档本身不依赖它。
     """
     remote_dir = resolve_remote_path(
@@ -344,15 +408,48 @@ def download_archive_outputs(server: str, task: Dict[str, Any]) -> Dict[str, Any
     ).rstrip("/")
     if not remote_dir:
         raise ValueError("任务缺少远程目录")
+    pending = pending_files(task)
+
+    if str(task.get("task_type") or "") == "neb":
+        cons = _list_remote_dirs(server, remote_dir, "con[0-9]*")
+        source_dir = f"{remote_dir}/{cons[-1]}" if cons else remote_dir
+        saved, missing, overwrote = _archive_one_dir(
+            server, task, source_dir, ARCHIVE_NEB_SHARED, drafted=pending
+        )
+        images = _list_remote_dirs(server, source_dir, "[0-9]*")
+        image_saved: List[str] = []
+        image_missing: List[str] = []
+        for image in images:
+            got, lost, _ = _archive_one_dir(
+                server, task, source_dir, ARCHIVE_NEB_IMAGE_FILES, subdir=image
+            )
+            image_saved += got
+            image_missing += lost
+        return {
+            "source_dir": source_dir,
+            "latest_dir": cons[-1] if cons else "",
+            "saved": saved,
+            "missing": missing,
+            "images": images,
+            "image_saved": image_saved,
+            "image_missing": image_missing,
+            "overwrote_draft": overwrote,
+        }
+
     source_dir = _newest_dir_with_file(server, remote_dir, "OUTCAR") or remote_dir
-    saved: List[str] = []
-    missing: List[str] = []
-    for name in ARCHIVE_OUTPUT_FILES:
-        if _download_mirror_file(server, task, f"{source_dir}/{name}", name):
-            saved.append(name)
-        else:
-            missing.append(name)
-    return {"source_dir": source_dir, "saved": saved, "missing": missing}
+    saved, missing, overwrote = _archive_one_dir(
+        server, task, source_dir, ARCHIVE_OUTPUT_FILES, drafted=pending
+    )
+    return {
+        "source_dir": source_dir,
+        "latest_dir": "",
+        "saved": saved,
+        "missing": missing,
+        "images": [],
+        "image_saved": [],
+        "image_missing": [],
+        "overwrote_draft": overwrote,
+    }
 
 
 def merge_snapshot(task: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:

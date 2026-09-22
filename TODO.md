@@ -9,8 +9,11 @@
 > ~~本地neb目录到底采用NEB还是neb？只保留一个neb吧；~~ → **已解决（v0.9.20）**：本地统一成小写
 > `neb`（真目录 `NEB` 改名 + 删掉软链接 + 改写 67 条 `dir_path`），工具 `scripts/migrate_neb_case.py`；
 > **远端一律没动**，`Ag/free_energy` 与 `Ag/opt` 也确认未被动（inode + mtime 前后一致）。
-> 归档时要同步的文件有CONTCAR、INCAR、KPOINTS、POSCAR、OUTCAR、OSZICAR；
-> 对于neb作业，本地归档后文件目录结构应该是files/【INCAR、KPOINTS、0X/【POSCAR、CONTCAR、OUTCAR、OSZICAR】】
+> ~~归档时要同步的文件有CONTCAR、INCAR、KPOINTS、POSCAR、OUTCAR、OSZICAR；~~
+> ~~对于neb作业，本地归档后文件目录结构应该是files/【INCAR、KPOINTS、0X/【POSCAR、CONTCAR、OUTCAR、OSZICAR】】~~
+> → **已解决（v0.9.21）**：普通任务归档拉六件套（存在才下）；NEB 归档落成
+> `files/{INCAR,KPOINTS}` + `files/<映像号>/{POSCAR,CONTCAR,OUTCAR,OSZICAR}`；审计行带
+> `saved/missing/images/img_saved/img_missing`。
 
 ## 当前进度概览
 
@@ -137,7 +140,7 @@
 - [x] **本地不再创建 `conN`**：`task_paths.strip_continuation_suffix()` 让续算子任务的本地路径归并到任务族根目录（`dir_path` 字段仍保留 `.../conN` 作逻辑主键）
 - [x] **`inputs/` 并入 `files/`**：本地每个任务只有一份镜像，同步时用远端"最新计算目录"的 INCAR/KPOINTS/POSCAR/CONTCAR（+CIF）**覆盖**写入
 - [x] **草稿保护**：有未生效草稿的文件跳过覆盖（本地副本保留），元数据仍按远端记录并标 `protected`，界面"本次计算值"不受影响
-- [x] **归档静默拉取**：任务归档（关闭）后后台线程拉最新 `OUTCAR` + `OSZICAR` 到 `files/`，失败只记审计
+- [x] **归档静默拉取**：任务归档（关闭）后后台线程拉"本次计算用到的文件"到 `files/`（v0.9.21 起：普通任务六件套 CONTCAR/INCAR/KPOINTS/POSCAR/OUTCAR/OSZICAR；NEB 落成 `files/{INCAR,KPOINTS}` + `files/<映像号>/{POSCAR,CONTCAR,OUTCAR,OSZICAR}`），失败只记审计
 - [x] 迁移脚本 `scripts/flatten_local_mirror.py`（dry-run/`--apply`）已执行：14 个 `inputs/` 合并、131 个空 `conN` 骨架删除，18 个被覆盖文件备份到 `data/backups/local_mirror_20260918_200029/`
 - [x] mock 模式补强：`ssh.mock_enabled()/mock_local_path()` 公开，"最新目录定位"在 mock 下改扫本地 mock 远端树（原先无法离线联调同步路径）
 - [x] **集群采集合并**：新增 `backend/cluster_probe.py`，总览与作业管理共用一次 exec 采集 + 一份 TTL 缓存（`cluster_cache_seconds`，默认 300s）；打开页面不再各自发 SSH，任一页刷新强制重采且两边同步，巡检后失效预热；采集失败有旧数据时标 `stale`（前端显示「缓存数据」）
@@ -709,7 +712,7 @@
 - 写接口散布在 `jobs`(21) / `groups`(3) / `projects`(4) / `inspections`(3) / `reports`(2) / 配置类(8)，**参数形态不统一**（`{content}` / `{params}` / 空 body / `{atoms}` …）。
 - **没有**：统一动作目录、dry-run 前置校验（只有 `submit` 内嵌了五件套非空检查）、幂等键、异步 run 句柄、统一动作台账（仅 `jobs.py::_audit_log` 文本行，且只覆盖 部分动作）、审批闸门、通知出口。
 - **长动作同步阻塞**：`create-neb-files` 远端脚本 timeout 300s、`create-frac`/`build-ele-inputs` 180s、`generate-potcar` 120s、全局巡检 75–90s、`continuation` ≈3.5s。
-- **已有的自动化**：巡检定时（2h）/报告定时（24h，后台 60s 轮询）、提交成功后 2s 自动同步输入、归档后 1.5s 拉 OUTCAR/OSZICAR、巡检后作废并预热集群采集。
+- **已有的自动化**：巡检定时（2h）/报告定时（24h，后台 60s 轮询）、提交成功后 2s 自动同步输入、归档后 1.5s 拉"本次计算用到的文件"（普通六件套；NEB 按映像目录）、巡检后作废并预热集群采集。
 - **已有的"给大模型"半成品**：`report_rules.json` 13 条声明式规则 → `risks[].advice` → `actions.items[{action_id,priority,task_id,action(自然语言),reason,link,risk_id}]` + `llm_context{purpose,key_findings,open_questions,data_references,constraints}` —— 但 `action` 只是句子，没有可执行的动作名与参数。
 
 **建议新增的接口**

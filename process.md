@@ -242,8 +242,15 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.21）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.22）
 
+- v0.9.22（2026-09-22，用户："按最好的改，要确保改完系统运行不受影响"）：**隔离数据目录的本地镜像根目录自动落在数据目录内**（修掉"隔离实例把本地镜像写回生产树"的隐患）。
+  根因（实测探针）：生产 `data/config/path_mapping.json` 与默认模板里 `local_root` 都是**相对值** `data/projects`，而 `paths.local_root()` 对相对值是**按仓库根**拼的 —— 生产恰好 `<仓库>/data/projects` = `PROJECTS_DIR`，看不出问题；一旦 `--data-dir`（或 `VASP_WEB_DATA_DIR`）起隔离实例，本地镜像的**解析与反解析两个方向**都会指回生产树（我这轮和上一轮的隔离测试各串了一次，泄漏目录已清理）。
+  **新规则**（`backend/paths.py::local_root`，只影响"显式指定数据目录"的场景）：① 绝对路径 `local_root` 原样生效（想放别处就写绝对路径）；② 相对值 + 显式数据目录 → 一律 `<数据目录>/projects`（= `PROJECTS_DIR`，本来就是数据目录感知的）；③ 其余情况（生产：没有显式数据目录）→ 仍按仓库根解析，**行为与历史完全一致**。
+  配套：`routers/paths.py` 的 `/path-mapping/rebase` 原来自己复制了一份"相对值按仓库根"的解析（会与新规则打架），改成复用 `paths.local_root()`；`main.py` 启动时打印一行 `[paths] 本地项目根目录：…｜数据目录：…`，若隔离实例的根目录落在数据目录之外（写了绝对路径）会带 ⚠️ 提示；文档 §11.2 那条"换数据目录记得把 local_root 改成绝对路径"随之作废（改数据目录不再需要手动改配置）。
+  顺带修掉一个 mock-only 隐患：`input_state._newest_dir_with_file()` 在 mock 模式下"主目录命中"时返回的是**模拟根绝对路径**，调用方再走一次路径映射就被二次拼接 → 主目录里的文件永远下载失败（真实 SSH 模式不受影响）。现在统一返回远端路径，mock 与真实行为一致。
+  **影响面核查（改前先查的）**：读 `local_root()` 的有 `task_paths.task_dir/task_files_dir`、`mappers`（前端 local_dir）、`continuation.local_continuation_dir`、`jobs`（重命名/删除/写文件/归档）、`projects`/`groups`（创建本地目录）、`cif_convert`（reports/structure）、`inspection_runner`、以及各 `scripts/*`；`data/checks`、`data/reports`、`data/backups`、`data/users`、`data/audit`、`data/aux_molecules*` 全部直接用 `DATA_DIR`，不受影响；同类"相对路径按仓库根解析"的配置只有 `local_root` 一处。
+  **验证**：① 解析规则 12 项（生产不变仍 `<仓库>/data/projects`、隔离落 `<数据目录>/projects`、自定义相对值也落数据目录、绝对路径优先、模板缺 `local_root` 时兜底、数据目录不叫 data 也在数据目录内、探针未在生产目录新增任何东西）；② 隔离实例端到端 13 项（启动日志写明根目录 → 建项目 → 写本地 POSCAR → 归档拉六件套，全部落在数据目录内，**生产 `data/projects` 目录清单前后完全一致**；`/path-mapping/rebase` 走同一个根）；③ 生产等价性（不设环境变量时 `local_root()` = `<仓库>/data/projects`，120 个任务的 `dir_path` 全部解析到真实目录，Ag 的 NEB 分支解析正确，`main` 与全部路由可正常导入）。
 - v0.9.21（commit `6bdd049`，已推送 origin/main；2026-09-22 用户对 TODO「发现问题」②③ 说"做吧"）：**归档（关闭任务）时的文件同步扩到六件套 + NEB 按映像目录留档**。
   ① **普通任务**（opt / frac / ele…）：原来只拉 `OUTCAR / OSZICAR`，现在拉 **`CONTCAR / INCAR / KPOINTS / POSCAR / OUTCAR / OSZICAR`**（存在才下），源目录仍是"含 OUTCAR 的最大编号 conN，否则主目录"（`_newest_dir_with_file`）。
   ② **NEB 任务**：原来基本拉不到东西（映像文件在 `0X/` 子目录里、主目录没有 OUTCAR），现在按用户口径落成本地结构
@@ -476,6 +483,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 8. 已知注意事项 / 坑
 
+- **用 `--data-dir` 起隔离实例时，本地镜像根目录的解析**（v0.9.22 已修，之前是坑）：`path_mapping.local_root` 写相对值时，历史上是按**仓库根**解析的，所以隔离实例会把本地镜像写进**生产** `data/projects/<项目>/…`（我这轮和上一轮各串了一次）。现在规则是"显式数据目录 → 相对值一律落 `<数据目录>/projects`；绝对路径仍优先"，并在启动日志打印 `[paths] 本地项目根目录：…`。**做隔离验证前先看一眼这行日志**；要放别处就写绝对路径。
 - **组页面里 `selectedTask` 是 `null`**（v0.9.19 踩坑，新增"依赖当前作业"的功能时必看）：自由能结构页 / NEB 组页渲染的是**组内子任务**的详情（`renderTaskDetail(task)`），但选组时页面会 `setSelectedTaskId(null)`，所以 `selectedTask` 取不到东西——**新写页面级处理函数时必须把 `task` 显式传进来（或像 `copyParamsSource` 那样在打开弹窗时记住来源作业），不要只依赖 `selectedTask`**；取不到时也**不要静默 return**，要给用户明确提示，否则就是"点了没反应"。「复制 INCAR 参数到其他作业」踩过一次。
 - **自动化规则加字段时四处必须同时改**（v0.9.13 / v0.9.14 连着踩的坑）：① `routers/automation.py` 的 `RULE_FIELDS`（新建/编辑校验白名单）；② 同文件的 `EDITABLE_FIELDS`（`PUT` 能覆盖的字段）；③ **`automation_status()` 里那份规则投影**（逐字段列 key，前端自动化页读的是它 —— 漏 key = 界面上永远看不到/回显不出来）；④ 前端 `RuleModal.tsx` 提交的 payload（消费点在 `automation/events.py`）。两次事故：v0.9.13 漏了 ② → "勾了保存不生效"；v0.9.14 漏了 ③ → "保存成功了但重开弹窗还是未勾"。现在顶层未知/拼错字段会直接 400 并列出可用字段。排查"配置没生效"先按这两类分：**写不进**（②）还是**读不回**（③）。
 - **3Dmol 视图的两个硬性要求**（v0.6.10 踩坑）：① 承载 3Dmol 的容器必须有 `position: relative`（+ `overflow: hidden`），否则画布绝对定位到页面左上角、盖出一块白色遮挡（opt 的 `.s3d-canvas`、NEB 的 `.neb3d__canvas` 都已遵守）；② 给某类任务新增专属 `analysis` 载荷时，**必须同时给它一个独立的渲染分支**——不能让它落到 `StructurePanel`（它按 opt 字段访问 `files/poscar/warnings`，字段缺失会抛错白屏）。新增任务类型分析时请照此处理。
@@ -582,7 +590,7 @@ sudo journalctl -u vasp-manager -n 100 --no-pager
 | 后端 `backend/*.py` | `sudo systemctl restart vasp-manager` |
 | `data/config/*.json` | 重启最稳（部分设置接口即时生效） |
 | 仅 `data/` 运行时数据 | 无需重启 |
-| 换数据目录 | 用 `--data-dir`，并把 `path_mapping.local_root` 改成**绝对路径** `<数据根>/projects` |
+| 换数据目录 | 用 `--data-dir`（v0.9.22 起本地镜像根**自动**落在该数据目录的 `projects/`，不需要再手改 `path_mapping.local_root`；想放别处才写**绝对路径**） |
 
 **硬规则**：`data/` 是唯一真相，**同一时刻只能有一个后端在写** —— 起前台进程前先 `systemctl stop`；旧 Windows 机保持停止。
 

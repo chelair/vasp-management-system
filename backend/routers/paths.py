@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from config import CONFIG_DIR, PROJECT_ROOT, PROJECTS_DIR, load_path_mapping, load_servers
 from envelope import fail, ok
 import permissions
+from paths import local_root as resolve_local_root
 from storage import load_db, save_db
 
 router = APIRouter(prefix="/path-mapping", tags=["path-mapping"])
@@ -107,12 +108,8 @@ def rebase_paths(request: Request):
     try:
         permissions.ensure_admin(getattr(request.state, "user", None), "只有管理员可以批量重算路径")
         mapping = load_path_mapping()
-        raw_root = str(mapping["local_root"])
-        local_root = (
-            Path(raw_root).resolve()
-            if Path(raw_root).is_absolute()
-            else (PROJECT_ROOT / raw_root).resolve()
-        )
+        # 复用统一解析（v0.9.22 起：显式数据目录下相对 local_root 落在数据目录内）
+        local_root = resolve_local_root()
         remote_roots = mapping.get("remote_roots", {})
         db = load_db()
         updated = skipped = 0

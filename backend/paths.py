@@ -7,19 +7,34 @@
 - 解析时：resolve_local_path / resolve_remote_path 负责拼接根目录。
 """
 
+import os
 from pathlib import Path
 from typing import Optional
 
-from config import PROJECT_ROOT, PROJECTS_DIR, load_path_mapping, load_servers
+from config import DATA_DIR, PROJECT_ROOT, PROJECTS_DIR, load_path_mapping, load_servers
 
 
 def local_root() -> Path:
-    """本地项目根目录（绝对路径）。"""
+    """本地项目根目录（绝对路径）。
+
+    解析规则（v0.9.22 起）：
+
+    1. `path_mapping.local_root` 写成**绝对路径** → 原样使用（想把镜像放别处就写绝对路径）；
+    2. 写成**相对路径**且**显式指定了数据目录**（`--data-dir` / `VASP_WEB_DATA_DIR`）→
+       一律用 `<数据目录>/projects`（= `PROJECTS_DIR`，本身就是数据目录感知的）。
+       隔离实例的本地镜像因此**一定落在自己的数据目录里**，不会串到生产树；
+       想换镜像目录位置请在 `path_mapping.local_root` 里写**绝对路径**；
+    3. 其余情况（生产：没有显式数据目录）→ 相对**仓库根**解析，即
+       `data/projects` = `<仓库>/data/projects`（与历史行为完全一致）。
+    """
     mapping = load_path_mapping()
     raw = str(mapping.get("local_root") or PROJECTS_DIR)
     p = Path(raw)
     if p.is_absolute():
         return p.resolve()
+    data_env = os.environ.get("VASP_WEB_DATA_DIR")
+    if data_env:
+        return PROJECTS_DIR.resolve()
     return (PROJECT_ROOT / p).resolve()
 
 

@@ -220,7 +220,9 @@ def _newest_dir_with_file(server: str, remote_dir: str, filename: str) -> str:
             if _has_file(candidate):
                 return f"{remote_dir.rstrip('/')}/{candidate.name}"
         if _has_file(base):
-            return str(base)
+            # 返回**远端路径**（与 conN 分支一致）：mock 模式下调用方还会再走一次
+            # `ssh.download_file` 的路径映射，返回模拟根下的绝对路径会被二次拼接而找不到文件
+            return remote_dir.rstrip("/")
         return ""
     script = (
         f'for d in $(ls -d "{remote_dir}"/con[0-9]* 2>/dev/null | sort -V -r); do '

@@ -18,8 +18,8 @@ Linux 上又补了一条软链接 `neb -> NEB` 兜着。代码（`task_paths.py`
     .venv/bin/python scripts/migrate_neb_case.py --project Ag_20260830
     .venv/bin/python scripts/migrate_neb_case.py --data-dir /tmp/x --apply
 
-> 用 `--data-dir` 做隔离测试时，记得把该目录 `config/path_mapping.json` 的 `local_root`
-> 写成**绝对路径**，否则相对路径会按仓库根解析（见 process.md §11.2）。
+> `--data-dir` 隔离时，本地镜像根目录会自动落在该数据目录的 `projects/`（v0.9.22 起，
+> 相对 `local_root` 不再按仓库根解析）；想把镜像放到别处才需要写绝对路径。
 """
 
 from __future__ import annotations

@@ -1,5 +1,6 @@
 """FastAPI 应用入口：统一信封、校验错误翻译、后台依赖检查、静态托管 dist。"""
 
+import os
 import threading
 from contextlib import asynccontextmanager
 
@@ -36,6 +37,20 @@ from ssh import warmup_connection
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_data_dirs()
+
+    # 路径解析自检（v0.9.22）：隔离实例的本地镜像必须落在自己的数据目录里，
+    # 一眼能从日志看到解析结果；写在绝对路径上且跑到数据目录外时给醒目提示
+    try:
+        from config import DATA_DIR
+        from paths import local_root as _local_root
+
+        root = _local_root()
+        outside = ""
+        if os.environ.get("VASP_WEB_DATA_DIR") and not str(root).startswith(str(DATA_DIR.resolve())):
+            outside = " ⚠️ 不在数据目录内（local_root 写的是绝对路径，注意别串到别的实例的数据）"
+        print(f"[paths] 本地项目根目录：{root}｜数据目录：{DATA_DIR}{outside}", flush=True)
+    except Exception as e:  # noqa: BLE001 - 自检失败不阻塞启动
+        print(f"[paths] 路径解析自检失败（不影响启动）：{e}", flush=True)
 
     # 账号底座（第 1 步）：users.json 不存在时自动创建默认管理员（随机密码打印一次）
     # 目前只做"文件与账号初始化"，**没有任何接口依赖它**（认证/授权见后续步骤）

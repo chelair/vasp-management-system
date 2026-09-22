@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.21）
 
-- v0.9.21（2026-09-22，用户对 TODO「发现问题」②③ 说"做吧"）：**归档（关闭任务）时的文件同步扩到六件套 + NEB 按映像目录留档**。
+- v0.9.21（commit `6bdd049`，已推送 origin/main；2026-09-22 用户对 TODO「发现问题」②③ 说"做吧"）：**归档（关闭任务）时的文件同步扩到六件套 + NEB 按映像目录留档**。
   ① **普通任务**（opt / frac / ele…）：原来只拉 `OUTCAR / OSZICAR`，现在拉 **`CONTCAR / INCAR / KPOINTS / POSCAR / OUTCAR / OSZICAR`**（存在才下），源目录仍是"含 OUTCAR 的最大编号 conN，否则主目录"（`_newest_dir_with_file`）。
   ② **NEB 任务**：原来基本拉不到东西（映像文件在 `0X/` 子目录里、主目录没有 OUTCAR），现在按用户口径落成本地结构
      `files/{INCAR,KPOINTS}` + `files/<映像号>/{POSCAR,CONTCAR,OUTCAR,OSZICAR}`（源目录 = 最大编号 conN，无则主目录；映像目录用新的 `_list_remote_dirs()` 列，mock 分支走本地树扫描、真实分支一次 `bash` 列目录）。

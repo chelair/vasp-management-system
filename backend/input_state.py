@@ -256,9 +256,13 @@ def _list_remote_dirs(server: str, remote_dir: str, pattern: str) -> List[str]:
             return []
         names = [p.name for p in base.glob(pattern) if p.is_dir()]
     else:
+        # 注意：`for d in "$RD"/pat; do [ -d "$d" ] && basename "$d"; done` 在
+        # "一个都没匹配 / 最后一个是普通文件" 时最后一条命令返回非 0，会被误判成远端失败
+        # （真实远端上踩过：neb 目录里有 00..04 目录 + 一个 00 开头的文件时直接抛错）。
+        # 用 if 形式：条件为假时 if 语句本身返回 0。
         script = (
-            f'RD="{remote_dir}"; [ -d "$RD" ] || exit 0; '
-            f'for d in "$RD"/{pattern}; do [ -d "$d" ] && basename "$d"; done'
+            f'RD="{remote_dir}"; '
+            f'for d in "$RD"/{pattern}; do if [ -d "$d" ]; then basename "$d"; fi; done'
         )
         result = ssh.run_remote(server, f"bash -c '{script}'", timeout=30)
         if result.get("exit_code") != 0:

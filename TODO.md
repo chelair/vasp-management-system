@@ -6,8 +6,9 @@
 
 # 发现问题
 
-> （当前无未处理问题）
-> 原「自由能路径和 neb 路径重名时会自动合并」已修复，见「已完成（v0.8.6）」。
+> 本地neb目录到底采用NEB还是neb？只保留一个neb吧；
+> 归档时要同步的文件有CONTCAR、INCAR、KPOINTS、POSCAR、OUTCAR、OSZICAR；
+> 对于neb作业，本地归档后文件目录结构应该是files/【INCAR、KPOINTS、0X/【POSCAR、CONTCAR、OUTCAR、OSZICAR】】
 
 ## 当前进度概览
 

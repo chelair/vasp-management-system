@@ -242,8 +242,14 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.19）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.20）
 
+- v0.9.20（2026-09-22，用户："本地的 NEB 没有什么有价值的，你把分支改好，但是远端不要动，Ag 本地的其他俩 free 和 opt 也不要动"）：**本地 NEB 分类目录统一成小写 `neb`（纯本地迁移，远端零改动）**。
+  背景：TODO「发现问题」第一条 —— Windows 大小写不敏感时期 Ag 的 NEB 分支落成了大写 `NEB/`，Linux 上又补了软链接 `neb → NEB` 兜着，于是同一个分支两个名字；`projects.json` 里 **67 条** `dir_path` 写的是大写 `NEB`，而它们的 `remote_dir` 一直是小写 `neb`（远端本来就是小写）。
+  做法：新增 `scripts/migrate_neb_case.py`（**dry-run 默认，不 import ssh、不连任何远端**，只处理 `<local_root>/<项目>/NEB`）——
+  ① 删掉指向 `NEB` 的软链接 `neb`；② 真目录 `NEB` 改名 `neb`（同层 rename，1.8M 的树瞬时完成、内容一字不动）；③ 把 `dir_path` 里 `NEB` 段改成 `neb`（只改路径字段：`notes` 里的 "NEB 映像…" 散文不动、`remote_dir`/`input_source` 等远端路径一律不动）；④ 写库走 `save_db`（自动备份到 `data/backups/`）；⑤ 复核里把"续算子任务的 `.../conN`"识别为**逻辑路径**（本地本来就不建 conN 目录），不算缺失。
+  执行结果：Ag 顶层现在只有 `free_energy / neb / opt` 三个目录（软链接已消失）；67 条 `dir_path` 全部改写完成、**0 条残留大写 NEB**；复核 120 条指向真实存在的目录、144 条是续算逻辑路径、0 条异常（120 与 §11.3 的"4 项目 / 120 可见任务"口径一致）；`free_energy` 与 `opt` 的 **inode 与 mtime 执行前后完全一致**（9841561/1789655370、9841563/1789655384），确认没被动过；`scripts/migrate_neb_case.py --apply` 再跑一次是 0 改动（幂等）。
+  验证：脚本级隔离测试 17 项（dry-run 不改盘 / apply 改名+软链接清理+文件跟随 / free_energy·opt 不受影响 / `dir_path` 改写而 `remote_dir`·`notes` 不动 / 复核口径 / 幂等 / 有备份）+ 生产 dry-run 人工核对（1 个目录 + 67 条路径，与预期完全一致）。
 - v0.9.19（commit `20faac4`，已推送 origin/main；2026-09-21，两件事一起发）：**①「复制 INCAR 参数到其他作业」在自由能/NEB 组页面点不动（静默无响应）**；**②「排队中」不再判成巡检警告**。
   **① 根因**：自由能结构页 / NEB 组页渲染的是**组内子任务**的详情，而选组时页面把 `selectedTaskId` 置成了 `null`（`handleSelectStructure` / `handleSelectGroup` / `handleSelectTask` 的 NEB 分支都会 `setSelectedTaskId(null)`）。「复制到其他作业」原来只从全局 `selectedTask` 取来源作业 → 取到 `null` 后 `if (!ws) return;` **静默返回**：弹窗不关、没有提示、一个请求都不发 —— 表现就是"点了没反应、像卡住"。
   修复：① 打开弹窗时**显式记住来源作业**（新增 `copyParamsSource`，`onCopyToOthers` 里 `setCopyParamsSource(task)`）；② `handleCopyParams` 改成 `task ?? copyParamsSource ?? selectedTask`，取不到就 `message.error` 明确报错（不再静默）；③ 来源作业从可选目标里排除，数量统计按过滤后的列表算。
@@ -586,7 +592,7 @@ sudo journalctl -u vasp-manager -n 100 --no-pager
 
 | 现象 | 根因 | 处理 |
 | --- | --- | --- |
-| NEB 映像只剩中间 3 个、本地文件"看不到" | **Windows 大小写不敏感**：老数据在 `data/projects/Ag_20260830/NEB/`，而 `projects.json` 里三个主 NEB 任务的 `dir_path` 写的是 `neb/`；Linux 上是两个目录，后端在小写路径下新建了空壳 | 已把新文件并回老树并做软链接 `neb → NEB`（两套引用命中同一份数据）。全盘审计确认再无其它大小写分叉；新增目录时留意同层仅大小写不同的名字 |
+| NEB 映像只剩中间 3 个、本地文件"看不到" | **Windows 大小写不敏感**：老数据在 `data/projects/Ag_20260830/NEB/`，而 `projects.json` 里三个主 NEB 任务的 `dir_path` 写的是 `neb/`；Linux 上是两个目录，后端在小写路径下新建了空壳 | **v0.9.20 已彻底归一**：本地统一成小写 `neb`（真目录改名 + 删掉当年的软链接 `neb → NEB` + 改写 67 条 `dir_path`），回归工具 `scripts/migrate_neb_case.py`（dry-run 默认、不连远端、只动 `<项目>/NEB`）。**新增目录时留意同层仅大小写不同的名字** |
 | apt / npm 报 `Temporary failure resolving …`，而 `dig` 正常 | SecureLink（校园 VPN）数据面 `sl-dp` 把 `/etc/resolv.conf` 改成 `nameserver 127.0.0.1` 自建 DNS 代理，对部分域名解析失败 | 用 `/etc/hosts` 托管段 + `/32` 例外路由 + 15 秒自愈 systemd timer（`codex-net-guard`）挡住；日志 `/var/log/codex-net-guard.log` |
 | 连 SecureLink 时后端/面板掉线 | 隧道 `tun0` 抢默认路由并把出站流量导向校园出口（模型后端 `api.deepseek.com` 随之不可达） | 同上（例外路由让后端/Codex 流量始终走物理网卡）；**HPC 操作则需要在 SecureLink 连上时做**（`hpc.xmu.edu.cn` 的路由在 `tun0` 里） |
 | 改后端不生效 | 后端无 `--reload` | `sudo systemctl restart vasp-manager` |

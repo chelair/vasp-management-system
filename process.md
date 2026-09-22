@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.23）
 
-- v0.9.23（2026-09-22，排查"为什么 PATH1 没有下载"时发现并修掉）：**`_list_remote_dirs` 的远端脚本退出码陷阱（会让 NEB 归档在真实远端必然失败）**。
+- v0.9.23（commit `19e21f3`，已推送 origin/main；2026-09-22 排查"为什么 PATH1 没有下载"时发现并修掉）：**`_list_remote_dirs` 的远端脚本退出码陷阱（会让 NEB 归档在真实远端必然失败）**。
   根因：v0.9.21 新增的列目录脚本写成 `for d in "$RD"/pat; do [ -d "$d" ] && basename "$d"; done` ——
   ① glob 的**最后一个匹配项若是普通文件**时（真实远端 neb 目录里就有 `670641.err` / `670641.out` 这类作业日志，按字典序排在 `04` 之后），最后一条命令返回 1 → `run_remote` 的 `exit_code=1` → 被当成"远端列目录失败"抛错；
   ② "一个都没匹配"时 glob 原样保留、`[ -d ]` 为假，同样返回 1。修法：改成 `for … do if [ -d "$d" ]; then basename "$d"; fi; done`（`if` 条件为假时语句本身返回 0）。

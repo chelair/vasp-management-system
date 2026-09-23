@@ -106,7 +106,7 @@ export async function saveTaskFile(
   taskId: string,
   filename: string,
   content: string,
-): Promise<{ name: string; path: string; size: number }> {
+): Promise<{ name: string; path: string; size: number; state?: TaskInputState }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(filename)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

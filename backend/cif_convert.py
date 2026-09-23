@@ -59,6 +59,42 @@ def structure_report_dir(project: Dict[str, Any], task: Dict[str, Any]) -> Path:
     return files_dir.parent / "reports" / "structure"
 
 
+def refresh_structure_cif(
+    project: Dict[str, Any], task: Dict[str, Any], label: str
+) -> Optional[str]:
+    """结构文件（POSCAR / CONTCAR）刚被写入本地后重算 CIF，返回 CIF 文本。
+
+    会**覆盖**两处：`files/<label>.cif`（输入面板读的就是它）与
+    `reports/structure/<label>.cif`（详情/报告的结构视图）。
+
+    为什么必须在这里做：3D 结构视图读的是 CIF，而不是 POSCAR 文本；导入/复制 POSCAR、
+    生成输入文件、同步到远端这些"只写结构文件"的操作如果不顺手重算 CIF，
+    界面就会一直显示上一次的结构，必须刷新页面（重新 GET /input）才更新。
+    """
+    if label not in ("POSCAR", "CONTCAR"):
+        return None
+    from task_paths import task_files_dir
+
+    files_dir = task_files_dir(project["name"], task)
+    src = files_dir / label
+    if not src.is_file() or src.stat().st_size == 0:
+        return None
+    outs = [files_dir / f"{label}.cif", structure_report_dir(project, task) / f"{label}.cif"]
+    text: Optional[str] = None
+    for out in outs:
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if convert_structure_to_cif(src, out, overwrite=True) and out.is_file():
+            if text is None:
+                try:
+                    text = out.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    text = None
+    return text
+
+
 def read_neb_image_cifs(
     project: Dict[str, Any], task: Dict[str, Any]
 ) -> Dict[str, str]:

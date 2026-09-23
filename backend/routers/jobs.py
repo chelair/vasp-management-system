@@ -66,7 +66,7 @@ from input_state import (
     set_incar_draft,
     set_kpoints_draft,
 )
-from cif_convert import read_or_convert_cif
+from cif_convert import read_or_convert_cif, refresh_structure_cif
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -720,14 +720,19 @@ def read_task_file(task_id: str, filename: str):
 def write_task_file(task_id: str, filename: str, payload: FileWritePayload):
     try:
         name = _validate_name(filename)
+        project, task = _resolve_task(task_id)
         task_dir = _resolve_task_dir(task_id)
         files_dir = task_dir / "files"
         files_dir.mkdir(parents=True, exist_ok=True)
         path = files_dir / name
         path.write_text(payload.content, encoding="utf-8")
+        # 结构文件写入后立刻重算 CIF（覆盖），否则 3D 结构视图要等下一次 GET /input 才更新
+        if name in ("POSCAR", "CONTCAR"):
+            refresh_structure_cif(project, task, name)
+        state = _input_payload(project, task)
         return ok(
             "保存成功",
-            {"name": name, "path": str(path), "size": path.stat().st_size},
+            {"name": name, "path": str(path), "size": path.stat().st_size, "state": state},
         )
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
@@ -1338,6 +1343,9 @@ def _push_input_file(
         state["source"] = source
         current["input_state"] = state
         updated = dict(current)
+    # 结构文件推到远端后，本地镜像也换了内容 → 顺手重算 CIF（3D 视图立刻反映新结构）
+    if name in ("POSCAR", "CONTCAR"):
+        refresh_structure_cif(project, updated, name)
     return _input_payload(project, updated), applied
 
 

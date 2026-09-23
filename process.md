@@ -242,8 +242,15 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.24）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.25）
 
+- v0.9.25（2026-09-23，用户："导入 POSCAR 后为什么没有结构视图，要刷新之后才有；归档同步的文件加一个 POTCAR"）：两件事。
+  **① 导入 POSCAR 后 3D 结构视图立刻更新（不用再刷新页面）**。根因：结构视图读的是 **CIF**（`input.poscar_cif`），而 `PUT /jobs/tasks/{id}/files/{name}` 只写 `files/POSCAR` **文本**、不重算 CIF；`cif_convert.read_or_convert_cif()` 又是"已有 CIF 就用、**只补缺不覆盖**"，于是旧的 CIF 一直被沿用 —— 表现为"导入后结构视图还是旧结构，刷新页面（重新 GET /input，走 read_or_convert_cif 补缺）才出现/才对"。修法：
+  - 新增 `cif_convert.refresh_structure_cif(project, task, label)`：结构文件刚写入/推送后就**覆盖**重算两处 CIF —— `files/<label>.cif`（输入面板读的）与 `reports/structure/<label>.cif`（详情/报告的结构视图）；
+  - `write_task_file` 在写 POSCAR/CONTCAR 后调用它，并把刷新后的 `state` 一起返回；「同步到远端」的 `_push_input_file` 同样调用；
+  - 前端 `saveTaskFile` 返回类型加 `state?`，`handleImportPoscar` 与 `handleGenerateInputs`（生成输入文件会写 POSCAR）拿到 `state` 立刻 `applyInputState()` → 3D 视图即时更新。
+  **② 归档同步清单加 POTCAR**：普通任务 `ARCHIVE_OUTPUT_FILES` 增加 `POTCAR`（现为 CONTCAR / INCAR / KPOINTS / POSCAR / POTCAR / OUTCAR / OSZICAR）；NEB 的共享文件 `ARCHIVE_NEB_SHARED` 增加 `POTCAR`（POTCAR 在 neb 根目录，属共享文件，各映像目录里没有）。
+  验证：隔离实例端到端 12 项（导入 a=5.0 → 响应 `state.poscar_cif`、`files/POSCAR.cif`、`reports/structure/POSCAR.cif` 三处都是 5.0；**再导入 a=6.0/Ge → 三处全部被覆盖成 6.0**；`GET /input` 与之一致；归档后 `files/` 里出现 POTCAR，审计 `saved=INCAR,KPOINTS,POSCAR,POTCAR,OUTCAR,OSZICAR`）+ `tsc` + `npm run build`。
 - v0.9.24（commit `9fa9f9f`，已推送 origin/main；2026-09-22 用户："前端自动化审计只显示重点就行，也是做滑动折叠，显示100条；为啥 Ag@Al2O3—neb 中的映像00和04是错的，我检查了远端是对的，巡检不会带回来吗"）：两件事。
   **① NEB 端点映像缺 CONTCAR 时改用 POSCAR（修"00/04 是错的"）**。真相（真实远端实测 Ag PATH2 = Ag@Al2O3）：NEB 的**端点映像只有 `OUTCAR + POSCAR`、没有 CONTCAR**（`01/02/03` 这些中间映像才有 CONTCAR 17435 B），而 v0.8.3 定的规则是"缺 CONTCAR 就跳过、不回退 POSCAR"（防止把 nebmake 插值出的初始结构当成优化后结构）→ **端点每次同步都被跳过**，本地 `files/neb_images/00`、`04` 一直留着 9-13 的旧结构（sha 与远端 POSCAR 不同，3D 看板自然就是错的）。修法（`inspection_runner._sync_neb_image_structures`）：远端脚本先算出最小/最大编号映像，**端点在缺 CONTCAR 时回退 POSCAR**（端点的 POSCAR 就是 IS/FS 优化后的结构，不是插值；`@@@IMG:<img>:<来源文件>` 会把来源带回），中间映像仍只认 CONTCAR。markers 里会写明"端点 00、04 没有 CONTCAR，用 POSCAR（优化后的初/末态）"。
   处置：用修好的逻辑对 Ag 的 NEB 组补跑了一次（远端只读）——PATH2 的 `00/04` 现在与远端 `00/POSCAR`、`04/POSCAR` 的 **sha256 完全一致**（`dda3da0e…` / `91bbe097…`，替换掉 9-13 的旧文件），CIF 一并重生成（`read_neb_image_cifs()` 每次请求现读文件，刷新页面即可看到正确端点）；PATH3 内容本来就与远端一致（只是时间戳旧）。之后每次巡检都会自动保持。

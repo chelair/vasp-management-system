@@ -925,6 +925,8 @@ export default function Jobs() {
       const r = await saveTaskFile(t.task_id, 'POSCAR', content);
       path = r.path;
       upsertLocalFile(t.task_id, 'POSCAR', r.size);
+      // 结构文件写入后端时已重算 CIF，直接用返回的状态刷新（否则 3D 视图要等刷新页面才更新）
+      if (r.state) applyInputState(t, r.state);
       message.success(`POSCAR 已保存：${r.path}`);
     } catch (err) {
       message.warning(
@@ -984,22 +986,25 @@ export default function Jobs() {
         ? buildKpoints(genTask.model_name, 'Gamma', recommendKgrid(info.lengths, 20), 20)
         : null);
 
-    const writes: Promise<{ name: string; size: number } | Error>[] = [
+    const writes: Promise<{ name: string; size: number; state?: TaskInputState } | Error>[] = [
       saveTaskFile(genTask.task_id, 'INCAR', incarText),
       saveTaskFile(genTask.task_id, 'POSCAR', poscar),
     ];
     if (kpoints) {
       writes.push(saveTaskFile(genTask.task_id, 'KPOINTS', kpoints));
     }
-    const results = await Promise.all(writes.map((p) => p.catch((e: unknown) => e)));
+    const results = await Promise.all(
+      writes.map((p) => p.catch((e: unknown): Error => (e instanceof Error ? e : new Error(String(e))))),
+    );
     const failed = results.filter((r): r is Error => r instanceof Error);
     if (failed.length > 0) {
       message.warning(`${failed.length} 个文件写入后端失败，已在会话内更新`);
     }
     for (const r of results) {
-      if (r && !(r instanceof Error) && typeof r === 'object' && 'name' in r && 'size' in r) {
-        upsertLocalFile(genTask.task_id, String(r.name), Number(r.size));
-      }
+      if (!r || r instanceof Error) continue;
+      upsertLocalFile(genTask.task_id, String(r.name), Number(r.size));
+      // 生成 POSCAR 时后端顺带重算 CIF：把状态刷进来，结构视图立刻更新
+      if (r.state) applyInputState(genTask, r.state);
     }
     const ws: JobWorkspace = {
       ...base,

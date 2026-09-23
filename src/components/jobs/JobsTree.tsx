@@ -1,6 +1,6 @@
 import { Dropdown, Tooltip, Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApartmentOutlined,
   CloseCircleFilled,
@@ -386,11 +386,31 @@ export default function JobsTree({
     [projects],
   );
   const [expandedKeys, setExpandedKeys] = useState<string[]>(allExpandableKeys);
-  // 项目列表变化时（新建/归档/关闭）重置为「关闭项目折叠、其余展开」
+  /**
+   * 项目列表刷新时的展开状态处理（v0.9.26）。
+   *
+   * 原来的写法是"只要 projects 变了就 setExpandedKeys(allExpandableKeys)"——
+   * 结果每次提交作业 / 归档 / 新建之后的列表刷新，都会把用户手动折叠/展开的状态冲掉、
+   * 整个树回到"全部展开 + 滚动到顶端"的观感。现在改成：
+   * - **保留**用户当前的展开状态（只丢掉已经不存在的 key，比如被删掉的任务/组）；
+   * - 只把**这次新出现**的节点自动展开（新建项目/组/任务时体验不变）；
+   * - 已关闭项目的子树仍然自动折叠（allExpandableKeys 里本来就不含它们的子键）。
+   */
+  const knownKeysRef = useRef<Set<string>>(new Set(allExpandableKeys));
   useEffect(() => {
-    setExpandedKeys(allExpandableKeys);
+    const known = knownKeysRef.current;
+    const fresh = allExpandableKeys.filter((key) => !known.has(key));
+    const valid = new Set(allExpandableKeys);
+    knownKeysRef.current = valid;
+    setExpandedKeys((prev) => {
+      const kept = prev.filter((key) => valid.has(key));
+      const next = Array.from(new Set([...kept, ...fresh]));
+      // 内容没变就不要 setState，避免多余渲染把滚动位置晃掉
+      const same = next.length === prev.length && next.every((key, i) => key === prev[i]);
+      return same ? prev : next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects]);
+  }, [allExpandableKeys]);
 
   return (
     <div className="job-tree">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Card, Empty, Input, InputNumber, Modal, Tabs } from 'antd';
 import { Space } from 'antd';
@@ -138,6 +138,34 @@ export default function Jobs() {
   const [nebBuildTask, setNebBuildTask] = useState<Task | null>(null);
   const [presets, setPresets] = useState<IncarPreset[]>(() => loadIncarPresets());
   const [loading, setLoading] = useState(true);
+
+  /**
+   * 左侧「项目与子项」面板的滚动位置（v0.9.26）。
+   *
+   * 该面板的滚动发生在 antd Card 的 `.ant-card-body`（见 global.css 的
+   * `.jobs-grid > .ant-card:first-child` 规则）。列表刷新（提交作业 / 归档 / 新建后的
+   * refreshProjects）会让内容重建、滚动位置被夹回 0 —— 用户"每提交一次就回到顶端"。
+   * 这里记住滚动位置，刷新后如果被夹到 0 就还原回去。
+   */
+  const treeWrapRef = useRef<HTMLDivElement | null>(null);
+  const treeScrollRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const body = treeWrapRef.current?.closest('.ant-card-body') as HTMLElement | null;
+    if (!body) return;
+    const onScroll = () => {
+      treeScrollRef.current = body.scrollTop;
+    };
+    body.addEventListener('scroll', onScroll, { passive: true });
+    return () => body.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const body = treeWrapRef.current?.closest('.ant-card-body') as HTMLElement | null;
+    if (body && body.scrollTop === 0 && treeScrollRef.current > 0) {
+      body.scrollTop = treeScrollRef.current;
+    }
+  }, [projects]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedStructureKey, setSelectedStructureKey] = useState<string | null>(null);
@@ -1258,38 +1286,40 @@ export default function Jobs() {
             </Button>
           }
         >
-          {projects.length === 0 && !loading ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="暂无项目数据"
-            >
-              <Button
-                size="small"
-                icon={<ReloadOutlined />}
-                onClick={() => window.location.reload()}
+          <div ref={treeWrapRef}>
+            {projects.length === 0 && !loading ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="暂无项目数据"
               >
-                重新加载
-              </Button>
-            </Empty>
-          ) : (
-            <JobsTree
-              projects={projects}
-              selectedProjectId={selectedProjectId}
-              selectedTaskId={selectedTaskId}
-              selectedStructureKey={selectedStructureKey}
-              selectedNebGroupKey={selectedNebGroupKey}
-              onSelectProject={selectProject}
-              onSelectTask={handleSelectTask}
-              onSelectStructure={handleSelectStructure}
-              onSelectGroup={handleSelectGroup}
-              onNewTask={(projectId, type) => openNewTask(projectId, type)}
-              onNewGroup={(projectId, kind) => openNewGroup(projectId, kind)}
-              onAddStructure={(projectId, groupId) => {
-                setSelectedProjectId(projectId);
-                setAddStructGroup(groupId);
-              }}
-            />
-          )}
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  onClick={() => window.location.reload()}
+                >
+                  重新加载
+                </Button>
+              </Empty>
+            ) : (
+              <JobsTree
+                projects={projects}
+                selectedProjectId={selectedProjectId}
+                selectedTaskId={selectedTaskId}
+                selectedStructureKey={selectedStructureKey}
+                selectedNebGroupKey={selectedNebGroupKey}
+                onSelectProject={selectProject}
+                onSelectTask={handleSelectTask}
+                onSelectStructure={handleSelectStructure}
+                onSelectGroup={handleSelectGroup}
+                onNewTask={(projectId, type) => openNewTask(projectId, type)}
+                onNewGroup={(projectId, kind) => openNewGroup(projectId, kind)}
+                onAddStructure={(projectId, groupId) => {
+                  setSelectedProjectId(projectId);
+                  setAddStructGroup(groupId);
+                }}
+              />
+            )}
+          </div>
         </Card>
 
         <div>

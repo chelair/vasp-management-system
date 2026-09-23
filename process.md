@@ -242,8 +242,12 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.25）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.26）
 
+- v0.9.26（2026-09-23，用户："作业管理那里每次提交都会把左边栏重置回顶端"）：**左侧「项目与子项」树的展开状态与滚动位置在列表刷新后保持**。
+  根因两处：① `JobsTree` 里写着 `useEffect(() => setExpandedKeys(allExpandableKeys), [projects])` —— 只要 `projects` 刷新（提交作业 / 归档 / 新建之后的 `refreshProjects()`）就把展开状态**重置成"关闭项目折叠、其余全展开"**，用户手动折叠的节点被强制展开，配合 rc-tree 的展开动画观感就是"左边栏被重置回顶端"；② 左侧面板的滚动发生在 antd Card 的 `.ant-card-body`（global.css: `.jobs-grid > .ant-card:first-child` 的 `max-height + overflow-y:auto`），列表刷新时内容重建 → 滚动位置被夹回 0。
+  修法：① `JobsTree` 改成**保留**用户当前的展开状态（只丢弃已不存在的 key），**只自动展开本次新出现**的节点（新建项目/组/任务的体验不变，已关闭项目子树仍自动折叠），而且内容没变化时不再 setState（避免多余渲染晃动滚动）；② 作业管理页记住左侧面板滚动位置，刷新后若被夹到 0 就还原回去。
+  验证：jsdom 真渲染 `JobsTree` 6 项（折叠 ProjA → 刷新后 ProjA 仍折叠、ProjB 仍展开、新增 ProjC 自动展开且不影响 ProjA）—— **同一套用例在旧代码上复现原症状**（刷新后 ProjA 被重新展开）；`tsc` + `npm run build` 通过。
 - v0.9.25（commit `dcac532`，已推送 origin/main；2026-09-23 用户："导入 POSCAR 后为什么没有结构视图，要刷新之后才有；归档同步的文件加一个 POTCAR"）：两件事。
   **① 导入 POSCAR 后 3D 结构视图立刻更新（不用再刷新页面）**。根因：结构视图读的是 **CIF**（`input.poscar_cif`），而 `PUT /jobs/tasks/{id}/files/{name}` 只写 `files/POSCAR` **文本**、不重算 CIF；`cif_convert.read_or_convert_cif()` 又是"已有 CIF 就用、**只补缺不覆盖**"，于是旧的 CIF 一直被沿用 —— 表现为"导入后结构视图还是旧结构，刷新页面（重新 GET /input，走 read_or_convert_cif 补缺）才出现/才对"。修法：
   - 新增 `cif_convert.refresh_structure_cif(project, task, label)`：结构文件刚写入/推送后就**覆盖**重算两处 CIF —— `files/<label>.cif`（输入面板读的）与 `reports/structure/<label>.cif`（详情/报告的结构视图）；

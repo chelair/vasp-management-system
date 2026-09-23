@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.25）
 
-- v0.9.25（2026-09-23，用户："导入 POSCAR 后为什么没有结构视图，要刷新之后才有；归档同步的文件加一个 POTCAR"）：两件事。
+- v0.9.25（commit `dcac532`，已推送 origin/main；2026-09-23 用户："导入 POSCAR 后为什么没有结构视图，要刷新之后才有；归档同步的文件加一个 POTCAR"）：两件事。
   **① 导入 POSCAR 后 3D 结构视图立刻更新（不用再刷新页面）**。根因：结构视图读的是 **CIF**（`input.poscar_cif`），而 `PUT /jobs/tasks/{id}/files/{name}` 只写 `files/POSCAR` **文本**、不重算 CIF；`cif_convert.read_or_convert_cif()` 又是"已有 CIF 就用、**只补缺不覆盖**"，于是旧的 CIF 一直被沿用 —— 表现为"导入后结构视图还是旧结构，刷新页面（重新 GET /input，走 read_or_convert_cif 补缺）才出现/才对"。修法：
   - 新增 `cif_convert.refresh_structure_cif(project, task, label)`：结构文件刚写入/推送后就**覆盖**重算两处 CIF —— `files/<label>.cif`（输入面板读的）与 `reports/structure/<label>.cif`（详情/报告的结构视图）；
   - `write_task_file` 在写 POSCAR/CONTCAR 后调用它，并把刷新后的 `state` 一起返回；「同步到远端」的 `_push_input_file` 同样调用；

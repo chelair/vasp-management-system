@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, TimePicker, Tooltip, TreeSelect } from 'antd';
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { App, Button, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, TimePicker, Tooltip, TreeSelect } from 'antd';
+import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { ActionCatalogItem, AutomationRule } from '../../api/automation';
 import {
@@ -41,6 +41,8 @@ interface Props {
   refs: TaskRefLite[];
   onCancel: () => void;
   onSubmit: (payload: Partial<AutomationRule>) => Promise<void>;
+  /** 重置这条规则目标任务的累计执行次数/冷却（编辑已有规则时显示按钮） */
+  onResetRuns?: (ruleId: string) => void;
 }
 
 /**
@@ -49,7 +51,15 @@ interface Props {
  * 三级交互：作用对象 → 具体对象（项目/任务/组，可搜索多选）→ 附加条件（字段与取值都是下拉，
  * 带中文名与说明，不需要用户记字段名和取值）。
  */
-export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmit }: Props) {
+export default function RuleModal({
+  open,
+  rule,
+  actions,
+  refs,
+  onCancel,
+  onSubmit,
+  onResetRuns,
+}: Props) {
   const { message } = App.useApp();
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
@@ -518,6 +528,23 @@ export default function RuleModal({ open, rule, actions, refs, onCancel, onSubmi
           <Form.Item name="max_runs_per_task" label="单任务执行上限" style={{ width: 160 }}>
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
+          {rule?.id && onResetRuns && (
+            <Form.Item label=" " style={{ width: 150 }}>
+              <Popconfirm
+                title={`重置规则 ${rule.id} 的已执行次数？`}
+                description="把这条规则目标任务的累计执行次数与冷却清零（「单任务执行上限」撑满后用它放行），同时清掉连续失败计数与熔断标记"
+                okText="重置"
+                cancelText="取消"
+                onConfirm={() => onResetRuns(rule.id)}
+              >
+                <Tooltip title="单任务执行上限是累计值，撑满后自动化就不再动这些任务；改上限不会清零已用次数">
+                  <Button size="small" icon={<ReloadOutlined />}>
+                    重置已执行次数
+                  </Button>
+                </Tooltip>
+              </Popconfirm>
+            </Form.Item>
+          )}
           <Form.Item name="enabled" label="启用" valuePropName="checked" style={{ width: 80 }}>
             <Checkbox />
           </Form.Item>

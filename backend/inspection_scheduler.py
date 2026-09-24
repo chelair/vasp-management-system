@@ -44,8 +44,35 @@ def _parse_ts(value: Any) -> Optional[datetime]:
 
 
 def last_inspection_time() -> Optional[datetime]:
+    """最近一次巡检（**含手动**）——只用于界面展示。"""
     runs = list_runs()
     return _parse_ts(runs[0].get("checked_at")) if runs else None
+
+
+def last_auto_inspection_time() -> Optional[datetime]:
+    """最近一次**自动**巡检的时间（手动点「立即巡检」不计入）。
+
+    v0.9.29 起单独落在 settings.json 的 `last_auto_inspection_at`：以前用"最近一次巡检"来算间隔，
+    用户手动点一次巡检就把自动巡检的时间表往后推了（用户 2026-09-24 反馈"我手动点击也计入时间"）。
+    升级到本版本的宿主如果没有这个字段，先按"最近一次巡检"兜底，避免部署完立刻又跑一轮。
+    """
+    parsed = _parse_ts(load_settings().get("last_auto_inspection_at"))
+    if parsed is not None:
+        return parsed
+    # 升级兜底：取最近一次**全局**巡检（单任务巡检 / 手动点击都不该影响自动巡检的节奏；
+    # runs.json 里单任务巡检的 scope = "single"）
+    runs = list_runs()
+    for run in runs:
+        if str(run.get("scope") or "") != "single":
+            return _parse_ts(run.get("checked_at"))
+    return _parse_ts(runs[0].get("checked_at")) if runs else None
+
+
+def mark_auto_inspection_at(when: Optional[datetime] = None) -> None:
+    """记录一次自动巡检（调度器自己触发的那一轮）。"""
+    save_settings(
+        {"last_auto_inspection_at": (when or datetime.now()).isoformat(timespec="seconds")}
+    )
 
 
 def _due() -> bool:
@@ -56,7 +83,8 @@ def _due() -> bool:
         interval = float(settings.get("inspection_interval_hours", 2) or 2)
     except (TypeError, ValueError):
         interval = 2.0
-    last = last_inspection_time()
+    # 只按"上次自动巡检"算间隔：手动巡检不计入（否则用户点一次就把自动巡检推后）
+    last = last_auto_inspection_time()
     if last is None:
         return True  # 从未巡检过：立即来一轮
     return datetime.now() - last >= timedelta(hours=interval)
@@ -66,6 +94,7 @@ def _run_auto_inspection() -> None:
     from inspection_runner import run_inspection
 
     try:
+        mark_auto_inspection_at()  # 先记时间：长任务期间不会重复触发
         summary = run_inspection()
         _state["last_error"] = None
         print(
@@ -166,7 +195,8 @@ def scheduler_status() -> Dict[str, Any]:
         interval = float(settings.get("inspection_interval_hours", 2) or 2)
     except (TypeError, ValueError):
         interval = 2.0
-    last = last_inspection_time()
+    last = last_auto_inspection_time()  # 倒计时只看自动巡检（手动不计入）
+    last_any = last_inspection_time()
     next_run = None
     if last is not None:
         next_run = (last + timedelta(hours=interval)).strftime("%Y-%m-%d %H:%M")
@@ -194,6 +224,7 @@ def scheduler_status() -> Dict[str, Any]:
         "scheduler_started": bool(_state["started"]),
         "running": bool(_state["running"]),
         "last_run_at": last.strftime("%Y-%m-%dT%H:%M:%S") if last else None,
+        "last_any_run_at": last_any.strftime("%Y-%m-%dT%H:%M:%S") if last_any else None,
         "next_run_at": next_run,
         "last_triggered_at": _state["last_triggered_at"],
         "last_finished_at": _state["last_finished_at"],

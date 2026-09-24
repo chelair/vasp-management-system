@@ -256,6 +256,7 @@ body: {
 | `GET /api/automation/rules` | — | 规则列表 |
 | `POST /api/automation/rules` | 规则对象 | 新建规则（id 冲突 409；校验 id/cron/动作/guard + 顶层字段白名单） |
 | `PUT /api/automation/rules/{id}` | `{enabled?, description?, trigger?, condition?, action?, guard?, follow_up_action?}` | 修改规则（改 cron / after_seconds 后**立即重排下次触发**） |
+| `POST /api/automation/rules/{id}/reset-runs` | — | **重置该规则目标任务的执行次数与冷却**（Guard 的「单任务执行上限」撑满后用它放行），同时清掉连续失败计数与熔断标记；返回 `{task_count, tasks, cleared:{counts,cooldowns,last_results}}` |
 | `DELETE /api/automation/rules/{id}` | — | 删除规则（含其冷却/计数/熔断/下次触发历史） |
 | `POST /api/automation/rules/{id}/run` | — | 立即触发一条定时规则（不等 cron） |
 | `GET /api/automation/decisions?limit=` | — | 决策日志（五态） |

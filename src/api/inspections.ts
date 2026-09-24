@@ -30,7 +30,10 @@ export interface InspectionMeta {
     interval_hours: number;
     scheduler_started: boolean;
     running: boolean;
+    /** 最近一次**自动**巡检（手动点「立即巡检」不计入，倒计时按它算） */
     last_run_at: string | null;
+    /** 最近一次巡检（含手动），仅用于展示 */
+    last_any_run_at?: string | null;
     next_run_at: string | null;
     last_triggered_at: string | null;
     last_finished_at: string | null;

@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse
@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 import permissions
 from envelope import fail, ok
 from automation import actions, audit, cron, events, rules, scheduler, store
+from storage import load_db
 
 router = APIRouter(tags=["actions"])
 
@@ -419,6 +420,83 @@ def update_automation_rule(rule_id: str, request: Request, payload: dict = Body(
         return JSONResponse(status_code=404, content=fail(str(e)))
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"更新规则失败：{e}"))
+
+
+@router.post("/automation/rules/{rule_id}/reset-runs")
+def reset_automation_rule_runs(rule_id: str, request: Request):
+    """重置这条规则**目标任务的执行次数与冷却**（「单任务执行上限」撑满后用它放行）。
+
+    - 按规则 condition 现算一遍目标任务（与规则命中的口径一致）；
+    - 清掉这些任务在该规则**动作**下的 `counts` / `cooldowns` / `last_results`；
+    - 同时把该规则的连续失败计数与熔断标记（disabled_rules）清掉；
+    - 显式 `idempotency_key` 的指纹不受影响（那是调用方自己传的键，规则链路不带）。
+    """
+    try:
+        _require_admin(request)
+        rule = next((r for r in store.load_rules() if str(r.get("id")) == str(rule_id)), None)
+        if rule is None:
+            return JSONResponse(status_code=404, content=fail(f"规则不存在：{rule_id}"))
+        action = str(rule.get("action") or "")
+        condition = rule.get("condition") or {}
+
+        targets: List[str] = []
+        for project in load_db().get("projects", []):
+            for task in project.get("tasks", []):
+                try:
+                    matched, _ = rules.condition_matches(
+                        condition, rules.build_context(project, task)
+                    )
+                except Exception:  # noqa: BLE001 - 单个任务上下文异常不影响其它
+                    matched = False
+                if matched:
+                    targets.append(str(task.get("task_id") or ""))
+
+        keys = {f"{task_id}|{action}" for task_id in targets if task_id}
+        cleared = {"counts": 0, "cooldowns": 0, "last_results": 0}
+
+        def mutate(history: Dict[str, Any]) -> None:
+            for bucket in ("counts", "cooldowns", "last_results"):
+                data = dict(history.get(bucket) or {})
+                for key in list(data):
+                    if key in keys:
+                        data.pop(key, None)
+                        cleared[bucket] += 1
+                history[bucket] = data
+            failures = dict(history.get("rule_failures") or {})
+            failures.pop(str(rule_id), None)
+            history["rule_failures"] = failures
+
+        store.update_history(mutate)
+
+        settings = store.load_settings()
+        disabled = [x for x in settings.get("disabled_rules") or [] if str(x) != str(rule_id)]
+        if disabled != list(settings.get("disabled_rules") or []):
+            store.save_settings({"disabled_rules": disabled})
+
+        audit.write(
+            action="automation.reset",
+            status="success",
+            trigger="api",
+            rule_id=str(rule_id),
+            reason=(
+                f"重置执行计数：目标 {len(targets)} 个任务，"
+                f"计数 -{cleared['counts']}、冷却 -{cleared['cooldowns']}"
+            ),
+        )
+        return ok(
+            f"已重置：{len(targets)} 个目标任务（执行计数 {cleared['counts']} 条、冷却 {cleared['cooldowns']} 条）",
+            {
+                "rule_id": str(rule_id),
+                "action": action,
+                "tasks": targets[:50],
+                "task_count": len(targets),
+                "cleared": cleared,
+            },
+        )
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"重置执行计数失败：{e}"))
 
 
 @router.delete("/automation/rules/{rule_id}")

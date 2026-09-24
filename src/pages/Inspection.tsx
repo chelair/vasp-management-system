@@ -826,16 +826,20 @@ export default function Inspection() {
               <span>
                 每 {meta?.interval_hours ?? 2} 小时
                 {meta?.last_run_at
-                  ? ` · 上次 ${formatTime(new Date(meta.last_run_at))}`
-                  : ' · 尚未巡检'}
+                  ? ` · 上次自动 ${formatTime(new Date(meta.last_run_at))}`
+                  : ' · 尚未自动巡检'}
                 {meta?.next_run_at ? ` · 下次 ${meta.next_run_at}` : ''}
+                {meta?.scheduler?.last_any_run_at &&
+                meta.scheduler.last_any_run_at !== meta.scheduler.last_run_at
+                  ? ` · 最近一次（含手动）${formatTime(new Date(meta.scheduler.last_any_run_at))}`
+                  : ''}
               </span>
               {isAdmin ? (
                 <Tooltip
                   title={
                     meta?.scheduler?.last_error
                       ? `上次自动巡检失败：${meta.scheduler.last_error}`
-                      : '距上次巡检超过间隔后自动执行全局巡检（后端后台线程）'
+                      : '按「上次自动巡检」计时：手动点「立即巡检」不影响下次自动执行的时间'
                   }
                 >
                   <Switch

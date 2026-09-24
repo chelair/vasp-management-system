@@ -130,6 +130,20 @@ export function deleteAutomationRule(id: string): Promise<{ id: string }> {
   return request(`/automation/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+/**
+ * 重置这条规则**目标任务的执行次数与冷却**（「单任务执行上限」撑满后用它放行）。
+ * 同时清掉该规则的连续失败计数与熔断标记。
+ */
+export function resetAutomationRuleRuns(id: string): Promise<{
+  rule_id: string;
+  action: string;
+  task_count: number;
+  tasks: string[];
+  cleared: { counts: number; cooldowns: number; last_results: number };
+}> {
+  return request(`/automation/rules/${encodeURIComponent(id)}/reset-runs`, { method: 'POST' });
+}
+
 export function runAutomationRule(id: string): Promise<{ rule_id: string }> {
   return request(`/automation/rules/${encodeURIComponent(id)}/run`, { method: 'POST' });
 }

@@ -15,6 +15,7 @@ import {
   fetchAutomationRuns,
   fetchAutomationStatus,
   reloadAutomation,
+  resetAutomationRuleRuns,
   runAutomationRule,
   saveAutomationSettings,
   setAutomationRuleEnabled,
@@ -171,6 +172,24 @@ export default function Automation() {
     }
   };
 
+  /**
+   * 重置这条规则目标任务的"执行次数 / 冷却"（v0.9.29）。
+   *
+   * 规则 Guard 里的「单任务执行上限」是累计值：撑满后自动化就不再动这些任务，
+   * 以前只能删规则重建或去改 action_history.json。现在一键清掉（同时清掉熔断计数）。
+   */
+  const resetRuleRuns = async (rule: AutomationRule) => {
+    try {
+      const r = await resetAutomationRuleRuns(rule.id);
+      message.success(
+        `已重置：${r.task_count} 个目标任务（执行计数 ${r.cleared.counts} 条、冷却 ${r.cleared.cooldowns} 条）`,
+      );
+      await load();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '重置执行次数失败');
+    }
+  };
+
   /** "N 分钟后执行一次"重新开始倒计时（等价于原样保存一次该规则） */
   const rearmSchedule = async (schedule: AutomationSchedule) => {
     try {
@@ -280,7 +299,7 @@ export default function Automation() {
       },
       {
         title: '操作',
-        width: 130,
+        width: 210,
         render: (_: unknown, rule: AutomationRule) => (
           <Space size={4}>
             <Button
@@ -293,6 +312,19 @@ export default function Automation() {
             >
               编辑
             </Button>
+            <Popconfirm
+              title={`重置规则 ${rule.id} 的执行次数？`}
+              description="把这条规则目标任务的累计执行次数与冷却清零（用于「单任务执行上限」撑满后放行），同时清掉连续失败计数与熔断标记"
+              okText="重置"
+              cancelText="取消"
+              onConfirm={() => void resetRuleRuns(rule)}
+            >
+              <Tooltip title="单任务执行上限被撑满后，用它放行">
+                <Button size="small" type="link">
+                  重置次数
+                </Button>
+              </Tooltip>
+            </Popconfirm>
             <Popconfirm
               title={`删除规则 ${rule.id}？`}
               description="删除后不再参与匹配（历史冷却/计数一并清理）"
@@ -630,6 +662,10 @@ export default function Automation() {
           setEditingRule(null);
         }}
         onSubmit={submitRule}
+        onResetRuns={(ruleId) => {
+          const target = rules.find((r) => r.id === ruleId);
+          if (target) void resetRuleRuns(target);
+        }}
       />
     </PageTransition>
   );

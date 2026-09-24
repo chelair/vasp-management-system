@@ -498,7 +498,8 @@
       检查标记 / 力历史 / 力统计（只更新、不删除）
 - [x] 最新输出定位（续算 conN 优先）：batch_check 远程解析 `con1/con2/...`（按编号降序，
       取第一个 OUTCAR 正常结束的目录，全部异常回退主目录）；结构对比/能量/力历史读取
-      最新目录的 CONTCAR/OUTCAR/OSZICAR，POSCAR 仍取主目录；`current_output`
+      最新目录的 CONTCAR/OUTCAR/OSZICAR；POSCAR **v0.9.28 起也取最新续算目录**
+      （原来固定取主目录，与"同步 POSCAR 到远端走 conN"不一致，见 process.md v0.9.28）；`current_output`
       落库并在巡检列表「输出位置」与详情中展示（报告模块可直接读取该字段）
 - [x] 结果本地持久化：归档 `data/checks/check_results_*.json`，重开网站显示上次巡检结果
 - [x] 本地模拟模式（VASP_SSH_MOCK + 夹具脚本）用于离线验证巡检流程

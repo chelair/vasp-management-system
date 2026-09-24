@@ -225,18 +225,27 @@ def _sync_and_convert_structure(
     task: Dict[str, Any],
     latest_dir: str = "",
 ) -> List[str]:
-    """下载 POSCAR（主目录）与最新 CONTCAR（续算目录优先），并用 vasp2cif 转为 CIF。"""
+    """下载 POSCAR / CONTCAR 并用 vasp2cif 转为 CIF。
+
+    目录口径（v0.9.28 起统一为"最新续算目录优先"）：两者都取**最新续算目录 conN**，
+    取不到才回退任务主目录 —— 与提交作业、续算、归档、`current_output` 的口径一致。
+
+    为什么改：以前 POSCAR 固定取主目录，而「同步 POSCAR 到远端」是推到 conN 的
+    （2026-09-24 用户踩坑：ABS/3 的 con1/POSCAR 是 48 原子 2× 胞，主目录还是 24 原子 1× 胞，
+    界面/本地镜像每次都按主目录刷新，看起来"没同步 con1 的 POSCAR"）。
+    """
     markers: List[str] = []
     local_files = task_dir(project["name"], task) / "files"
     local_files.mkdir(parents=True, exist_ok=True)
     remote_dir = task_remote_dir(project["server"], task).rstrip("/")
-    pairs = [("POSCAR", f"{remote_dir}/POSCAR")]
-    contcar_remote = (
-        f"{remote_dir}/{latest_dir}/CONTCAR" if latest_dir else f"{remote_dir}/CONTCAR"
-    )
-    pairs.append(("CONTCAR", contcar_remote))
+
+    def _remote_of(name: str) -> str:
+        """优先最新续算目录，回退主目录（下载为空时再回退一次，见下）。"""
+        return f"{remote_dir}/{latest_dir}/{name}" if latest_dir else f"{remote_dir}/{name}"
+
+    pairs = [("POSCAR", _remote_of("POSCAR")), ("CONTCAR", _remote_of("CONTCAR"))]
     if latest_dir:
-        markers.append(f"结构对比使用续算输出 {latest_dir}/CONTCAR")
+        markers.append(f"结构对比使用续算输出 {latest_dir}/ 的 POSCAR 与 CONTCAR")
     for filename, remote_path in pairs:
         local_path = local_files / filename
         ok = False
@@ -244,22 +253,39 @@ def _sync_and_convert_structure(
             ok = ssh.download_file(project["server"], remote_path, str(local_path))
         except Exception as e:  # noqa: BLE001 - 下载失败仅记录标记
             markers.append(f"{filename} 下载失败：{e}")
+        if not ok and latest_dir and remote_path != f"{remote_dir}/{filename}":
+            # conN 里没有（老目录或异常情况）→ 回退主目录，别把本地镜像留成空的
+            fallback = f"{remote_dir}/{filename}"
+            try:
+                ok = ssh.download_file(project["server"], fallback, str(local_path))
+            except Exception as e:  # noqa: BLE001
+                markers.append(f"{filename} 回退主目录下载失败：{e}")
+            if ok:
+                markers.append(f"{latest_dir}/ 里没有 {filename}，改用主目录的")
         if not ok:
             markers.append(
                 "POSCAR缺失或内容为空" if filename == "POSCAR" else "CONTCAR未生成或内容为空"
             )
 
     # 用 vasp2cif 脚本把下载的结构转为 CIF（触发=新结果，覆盖旧 CIF；失败保留旧文件）
+    # **两处都要写**：`files/<name>.cif`（输入面板的 3D 结构视图读它）与
+    # `reports/structure/<name>.cif`（详情/报告）；只写后者的话，界面上会留着上一次的旧结构。
     report_dir = local_files.parent / "reports" / "structure"
     report_dir.mkdir(parents=True, exist_ok=True)
     for name in ("POSCAR", "CONTCAR"):
         src = local_files / name
-        out = report_dir / f"{name}.cif"
+        panel_out = local_files / f"{name}.cif"
+        report_out = report_dir / f"{name}.cif"
         if not src.is_file() or src.stat().st_size == 0:
             markers.append(f"{name} 缺失或为空，跳过 CIF 转换")
             continue
-        if not convert_structure_to_cif(src, out, overwrite=True):
+        if not convert_structure_to_cif(src, panel_out, overwrite=True):
             markers.append(f"{name}.cif 转换失败（保留上一次结果）")
+            continue
+        try:
+            report_out.write_bytes(panel_out.read_bytes())
+        except OSError as e:  # noqa: BLE001 - 报告目录写失败不影响面板
+            markers.append(f"{name}.cif 写入报告目录失败：{e}")
     return markers
 
 

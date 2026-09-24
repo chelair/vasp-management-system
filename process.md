@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.28）
 
-- v0.9.28（2026-09-24，用户："ABS/3/con1/OSZICAR 为什么不同步 POSCAR" → 选定 A 方案）：**结构同步的 POSCAR 也跟随最新续算目录（口径与提交/续算/CONTCAR 统一）**。
+- v0.9.28（commit `13af4ec`，已推送 origin/main；2026-09-24 用户："ABS/3/con1/OSZICAR 为什么不同步 POSCAR" → 选定 A 方案）：**结构同步的 POSCAR 也跟随最新续算目录（口径与提交/续算/CONTCAR 统一）**。
   **根因**：`inspection_runner._sync_and_convert_structure()` 原来是"**POSCAR 固定取任务主目录**、CONTCAR 取最新 conN"，而「同步 POSCAR 到远端」是推到 **conN** 的 —— 两条链路口径打架：输入同步（`build_snapshot`，取"最新含 INCAR 的目录"）写进去的 conN 版 POSCAR，会被下一次巡检的结构同步用**主目录版**覆盖回去。用户实测：ABS/3 主目录 POSCAR = 6568 B（Fe/S/Cd/O/H = 24/32/1/6/12，1× 胞）、`con1/POSCAR` = 10644 B（48/64/1/6/12，2× 胞带 Selective Dynamics，09-23 00:31 由"固定原子 + 同步到远端"推进 con1），本地镜像在 09-23 16:21 的巡检里被覆盖回 6568 —— 看起来就是"没同步 con1 的 POSCAR"。
   **改法**：POSCAR 与 CONTCAR 一律 **最新续算目录优先，取不到再回退主目录**（回退时写 marker「conN/ 里没有 POSCAR，改用主目录的」）；同时把 CIF **两处都写** —— `files/<name>.cif`（输入面板 3D 视图读它）与 `reports/structure/<name>.cif`（详情/报告）—— 以前只写后者，面板会一直留着旧 CIF。
   **现场纠正**：用新口径对 ABS/3 重跑了一次结构同步（远端只读）——本地 `files/POSCAR` 6568（24 原子）→ **10644（48 原子，带 Selective Dynamics）**，与 con1 一致，CONTCAR 也刷新为最新。其它任务若也有"POSCAR 推到 conN"的情况，会在下次结构同步（离子步每 25 步一桶 / 目录变化触发）时自动纠正；想立刻纠正可点「同步最新参数」（它本来就取 conN）。

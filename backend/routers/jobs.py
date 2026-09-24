@@ -514,14 +514,32 @@ def core_submit(
             "raw_output": raw,
         }
 
+    # bsub 的报错要**原样带给用户**：像 LSF 拒绝提交（RUNLIMIT 超队列硬上限等）时
+    # 输出里根本没有 "Job <id>"，旧实现只会抛"未能解析作业 ID"，用户完全看不懂（2026-09-24 踩坑）。
+    def _bsub_detail() -> str:
+        lines = [
+            line.strip()
+            for line in raw.splitlines()
+            if line.strip() and not line.startswith("@@@")
+        ]
+        return " / ".join(lines[:3]) or "bsub 没有任何输出"
+
+    bsub_rc_match = re.search(r"@@@BSUB_RC=(\d+)", raw)
+    bsub_rc = bsub_rc_match.group(1) if bsub_rc_match else ""
     submit_match = re.search(r"Job <(\d+)> is submitted", raw)
-    if not submit_match and result.get("exit_code") != 0:
-        _audit_log(project["name"], task_id, remote_dir, command, f"FAILED: {raw}")
-        raise ActionError(500, f"bsub 提交失败：{raw or '未知错误'}")
     match = submit_match or re.search(r"Job <(\d+)>", raw)
     if not match:
-        _audit_log(project["name"], task_id, remote_dir, command, f"UNPARSED: {raw}")
-        raise ActionError(500, f"未能从 bsub 输出解析作业 ID：{raw}")
+        detail = _bsub_detail()
+        _audit_log(
+            project["name"], task_id, work_dir, command,
+            f"BSUB_REJECTED rc={bsub_rc or '?'} {detail}",
+        )
+        raise ActionError(
+            400,
+            f"bsub 提交被集群拒绝（rc={bsub_rc or '?'}）：{detail}"
+            + (f"；工作目录 {work_dir}" if work_dir else ""),
+            {"work_dir": work_dir, "bsub_rc": bsub_rc, "raw_output": raw},
+        )
     new_job_id = match.group(1)
     try:
         with db_transaction() as db:

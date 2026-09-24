@@ -124,6 +124,20 @@ export default function SubmitScriptPanel({
 
   /** 截止时间非法（0:00）时阻止写入 */
   const walltimeInvalid = normalizeMinute(minutes) === 0 && Math.trunc(hours) === 0;
+  /**
+   * 队列硬上限（分钟）：来自节点规格的 walltime（"1天" / "2周" / "无限制"）。
+   * 超过上限时 LSF 会直接拒绝提交（`RUNLIMIT: Cannot exceed queue's hard limit(s)`，
+   * 2026-09-24 实际踩到：normal_1day_new 上限 24 小时、脚本请求 36 小时）——这里提前拦住。
+   */
+  const queueLimitMinutes = useMemo(() => {
+    const text = String(queueSpec?.walltime ?? '').trim();
+    const matched = text.match(/^(\d+)\s*(天|周)$/);
+    if (!matched) return null;
+    const amount = Number(matched[1]);
+    return (matched[2] === '周' ? amount * 7 : amount) * 24 * 60;
+  }, [queueSpec?.walltime]);
+  const plannedMinutes = Math.trunc(hours) * 60 + normalizeMinute(minutes);
+  const overQueueLimit = queueLimitMinutes !== null && plannedMinutes > queueLimitMinutes;
   const plannedNodes = estimateNodes(cores, ptile);
   /** 预警时间不小于截止时间时给非阻塞提醒（LSF 到点前 N 分钟才发 SIGURG） */
   const warnTooLate =
@@ -134,6 +148,12 @@ export default function SubmitScriptPanel({
       message.error('截止时间不能为 0:00，请填写小时或分钟');
       return;
     }
+    if (overQueueLimit) {
+      message.error(
+        `截止时间超过队列 ${queue} 的硬上限（${queueSpec?.walltime}），LSF 会直接拒绝提交`,
+      );
+      return;
+    }
     setScript(buildVaspLsf(opts));
     message.success('已按 8 段模板生成 vasp.lsf');
   };
@@ -141,6 +161,12 @@ export default function SubmitScriptPanel({
   const writeRemote = async () => {
     if (walltimeInvalid) {
       message.error('截止时间不能为 0:00，请填写小时或分钟');
+      return;
+    }
+    if (overQueueLimit) {
+      message.error(
+        `截止时间超过队列 ${queue} 的硬上限（${queueSpec?.walltime}），LSF 会直接拒绝提交`,
+      );
       return;
     }
     const content = script.trim() ? script : buildVaspLsf(opts);
@@ -283,6 +309,9 @@ export default function SubmitScriptPanel({
                   <span className="lsf-field__hint">
                     #BSUB -W {formatWalltime(hours, normalizeMinute(minutes))}
                     {walltimeInvalid ? ' · 不能为 0:00' : ''}
+                    {overQueueLimit
+                      ? ` · 超过队列「${queue}」硬上限 ${queueSpec?.walltime}，LSF 会拒绝提交`
+                      : ''}
                   </span>
                 </div>
               </div>
@@ -380,7 +409,7 @@ export default function SubmitScriptPanel({
               type="primary"
               icon={<SaveOutlined />}
               loading={writing}
-              disabled={walltimeInvalid}
+              disabled={walltimeInvalid || overQueueLimit}
               onClick={() => void writeRemote()}
             >
               写入远端 vasp.lsf

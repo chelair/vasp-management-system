@@ -242,8 +242,16 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.26）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.27）
 
+- v0.9.27（2026-09-24，用户："为什么提交不了 Ag24@Al2O3"）：**把 LSF 的拒绝原因原样报出来 + 提交脚本页提前拦住超队列上限的截止时间**。
+  **真相**：不是系统没提交，是 **LSF 拒绝了**。审计里 5 次尝试（18:55~19:10）都是
+  `result=UNPARSED: @@@WORK=…/con7 @@@BSUB @@@BSUB_RC=255\nRUNLIMIT: Cannot exceed queue's hard limit(s). Job not submitted.` ——
+  `con7/vasp.lsf` 请求 `-q normal_1day_new` + `-W 36:00`（36 小时），而 `bqueues -l` 显示该队列 **RUNLIMIT = 1440.0 min = 24 小时**（`normal_2week` 才是 20160 min = 14 天）。作业**没有被提交**（LSF 直接拒了，不会产生重复作业）。
+  **暴露的两个体验问题（本次修）**：
+  ① 旧实现在解析不到 `Job <id>` 时抛 `500 未能从 bsub 输出解析作业 ID：@@@WORK=…`，把 LSF 的原话埋在 `@@@` 标记里，用户完全看不懂 —— 现在改成把 bsub 的原话（过滤掉 `@@@` 标记行）带进错误信息、返回 **400**「bsub 提交被集群拒绝（rc=255）：RUNLIMIT: Cannot exceed queue's hard limit(s). Job not submitted.；工作目录 …」，审计记 `BSUB_REJECTED rc=… <原话>`；
+  ② 提交脚本页（`SubmitScriptPanel`）在**填写的截止时间超过所选队列硬上限**时直接红字提示（「超过队列「normal_1day_new」硬上限 1天，LSF 会拒绝提交」）并**禁用「写入远端 vasp.lsf」**，`生成预览` 也会拦住 —— 队列上限取自节点规格的 `walltime`（1天/2周/无限制）。
+  验证：用打桩 `bsub`（打印 LSF 原话 + exit 255）走真实 HTTP 提交 6 项——返回 400 且带 `RUNLIMIT…` 原话、带 rc、审计 `BSUB_REJECTED`、任务状态/作业号未被改动；`tsc` + `npm run build` 通过。
 - v0.9.26（commit `985e0bd`，已推送 origin/main；2026-09-23 用户："作业管理那里每次提交都会把左边栏重置回顶端"）：**左侧「项目与子项」树的展开状态与滚动位置在列表刷新后保持**。
   根因两处：① `JobsTree` 里写着 `useEffect(() => setExpandedKeys(allExpandableKeys), [projects])` —— 只要 `projects` 刷新（提交作业 / 归档 / 新建之后的 `refreshProjects()`）就把展开状态**重置成"关闭项目折叠、其余全展开"**，用户手动折叠的节点被强制展开，配合 rc-tree 的展开动画观感就是"左边栏被重置回顶端"；② 左侧面板的滚动发生在 antd Card 的 `.ant-card-body`（global.css: `.jobs-grid > .ant-card:first-child` 的 `max-height + overflow-y:auto`），列表刷新时内容重建 → 滚动位置被夹回 0。
   修法：① `JobsTree` 改成**保留**用户当前的展开状态（只丢弃已不存在的 key），**只自动展开本次新出现**的节点（新建项目/组/任务的体验不变，已关闭项目子树仍自动折叠），而且内容没变化时不再 setState（避免多余渲染晃动滚动）；② 作业管理页记住左侧面板滚动位置，刷新后若被夹到 0 就还原回去。

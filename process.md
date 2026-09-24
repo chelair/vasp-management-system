@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.27）
 
-- v0.9.27（2026-09-24，用户："为什么提交不了 Ag24@Al2O3"）：**把 LSF 的拒绝原因原样报出来 + 提交脚本页提前拦住超队列上限的截止时间**。
+- v0.9.27（commit `77e930a`，已推送 origin/main；2026-09-24 用户："为什么提交不了 Ag24@Al2O3"）：**把 LSF 的拒绝原因原样报出来 + 提交脚本页提前拦住超队列上限的截止时间**。
   **真相**：不是系统没提交，是 **LSF 拒绝了**。审计里 5 次尝试（18:55~19:10）都是
   `result=UNPARSED: @@@WORK=…/con7 @@@BSUB @@@BSUB_RC=255\nRUNLIMIT: Cannot exceed queue's hard limit(s). Job not submitted.` ——
   `con7/vasp.lsf` 请求 `-q normal_1day_new` + `-W 36:00`（36 小时），而 `bqueues -l` 显示该队列 **RUNLIMIT = 1440.0 min = 24 小时**（`normal_2week` 才是 20160 min = 14 天）。作业**没有被提交**（LSF 直接拒了，不会产生重复作业）。

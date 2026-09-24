@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.29）
 
-- v0.9.29（2026-09-24，用户："自动巡检那个，我手动点击也计入时间；续算那里单任务执行上限 加一个重置按钮"）：两件事。
+- v0.9.29（commit `3b8318e`，已推送 origin/main；2026-09-24 用户："自动巡检那个，我手动点击也计入时间；续算那里单任务执行上限 加一个重置按钮"）：两件事。
   **① 自动巡检的倒计时不再被手动巡检顶掉**。原因：`inspection_scheduler.last_inspection_time()` 取的是 `checks/runs.json` 里**最近一次巡检（不分来源）**，所以手动点「立即巡检」（包括单任务巡检）都会把"下次自动巡检"往后推 2 小时。改法：新增 `last_auto_inspection_time()` —— 调度器每跑一轮就把它自己的时间写进 `settings.json` 的 `last_auto_inspection_at`，`_due()` 与界面的「下次」都只按它算；`/inspections/meta` 另外返回 `last_any_run_at`（最近一次含手动的巡检，仅供展示）。升级兜底：没有 `last_auto_inspection_at` 的老数据取"最近一次**全局**巡检"（`scope != "single"`，单任务巡检也不算），避免部署完立刻又跑一轮。界面文案同步改成「每 N 小时 · 上次自动 … · 下次 … · 最近一次（含手动）…」，开关的 tooltip 写明"手动点立即巡检不影响下次自动执行的时间"。
   **② 自动化规则新增「重置已执行次数」**（用户："续算那里单任务执行上限 加一个重置按钮"）。Guard 的「单任务执行上限」是**累计值**（`action_history.json` 的 `counts[task_id|action]`），撑满后自动化就不再动这些任务，以前只能删规则重建或手改 JSON。新增 `POST /api/automation/rules/{id}/reset-runs`（仅 admin）：按规则 condition **现算一遍目标任务**，清掉这些任务在该规则动作下的 `counts` / `cooldowns` / `last_results`，并把该规则的连续失败计数与熔断标记（`disabled_rules`）一起清掉；返回清理条数与目标任务。前端在**规则表「操作」列**和**规则弹窗「单任务执行上限」旁边**各放一个「重置已执行次数」按钮（Popconfirm 二次确认）。
   验证：① 自动巡检计时 8 项（手动/单任务巡检不推后；按自动时间算下次；老数据兜底取全局巡检；`mark_auto_inspection_at` 落盘）；② 重置接口 8 项（200 + 只清目标任务 task_a、别的任务 task_b 的计数保留、熔断计数与 disabled_rules 清掉、不存在的规则 404）；`tsc` + `npm run build` 通过。

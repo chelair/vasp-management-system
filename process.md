@@ -242,8 +242,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.29）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.30）
 
+- v0.9.30（2026-09-25，用户："我在作业管理加了个新任务 In_LMR_test/opt/test，可是远端一直不创建目录"）：**新建独立任务时顺手在远端建目录 + 「同步到远端」时目录不存在会自动创建**。
+  **根因**：只有两处会碰远端目录 —— ① 新建**项目**（`POST /projects`，且受 `settings.sync_remote_dirs` 开关控制，默认关）；② 新建**组 / 加结构**（`_try_remote_mkdir`，失败只警告）。而「作业管理 → 新建子项」（`POST /groups/tasks`，`create_independent_task`）**从来不碰远端**，所以新任务 `In_LMR_test/opt/test` 只有本地目录、远端没有；接着第一次「同步 POSCAR/INCAR/KPOINTS 到远端」就会因为 `cd "$remote_dir"` 失败而报"远程目录不存在"。实测确认：远端 `In_LMR_test/opt/` 下 `model1/2/3` 都在（早先建项目时建的），唯独 `test` 目录不存在。
+  **改法**：① `create_independent_task` 落库后调用 `_try_remote_mkdir(project.server, remote_dir)`（与建组一致，失败只警告并把 warning 返回给前端，提示语写明"已在远端建好目录"）；② 「同步到远端」的公共前置 `_prepare_remote_write`（POSCAR / INCAR / KPOINTS / 提交脚本都走它）在最前面加 `mkdir -p "$remote_dir"`：目录不存在就建出来再写，创建失败（无权限/配额）时报明确错误"远端目录 … 不存在且创建失败（检查账号权限/磁盘配额）"，不再含糊地说找不到目录。
+  **现场处置**：给用户的 `In_LMR_test/opt/test` 补建了远端目录 `/data/gpfs03/mdye/projects/HS/In_LMR_test/opt/test`（现在可以直接上传输入文件/提交了）。
+  **验证**：9 项 —— 新建独立任务后 mock 远端目录确实被创建、响应无警告且提示"已在远端建好目录"；真实模式脚本（本地起 bash 跑生成的脚本）目录不存在时自动创建并返回正确 WORK、已有文件仍备份为 `old_POSCAR`、**只读父目录时报"创建失败"而不是被当成"目录不存在"**；`tsc` + `npm run build` 通过。
 - v0.9.29（commit `3b8318e`，已推送 origin/main；2026-09-24 用户："自动巡检那个，我手动点击也计入时间；续算那里单任务执行上限 加一个重置按钮"）：两件事。
   **① 自动巡检的倒计时不再被手动巡检顶掉**。原因：`inspection_scheduler.last_inspection_time()` 取的是 `checks/runs.json` 里**最近一次巡检（不分来源）**，所以手动点「立即巡检」（包括单任务巡检）都会把"下次自动巡检"往后推 2 小时。改法：新增 `last_auto_inspection_time()` —— 调度器每跑一轮就把它自己的时间写进 `settings.json` 的 `last_auto_inspection_at`，`_due()` 与界面的「下次」都只按它算；`/inspections/meta` 另外返回 `last_any_run_at`（最近一次含手动的巡检，仅供展示）。升级兜底：没有 `last_auto_inspection_at` 的老数据取"最近一次**全局**巡检"（`scope != "single"`，单任务巡检也不算），避免部署完立刻又跑一轮。界面文案同步改成「每 N 小时 · 上次自动 … · 下次 … · 最近一次（含手动）…」，开关的 tooltip 写明"手动点立即巡检不影响下次自动执行的时间"。
   **② 自动化规则新增「重置已执行次数」**（用户："续算那里单任务执行上限 加一个重置按钮"）。Guard 的「单任务执行上限」是**累计值**（`action_history.json` 的 `counts[task_id|action]`），撑满后自动化就不再动这些任务，以前只能删规则重建或手改 JSON。新增 `POST /api/automation/rules/{id}/reset-runs`（仅 admin）：按规则 condition **现算一遍目标任务**，清掉这些任务在该规则动作下的 `counts` / `cooldowns` / `last_results`，并把该规则的连续失败计数与熔断标记（`disabled_rules`）一起清掉；返回清理条数与目标任务。前端在**规则表「操作」列**和**规则弹窗「单任务执行上限」旁边**各放一个「重置已执行次数」按钮（Popconfirm 二次确认）。

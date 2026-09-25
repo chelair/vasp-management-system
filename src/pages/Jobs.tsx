@@ -692,7 +692,12 @@ export default function Jobs() {
           setSelectedTaskId(target.task_id);
         }
         setNewTaskOpen(false);
-        message.success(`子项已创建：${payload.modelName}`);
+        // 后端会顺手在远端建任务目录（v0.9.30）；建失败时它回一个 warning，这里要显示出来
+        if (created.remote_warning) {
+          message.warning(`子项已创建：${payload.modelName}（${created.remote_warning}）`);
+        } else {
+          message.success(`子项已创建：${payload.modelName}（远端目录已建好）`);
+        }
       } catch (err) {
         message.error(err instanceof Error ? err.message : '创建子项失败');
       }

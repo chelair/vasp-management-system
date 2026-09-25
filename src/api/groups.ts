@@ -74,7 +74,7 @@ export function createIndependentTask(payload: {
   model_name: string;
   task_type: TaskType;
   subtype?: EleSubtype | null;
-}): Promise<{ task_id: string; dir_path: string }> {
+}): Promise<{ task_id: string; dir_path: string; remote_warning?: string | null }> {
   return request('/groups/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

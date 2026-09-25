@@ -203,6 +203,9 @@ def _prepare_remote_write(
 
     script = "\n".join(
         [
+            # 目录还不存在时先建出来（v0.9.30）：新建的独立任务以前不在远端建目录，
+            # 第一次「同步到远端」就会因为目录不存在失败（用户 2026-09-25 踩坑）
+            'mkdir -p "' + remote_dir + '" 2>/dev/null || { echo "@@@MKDIR_FAIL"; exit 4; }',
             'cd "' + remote_dir + '" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
             'LATEST=$(ls -d con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -1)',
             'WORK="' + remote_dir + '"',
@@ -227,6 +230,10 @@ def _prepare_remote_write(
     except Exception:  # noqa: BLE001 - 定位失败回退主目录写入
         return remote_dir, False
     out = str(result.get("stdout") or "")
+    if "@@@MKDIR_FAIL" in out:
+        raise ActionError(
+            502, f"远端目录 {remote_dir} 不存在且创建失败（检查账号权限/磁盘配额）"
+        )
     if "@@@NO_DIR" in out:
         return remote_dir, False
     match = re.search(r"@@@WORK=(.+)", out)

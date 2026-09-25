@@ -473,7 +473,13 @@ def create_independent_task(payload: IndependentTaskPayload, request: Request):
         task["subtype"] = payload.subtype
         _register_tasks(db, project["name"], [task])
         save_db(db)
-        return ok("独立任务已创建", {"task_id": task["task_id"], "dir_path": task["dir_path"]})
+        # 顺手在远端建出任务目录（v0.9.30，与建组/加结构一致；失败只警告不阻塞）
+        # 以前这里完全不碰远端，新建的任务第一次「同步到远端」会因为目录不存在而失败
+        warn = _try_remote_mkdir(project["server"], remote_dir)
+        return ok(
+            "独立任务已创建" + (f"（{warn}）" if warn else "（已在远端建好目录）"),
+            {"task_id": task["task_id"], "dir_path": task["dir_path"], "remote_warning": warn},
+        )
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:

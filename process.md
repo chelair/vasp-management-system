@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.30）
 
-- v0.9.30（2026-09-25，用户："我在作业管理加了个新任务 In_LMR_test/opt/test，可是远端一直不创建目录"）：**新建独立任务时顺手在远端建目录 + 「同步到远端」时目录不存在会自动创建**。
+- v0.9.30（commit `b95340a`，已推送 origin/main；2026-09-25 用户："我在作业管理加了个新任务 In_LMR_test/opt/test，可是远端一直不创建目录"）：**新建独立任务时顺手在远端建目录 + 「同步到远端」时目录不存在会自动创建**。
   **根因**：只有两处会碰远端目录 —— ① 新建**项目**（`POST /projects`，且受 `settings.sync_remote_dirs` 开关控制，默认关）；② 新建**组 / 加结构**（`_try_remote_mkdir`，失败只警告）。而「作业管理 → 新建子项」（`POST /groups/tasks`，`create_independent_task`）**从来不碰远端**，所以新任务 `In_LMR_test/opt/test` 只有本地目录、远端没有；接着第一次「同步 POSCAR/INCAR/KPOINTS 到远端」就会因为 `cd "$remote_dir"` 失败而报"远程目录不存在"。实测确认：远端 `In_LMR_test/opt/` 下 `model1/2/3` 都在（早先建项目时建的），唯独 `test` 目录不存在。
   **改法**：① `create_independent_task` 落库后调用 `_try_remote_mkdir(project.server, remote_dir)`（与建组一致，失败只警告并把 warning 返回给前端，提示语写明"已在远端建好目录"）；② 「同步到远端」的公共前置 `_prepare_remote_write`（POSCAR / INCAR / KPOINTS / 提交脚本都走它）在最前面加 `mkdir -p "$remote_dir"`：目录不存在就建出来再写，创建失败（无权限/配额）时报明确错误"远端目录 … 不存在且创建失败（检查账号权限/磁盘配额）"，不再含糊地说找不到目录。
   **现场处置**：给用户的 `In_LMR_test/opt/test` 补建了远端目录 `/data/gpfs03/mdye/projects/HS/In_LMR_test/opt/test`（现在可以直接上传输入文件/提交了）。

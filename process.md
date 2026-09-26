@@ -242,8 +242,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.30）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.31）
 
+- v0.9.31（2026-09-27，用户："我关闭项目的按钮哪去了"）：**「关闭项目」入口始终显示**（未满足条件时置灰 + 写明还差几个任务）。
+  **入口位置**：一直是 **总览 → 「项目进度」卡片**里每个项目那一行的元信息尾部（"完成 3/3 · 运行 1 …" 之后的小链接）；作业管理里从来没有项目级关闭，只有任务级「关闭（归档）」。**为什么"看不见"**：它原来是 `p.closable && <Popconfirm>` 条件渲染，而 `closable = 归档数 == 可见任务数`（后端 `dashboard.build_project_progress`，可见任务不含 conN 续算子任务）—— 只要还有一个任务没归档，按钮整个不渲染，用户既找不到也看不出原因。
+  **改法**（`ProjectProgressPanel`）：未关闭的项目**一律渲染**「关闭项目」——可关闭时是原来的 Popconfirm 链接；不可关闭时是**置灰按钮 + Tooltip**「项目下还有 N 个任务没关闭（归档）：先把它们「关闭（归档）」，这里就能关闭项目了」。
+  **当时各项目状态**（按后端口径实测）：`In_LMR_test` 可见 3 / 归档 3 → 可关闭；`Ag_20260830` 63 / 42 → 还差 21 个；`FS_Kaolin` 16 / 6 → 还差 10 个；`Co_260902`、`TMDZYX` 已关闭（在下方「已关闭项目」里可重新打开）。
+  验证：`tsc` + `npm run build` 通过（纯前端改动，硬刷新即可）。
 - v0.9.30（commit `b95340a`，已推送 origin/main；2026-09-25 用户："我在作业管理加了个新任务 In_LMR_test/opt/test，可是远端一直不创建目录"）：**新建独立任务时顺手在远端建目录 + 「同步到远端」时目录不存在会自动创建**。
   **根因**：只有两处会碰远端目录 —— ① 新建**项目**（`POST /projects`，且受 `settings.sync_remote_dirs` 开关控制，默认关）；② 新建**组 / 加结构**（`_try_remote_mkdir`，失败只警告）。而「作业管理 → 新建子项」（`POST /groups/tasks`，`create_independent_task`）**从来不碰远端**，所以新任务 `In_LMR_test/opt/test` 只有本地目录、远端没有；接着第一次「同步 POSCAR/INCAR/KPOINTS 到远端」就会因为 `cd "$remote_dir"` 失败而报"远程目录不存在"。实测确认：远端 `In_LMR_test/opt/` 下 `model1/2/3` 都在（早先建项目时建的），唯独 `test` 目录不存在。
   **改法**：① `create_independent_task` 落库后调用 `_try_remote_mkdir(project.server, remote_dir)`（与建组一致，失败只警告并把 warning 返回给前端，提示语写明"已在远端建好目录"）；② 「同步到远端」的公共前置 `_prepare_remote_write`（POSCAR / INCAR / KPOINTS / 提交脚本都走它）在最前面加 `mkdir -p "$remote_dir"`：目录不存在就建出来再写，创建失败（无权限/配额）时报明确错误"远端目录 … 不存在且创建失败（检查账号权限/磁盘配额）"，不再含糊地说找不到目录。

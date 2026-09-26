@@ -163,19 +163,40 @@ export default function ProjectProgressPanel({
                         <span className="dashboard-sub">另 {p.continuationTasks} 个续算目录</span>
                       </Tooltip>
                     )}
-                    {p.closable && onClose && (
-                      <Popconfirm
-                        title={`关闭项目 ${p.project_name}？`}
-                        description="项目下所有任务都已关闭；关闭后项目在列表中折叠显示，可随时重新打开（文件不受影响）"
-                        okText="关闭项目"
-                        cancelText="取消"
-                        onConfirm={() => onClose(p)}
-                      >
-                        <Button size="small" type="link" style={{ padding: 0, height: 'auto' }}>
-                          关闭项目
-                        </Button>
-                      </Popconfirm>
-                    )}
+                    {/*
+                      v0.9.31：关闭项目入口**始终显示**（未满足条件时置灰 + 说明还差几个任务）。
+                      以前是 `p.closable &&` 才渲染，用户找不到按钮也不知道为什么（2026-09-27 反馈）。
+                    */}
+                    {onClose &&
+                      (p.closable ? (
+                        <Popconfirm
+                          title={`关闭项目 ${p.project_name}？`}
+                          description="项目下所有任务都已关闭；关闭后项目在列表中折叠显示，可随时重新打开（文件不受影响）"
+                          okText="关闭项目"
+                          cancelText="取消"
+                          onConfirm={() => onClose(p)}
+                        >
+                          <Button size="small" type="link" style={{ padding: 0, height: 'auto' }}>
+                            关闭项目
+                          </Button>
+                        </Popconfirm>
+                      ) : (
+                        <Tooltip
+                          title={`项目下还有 ${Math.max(
+                            0,
+                            p.visibleTasks - p.archived,
+                          )} 个任务没关闭（归档）：先把它们「关闭（归档）」，这里就能关闭项目了`}
+                        >
+                          <Button
+                            size="small"
+                            type="link"
+                            disabled
+                            style={{ padding: 0, height: 'auto' }}
+                          >
+                            关闭项目（还差 {Math.max(0, p.visibleTasks - p.archived)} 个任务）
+                          </Button>
+                        </Tooltip>
+                      ))}
                   </div>
                 </div>
               );

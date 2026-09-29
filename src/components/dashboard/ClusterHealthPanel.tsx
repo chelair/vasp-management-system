@@ -73,7 +73,7 @@ export default function ClusterHealthPanel({
       ) : !nodes ? (
         <div className="dashboard-muted">未取到节点状态（bhosts）</div>
       ) : (
-        <>
+        <div className="cluster-panel-enter">
           <div className="health-block">
             <div className="health-block__title">
               节点状态
@@ -172,7 +172,7 @@ export default function ClusterHealthPanel({
               </>
             )}
           </div>
-        </>
+        </div>
       )}
     </Card>
   );

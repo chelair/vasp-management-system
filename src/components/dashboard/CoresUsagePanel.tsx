@@ -77,7 +77,10 @@ export default function CoresUsagePanel({
           labelLine: { show: false },
           emphasis: { scale: true, scaleSize: 6 },
           data,
-          animationDuration: 700,
+          // 圆环入场：扇区依次展开（配合面板的淡入上移），显得"活"一点
+          animationDuration: 900,
+          animationEasing: 'cubicOut',
+          animationDelay: (idx: number) => idx * 70,
         },
       ],
     };
@@ -115,14 +118,18 @@ export default function CoresUsagePanel({
       ) : !usage || (usage.byProject.length === 0 && usage.usedCores === 0) ? (
         <Empty description="当前没有占用核数的作业" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
-        <>
+        <div className="cluster-panel-enter">
           <div
             ref={chartRef}
             className={`cores-donut${level === 'critical' ? ' cores-donut--critical' : ''}`}
           />
           <div className="cores-legend">
             {(usage.byProject ?? []).map((p, i) => (
-              <div key={p.project_name} className="cores-legend__row">
+              <div
+                key={p.project_name}
+                className="cores-legend__row cores-legend__row--enter"
+                style={{ animationDelay: `${i * 60}ms` }}
+              >
                 <span
                   className="cores-legend__dot"
                   style={{ background: sliceColor(i, usage.level) }}
@@ -143,7 +150,7 @@ export default function CoresUsagePanel({
                 : '未取到，仅统计 bjobs 汇总'}
             {usage.queues.length > 0 && `（队列 ${usage.queues.join(' / ')}）`}
           </div>
-        </>
+        </div>
       )}
     </Card>
   );

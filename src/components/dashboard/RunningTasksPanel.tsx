@@ -128,22 +128,24 @@ export default function RunningTasksPanel({
       ) : jobs.length === 0 ? (
         <Empty description="当前没有作业在运行或排队" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
-        <Table
-          rowKey="job_id"
-          dataSource={jobs}
-          columns={columns}
-          pagination={false}
-          size="small"
-          // 固定高度 + 内部滚动：作业变多时模块不再被撑高
-          scroll={{ x: 'max-content', y: 320 }}
-          onRow={(row) => ({
-            onClick: () => {
-              if (!row.task_id) return;
-              navigate(`/jobs?task=${encodeURIComponent(row.task_id)}`);
-            },
-            style: { cursor: row.task_id ? 'pointer' : 'default' },
-          })}
-        />
+        <div className="cluster-panel-enter">
+          <Table
+            rowKey="job_id"
+            dataSource={jobs}
+            columns={columns}
+            pagination={false}
+            size="small"
+            // 固定高度 + 内部滚动：作业变多时模块不再被撑高
+            scroll={{ x: 'max-content', y: 320 }}
+            onRow={(row) => ({
+              onClick: () => {
+                if (!row.task_id) return;
+                navigate(`/jobs?task=${encodeURIComponent(row.task_id)}`);
+              },
+              style: { cursor: row.task_id ? 'pointer' : 'default' },
+            })}
+          />
+        </div>
       )}
       {jobs.length > 0 && (
         <div className="dashboard-note">

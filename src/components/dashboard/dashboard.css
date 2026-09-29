@@ -519,3 +519,30 @@
   align-items: center;
   gap: 4px;
 }
+
+/* 集群面板内容"加载完成"入场动画（v0.9.33）：淡入 + 轻微上移 + 图例行错峰出现 */
+@keyframes clusterPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.cluster-panel-enter {
+  animation: clusterPanelIn 0.45s cubic-bezier(0.25, 0.1, 0.25, 1) both;
+}
+
+.cores-legend__row--enter {
+  animation: clusterPanelIn 0.4s cubic-bezier(0.25, 0.1, 0.25, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cluster-panel-enter,
+  .cores-legend__row--enter {
+    animation: none;
+  }
+}

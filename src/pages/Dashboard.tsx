@@ -19,6 +19,7 @@ import AddProjectModal from '../components/projects/AddProjectModal';
 import ClusterHealthPanel from '../components/dashboard/ClusterHealthPanel';
 import CoresUsagePanel from '../components/dashboard/CoresUsagePanel';
 import ProjectProgressPanel from '../components/dashboard/ProjectProgressPanel';
+import { clusterPanelState } from '../components/dashboard/ClusterPanelHeader';
 import RiskAlertsPanel from '../components/dashboard/RiskAlertsPanel';
 import RunningTasksPanel from '../components/dashboard/RunningTasksPanel';
 import TrendPanel from '../components/dashboard/TrendPanel';
@@ -144,6 +145,20 @@ export default function Dashboard() {
     () => (overview ? { ...overview, ...(clusterOverview ?? {}) } : null),
     [overview, clusterOverview],
   );
+
+  /**
+   * 集群数据是否**已经拿到**（v0.9.33 修）。
+   *
+   * - 新后端：第一次请求 `cluster=0` → `cluster.pending=true`（没数据），第二次 `cluster=1` 才有；
+   * - 旧后端（还没重启）：第一次请求就已经带了集群数据（它不认识 `cluster=0`）→ 这里也认。
+   * 只要有一次拿到了数据，面板就正常渲染，不再被"第二次请求还在飞/失败"盖成骨架或错误框。
+   */
+  const clusterReady = Boolean(clusterOverview) || Boolean(overview?.cluster?.queriedAt);
+  const clusterPanel = clusterPanelState({
+    loading: clusterLoading,
+    ready: clusterReady,
+    error: clusterError,
+  });
 
   const stats = view?.stats;
   const projectCount = useCountUp(stats?.projects ?? 0);
@@ -348,12 +363,14 @@ export default function Dashboard() {
             />
             <StatCard
               label="运行中任务"
-              value={clusterLoading || view.cluster?.pending ? '—' : runningJobs}
+              value={clusterReady ? runningJobs : '—'}
               icon={<ThunderboltOutlined />}
               accent="teal"
               trend={
-                clusterLoading || view.cluster?.pending
-                  ? '集群数据加载中（bjobs / blimits 单独查询）'
+                !clusterReady
+                  ? clusterPanel.showError
+                    ? `集群查询失败：${clusterError}`
+                    : '集群数据加载中（bjobs / blimits 单独查询）'
                   : clusterError
                     ? `集群查询失败：${clusterError}`
                     : `另有 ${stats?.pendingJobs ?? 0} 个排队中`
@@ -369,7 +386,7 @@ export default function Dashboard() {
             <div ref={runningRef}>
               <RunningTasksPanel
                 jobs={view.runningTasks}
-                loading={clusterLoading || (Boolean(view.cluster?.pending) && !clusterError)}
+                loading={clusterPanel.showLoading}
                 highlight={highlightRunning}
                 onRefresh={() => void loadCluster(true)}
                 refreshingRef={clusterRefreshingRef}
@@ -378,11 +395,11 @@ export default function Dashboard() {
             </div>
             <CoresUsagePanel
               usage={view.coresUsage}
-              loading={clusterLoading || (Boolean(view.cluster?.pending) && !clusterError)}
+              loading={clusterPanel.showLoading}
               onRefresh={() => void loadCluster(true)}
               refreshingRef={clusterRefreshingRef}
               lastUpdated={view.cluster?.queriedAt}
-              error={clusterError}
+              error={clusterPanel.showError ? clusterError : null}
               onRetry={() => void loadCluster(true)}
             />
           </div>
@@ -391,11 +408,11 @@ export default function Dashboard() {
             <TrendPanel trend={view.trend} loading={loading} />
             <ClusterHealthPanel
               health={view.clusterHealth}
-              loading={clusterLoading || (Boolean(view.cluster?.pending) && !clusterError)}
+              loading={clusterPanel.showLoading}
               onRefresh={() => void loadCluster(true)}
               refreshingRef={clusterRefreshingRef}
               lastUpdated={view.cluster?.queriedAt}
-              error={clusterError}
+              error={clusterPanel.showError ? clusterError : null}
               onRetry={() => void loadCluster(true)}
             />
           </div>
@@ -423,9 +440,9 @@ export default function Dashboard() {
             title="最近更新的任务"
             extra={
               <span className="dashboard-sub">
-                {clusterError
+                {!clusterReady && clusterPanel.showError
                   ? `集群数据查询失败（${clusterError}）`
-                  : view.cluster?.pending || clusterLoading
+                  : !clusterReady
                     ? '集群数据加载中（bjobs / blimits 单独查询）'
                     : `集群数据 ${view.cluster.queriedAt?.replace('T', ' ') ?? '—'}`}
                 {view.cluster.cached ? '（缓存）' : ''}

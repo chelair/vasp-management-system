@@ -101,3 +101,20 @@ export function ClusterPanelError({ error, onRetry }: { error: string; onRetry?:
     />
   );
 }
+
+/**
+ * 集群面板该显示"加载中"还是"失败"（v0.9.33 修）：
+ *
+ * **只要已经有集群数据（第一次请求就带回来了，或第二次请求成功）就正常渲染**，
+ * 不要再被"第二次请求还在飞/失败了"盖成骨架屏或错误框 —— 否则就会出现
+ * "核数占用明明有数据却不显示"（用户 2026-09-29 反馈）。
+ */
+export function clusterPanelState(opts: {
+  loading: boolean;
+  ready: boolean;
+  error: string | null;
+}): { showLoading: boolean; showError: boolean } {
+  if (opts.ready) return { showLoading: false, showError: false };
+  if (opts.error) return { showLoading: false, showError: true };
+  return { showLoading: opts.loading, showError: false };
+}

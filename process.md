@@ -242,8 +242,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.31）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.32）
 
+- v0.9.32（2026-09-29，用户："帮我查查今天自动化怎么回事，特别是 Ag——neb——PATH" → "2 不用其他改"）：**给规则 26651（Ag@Al2O3_neb 续算）补上状态过滤**（配置改动，非代码）。
+  **问题**（今日复盘）：09-28 23:35 建 con11 并提交（job 159973），随后该作业一直**排队（PEND）**；规则 26651 的条件只有 `task_type=neb` + `task_id`，**没有 status 过滤**，而 NEB 续算脚本判断"有没有活跃作业"只看 `bjobs -l <job_id>` 里的 **RUN/SSUSP/PSUSP/USUSP（PEND 不算）** → 于是 09-29 的 01:35 / 03:35 / 05:35 / 07:35 四轮巡检各建了一个新目录 **con12–con15**（全都因为 `max_runs_per_task` 撑满而没提交），09:35 起连续算也被上限拦住 → 规则停摆到今天 21:23。（opt 续算有"源目录必须 OUTCAR+CONTCAR 非空"的保护，NEB 分支没有 —— 这是 #1/#3 待办，用户本次要求先不动。）
+  **改动**：`data/config/rules/26651.json` 的 condition 从 `{task_type, task_id}` 改为 `{task_type, task_id, status: ["completed", "zombied", "unconverged"]}` —— 只有"作业确实结束"（完成 / 僵尸 / 未收敛）才续算，`pending / queued / running` 一律不命中。写回前先过了一遍后端自己的 `_validate_rule`（字段白名单、guard、`follow_up_action` 都保留），旧文件备份在 `data/backups/rule_26651.json.bak.20260929_213437`，原子写回（0600）。规则文件是每个事件现读的 → **无需重启，立即生效**。
+  **验证**（用真实任务上下文跑规则匹配）：任务当前 `pending` → 不命中；`queued / running / pending` → 不命中；`completed / zombied / unconverged` → 命中。
+  **遗留提醒**：`action_history.json` 里该任务的 `task.continuation` 与 `task.submit` 计数仍是 **5/5**，所以下次真进入 `completed/unconverged` 时仍会被"已达执行上限"拦住 —— 需要在自动化页点「重置次数」（或用「单任务执行上限」调大/设 0=不限）才会继续。
 - v0.9.31（commit `378062f`，已推送 origin/main；2026-09-27 用户："我关闭项目的按钮哪去了"）：**「关闭项目」入口始终显示**（未满足条件时置灰 + 写明还差几个任务）。
   **入口位置**：一直是 **总览 → 「项目进度」卡片**里每个项目那一行的元信息尾部（"完成 3/3 · 运行 1 …" 之后的小链接）；作业管理里从来没有项目级关闭，只有任务级「关闭（归档）」。**为什么"看不见"**：它原来是 `p.closable && <Popconfirm>` 条件渲染，而 `closable = 归档数 == 可见任务数`（后端 `dashboard.build_project_progress`，可见任务不含 conN 续算子任务）—— 只要还有一个任务没归档，按钮整个不渲染，用户既找不到也看不出原因。
   **改法**（`ProjectProgressPanel`）：未关闭的项目**一律渲染**「关闭项目」——可关闭时是原来的 Popconfirm 链接；不可关闭时是**置灰按钮 + Tooltip**「项目下还有 N 个任务没关闭（归档）：先把它们「关闭（归档）」，这里就能关闭项目了」。

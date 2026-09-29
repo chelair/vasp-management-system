@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.35）
 
-- v0.9.35（2026-09-29，用户："核数圆环还是没有"）：**`useEcharts` 改成回调 ref —— 图表容器"后出现"时也能初始化**（这是圆环空白的真正根因）。
+- v0.9.35（commit `74ea410`，已推送 origin/main；2026-09-29 用户："核数圆环还是没有"）：**`useEcharts` 改成回调 ref —— 图表容器"后出现"时也能初始化**（这是圆环空白的真正根因）。
   根因：`useEcharts` 用 `useRef` + **空依赖**的 init effect：
   ```ts
   useEffect(() => { const el = containerRef.current; if (!el) return; init(el); }, []);

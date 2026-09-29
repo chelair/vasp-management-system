@@ -242,8 +242,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.35）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.36）
 
+- v0.9.36（2026-09-29，用户："其他元素还是不是秒出呀"）：**总览"本地聚合"不再每次全量读巡检归档 —— 从 ~500ms 降到 ~16ms**。
+  **定位**（生产数据实测）：`/api/dashboard/overview?cluster=0` 仍要 ~518ms。逐项 profile 后：`_build_local_bundle` 里 **`build_risk_alerts()` 占了 ~410ms** —— 它调用的是 `checks_store.collect_results()`（**无缓存**，每次全量读 `data/checks` 下 20MB+ 归档），而 `merged_results()` 本身是有 30s 缓存的；另外 `_completed_stats()` 每次扫检查文件 mtime 也要 ~58ms。为什么以前没暴露：`local_bundle(refresh, project_names)` 只有 `project_names is None`（admin 不传）才走 60s 缓存，而 router **总是传可见项目集合** → 一直走"现算"分支。
+  **修法**：① `build_risk_alerts` 改用 `merged_results()`（30s 缓存）；② `_completed_stats` 拆出 `_completed_task_ids_by_day()`（"日期桶 → task_id 集合"，60s 缓存、**不带用户过滤**），再按 `allowed` 交集过滤，普通用户这条路也不再每次扫文件；③ `invalidate_cluster_cache()`（巡检归档后调用）一并作废这两份缓存 + checks 缓存，刷新后不会看到旧结论。
+  **实测**（生产数据、进程内，等价于页面请求）：`build_risk_alerts` 411ms → **1.3ms**、`_completed_stats` 58ms → **0.1ms**、普通用户路径 `build_overview(cluster=0, project_names=可见)` **~500ms → 16.4ms**。
+  **验证**：隔离数据 7 项 —— 第二次调用不再全量读 checks（`collect_results` 只被调 1 次）、全部项目 2 条告警/只看 ProjA 只 1 条、今日完成全部=2/只看 ProjA=1、作废缓存后确实清空。
 - v0.9.35（commit `74ea410`，已推送 origin/main；2026-09-29 用户："核数圆环还是没有"）：**`useEcharts` 改成回调 ref —— 图表容器"后出现"时也能初始化**（这是圆环空白的真正根因）。
   根因：`useEcharts` 用 `useRef` + **空依赖**的 init effect：
   ```ts

@@ -24,7 +24,8 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cluster_probe
-from checks_store import CHECKS_DIR, collect_results, list_runs, to_frontend_rows
+import checks_store
+from checks_store import CHECKS_DIR, list_runs, merged_results, to_frontend_rows
 from config import DATA_DIR, load_servers, load_settings
 from storage import load_db
 from task_paths import is_continuation_task
@@ -379,19 +380,21 @@ def build_trend(days: int = TREND_DAYS) -> Dict[str, Any]:
 # ------------------------------------------------------------------ 本地聚合
 
 
-def _completed_stats(db: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """今日/昨日「新完成」任务数：当天巡检观察到 completed 且前一天未完成的任务。
+#: 「今日/昨日/前天归档里 completed 的 task_id」短缓存（60s）：读检查文件也要 50-60ms
+_DAY_COMPLETED_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
+DAY_COMPLETED_CACHE_TTL = 60
 
-    按检查文件 mtime 归日（归档文件即一轮巡检的产物），任务去重。
-    `db` 不为 None 时只统计该项目集合下的任务（第 4 步：普通用户只看自己的）。
-    """
-    allowed: Optional[set] = None
-    if db is not None:
-        allowed = {
-            str(t.get("task_id"))
-            for p in db.get("projects", [])
-            for t in p.get("tasks", [])
-        }
+
+def _completed_task_ids_by_day(force: bool = False) -> Dict[str, set]:
+    """三个日期桶里「status=completed」的 task_id 集合（带 60s 缓存，不带用户过滤）。"""
+    now = time.time()
+    cached = _DAY_COMPLETED_CACHE.get("data")
+    if (
+        not force
+        and cached is not None
+        and now - float(_DAY_COMPLETED_CACHE.get("at") or 0) < DAY_COMPLETED_CACHE_TTL
+    ):
+        return cached
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
     prev = today - timedelta(days=2)
@@ -418,10 +421,30 @@ def _completed_stats(db: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             continue
         for entry in entries:
             if entry.get("status") == "completed" and entry.get("task_id"):
-                task_id = str(entry["task_id"])
-                if allowed is not None and task_id not in allowed:
-                    continue
-                seen[key].add(task_id)
+                seen[key].add(str(entry["task_id"]))
+    _DAY_COMPLETED_CACHE["at"] = now
+    _DAY_COMPLETED_CACHE["data"] = seen
+    return seen
+
+
+def _completed_stats(db: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """今日/昨日「新完成」任务数：当天巡检观察到 completed 且前一天未完成的任务。
+
+    按检查文件 mtime 归日（归档文件即一轮巡检的产物），任务去重。
+    `db` 不为 None 时只统计该项目集合下的任务（第 4 步：普通用户只看自己的）；
+    原始"日期桶 → task_id 集合"带 60s 缓存（**不带用户过滤**），因此普通用户这条路
+    也不会每次请求都去读几十上百个检查文件。
+    """
+    allowed: Optional[set] = None
+    if db is not None:
+        allowed = {
+            str(t.get("task_id"))
+            for p in db.get("projects", [])
+            for t in p.get("tasks", [])
+        }
+    seen = _completed_task_ids_by_day()
+    if allowed is not None:
+        seen = {key: {tid for tid in ids if tid in allowed} for key, ids in seen.items()}
     today_new = seen["today"] - seen["yesterday"]
     yesterday_new = seen["yesterday"] - seen["prev"]
     return {
@@ -557,7 +580,9 @@ def build_cluster_health(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_risk_alerts(db: Dict[str, Any]) -> Dict[str, Any]:
-    merged = collect_results()
+    # 用**带 30s 缓存**的 merged_results()，不要 collect_results()（每次全量读 data/checks
+    # 下 20MB+ 归档 ≈ 400ms —— 总览每次请求都卡在这里，2026-09-29 定位）
+    merged = merged_results()
     rows = to_frontend_rows(db, merged)
     alerts: List[Dict[str, Any]] = []
     seen: set = set()
@@ -889,6 +914,10 @@ def invalidate_cluster_cache(
     targets = cluster_probe.invalidate(servers)
     # 本地聚合（风险/趋势/项目进度）同样可能与巡检结果相关
     _local_cache = {"at": 0.0, "data": None}
+    # 巡检结果是这两份缓存的来源：一起作废，避免刷新后仍显示旧结论
+    checks_store.invalidate_cache()
+    _DAY_COMPLETED_CACHE["at"] = 0.0
+    _DAY_COMPLETED_CACHE["data"] = None
 
     if not prewarm or not targets:
         return targets

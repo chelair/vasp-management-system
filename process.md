@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.33）
 
-- v0.9.33（2026-09-29，用户："总览页面给 bjobs 和 limits 查询单独弄个加载，这样查不到页面一直卡住"）：**总览拆成"本地聚合秒开 + 集群部分单独加载"**。
+- v0.9.33（commit `28ad0eb`，已推送 origin/main；2026-09-29 用户："总览页面给 bjobs 和 limits 查询单独弄个加载，这样查不到页面一直卡住"）：**总览拆成"本地聚合秒开 + 集群部分单独加载"**。
   **根因**：`GET /api/dashboard/overview` 一次返回整页数据，而它开头就 `cluster_snapshot()`（一次 SSH 合并查询 bjobs/blimits/bhosts/bqueues/df，`cluster_probe` 超时 **90s**，叠加 Paramiko 连接 10s + 重试）→ 集群慢/连不上时**整页一直转圈**。
   **改法**：
   - 后端 `build_overview(..., include_cluster=True)` + 接口参数 `GET /api/dashboard/overview?cluster=0`（`routers/dashboard.py` 新增 `cluster` query）：`cluster=0` 时**完全不碰 SSH**，只返回本地聚合（统计 / 风险 / 项目进度 / 最近任务 / 趋势），集群字段留空并标 `cluster.pending=true`；`stats.runningJobs/pendingJobs` 为 `null`（前端显示"—"，不假装 0）。

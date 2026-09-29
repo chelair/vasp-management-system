@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.34）
 
-- v0.9.34（2026-09-29，用户："核数占用不正常显示了；加载出来的时候加一点动画显得生动一点"）：**修 v0.9.33 引入的"有数据也被盖住"+ 集群面板入场动画**。
+- v0.9.34（commit `218dfa4`，已推送 origin/main；2026-09-29 用户："核数占用不正常显示了；加载出来的时候加一点动画显得生动一点"）：**修 v0.9.33 引入的"有数据也被盖住"+ 集群面板入场动画**。
   **bug 成因**：v0.9.33 把集群拆成第二段请求后，面板的 loading/error 只看"第二段请求的状态" —— 而**旧后端（还没重启）不认识 `?cluster=0`，第一段请求就已经把集群数据带回来了**；第二段请求若慢/失败（例如 25s 超时），面板就会被骨架屏或"查询失败"框盖住 → 表现为"核数占用明明有数据却不显示"。
   **修法**：Dashboard 新增 `clusterReady = Boolean(clusterOverview) || Boolean(overview?.cluster?.queriedAt)`（第二段有结果，或第一段本身就带集群数据），并用 `ClusterPanelHeader.clusterPanelState({loading, ready, error})` 统一决定：**只要有数据就正常渲染**，只有"完全没数据"才显示骨架（加载中）或错误框（失败 + 重试）。顶部「运行中任务」卡片同理（未就绪显示"—"）。
   **动画**：集群面板内容加载完成时加 `.cluster-panel-enter`（淡入 + 上移 8px，0.45s cubic-bezier）；核数占用的图例行按 60ms 错峰出现；圆环 echarts 动画调优为 900ms `cubicOut` + `animationDelay: idx * 70`（扇区依次展开）；全部尊重 `prefers-reduced-motion`（该情形下关闭动画）。

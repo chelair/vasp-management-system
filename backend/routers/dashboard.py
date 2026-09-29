@@ -36,13 +36,26 @@ def overview(
     request: Request,
     server: str | None = Query(default=None, description="服务器名，默认取第一个"),
     refresh: bool = Query(default=False, description="true 时忽略缓存强制查询"),
+    cluster: bool = Query(
+        default=True,
+        description="false 时跳过集群查询（bjobs/blimits/bhosts），只返回本地聚合，用于页面秒开",
+    ),
 ):
-    """总览聚合：项目相关统计按可见项目过滤（第 4 步），集群信息保持全局。"""
+    """总览聚合：项目相关统计按可见项目过滤（第 4 步），集群信息保持全局。
+
+    `cluster=false`（v0.9.33）完全不碰 SSH：先把本地聚合返回让页面渲染，
+    集群部分前端再用 `cluster=true`（默认）单独加载并各自显示 loading/超时。
+    """
     try:
         names = permissions.visible_project_names(load_db(), getattr(request.state, "user", None))
         return ok(
             "查询成功",
-            cached_overview(_server(server), refresh=refresh, project_names=names),
+            cached_overview(
+                _server(server),
+                refresh=refresh,
+                project_names=names,
+                include_cluster=cluster,
+            ),
         )
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉

@@ -512,3 +512,10 @@
     height: 200px;
   }
 }
+
+/* 集群类面板（bjobs / blimits / bhosts）标题右侧的「上次更新 + 刷新」小控件（v0.9.33） */
+.cluster-panel-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

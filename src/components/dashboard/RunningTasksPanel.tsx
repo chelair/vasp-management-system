@@ -1,9 +1,10 @@
-import { Card, Empty, Skeleton, Table, Tag, Tooltip } from 'antd';
+import { Card, Empty, Skeleton, Space, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import type { DashboardJob } from '../../types';
+import ClusterPanelHeader, { ClusterPanelError, type ClusterPanelHeaderProps } from './ClusterPanelHeader';
 
-interface Props {
+interface Props extends ClusterPanelHeaderProps {
   jobs: DashboardJob[];
   loading?: boolean;
   highlight?: boolean;
@@ -17,7 +18,17 @@ const STATUS_STYLE: Record<string, { label: string; color: string }> = {
   PSUSP: { label: '排队挂起', color: 'volcano' },
 };
 
-export default function RunningTasksPanel({ jobs, loading, highlight }: Props) {
+export default function RunningTasksPanel({
+  jobs,
+  loading,
+  highlight,
+  onRefresh,
+  refreshingRef,
+  lastUpdated,
+  autoRefresh,
+  error,
+  onRetry,
+}: Props) {
   const navigate = useNavigate();
 
   const columns: ColumnsType<DashboardJob> = [
@@ -97,12 +108,22 @@ export default function RunningTasksPanel({ jobs, loading, highlight }: Props) {
       className={`dashboard-card${highlight ? ' dashboard-card--highlight' : ''}`}
       title="运行中的任务"
       extra={
-        <span className="dashboard-sub">
-          运行 {running} · 排队 {pending}
-        </span>
+        <Space size={8}>
+          <ClusterPanelHeader
+            onRefresh={onRefresh}
+            refreshingRef={refreshingRef}
+            lastUpdated={lastUpdated}
+            autoRefresh={autoRefresh}
+          />
+          <span className="dashboard-sub">
+            运行 {running} · 排队 {pending}
+          </span>
+        </Space>
       }
     >
-      {loading && jobs.length === 0 ? (
+      {error && jobs.length === 0 ? (
+        <ClusterPanelError error={error} onRetry={onRetry ?? onRefresh} />
+      ) : loading && jobs.length === 0 ? (
         <Skeleton active paragraph={{ rows: 4 }} />
       ) : jobs.length === 0 ? (
         <Empty description="当前没有作业在运行或排队" image={Empty.PRESENTED_IMAGE_SIMPLE} />

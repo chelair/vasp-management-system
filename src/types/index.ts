@@ -479,8 +479,9 @@ export interface DashboardStats {
   projectsThisMonth: number;
   running: number;
   queued: number;
-  runningJobs: number;
-  pendingJobs: number;
+  /** 集群查询未返回时为 null（前端显示"—"，不要显示成 0） */
+  runningJobs: number | null;
+  pendingJobs: number | null;
   todayCompleted: number;
   yesterdayCompleted: number;
   completedDelta: number;
@@ -491,6 +492,8 @@ export interface DashboardStats {
 }
 
 export interface DashboardClusterMeta {
+  /** true = 这一次响应没有查集群（前端据此显示"加载中/查询失败"，不要假装 0） */
+  pending?: boolean;
   source: string;
   error: string | null;
   queriedAt: string | null;
@@ -504,8 +507,9 @@ export interface DashboardOverview {
   server: string;
   stats: DashboardStats;
   runningTasks: DashboardJob[];
-  coresUsage: DashboardCoresUsage;
-  clusterHealth: DashboardClusterHealth;
+  /** `cluster=0`（只取本地聚合）时为 null —— 集群部分单独加载 */
+  coresUsage: DashboardCoresUsage | null;
+  clusterHealth: DashboardClusterHealth | null;
   riskAlerts: DashboardRiskSummary;
   projectProgress: DashboardProjectProgress[];
   recentTasks: DashboardRecentTask[];

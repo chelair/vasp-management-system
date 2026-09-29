@@ -760,13 +760,20 @@ def build_overview(
     server_name: str,
     refresh: bool = False,
     project_names: Optional[Set[str]] = None,
+    include_cluster: bool = True,
 ) -> Dict[str, Any]:
     """总览页聚合数据（顶部统计 + 运行任务 + 核数 + 集群 + 风险 + 项目进度 + 趋势）。
 
     `project_names` 不为 None 时只统计当前用户可见的项目（第 4 步）；
     集群级信息（节点 / 队列 / 存储 / 提交趋势）保持全局。
+
+    `include_cluster=False`（v0.9.33，接口 `?cluster=0`）时**完全不碰 SSH**：
+    直接返回本地聚合（统计 / 风险 / 项目进度 / 最近任务 / 趋势），集群相关的
+    字段留空并标 `cluster.pending = True`。前端先渲染这一份让页面秒开，
+    再用 `?cluster=1` 单独加载 bjobs / blimits 那部分（各自有 loading 与超时），
+    避免集群查询卡住时整页一直转圈。
     """
-    snapshot = cluster_snapshot(server_name, refresh=refresh)
+    snapshot = cluster_snapshot(server_name, refresh=refresh) if include_cluster else {}
     local = local_bundle(refresh=refresh, project_names=project_names)
     db = _visible_db(project_names)
     risks = local["riskAlerts"]
@@ -777,8 +784,17 @@ def build_overview(
         "server": server_name,
         "stats": {
             **base,
-            "runningJobs": len([j for j in snapshot.get("jobs", []) if j.get("status") == "RUN"]),
-            "pendingJobs": len([j for j in snapshot.get("jobs", []) if j.get("status") == "PEND"]),
+            # 没查集群时给 None（前端显示"—"），不要假装 0
+            "runningJobs": (
+                len([j for j in snapshot.get("jobs", []) if j.get("status") == "RUN"])
+                if include_cluster
+                else None
+            ),
+            "pendingJobs": (
+                len([j for j in snapshot.get("jobs", []) if j.get("status") == "PEND"])
+                if include_cluster
+                else None
+            ),
             "todayCompleted": completed["todayCompleted"],
             "yesterdayCompleted": completed["yesterdayCompleted"],
             "completedDelta": completed["delta"],
@@ -786,14 +802,15 @@ def build_overview(
             "errorCount": risks["errorCount"],
             "warningCount": risks["warningCount"],
         },
-        "runningTasks": build_running_tasks(db, snapshot),
-        "coresUsage": build_cores_usage(db, snapshot),
-        "clusterHealth": build_cluster_health(snapshot),
+        "runningTasks": build_running_tasks(db, snapshot) if include_cluster else [],
+        "coresUsage": build_cores_usage(db, snapshot) if include_cluster else None,
+        "clusterHealth": build_cluster_health(snapshot) if include_cluster else None,
         "riskAlerts": risks,
         "projectProgress": local["projectProgress"],
         "recentTasks": recent_tasks(db),
         "trend": local["trend"],
         "cluster": {
+            "pending": not include_cluster,
             "source": snapshot.get("source"),
             "error": snapshot.get("error"),
             "queriedAt": snapshot.get("queriedAt"),
@@ -845,10 +862,18 @@ def recent_tasks(db: Dict[str, Any], limit: int = 8) -> List[Dict[str, Any]]:
 
 
 def cached_overview(
-    server_name: str, refresh: bool = False, project_names: Optional[Set[str]] = None
+    server_name: str,
+    refresh: bool = False,
+    project_names: Optional[Set[str]] = None,
+    include_cluster: bool = True,
 ) -> Dict[str, Any]:
     """兼容入口：集群快照与本地聚合各自带缓存。"""
-    return build_overview(server_name, refresh=refresh, project_names=project_names)
+    return build_overview(
+        server_name,
+        refresh=refresh,
+        project_names=project_names,
+        include_cluster=include_cluster,
+    )
 
 
 def invalidate_cluster_cache(

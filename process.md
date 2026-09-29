@@ -242,8 +242,15 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.32）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.33）
 
+- v0.9.33（2026-09-29，用户："总览页面给 bjobs 和 limits 查询单独弄个加载，这样查不到页面一直卡住"）：**总览拆成"本地聚合秒开 + 集群部分单独加载"**。
+  **根因**：`GET /api/dashboard/overview` 一次返回整页数据，而它开头就 `cluster_snapshot()`（一次 SSH 合并查询 bjobs/blimits/bhosts/bqueues/df，`cluster_probe` 超时 **90s**，叠加 Paramiko 连接 10s + 重试）→ 集群慢/连不上时**整页一直转圈**。
+  **改法**：
+  - 后端 `build_overview(..., include_cluster=True)` + 接口参数 `GET /api/dashboard/overview?cluster=0`（`routers/dashboard.py` 新增 `cluster` query）：`cluster=0` 时**完全不碰 SSH**，只返回本地聚合（统计 / 风险 / 项目进度 / 最近任务 / 趋势），集群字段留空并标 `cluster.pending=true`；`stats.runningJobs/pendingJobs` 为 `null`（前端显示"—"，不假装 0）。
+  - 前端 `Dashboard.tsx` 两段式加载：第一段 `load()`（`cluster=0`）让页面立刻渲染；第二段 `loadCluster()`（`cluster=1`）**单独 loading + 25s 超时 + 重试**，并用 generation 计数丢弃过期响应。"刷新集群状态"按钮、巡检完成后的刷新、30 分钟自动刷新都分别作用于这两段。
+  - 三个集群面板（运行中的任务 ← bjobs、核数占用 ← blimits、集群健康 ← bhosts/bqueues）统一加 `ClusterPanelHeader`（标题右侧显示"更新于 HH:MM:SS" + 刷新按钮 + 每 5 分钟自动刷新）与 `ClusterPanelError`（**查询失败/超时时显示原因 + 重试按钮，不再一直转圈**）；顶部「运行中任务」卡片在集群未就绪时显示"—"并提示"集群数据加载中"。
+  **验证**：后端 9 项（`cluster=0` 远程调用 **0 次**、<1s 返回、`pending=true`、集群字段为空、runningJobs=None、本地聚合仍在；`cluster=1` 仍查集群并返回对象/数字）+ `tsc` + `npm run build`。
 - v0.9.32（2026-09-29，用户："帮我查查今天自动化怎么回事，特别是 Ag——neb——PATH" → "2 不用其他改"）：**给规则 26651（Ag@Al2O3_neb 续算）补上状态过滤**（配置改动，非代码）。
   **问题**（今日复盘）：09-28 23:35 建 con11 并提交（job 159973），随后该作业一直**排队（PEND）**；规则 26651 的条件只有 `task_type=neb` + `task_id`，**没有 status 过滤**，而 NEB 续算脚本判断"有没有活跃作业"只看 `bjobs -l <job_id>` 里的 **RUN/SSUSP/PSUSP/USUSP（PEND 不算）** → 于是 09-29 的 01:35 / 03:35 / 05:35 / 07:35 四轮巡检各建了一个新目录 **con12–con15**（全都因为 `max_runs_per_task` 撑满而没提交），09:35 起连续算也被上限拦住 → 规则停摆到今天 21:23。（opt 续算有"源目录必须 OUTCAR+CONTCAR 非空"的保护，NEB 分支没有 —— 这是 #1/#3 待办，用户本次要求先不动。）
   **改动**：`data/config/rules/26651.json` 的 condition 从 `{task_type, task_id}` 改为 `{task_type, task_id, status: ["completed", "zombied", "unconverged"]}` —— 只有"作业确实结束"（完成 / 僵尸 / 未收敛）才续算，`pending / queued / running` 一律不命中。写回前先过了一遍后端自己的 `_validate_rule`（字段白名单、guard、`follow_up_action` 都保留），旧文件备份在 `data/backups/rule_26651.json.bak.20260929_213437`，原子写回（0600）。规则文件是每个事件现读的 → **无需重启，立即生效**。

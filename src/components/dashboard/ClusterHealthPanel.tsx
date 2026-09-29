@@ -1,7 +1,8 @@
-import { Card, Skeleton, Tooltip } from 'antd';
+import { Card, Skeleton, Space, Tooltip } from 'antd';
 import type { DashboardClusterHealth } from '../../types';
+import ClusterPanelHeader, { ClusterPanelError, type ClusterPanelHeaderProps } from './ClusterPanelHeader';
 
-interface Props {
+interface Props extends ClusterPanelHeaderProps {
   health: DashboardClusterHealth | null;
   loading?: boolean;
 }
@@ -13,7 +14,16 @@ const NODE_ITEMS = [
   { key: 'down', label: '宕机', className: 'down' },
 ] as const;
 
-export default function ClusterHealthPanel({ health, loading }: Props) {
+export default function ClusterHealthPanel({
+  health,
+  loading,
+  onRefresh,
+  refreshingRef,
+  lastUpdated,
+  autoRefresh,
+  error,
+  onRetry,
+}: Props) {
   if (loading && !health) {
     return (
       <Card title="集群健康与资源" className="dashboard-card">
@@ -36,21 +46,31 @@ export default function ClusterHealthPanel({ health, loading }: Props) {
       title="集群健康与资源"
       className="dashboard-card"
       extra={
-        health?.error ? (
-          <Tooltip title={health.error}>
-            <span className="dashboard-badge dashboard-badge--error">查询异常</span>
-          </Tooltip>
-        ) : (
-          <span className="dashboard-sub">
-            {health?.source === 'real' ? '实时' : '缓存'}
-            {typeof health?.cacheAgeSeconds === 'number' && health.cacheAgeSeconds > 0
-              ? ` · ${Math.round(health.cacheAgeSeconds)}s 前`
-              : ''}
-          </span>
-        )
+        <Space size={8}>
+          <ClusterPanelHeader
+            onRefresh={onRefresh}
+            refreshingRef={refreshingRef}
+            lastUpdated={lastUpdated ?? health?.queriedAt}
+            autoRefresh={autoRefresh}
+          />
+          {health?.error ? (
+            <Tooltip title={health.error}>
+              <span className="dashboard-badge dashboard-badge--error">查询异常</span>
+            </Tooltip>
+          ) : (
+            <span className="dashboard-sub">
+              {health?.source === 'real' ? '实时' : '缓存'}
+              {typeof health?.cacheAgeSeconds === 'number' && health.cacheAgeSeconds > 0
+                ? ` · ${Math.round(health.cacheAgeSeconds)}s 前`
+                : ''}
+            </span>
+          )}
+        </Space>
       }
     >
-      {!nodes ? (
+      {error && !nodes ? (
+        <ClusterPanelError error={error} onRetry={onRetry ?? onRefresh} />
+      ) : !nodes ? (
         <div className="dashboard-muted">未取到节点状态（bhosts）</div>
       ) : (
         <>

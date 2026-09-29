@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
-import { Card, Empty, Skeleton } from 'antd';
+import { Card, Empty, Skeleton, Space } from 'antd';
 import type { DashboardCoresUsage } from '../../types';
+import ClusterPanelHeader, { ClusterPanelError, type ClusterPanelHeaderProps } from './ClusterPanelHeader';
 import useEcharts, { DASHBOARD_PALETTE } from './useEcharts';
 
-interface Props {
+interface Props extends ClusterPanelHeaderProps {
   usage: DashboardCoresUsage | null;
   loading?: boolean;
 }
@@ -19,7 +20,16 @@ function sliceColor(index: number, level: string): string {
   return DASHBOARD_PALETTE[index % DASHBOARD_PALETTE.length];
 }
 
-export default function CoresUsagePanel({ usage, loading }: Props) {
+export default function CoresUsagePanel({
+  usage,
+  loading,
+  onRefresh,
+  refreshingRef,
+  lastUpdated,
+  autoRefresh,
+  error,
+  onRetry,
+}: Props) {
   const option = useMemo(() => {
     const projects = usage?.byProject ?? [];
     const total = usage?.totalCores ?? null;
@@ -81,16 +91,26 @@ export default function CoresUsagePanel({ usage, loading }: Props) {
       title="核数占用"
       className="dashboard-card"
       extra={
-        <span className={`cores-badge cores-badge--${level}`}>
-          {level === 'critical'
-            ? '已超配额'
-            : level === 'warning'
-              ? '接近配额'
-              : '配额充足'}
-        </span>
+        <Space size={8}>
+          <ClusterPanelHeader
+            onRefresh={onRefresh}
+            refreshingRef={refreshingRef}
+            lastUpdated={lastUpdated ?? usage?.queriedAt}
+            autoRefresh={autoRefresh}
+          />
+          <span className={`cores-badge cores-badge--${level}`}>
+            {level === 'critical'
+              ? '已超配额'
+              : level === 'warning'
+                ? '接近配额'
+                : '配额充足'}
+          </span>
+        </Space>
       }
     >
-      {loading && !usage ? (
+      {error && !usage ? (
+        <ClusterPanelError error={error} onRetry={onRetry ?? onRefresh} />
+      ) : loading && !usage ? (
         <Skeleton active paragraph={{ rows: 4 }} />
       ) : !usage || (usage.byProject.length === 0 && usage.usedCores === 0) ? (
         <Empty description="当前没有占用核数的作业" image={Empty.PRESENTED_IMAGE_SIMPLE} />

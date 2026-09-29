@@ -45,17 +45,32 @@ export default function Dashboard() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  /**
+   * 集群部分（bjobs / blimits / bhosts）**单独加载**（v0.9.33）。
+   *
+   * 以前整页共用一次 `/dashboard/overview`，而那次请求会先查集群（SSH 90s 超时 + 重连），
+   * 集群查询卡住时整页一直转圈。现在：先取"不含集群"的本地聚合让页面秒开，
+   * 再单独取集群那一份（独立 loading / 超时 / 重试）。
+   */
+  const [clusterOverview, setClusterOverview] = useState<DashboardOverview | null>(null);
+  const [clusterLoading, setClusterLoading] = useState(true);
+  const [clusterError, setClusterError] = useState<string | null>(null);
+  const clusterRefreshingRef = useRef(false);
+  const clusterGenRef = useRef(0);
   const [inspecting, setInspecting] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [highlightRunning, setHighlightRunning] = useState(false);
   const runningRef = useRef<HTMLDivElement | null>(null);
 
+  /** 集群查询超时（bjobs/blimits 卡住时不要一直转圈） */
+  const CLUSTER_TIMEOUT_MS = 25_000;
+
+  /** 第一段：本地聚合（不查 SSH）→ 页面立刻渲染 */
   const load = useCallback(
     async (refreshCluster = false, silent = false) => {
-      if (refreshCluster) setRefreshing(true);
-      else if (!silent) setLoading(true);
+      if (!silent) setLoading(true);
       try {
-        const data = await fetchDashboardOverview(refreshCluster);
+        const data = await fetchDashboardOverview(refreshCluster, false);
         setOverview(data);
       } catch (err) {
         if (!silent) {
@@ -63,23 +78,74 @@ export default function Dashboard() {
         }
       } finally {
         setLoading(false);
-        setRefreshing(false);
       }
     },
     [message],
   );
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  /**
+   * 第二段：集群部分（bjobs / blimits / bhosts）——单独 loading、25s 超时、可重试。
+   *
+   * 超时/失败时只影响这几块卡片（显示"查询失败/超时"），不再拖住整页。
+   */
+  const loadCluster = useCallback(
+    async (refreshCluster = false, silent = false) => {
+      const gen = (clusterGenRef.current += 1);
+      clusterRefreshingRef.current = true;
+      if (!silent) setClusterLoading(true);
+      setClusterError(null);
+      let timer: number | undefined;
+      try {
+        const data = await Promise.race([
+          fetchDashboardOverview(refreshCluster, true),
+          new Promise<never>((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error(`集群查询超过 ${Math.round(CLUSTER_TIMEOUT_MS / 1000)} 秒还没返回`)),
+              CLUSTER_TIMEOUT_MS,
+            );
+          }),
+        ]);
+        if (gen !== clusterGenRef.current) return; // 已经有更新的一次请求，丢弃旧结果
+        setClusterOverview(data);
+        setClusterError(null);
+      } catch (err) {
+        if (gen !== clusterGenRef.current) return;
+        setClusterError(
+          err instanceof Error ? err.message : '集群数据（bjobs / blimits）查询失败',
+        );
+      } finally {
+        if (timer) window.clearTimeout(timer);
+        if (gen === clusterGenRef.current) {
+          clusterRefreshingRef.current = false;
+          setClusterLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [CLUSTER_TIMEOUT_MS],
+  );
 
-  // 每 30 分钟自动刷新（静默刷新，不打扰用户）
   useEffect(() => {
-    const timer = window.setInterval(() => load(false, true), AUTO_REFRESH_MS);
+    void load();
+    void loadCluster();
+  }, [load, loadCluster]);
+
+  // 每 30 分钟自动刷新（静默刷新，不打扰用户）：本地 + 集群各刷一次
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void load(false, true);
+      void loadCluster(false, true);
+    }, AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, loadCluster]);
 
-  const stats = overview?.stats;
+  /** 渲染用数据：本地聚合 + 已到的集群部分（集群没到就先用本地的，字段留空） */
+  const view = useMemo(
+    () => (overview ? { ...overview, ...(clusterOverview ?? {}) } : null),
+    [overview, clusterOverview],
+  );
+
+  const stats = view?.stats;
   const projectCount = useCountUp(stats?.projects ?? 0);
   const anomalyCount = useCountUp(stats?.anomalies ?? 0);
   const todayCompleted = useCountUp(stats?.todayCompleted ?? 0);
@@ -113,6 +179,7 @@ export default function Dashboard() {
           (result.warnings ? `，警告 ${result.warnings} 项` : ''),
       );
       await load(true, true);
+      void loadCluster(true, true);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '触发巡检失败');
     } finally {
@@ -222,11 +289,14 @@ export default function Dashboard() {
                 触发全局巡检
               </Button>
             )}
-            <Tooltip title="重新执行 bjobs / bhosts / bqueues / df（约 2-4 秒）">
+            <Tooltip title="只重新执行 bjobs / blimits / bhosts / bqueues / df（这几块单独加载，不影响页面其它部分）">
               <Button
                 icon={<ReloadOutlined />}
                 loading={refreshing}
-                onClick={() => load(true)}
+                onClick={() => {
+                  setRefreshing(true);
+                  void loadCluster(true);
+                }}
               >
                 刷新集群状态
               </Button>
@@ -235,11 +305,11 @@ export default function Dashboard() {
         }
       />
 
-      {loading && !overview ? (
+      {loading && !view ? (
         <Card>
           <Skeleton active paragraph={{ rows: 10 }} />
         </Card>
-      ) : !overview ? (
+      ) : !view ? (
         <Card>
           <div className="dashboard-muted">暂无数据：请确认后端服务（端口 3001）已启动。</div>
         </Card>
@@ -278,10 +348,16 @@ export default function Dashboard() {
             />
             <StatCard
               label="运行中任务"
-              value={runningJobs}
+              value={clusterLoading || view.cluster?.pending ? '—' : runningJobs}
               icon={<ThunderboltOutlined />}
               accent="teal"
-              trend={`另有 ${stats?.pendingJobs ?? 0} 个排队中`}
+              trend={
+                clusterLoading || view.cluster?.pending
+                  ? '集群数据加载中（bjobs / blimits 单独查询）'
+                  : clusterError
+                    ? `集群查询失败：${clusterError}`
+                    : `另有 ${stats?.pendingJobs ?? 0} 个排队中`
+              }
               delay={0.18}
               onClick={focusRunning}
               active={highlightRunning}
@@ -292,29 +368,48 @@ export default function Dashboard() {
           <div className="dashboard-grid dashboard-grid--main">
             <div ref={runningRef}>
               <RunningTasksPanel
-                jobs={overview.runningTasks}
-                loading={loading}
+                jobs={view.runningTasks}
+                loading={clusterLoading || (Boolean(view.cluster?.pending) && !clusterError)}
                 highlight={highlightRunning}
+                onRefresh={() => void loadCluster(true)}
+                refreshingRef={clusterRefreshingRef}
+                lastUpdated={view.cluster?.queriedAt}
               />
             </div>
-            <CoresUsagePanel usage={overview.coresUsage} loading={loading} />
+            <CoresUsagePanel
+              usage={view.coresUsage}
+              loading={clusterLoading || (Boolean(view.cluster?.pending) && !clusterError)}
+              onRefresh={() => void loadCluster(true)}
+              refreshingRef={clusterRefreshingRef}
+              lastUpdated={view.cluster?.queriedAt}
+              error={clusterError}
+              onRetry={() => void loadCluster(true)}
+            />
           </div>
 
           <div className="dashboard-grid dashboard-grid--main">
-            <TrendPanel trend={overview.trend} loading={loading} />
-            <ClusterHealthPanel health={overview.clusterHealth} loading={loading} />
+            <TrendPanel trend={view.trend} loading={loading} />
+            <ClusterHealthPanel
+              health={view.clusterHealth}
+              loading={clusterLoading || (Boolean(view.cluster?.pending) && !clusterError)}
+              onRefresh={() => void loadCluster(true)}
+              refreshingRef={clusterRefreshingRef}
+              lastUpdated={view.cluster?.queriedAt}
+              error={clusterError}
+              onRetry={() => void loadCluster(true)}
+            />
           </div>
 
           {/* ③ 风险 + 项目进度 */}
           <div className="dashboard-grid dashboard-grid--main">
             <RiskAlertsPanel
-              summary={overview.riskAlerts}
+              summary={view.riskAlerts}
               loading={loading}
               onInspect={isAdmin ? handleInspect : undefined}
               inspecting={inspecting}
             />
             <ProjectProgressPanel
-              projects={overview.projectProgress}
+              projects={view.projectProgress}
               loading={loading}
               onDelete={handleProjectDeleted}
               onClose={handleProjectClose}
@@ -328,14 +423,18 @@ export default function Dashboard() {
             title="最近更新的任务"
             extra={
               <span className="dashboard-sub">
-                集群数据 {overview.cluster.queriedAt?.replace('T', ' ') ?? '—'}
-                {overview.cluster.cached ? '（缓存）' : ''}
+                {clusterError
+                  ? `集群数据查询失败（${clusterError}）`
+                  : view.cluster?.pending || clusterLoading
+                    ? '集群数据加载中（bjobs / blimits 单独查询）'
+                    : `集群数据 ${view.cluster.queriedAt?.replace('T', ' ') ?? '—'}`}
+                {view.cluster.cached ? '（缓存）' : ''}
               </span>
             }
           >
             <Table
               rowKey="task_id"
-              dataSource={overview.recentTasks}
+              dataSource={view.recentTasks}
               columns={recentColumns}
               pagination={false}
               size="middle"
@@ -349,8 +448,8 @@ export default function Dashboard() {
           <div className="dashboard-note dashboard-note--footer">
             <CloudSyncOutlined /> 数据每次打开页面加载一次，之后每 30 分钟自动刷新；
             集群查询（bjobs / bhosts / bqueues / df）在服务端缓存 5 分钟，点「刷新集群状态」可强制更新。
-            {overview.cluster.error && (
-              <span className="dashboard-note--danger"> 集群查询异常：{overview.cluster.error}</span>
+            {view.cluster.error && (
+              <span className="dashboard-note--danger"> 集群查询异常：{view.cluster.error}</span>
             )}
           </div>
         </>

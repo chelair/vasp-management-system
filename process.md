@@ -242,8 +242,16 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.34）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.35）
 
+- v0.9.35（2026-09-29，用户："核数圆环还是没有"）：**`useEcharts` 改成回调 ref —— 图表容器"后出现"时也能初始化**（这是圆环空白的真正根因）。
+  根因：`useEcharts` 用 `useRef` + **空依赖**的 init effect：
+  ```ts
+  useEffect(() => { const el = containerRef.current; if (!el) return; init(el); }, []);
+  ```
+  而图表容器 div 是"**有数据才渲染**"（骨架屏 → 图表）：v0.9.33 之前整页要等第一次请求（含集群）返回才挂载面板，容器一开始就在 → init 正常；现在（两段式加载）面板在**容器还没渲染时就已 mount** → init 直接 return，之后再也不会初始化 → 图表永远空白（核数圆环、趋势图、项目进度四象限都受影响）。
+  修法：改用**回调 ref**（`useCallback` + `chart.setOption(optionRef.current, true)`）：容器真正挂载时初始化并立刻用当前 option 渲染，卸载时 dispose。顺带把 `ResizeObserver` 缺失时也兜底。
+  验证：jsdom + echarts 打桩（`--alias:echarts/*`）7 项 —— 容器"晚出现"时**必须补上 init**（旧代码 init=0 → 空白，新代码 init=1）、初始化即渲染、init 拿到真容器；真组件 `CoresUsagePanel` 在有数据时圆环容器存在 + 图例列出 "Ag_20260830 120 核 / FS_Kaolin 24 核" + 不出现"当前没有占用核数的作业"空态。**旧 hook 跑同一套用例会 FAIL（init=0）**，已实测对照。
 - v0.9.34（commit `218dfa4`，已推送 origin/main；2026-09-29 用户："核数占用不正常显示了；加载出来的时候加一点动画显得生动一点"）：**修 v0.9.33 引入的"有数据也被盖住"+ 集群面板入场动画**。
   **bug 成因**：v0.9.33 把集群拆成第二段请求后，面板的 loading/error 只看"第二段请求的状态" —— 而**旧后端（还没重启）不认识 `?cluster=0`，第一段请求就已经把集群数据带回来了**；第二段请求若慢/失败（例如 25s 超时），面板就会被骨架屏或"查询失败"框盖住 → 表现为"核数占用明明有数据却不显示"。
   **修法**：Dashboard 新增 `clusterReady = Boolean(clusterOverview) || Boolean(overview?.cluster?.queriedAt)`（第二段有结果，或第一段本身就带集群数据），并用 `ClusterPanelHeader.clusterPanelState({loading, ready, error})` 统一决定：**只要有数据就正常渲染**，只有"完全没数据"才显示骨架（加载中）或错误框（失败 + 重试）。顶部「运行中任务」卡片同理（未就绪显示"—"）。

@@ -236,9 +236,17 @@ export default function Automation() {
   const resetRuleRuns = async (rule: AutomationRule) => {
     try {
       const r = await resetAutomationRuleRuns(rule.id);
+      const after = r.progress;
       message.success(
-        `已重置：${r.task_count} 个目标任务（执行计数 ${r.cleared.counts} 条、冷却 ${r.cleared.cooldowns} 条）`,
+        `已重置：${r.task_count} 个目标任务、动作 ${(r.actions ?? [rule.action]).join(' + ')}`
+          + `（计数 ${r.cleared.counts} 条、冷却 ${r.cleared.cooldowns} 条）`
+          + (after ? `，现在 ${after.max_count}${after.limit > 0 ? `/${after.limit}` : '/∞'}` : ''),
       );
+      // 先用返回值立刻刷新（网络慢时也不会看起来"没更新"）
+      if (after) {
+        setRules((prev) => prev.map((x) => (x.id === rule.id ? { ...x, progress: after } : x)));
+        setSchedules((prev) => prev.map((x) => (x.id === rule.id ? { ...x, progress: after } : x)));
+      }
       await load();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '重置执行次数失败');
@@ -373,7 +381,10 @@ export default function Automation() {
             </Button>
             <Popconfirm
               title={`重置规则 ${rule.id} 的执行次数？`}
-              description="把这条规则目标任务的累计执行次数与冷却清零（用于「单任务执行上限」撑满后放行），同时清掉连续失败计数与熔断标记"
+              description={
+                `把这条规则目标任务的累计执行次数与冷却清零（主动作与接力动作都清），` +
+                `用于「单任务执行上限」撑满后放行；同时清掉连续失败计数与熔断标记`
+              }
               okText="重置"
               cancelText="取消"
               onConfirm={() => void resetRuleRuns(rule)}

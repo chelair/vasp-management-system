@@ -12,6 +12,20 @@ from automation import store
 #: 条件里不能出现这些"仅供内部"的键
 _RESERVED = {"trigger", "action", "guard", "enabled", "id", "description"}
 
+#: "当前状态"类条件字段。它们随巡检 / 手动操作随时变化，**只代表"此刻会不会跑"**：
+#: 算「已运行次数」和「重置次数」时必须忽略，否则任务一跑到 pending/completed/running，
+#: 已经用掉的次数就从界面上消失、点重置也清不掉（2026-09-30 的真实 bug）。
+VOLATILE_CONDITION_KEYS = {
+    "status",
+    "converged",
+    "archived",
+    "job_id",
+    "frac_status",
+    "frac_missing",
+    "initial_converged",
+    "final_converged",
+}
+
 #: 允许出现在 condition 里的字段（与 build_context() 的输出对齐；未知字段会被拒绝，
 #: 否则规则会静默地永不命中）
 CONDITION_KEYS = {
@@ -129,6 +143,47 @@ def match_task(
     ctx = build_context(project, task)
     ok, reason = condition_matches(rule.get("condition") or {}, ctx)
     return ok, reason, ctx
+
+
+def stable_condition(condition: Dict[str, Any]) -> Dict[str, Any]:
+    """去掉"当前状态"类字段后的条件（身份类条件：task_id / group_id / task_type …）。"""
+    return {
+        key: value
+        for key, value in (condition or {}).items()
+        if key not in VOLATILE_CONDITION_KEYS
+    }
+
+
+def resolve_rule_targets(
+    rule: Dict[str, Any], db: Dict[str, Any]
+) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """规则的**目标任务**（项目, 任务）清单 —— 「已运行次数」与「重置次数」共用这一份口径。
+
+    - 候选集：定时规则先按 `scope`（all / project:X）过滤，条件规则取全库任务；
+    - 匹配用 `stable_condition()`：`status` / `converged` 等"当前状态"字段只标注是否命中，
+      **不参与挑选**（否则状态一变，计数就查不到、重置也清不掉）。
+    """
+    trigger = rule.get("trigger") or {}
+    if trigger_type(rule) == "schedule":
+        candidates: Iterable[Tuple[Dict[str, Any], Dict[str, Any]]] = resolve_scope(
+            db, trigger.get("scope")
+        )
+    else:
+        candidates = [
+            (project, task)
+            for project in db.get("projects", [])
+            for task in project.get("tasks", [])
+        ]
+    stable = stable_condition(rule.get("condition") or {})
+    targets: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for project, task in candidates:
+        try:
+            ok, _ = condition_matches(stable, build_context(project, task))
+        except Exception:  # noqa: BLE001 - 单个任务上下文异常不影响其它
+            ok = False
+        if ok:
+            targets.append((project, task))
+    return targets
 
 
 def schedules() -> List[Dict[str, Any]]:

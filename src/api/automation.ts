@@ -172,9 +172,13 @@ export function deleteAutomationRule(id: string): Promise<{ id: string }> {
 export function resetAutomationRuleRuns(id: string): Promise<{
   rule_id: string;
   action: string;
+  /** 被清零的动作（主动作 + 接力动作） */
+  actions: string[];
   task_count: number;
   tasks: string[];
   cleared: { counts: number; cooldowns: number; last_results: number };
+  /** 重置后的「已运行 / 上限」（前端直接用来刷新徽标） */
+  progress?: RuleProgress;
 }> {
   return request(`/automation/rules/${encodeURIComponent(id)}/reset-runs`, { method: 'POST' });
 }

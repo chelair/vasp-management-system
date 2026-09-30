@@ -214,21 +214,6 @@ def action_run(run_id: str, request: Request):
 # ------------------------------------------------------------------ 自动化状态
 
 
-#: 这些条件字段是"当前状态"，会随巡检/手动操作变化 —— 算**已运行次数**时必须忽略，
-#: 否则任务一跑到 pending/completed，界面上就再也看不到它已经用掉几次（`3/5` 会变 `—`）。
-#: 它们只用于标注"当前是否满足条件"（tooltip 里提示，不影响计数）。
-_VOLATILE_CONDITION_KEYS = {
-    "status",
-    "converged",
-    "archived",
-    "job_id",
-    "frac_status",
-    "frac_missing",
-    "initial_converged",
-    "final_converged",
-}
-
-
 def _rule_progress(
     rule: Dict[str, Any],
     db: Dict[str, Any],
@@ -238,26 +223,11 @@ def _rule_progress(
 
     计数口径与调度层完全一致（`scheduler.submit` 里的 guard）：
     key = `<task_id>|<action>`，**接力动作各算一份**（如 `task.submit`）。
-    目标任务 = 按 condition 里**身份类字段**（task_id / group_id / project / task_type…）
-    选出来的任务；status/converged 之类的"当前状态"字段只用来标注是否命中，
-    不参与挑选 —— 否则任务状态一变，已经用掉的次数就从界面上消失。
+    目标任务 = `rules.resolve_rule_targets()`（与「重置次数」同一份口径）：
+    按 condition 里**身份类字段**（task_id / group_id / project / task_type…）挑任务；
+    status/converged 之类的"当前状态"字段只用来标注是否命中，不参与挑选。
     """
-    trigger = rule.get("trigger") or {}
     condition = rule.get("condition") or {}
-    if str(trigger.get("type")) == "schedule":
-        candidates = list(rules.resolve_scope(db, trigger.get("scope")))
-    else:
-        candidates = [
-            (project, task)
-            for project in db.get("projects", [])
-            for task in project.get("tasks", [])
-        ]
-
-    stable_condition = {
-        key: value
-        for key, value in condition.items()
-        if key not in _VOLATILE_CONDITION_KEYS
-    }
     action = str(rule.get("action") or "")
     follow_up = str(rule.get("follow_up_action") or "")
     counts = history.get("counts") or {}
@@ -266,15 +236,12 @@ def _rule_progress(
         return int(counts.get(f"{task_id}|{action_name}") or 0)
 
     targets: List[Dict[str, Any]] = []
-    for project, task in candidates:
+    for project, task in rules.resolve_rule_targets(rule, db):
         try:
             ctx = rules.build_context(project, task)
-            is_target, _ = rules.condition_matches(stable_condition, ctx)
             matched, reason = rules.condition_matches(condition, ctx)
         except Exception:  # noqa: BLE001 - 单个任务上下文异常不影响其它
-            is_target, matched, reason = False, False, "任务上下文异常"
-        if not is_target:
-            continue
+            matched, reason = False, "任务上下文异常"
         task_id = str(task.get("task_id") or "")
         entry: Dict[str, Any] = {
             "task_id": task_id,
@@ -528,32 +495,35 @@ def update_automation_rule(rule_id: str, request: Request, payload: dict = Body(
 def reset_automation_rule_runs(rule_id: str, request: Request):
     """重置这条规则**目标任务的执行次数与冷却**（「单任务执行上限」撑满后用它放行）。
 
-    - 按规则 condition 现算一遍目标任务（与规则命中的口径一致）；
-    - 清掉这些任务在该规则**动作**下的 `counts` / `cooldowns` / `last_results`；
+    - 目标任务用 `rules.resolve_rule_targets()` 现算 —— 与界面上的「已运行 / 上限」
+      是**同一份口径**（忽略 status/converged 等"当前状态"字段），否则任务正跑到
+      running / 已回 pending 时算不出目标，点重置会清 0 条、界面纹丝不动
+      （2026-09-30 的真实 bug：审计里"目标 0 个任务，计数 -0"）；
+    - **主动作与接力动作都清**（如 `task.continuation` + `task.submit`，
+      两者各自计数、各自受上限约束）；
     - 同时把该规则的连续失败计数与熔断标记（disabled_rules）清掉；
     - 显式 `idempotency_key` 的指纹不受影响（那是调用方自己传的键，规则链路不带）。
+
+    返回里带 `progress`：重置**之后**的已运行次数（前端拿它直接刷成 `0/5`）。
     """
     try:
         _require_admin(request)
         rule = next((r for r in store.load_rules() if str(r.get("id")) == str(rule_id)), None)
         if rule is None:
             return JSONResponse(status_code=404, content=fail(f"规则不存在：{rule_id}"))
+        db = load_db()
         action = str(rule.get("action") or "")
-        condition = rule.get("condition") or {}
+        follow_up = str(rule.get("follow_up_action") or "")
+        actions = [name for name in (action, follow_up) if name]
 
-        targets: List[str] = []
-        for project in load_db().get("projects", []):
-            for task in project.get("tasks", []):
-                try:
-                    matched, _ = rules.condition_matches(
-                        condition, rules.build_context(project, task)
-                    )
-                except Exception:  # noqa: BLE001 - 单个任务上下文异常不影响其它
-                    matched = False
-                if matched:
-                    targets.append(str(task.get("task_id") or ""))
-
-        keys = {f"{task_id}|{action}" for task_id in targets if task_id}
+        targets: List[str] = [
+            str(task.get("task_id") or "")
+            for _, task in rules.resolve_rule_targets(rule, db)
+        ]
+        targets = [task_id for task_id in targets if task_id]
+        keys = {
+            f"{task_id}|{name}" for task_id in targets for name in actions
+        }
         cleared = {"counts": 0, "cooldowns": 0, "last_results": 0}
 
         def mutate(history: Dict[str, Any]) -> None:
@@ -581,18 +551,22 @@ def reset_automation_rule_runs(rule_id: str, request: Request):
             trigger="api",
             rule_id=str(rule_id),
             reason=(
-                f"重置执行计数：目标 {len(targets)} 个任务，"
+                f"重置执行计数：目标 {len(targets)} 个任务（动作 {'、'.join(actions)}），"
                 f"计数 -{cleared['counts']}、冷却 -{cleared['cooldowns']}"
             ),
         )
         return ok(
-            f"已重置：{len(targets)} 个目标任务（执行计数 {cleared['counts']} 条、冷却 {cleared['cooldowns']} 条）",
+            f"已重置：{len(targets)} 个目标任务（动作 {'、'.join(actions)}；"
+            f"执行计数 {cleared['counts']} 条、冷却 {cleared['cooldowns']} 条）",
             {
                 "rule_id": str(rule_id),
                 "action": action,
+                "actions": actions,
                 "tasks": targets[:50],
                 "task_count": len(targets),
                 "cleared": cleared,
+                # 重置后的进度（前端直接用它刷新「已运行 / 上限」）
+                "progress": _rule_progress(rule, db, store.load_history()),
             },
         )
     except permissions.PermissionDenied:

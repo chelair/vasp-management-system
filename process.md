@@ -244,7 +244,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.37）
 
-- v0.9.37（2026-09-30 用户："自动化显示已运行次数，类似3/5"）：**自动化页显示每条规则的「已运行 / 单任务执行上限」**。
+- v0.9.37（commit `872db3a`，2026-09-30 用户："自动化显示已运行次数，类似3/5"）：**自动化页显示每条规则的「已运行 / 单任务执行上限」**。
   **后端**（`routers/automation.py`）：`GET /api/automation/status` 的每条规则（含定时任务行）新增
   `progress`：`{action, follow_up_action, limit, max_count, max_follow_up_count, target_count, targets[{task_id,label,count,follow_up_count,matched,reason}]}`。
   计数口径与调度层 guard **完全一致**（`counts["<task_id>|<action>"]`，接力动作各算一份），

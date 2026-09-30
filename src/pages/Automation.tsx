@@ -26,6 +26,7 @@ import {
   type AutomationRun,
   type AutomationSchedule,
   type AutomationSettings,
+  type RuleProgress,
 } from '../api/automation';
 
 /** 五种审计状态的展示样式（success / failed / skipped / blocked / dry_run） */
@@ -45,6 +46,60 @@ function statusTag(status: string) {
 function formatTime(value?: string | null) {
   if (!value) return '—';
   return value.replace('T', ' ').slice(5, 19);
+}
+
+/** 「已运行次数 / 单任务执行上限」：3/5（无上限显示 3/∞，撑满时标红） */
+function RunCountTag({ progress, action }: { progress?: RuleProgress; action?: string }) {
+  if (!progress) return <span className="preview-note">—</span>;
+  const limit = Number(progress.limit) || 0;
+  const used = Number(progress.max_count) || 0;
+  const full = limit > 0 && used >= limit;
+  const followUp = progress.follow_up_action;
+  const followUsed = progress.max_follow_up_count;
+  const tooltip = (
+    <div style={{ maxWidth: 380 }}>
+      <div>
+        已运行 {limit > 0 ? `${used}/${limit}` : `${used}/∞`}
+        {progress.target_count ? `（共 ${progress.target_count} 个目标任务，按最多的算）` : ''}
+      </div>
+      {progress.targets.some((t) => !t.matched) ? (
+        <div className="preview-note">灰字任务=当前状态不满足条件（计数会保留，不会因为状态变化清零）</div>
+      ) : null}
+      {progress.target_count === 0 ? (
+        <div>当前没有命中条件的任务</div>
+      ) : (
+        <>
+          {progress.targets.map((t) => (
+            <div key={t.task_id}>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                {t.label}：{progress.action || action} {t.count}
+                {limit > 0 ? `/${limit}` : ''}
+                {followUp != null && followUp !== ''
+                  ? ` · ${followUp} ${t.follow_up_count ?? 0}${limit > 0 ? `/${limit}` : ''}`
+                  : ''}
+              </span>
+              {t.matched ? null : (
+                <span className="preview-note">（当前不满足条件：{t.reason || '—'}）</span>
+              )}
+            </div>
+          ))}
+          {progress.target_count > progress.targets.length ? (
+            <div>…只列出前 {progress.targets.length} 个</div>
+          ) : null}
+        </>
+      )}
+      {limit > 0 && followUsed != null && followUsed >= limit ? (
+        <div>接力动作「{followUp}」也已到上限，需要「重置次数」才会继续</div>
+      ) : null}
+    </div>
+  );
+  return (
+    <Tooltip title={tooltip}>
+      <Tag color={full ? 'red' : 'default'} style={{ marginInlineEnd: 0 }}>
+        {limit > 0 ? `${used}/${limit}` : `${used}/∞`}
+      </Tag>
+    </Tooltip>
+  );
 }
 
 /**
@@ -279,14 +334,18 @@ export default function Automation() {
         ),
       },
       {
-        title: 'Guard',
-        dataIndex: 'guard',
+        title: '已运行 / 上限',
+        dataIndex: 'progress',
         width: 170,
-        render: (guard: AutomationRule['guard'], rule: AutomationRule) => (
-          <span className="preview-note">
-            冷却 {guard?.cooldown_seconds ?? 0}s · 上限 {guard?.max_runs_per_task ?? '∞'}
-            {rule.failures ? ` · 连续失败 ${rule.failures}` : ''}
-          </span>
+        render: (progress: AutomationRule['progress'], rule: AutomationRule) => (
+          <div>
+            <RunCountTag progress={progress} action={rule.action} />
+            <div className="preview-note" style={{ marginTop: 2 }}>
+              冷却 {rule.guard?.cooldown_seconds ?? 0}s · 上限{' '}
+              {rule.guard?.max_runs_per_task ?? '∞'}
+              {rule.failures ? ` · 连续失败 ${rule.failures}` : ''}
+            </div>
+          </div>
         ),
       },
       {
@@ -361,6 +420,14 @@ export default function Automation() {
     },
     { title: '范围', dataIndex: 'scope', width: 100 },
     { title: '动作', dataIndex: 'action', width: 150 },
+    {
+      title: '已运行 / 上限',
+      dataIndex: 'progress',
+      width: 140,
+      render: (progress: AutomationSchedule['progress'], s: AutomationSchedule) => (
+        <RunCountTag progress={progress} action={s.action} />
+      ),
+    },
     {
       title: '下次执行',
       width: 190,

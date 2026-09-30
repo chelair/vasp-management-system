@@ -27,6 +27,40 @@ export interface AutomationRule {
   /** 主动作成功后接着执行的动作（例如续算成功后自动提交作业） */
   follow_up_action?: string | null;
   failures?: number;
+  /** 已运行次数 / 单任务执行上限（计数口径与调度层一致） */
+  progress?: RuleProgress;
+}
+
+/** 单个目标任务在这条规则下的累计执行次数 */
+export interface RuleProgressTarget {
+  task_id: string;
+  /** 项目 · 任务名（前端 tooltip 用） */
+  label: string;
+  count: number;
+  /** 接力动作（如 task.submit）在该任务上的累计次数 */
+  follow_up_count?: number;
+  /** 当前是否满足完整条件（含 status 等）；false 只表示"现在不会跑"，计数照样算 */
+  matched: boolean;
+  /** 未命中原因（仅 matched=false 时返回） */
+  reason?: string;
+}
+
+/**
+ * 规则当前进度：目标任务里"用得最多"的已运行次数 + 上限。
+ *
+ * 「单任务执行上限」是**累计值**、按 `任务|动作` 分开计，接力动作各算一份，
+ * 所以这里既有主动作的 max_count，也有接力的 max_follow_up_count。
+ */
+export interface RuleProgress {
+  action: string;
+  follow_up_action?: string | null;
+  /** 0 = 不限制（界面显示成 ∞） */
+  limit: number;
+  max_count: number;
+  max_follow_up_count?: number | null;
+  /** 当前命中条件的目标任务数（targets 只回传前 20 个） */
+  target_count: number;
+  targets: RuleProgressTarget[];
 }
 
 export interface AutomationSchedule {
@@ -42,6 +76,7 @@ export interface AutomationSchedule {
   description?: string;
   guard?: Record<string, unknown>;
   next_run_at?: string | null;
+  progress?: RuleProgress;
 }
 
 export interface AutomationDecision {

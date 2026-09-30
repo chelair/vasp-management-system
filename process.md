@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-09-21 · 当前版本：v0.9.12（规则支持"动作成功后自动提交作业"接力 + 修掉隐式幂等指纹）
+> 生成时间：2026-08-29 · 最近更新：2026-09-30 · 当前版本：v0.9.37（自动化页显示「已运行次数 / 上限」）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -242,7 +242,26 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.36）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.37）
+
+- v0.9.37（2026-09-30 用户："自动化显示已运行次数，类似3/5"）：**自动化页显示每条规则的「已运行 / 单任务执行上限」**。
+  **后端**（`routers/automation.py`）：`GET /api/automation/status` 的每条规则（含定时任务行）新增
+  `progress`：`{action, follow_up_action, limit, max_count, max_follow_up_count, target_count, targets[{task_id,label,count,follow_up_count,matched,reason}]}`。
+  计数口径与调度层 guard **完全一致**（`counts["<task_id>|<action>"]`，接力动作各算一份），
+  目标任务现算：条件规则取全库任务、定时规则先按 `scope`（all / project:X）；
+  选目标时**忽略 status/converged/archived/job_id/frac_* 这些"当前状态"字段**（它们只标注 `matched`/`reason`）——
+  否则任务一回到 pending/completed，已经用掉的次数就从界面上消失（`3/5` 变 `—`）。`max_count` 取目标任务里的最大值。
+  **前端**（`src/pages/Automation.tsx`、`src/api/automation.ts`）：规则表 Guard 列改为「已运行 / 上限」——
+  一个 `Tag` 显示 `3/5`（无上限 `3/∞`；撑满时标红），下面一行仍是 `冷却 1800s · 上限 5 · 连续失败 N`；
+  Tooltip 列出每个目标任务的主动作与接力动作计数（含"当前不满足条件"的原因），超过 20 个目标任务只列前 20 个；
+  定时任务表新增同样的「已运行 / 上限」列。
+  **验证**（隔离数据目录 + mock 远端，未碰生产）：① 后端真实 HTTP：规则 26651 的 NEB 目标 `task_..._9` 显示 **5/5**、
+  规则 26652 的两个 opt 目标显示 **1/5**（含其中一个 `status='running'` 未命中条件的标注）；隔离造的定时规则（上限 3）显示 **1/3**；
+  不在规则身份条件里的任务不会被算进来。② 前端 jsdom 真渲染 `Automation` 页（esbuild 打包 + 真实 `/automation/status` 响应）**13 项断言全过**：
+  `5/5` / `1/5` / `1/3` 标记、Guard 细节仍在、接力动作显示、定时任务表新列、悬停 tooltip 的目标任务清单与"按最多的算"、
+  "当前不满足条件"标注、接力计数 `task.submit 5/5`。③ `tsc` + `npm run build` 通过。
+  **影响面**：只读接口新增字段 + 前端展示，不改数据结构、不改调度判定；后端改动需 `sudo systemctl restart vasp-manager`，
+  前端需 `npm run build` + 硬刷新。
 
 - v0.9.36（commit `f2e9799`，已推送 origin/main；2026-09-29 用户："其他元素还是不是秒出呀"）：**总览"本地聚合"不再每次全量读巡检归档 —— 从 ~500ms 降到 ~16ms**。
   **定位**（生产数据实测）：`/api/dashboard/overview?cluster=0` 仍要 ~518ms。逐项 profile 后：`_build_local_bundle` 里 **`build_risk_alerts()` 占了 ~410ms** —— 它调用的是 `checks_store.collect_results()`（**无缓存**，每次全量读 `data/checks` 下 20MB+ 归档），而 `merged_results()` 本身是有 30s 缓存的；另外 `_completed_stats()` 每次扫检查文件 mtime 也要 ~58ms。为什么以前没暴露：`local_bundle(refresh, project_names)` 只有 `project_names is None`（admin 不传）才走 60s 缓存，而 router **总是传可见项目集合** → 一直走"现算"分支。

@@ -251,7 +251,7 @@ body: {
 | `GET /api/actions` | — | 动作目录：名称 / 说明 / 是否长动作 / 参数提示 |
 | `POST /api/actions/{action_name}` | `{task_id?, params?, dry_run?, idempotency_key?, wait?}` | `task.continuation` / `task.submit` / `frac.create`（`neb.create` v0.9.8 起暂未启用，调用返回 400） |
 | `GET /api/actions/runs/{run_id}` | — | 长动作轮询：`running / success / failed / skipped` + result |
-| `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则（含 `follow_up_action`）+ 计数 |
+| `GET /api/automation/status` | — | 全局开关 + 定时任务（含下次触发）+ 规则（含 `follow_up_action`、`progress` 已运行次数）+ 计数 |
 | `GET/PUT /api/automation/settings` | `{enabled?, dry_run?, schedules_enabled?, failure_threshold?}` | 改完**立即生效**（enabled=false 即全局暂停） |
 | `GET /api/automation/rules` | — | 规则列表 |
 | `POST /api/automation/rules` | 规则对象 | 新建规则（id 冲突 409；校验 id/cron/动作/guard + 顶层字段白名单） |
@@ -270,6 +270,28 @@ body: {
 - 长动作 → `{status: "running", run_id}`（`frac.create` / `neb.create`）；
 - `task.continuation` 的**业务结果**在 `result.action`：只有 `created` 才算创建成功，
   `running` / `input_complete_but_not_finished` / `input_incomplete` 一律按 `skipped` 记账。
+
+`GET /api/automation/status` 里每条规则（定时任务行同）带 `progress`：**已运行次数 / 单任务执行上限**
+（前端显示成 `3/5`），计数口径与调度层 guard 完全一致（`counts["<task_id>|<action>"]`，接力动作各算一份）：
+
+```json
+{
+  "action": "task.continuation",
+  "follow_up_action": "task.submit",
+  "limit": 5,                 // guard.max_runs_per_task，0 = 不限制
+  "max_count": 1,             // 目标任务里用得最多的主动作次数
+  "max_follow_up_count": 1,
+  "target_count": 2,          // 命中（身份类）条件的目标任务数
+  "targets": [                // 只回传前 20 个
+    { "task_id": "task_..._5", "label": "Ag_20260830 · Ag@Al2O3_I4",
+      "count": 1, "follow_up_count": 1, "matched": true }
+  ]
+}
+```
+
+> 选目标任务时**忽略 `status` / `converged` / `archived` / `job_id` / `frac_*` 这些"当前状态"字段**
+> （它们只体现在 `matched` / `reason` 上）——否则任务一回到 pending/completed，已经用掉的次数就从界面消失。
+> 撑满上限后自动化会被 guard 拦下（决策日志里是 `已达执行上限（5/5）`），需要 `reset-runs` 才继续。
 
 规则文件：`data/config/rules/<id>.json`（一文件一规则）。前端配置规则时先选**作用对象**，
 再（可选）加附加条件，映射关系：

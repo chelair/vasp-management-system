@@ -214,9 +214,107 @@ def action_run(run_id: str, request: Request):
 # ------------------------------------------------------------------ 自动化状态
 
 
-def _schedule_rows() -> list:
+#: 这些条件字段是"当前状态"，会随巡检/手动操作变化 —— 算**已运行次数**时必须忽略，
+#: 否则任务一跑到 pending/completed，界面上就再也看不到它已经用掉几次（`3/5` 会变 `—`）。
+#: 它们只用于标注"当前是否满足条件"（tooltip 里提示，不影响计数）。
+_VOLATILE_CONDITION_KEYS = {
+    "status",
+    "converged",
+    "archived",
+    "job_id",
+    "frac_status",
+    "frac_missing",
+    "initial_converged",
+    "final_converged",
+}
+
+
+def _rule_progress(
+    rule: Dict[str, Any],
+    db: Dict[str, Any],
+    history: Dict[str, Any],
+) -> Dict[str, Any]:
+    """规则当前的「已运行次数 / 单任务执行上限」（前端显示成 `3/5`）。
+
+    计数口径与调度层完全一致（`scheduler.submit` 里的 guard）：
+    key = `<task_id>|<action>`，**接力动作各算一份**（如 `task.submit`）。
+    目标任务 = 按 condition 里**身份类字段**（task_id / group_id / project / task_type…）
+    选出来的任务；status/converged 之类的"当前状态"字段只用来标注是否命中，
+    不参与挑选 —— 否则任务状态一变，已经用掉的次数就从界面上消失。
+    """
+    trigger = rule.get("trigger") or {}
+    condition = rule.get("condition") or {}
+    if str(trigger.get("type")) == "schedule":
+        candidates = list(rules.resolve_scope(db, trigger.get("scope")))
+    else:
+        candidates = [
+            (project, task)
+            for project in db.get("projects", [])
+            for task in project.get("tasks", [])
+        ]
+
+    stable_condition = {
+        key: value
+        for key, value in condition.items()
+        if key not in _VOLATILE_CONDITION_KEYS
+    }
+    action = str(rule.get("action") or "")
+    follow_up = str(rule.get("follow_up_action") or "")
+    counts = history.get("counts") or {}
+
+    def used(task_id: str, action_name: str) -> int:
+        return int(counts.get(f"{task_id}|{action_name}") or 0)
+
+    targets: List[Dict[str, Any]] = []
+    for project, task in candidates:
+        try:
+            ctx = rules.build_context(project, task)
+            is_target, _ = rules.condition_matches(stable_condition, ctx)
+            matched, reason = rules.condition_matches(condition, ctx)
+        except Exception:  # noqa: BLE001 - 单个任务上下文异常不影响其它
+            is_target, matched, reason = False, False, "任务上下文异常"
+        if not is_target:
+            continue
+        task_id = str(task.get("task_id") or "")
+        entry: Dict[str, Any] = {
+            "task_id": task_id,
+            "label": f"{project.get('name')} · {task.get('model_name') or task_id}",
+            "count": used(task_id, action),
+            # 当前是否满足完整条件（含 status 等）；false 只表示"现在不会跑"，计数照样算
+            "matched": bool(matched),
+        }
+        if not matched:
+            entry["reason"] = reason
+        if follow_up:
+            entry["follow_up_count"] = used(task_id, follow_up)
+        targets.append(entry)
+
+    targets.sort(
+        key=lambda item: (
+            -int(item["count"]),
+            -int(item.get("follow_up_count") or 0),
+            str(item["label"]),
+        )
+    )
+    limit = int((rule.get("guard") or {}).get("max_runs_per_task") or 0)
+    return {
+        "action": action,
+        "follow_up_action": follow_up or None,
+        "limit": limit,
+        "max_count": int(targets[0]["count"]) if targets else 0,
+        "max_follow_up_count": (
+            max(int(item.get("follow_up_count") or 0) for item in targets)
+            if targets and follow_up
+            else None
+        ),
+        "target_count": len(targets),
+        # 只回传前 20 个（前端 tooltip 用），超出时用 target_count 说明总数
+        "targets": targets[:20],
+    }
+
+
+def _schedule_rows(db: Dict[str, Any], history: Dict[str, Any]) -> list:
     rows = []
-    history = store.load_history()
     for schedule in rules.schedules():
         rule = next((r for r in store.load_rules() if str(r.get("id")) == str(schedule["id"])), {})
         rows.append(
@@ -226,6 +324,7 @@ def _schedule_rows() -> list:
                 "next_run_at": scheduler.next_run_of(schedule["id"]),
                 "last_fired_at": history["last_fired"].get(str(schedule["id"])),
                 "cron_note": cron.describe(schedule["cron"]) if schedule.get("cron") else "",
+                "progress": _rule_progress(rule, db, history),
             }
         )
     return rows
@@ -239,11 +338,12 @@ def automation_status(request: Request):
         settings = store.load_settings()
         all_rules = store.load_rules()
         history = store.load_history()
+        db = load_db()
         return ok(
             "查询成功",
             {
                 "settings": settings,
-                "schedules": _schedule_rows(),
+                "schedules": _schedule_rows(db, history),
                 "rules": [
                     {
                         "id": r.get("id"),
@@ -257,6 +357,8 @@ def automation_status(request: Request):
                         "follow_up_action": r.get("follow_up_action") or None,
                         "guard": r.get("guard"),
                         "failures": int(history["rule_failures"].get(str(r.get("id"))) or 0),
+                        # 已运行次数 / 单任务执行上限（前端显示成 `3/5`）
+                        "progress": _rule_progress(r, db, history),
                     }
                     for r in all_rules
                 ],

@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-10-04 · 当前版本：v0.9.39（复核 TODO「发现问题」：修核数校验 / 任务级互斥锁 / 续算认 PEND / bkill 清 job_id）
+> 生成时间：2026-08-29 · 最近更新：2026-10-04 · 当前版本：v0.9.40（NEB 映像主从视图 + 全站 3D 统一到 Structure3DFrame + 力收敛阈值按 INCAR EDIFFG）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -242,7 +242,42 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.39）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.40）
+
+- v0.9.40（commit `待补`，2026-10-04 用户："现在3d视图和其他任务的不一致，我的点击选择原子等功能也不见了" → "能量曲线等有重复元素" → "巡检详情页 opt/frac/ele 的结构分析也换成点击类似 neb 的吧，用同一套系统"）：
+  **NEB 映像视图重构为主从视图 + 全站 3D 渲染统一到一套 + 力收敛阈值口径修正**。
+  **① NEB 主从视图**（新 `components/inspection/NebImageMasterDetail.tsx` + `NebEnergyCurve.tsx`）：三段式
+  「统计卡 → 能量曲线（铺满、可点选、含零线虚线与面积填充、鞍点单独标记）→ 主视图 → 缩略图条」。
+  点曲线点 / 点缩略图 / 按 ←→ / 点左右按钮**四种方式**都能切换，三段同步高亮，选中缩略图自动滚到可视区，
+  首尾按钮禁用。同步旋转开关：拖动主视图时缩略图跟着转（节流 160ms），关闭则缩略图保持固定视角。
+  映像数量完全自适应（3/5/7/9/11/20+）。曲线用 nebef.pl 的**全部**映像，缺 CONTCAR 的映像在缩略图里显示
+  「无结构」占位，保证三段索引对齐；整条路径都没同步结构时只显示统计+曲线+提示。
+  **② 去掉重复的能垒曲线**：原来「NEB 过渡态能垒」（NebBarrierPanel：统计卡+曲线+明细表）与
+  「NEB 映像分析」各有一条曲线 → 合并成一段（统计卡并入主从视图，曲线只留可点选的那条，
+  绝对能量/受力移到曲线读数），删除 `NebBarrierPanel.tsx`。
+  **③ 3D 渲染统一到 `Structure3DFrame`（作业管理那套 3Dmol）**：起因是我最初用自绘 canvas 实现 NEB 主视图，
+  导致与其它任务样式不一致、且丢了点选原子——**已改回复用同一组件**。现在四个调用点全是一套：
+  作业管理结构面板、巡检 opt/frac/ele 结构分析、NEB 主视图（都直接是 `Structure3DFrame`）、
+  NEB 缩略图（同一个 3Dmol，用一个**离屏 viewer** 逐张渲染后 `drawImage` 到 2D 画布——只占 1 个
+  WebGL 上下文，浏览器上限约 16 个，每张一个会崩）。
+  巡检 opt/frac/ele 的结构分析从旧的并排对比组件 `Structure3DViewer` 换成 `Structure3DFrame`
+  （POSCAR/CONTCAR 改为工具栏上的切换器，默认「优化后」，原子选中在切换时保留，方便看同一原子前后位移），
+  删除 `Structure3DViewer.tsx` 与 `structure3d.css`（其 `.s3d-*` 类只被它使用）。
+  `Structure3DFrame` 新增两个**可选**属性：`onViewerReady`（交出 viewer 供 NEB 缩略图同步视角）、
+  `toolbarExtra`（供外部往工具栏注入控件）；工具栏去掉「双击空白 = 取消选中」提示（功能不变）。
+  **④ 力收敛阈值口径修正**（用户："最大力 随离子步那块的收敛阈值是不是固定0.02还是从INCAR读取？"）：
+  后端判定本来就按 **INCAR 的 EDIFFG**（`batch_check.force_thresholds_from_incar`：`EDIFFG<0` → `|EDIFFG|`、
+  RMS 取半，来源 `incar:EDIFFG`；缺失/正值退回 registry 0.02/0.01），但前端图表红线**写死 0.02**、
+  详情接口也没透出阈值 → 遇 EDIFFG≠-0.02 的任务会误导（实测归档 3206 条 `incar:EDIFFG`、1822 条 `registry`，
+  阈值分布 0.02/0.04/0.05）。修：详情接口补 `force_thresholds`；`checks_store._merge_entry` 让
+  `force_thresholds` 与 `force_converged` 一起沿用旧值；前端 `ForceHistoryCharts` 接收真实阈值
+  （拿不到才退回 0.02），线段标注带来源「阈值 0.050（EDIFFG）」；详情页「收敛判定」补一行
+  「阈值 0.05 eV/Å（INCAR EDIFFG）」。
+  **验证**（未碰生产）：`tsc` + `npm run build` 通过；SSR 真渲染断言——NEB 主从视图 n=3/7/11/21 三段齐全、
+  缩略图数量与占位对齐、只有 barrier / 只有结构 / n=1 / n=0 边界；opt 出现切换器且走同一组件、
+  ele 只有 CONTCAR / frac 只有 POSCAR 正常且不显示切换器；力阈值 EDIFFG=0.04/0.05 时红线画在 0.040/0.050
+  且不再出现写死的 0.020。**影响面**：只动前端组件与详情接口/合并逻辑，不改巡检流程与归档格式；
+  后端需 `sudo systemctl restart vasp-manager`，前端需 `npm run build` + 硬刷新。
 
 - v0.9.39（commit `693b9b0`，2026-10-04 用户："你检查一下，有些已经被改过了，有些没改的帮我改下，要以最小的影响去改动"）：
   **复核 TODO「发现问题」6 条，2 条早已实现、4 条本轮修复**。

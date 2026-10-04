@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { CheckCircleOutlined, WarningOutlined } from '@ant-design/icons';
-import { Alert, Empty, Table, Tag } from 'antd';
+import { Alert, Empty, Segmented, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
   ForceHistoryPoint,
@@ -7,7 +8,7 @@ import type {
   StructureAnalysis,
 } from '../../types';
 import { TASK_TYPE_LABELS } from '../../types';
-import Structure3DViewer from './Structure3DViewer';
+import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 
 interface LatticeRow {
   key: string;
@@ -81,6 +82,16 @@ export default function StructurePanel({
   forceRms,
   forceConverged,
 }: Props) {
+  const hasPoscar = Boolean(analysis.poscar_cif);
+  const hasContcar = Boolean(analysis.contcar_cif);
+  /** 结构 3D 视图看哪一份：默认「优化后（CONTCAR）」，没有就退回 POSCAR */
+  const [structureView, setStructureView] = useState<'contcar' | 'poscar'>('contcar');
+  const [selectedAtoms, setSelectedAtoms] = useState<AtomRef[]>([]);
+  const activeView: 'contcar' | 'poscar' =
+    structureView === 'contcar' && !hasContcar ? 'poscar' : structureView;
+  const activeCif =
+    (activeView === 'contcar' ? analysis.contcar_cif : analysis.poscar_cif) ?? null;
+
   const isifText =
     analysis.isif == null
       ? 'ISIF 未知'
@@ -230,12 +241,42 @@ export default function StructurePanel({
         />
       )}
 
-      {analysis.poscar_cif || analysis.contcar_cif ? (
+      {hasPoscar || hasContcar ? (
         <>
-          <div className="structure-panel__section-title">结构 3D 对比（3Dmol.js）</div>
-          <Structure3DViewer
-            poscarCif={analysis.poscar_cif ?? null}
-            contcarCif={analysis.contcar_cif ?? null}
+          <div className="structure-panel__section-title">结构 3D 视图</div>
+          <Structure3DFrame
+            cif={activeCif}
+            height={460}
+            selected={selectedAtoms}
+            toolbarExtra={
+              hasPoscar && hasContcar ? (
+                <Segmented
+                  size="small"
+                  value={activeView}
+                  onChange={(v) => setStructureView(v as 'contcar' | 'poscar')}
+                  options={[
+                    { label: '优化后（CONTCAR）', value: 'contcar' },
+                    { label: '初始（POSCAR）', value: 'poscar' },
+                  ]}
+                />
+              ) : undefined
+            }
+            onClickAtom={(atom, additive) =>
+              setSelectedAtoms((prev) => {
+                if (!additive) return [atom];
+                const exists = prev.some((x) => x.index === atom.index);
+                return exists ? prev.filter((x) => x.index !== atom.index) : [...prev, atom];
+              })
+            }
+            onBoxSelect={(atoms, additive) =>
+              setSelectedAtoms((prev) => {
+                if (!additive) return atoms;
+                const seen = new Set(prev.map((x) => x.index));
+                return [...prev, ...atoms.filter((x) => !seen.has(x.index))];
+              })
+            }
+            onClearSelection={() => setSelectedAtoms([])}
+            showSelectedCoords
           />
         </>
       ) : null}

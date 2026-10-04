@@ -46,8 +46,7 @@ import ForceHistoryCharts from '../components/inspection/ForceHistoryCharts';
 import EleAnalysisPanel from '../components/inspection/EleAnalysisPanel';
 import PathSummaryModal from '../components/inspection/PathSummaryModal';
 import StructurePanel from '../components/inspection/StructurePanel';
-import NebBarrierPanel from '../components/inspection/NebBarrierPanel';
-import NebImages3DViewer from '../components/inspection/NebImages3DViewer';
+import NebImageMasterDetail from '../components/inspection/NebImageMasterDetail';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import StatusTag from '../components/common/StatusTag';
@@ -1157,6 +1156,15 @@ export default function Inspection() {
                     最大力 {detailData.force_max} eV/Å · RMS {detailData.force_rms} eV/Å
                   </span>
                 )}
+                {detailData.force_thresholds && (
+                  <span className="preview-note" style={{ marginLeft: 8 }}>
+                    阈值 {detailData.force_thresholds.max_force_threshold} eV/Å
+                    （{detailData.force_thresholds.source === 'incar:EDIFFG'
+                      ? 'INCAR EDIFFG'
+                      : '默认值'}
+                    ）
+                  </span>
+                )}
               </Descriptions.Item>
               {detailData.notes && (
                 <Descriptions.Item label="备注">{detailData.notes}</Descriptions.Item>
@@ -1171,18 +1179,13 @@ export default function Inspection() {
             {detailData.force_history.length > 0 && (
               <div className="inspection-detail__section">
                 <h3>能量与力 · 离子步</h3>
-                <ForceHistoryCharts history={detailData.force_history} />
+                <ForceHistoryCharts
+                  history={detailData.force_history}
+                  forceThreshold={detailData.force_thresholds?.max_force_threshold ?? null}
+                  forceThresholdSource={detailData.force_thresholds?.source ?? null}
+                />
               </div>
             )}
-
-            {detailData.task_type === 'neb' &&
-              detailData.neb_barrier &&
-              detailData.neb_barrier.images.length > 0 && (
-                <div className="inspection-detail__section">
-                  <h3>NEB 过渡态能垒</h3>
-                  <NebBarrierPanel images={detailData.neb_barrier.images} />
-                </div>
-              )}
 
             <div className="inspection-detail__section">
               <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
@@ -1191,16 +1194,13 @@ export default function Inspection() {
               ) : detailData.task_type === 'neb' ? (
                 // NEB 专属分析：只走映像结构视图，**不要**落到 StructurePanel
                 // （StructurePanel 期望 opt 的 files/poscar/warnings 字段，NEB 载荷没有会白屏）
-                detailData.analysis?.neb_images?.length ? (
-                  <>
-                    <div className="fe-footnote" style={{ marginTop: 0, marginBottom: 8 }}>
-                      已同步 {detailData.analysis.neb_images.length} 个映像的优化后结构
-                      {detailData.analysis.steps != null
-                        ? `（NEB 推进约 ${detailData.analysis.steps} 离子步）`
-                        : ''}
-                    </div>
-                    <NebImages3DViewer images={detailData.analysis.neb_images} />
-                  </>
+                (detailData.analysis?.neb_images?.length ?? 0) > 0 ||
+                (detailData.neb_barrier?.images.length ?? 0) > 0 ? (
+                  <NebImageMasterDetail
+                    images={detailData.analysis?.neb_images ?? []}
+                    barrier={detailData.neb_barrier?.images}
+                    steps={detailData.analysis?.steps}
+                  />
                 ) : (
                   <Empty
                     image={Empty.PRESENTED_IMAGE_SIMPLE}

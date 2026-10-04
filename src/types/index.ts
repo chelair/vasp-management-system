@@ -255,6 +255,13 @@ export interface InspectionDetail {
   force_max: number | null;
   force_rms: number | null;
   force_converged: boolean | null;
+  /** 力收敛阈值（结构优化取自 INCAR 的 EDIFFG；缺失/正值时退回 registry 默认 0.02/0.01） */
+  force_thresholds?: {
+    max_force_threshold: number;
+    rms_force_threshold: number;
+    /** `incar:EDIFFG` = 按 INCAR 判；`registry` = 用默认阈值 */
+    source: string;
+  } | null;
   force_history: ForceHistoryPoint[];
   errors: string[];
   notes: string;

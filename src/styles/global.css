@@ -3830,123 +3830,269 @@ body.is-atom-selecting * {
   }
 }
 
-/* ---------- NEB 映像结构横向对比（v0.6.9） ---------- */
+/* ---------- NEB 映像主从视图（v0.9.40） ---------- */
 
-.neb3d__bar {
+.nebmd {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ① 能量曲线 */
+.nebmd-curve__head {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 2px;
 }
 
-.neb3d__scale {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
+.nebmd-curve__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.nebmd-curve__hint {
+  font-size: 11.5px;
   color: var(--color-text-muted);
 }
 
-.neb3d__legend {
+.nebmd-curve__read {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.nebmd-curve__saddle {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: 11px;
+  color: #c8434b;
+  background: #fdeced;
+  border: 1px solid #f3c3c7;
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.nebmd-curve__svg {
+  display: block;
+}
+
+/* ② 主视图 */
+.nebmd__stage {
+  position: relative;
+}
+
+.nebmd__extra {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   margin-left: auto;
-  flex-wrap: wrap;
+}
+
+.nebmd__no-structure {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 0 24px;
+  border: 1px dashed var(--color-border-soft);
+  border-radius: 14px;
+  background: #f9fbfd;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.nebmd__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.nebmd__nav {
+  position: absolute;
+  top: 55%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+  z-index: 2;
+}
+
+.nebmd__stage--hover:hover .nebmd__nav:not(:disabled),
+.nebmd__nav:focus-visible {
+  opacity: 1;
+}
+
+.nebmd__nav:hover:not(:disabled) {
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(35, 48, 67, 0.14);
+}
+
+.nebmd__nav:disabled {
+  cursor: default;
+  opacity: 0;
+}
+
+.nebmd__nav--prev {
+  left: 12px;
+}
+
+.nebmd__nav--next {
+  right: 12px;
+}
+
+.nebmd__hint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
   font-size: 11px;
   color: var(--color-text-muted);
+  pointer-events: none;
 }
 
-.neb3d__legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+/* 离屏 3Dmol viewer：只为生成缩略图，不参与可见布局 */
+.nebmd__offscreen {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-.neb3d__legend-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-}
-
-.neb3d__grid {
-  display: grid;
-  /* 整条路径恒定横排：列数不足时横向滚动，而不是换行（换行会打断 IS→中间态→FS 的对比） */
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(190px, 1fr);
+/* ③ 缩略图条 */
+.nebmd__thumbs {
+  display: flex;
   gap: 10px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding: 4px 2px 8px;
+  scroll-behavior: smooth;
 }
 
-.neb3d__panel {
+.nebmd__thumb {
+  flex: 0 0 auto;
+  width: 154px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--color-border-soft);
   border-radius: 12px;
   background: #fff;
   overflow: hidden;
+  cursor: pointer;
   transition:
-    box-shadow 0.18s ease,
-    border-color 0.18s ease;
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
-.neb3d__panel:hover {
-  box-shadow: 0 8px 22px rgba(35, 48, 67, 0.08);
+.nebmd__thumb:hover {
+  box-shadow: 0 8px 20px rgba(35, 48, 67, 0.1);
 }
 
-.neb3d__panel.is-saddle {
-  border-color: rgba(217, 83, 91, 0.45);
-  box-shadow: 0 0 0 2px rgba(217, 83, 91, 0.1);
+.nebmd__thumb.is-saddle {
+  border-color: rgba(217, 83, 91, 0.5);
 }
 
-.neb3d__head {
+.nebmd__thumb.is-selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(91, 141, 239, 0.28);
+}
+
+.nebmd__thumb.is-selected.is-saddle {
+  border-color: #d9535b;
+  box-shadow: 0 0 0 2px rgba(217, 83, 91, 0.28);
+}
+
+.nebmd__thumb.is-empty {
+  opacity: 0.75;
+}
+
+.nebmd__thumb-none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 104px;
+  background: repeating-linear-gradient(
+    45deg,
+    #f4f7fb,
+    #f4f7fb 8px,
+    #eef2f8 8px,
+    #eef2f8 16px
+  );
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.nebmd__thumb canvas {
+  display: block;
+  width: 100%;
+  height: 104px;
+  background: #fbfcfe;
+}
+
+.nebmd__thumb-cap {
   display: flex;
   align-items: center;
   gap: 6px;
-  /* 固定高度 + 不换行：否则长标签会把头部撑成两行，各面板画布起点错位 */
-  height: 34px;
-  padding: 0 10px;
-  flex-wrap: nowrap;
-  overflow: hidden;
-  border-bottom: 1px solid var(--color-border-soft);
-  background: #f9fbfd;
-}
-
-.neb3d__head .fe-chip,
-.neb3d__head .fe-badge {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.neb3d__canvas {
-  width: 100%;
-  height: 240px;
-  flex: 0 0 auto;
-  /* 关键：3Dmol 会在容器内插入绝对定位的 canvas，容器必须定位，
-     否则画布会相对页面定位、在左上角盖出一块白色遮挡 */
-  position: relative;
-  overflow: hidden;
-}
-
-.neb3d__foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 26px;
-  padding: 0 10px;
+  padding: 4px 8px;
   border-top: 1px solid var(--color-border-soft);
-  background: #fcfdff;
+  background: #f9fbfd;
   font-size: 11px;
   white-space: nowrap;
-  overflow: hidden;
 }
 
-@media (max-width: 640px) {
-  .neb3d__canvas {
-    height: 190px;
+.nebmd__thumb-idx {
+  font-weight: 700;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.nebmd__thumb-role {
+  color: var(--color-text-muted);
+}
+
+.nebmd__thumb-de {
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nebmd__thumb,
+  .nebmd__nav {
+    transition: none;
+  }
+  .nebmd__thumbs {
+    scroll-behavior: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .nebmd__hint {
+    display: none;
   }
 }
 

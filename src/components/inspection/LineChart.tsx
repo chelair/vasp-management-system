@@ -7,6 +7,8 @@ interface Props {
   color: string;
   unit?: string;
   threshold?: number;
+  /** 阈值来源说明（如「EDIFFG」「默认值」），显示在阈值标注后面 */
+  thresholdNote?: string;
   /** 悬停提示区数值标签（默认“能量”） */
   valueLabel?: string;
   /** 悬停提示数据点（与 series 索引对齐） */
@@ -25,6 +27,7 @@ export default function LineChart({
   color,
   unit,
   threshold,
+  thresholdNote,
   valueLabel,
   points,
   hovered,
@@ -163,6 +166,7 @@ export default function LineChart({
               textAnchor="end"
             >
               阈值 {threshold.toFixed(3)}
+              {thresholdNote ? `（${thresholdNote}）` : ''}
             </text>
           </>
         )}

@@ -112,8 +112,9 @@ def _merge_entry(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("force_history",):
         if not merged.get(key) and old.get(key):
             merged[key] = old[key]
-    # 力统计字段：新结果缺失时沿用旧值（例如本次未下载检查）
-    for key in ("force_max", "force_rms", "force_converged"):
+    # 力统计字段：新结果缺失时沿用旧值（例如本次未下载检查）。
+    # force_thresholds 必须跟 force_converged 一起沿用，否则会出现"判定来自 INCAR、图上却退回 0.02"。
+    for key in ("force_max", "force_rms", "force_converged", "force_thresholds"):
         if merged.get(key) is None and old.get(key) is not None:
             merged[key] = old[key]
     return merged

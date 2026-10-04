@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Button, Checkbox, Empty, Segmented, Slider } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { ELEMENT_COLORS, computeBonds, parseCif, type Structure3D } from '../../utils/structure3d';
@@ -29,6 +30,10 @@ interface Props {
   onClearSelection: () => void;
   /** 在结构图左上角显示选中原子的分数坐标（灰色小字，默认关闭） */
   showSelectedCoords?: boolean;
+  /** 3Dmol viewer 就绪回调（创建后给出 viewer，销毁/切换时给 null）——供外部同步视角用 */
+  onViewerReady?: (viewer: any | null) => void;
+  /** 追加到工具栏末尾的自定义控件（如 NEB 的「同步旋转」开关） */
+  toolbarExtra?: ReactNode;
 }
 
 /** 左上角坐标块最多显示几行，超出折叠成"…另 N 个原子" */
@@ -55,6 +60,8 @@ export default function Structure3DFrame({
   onBoxSelect,
   onClearSelection,
   showSelectedCoords = false,
+  onViewerReady,
+  toolbarExtra,
 }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
@@ -79,6 +86,8 @@ export default function Structure3DFrame({
   const scaleRef = useRef(scale);
   const spinRef = useRef(spin);
   const handlersRef = useRef({ onClickAtom, onBoxSelect, onClearSelection });
+  const viewerReadyRef = useRef(onViewerReady);
+  viewerReadyRef.current = onViewerReady;
   /** Ctrl/⌘ 按下状态（部分环境下 3Dmol 回调不带原生事件时兜底） */
   const modifierRef = useRef(false);
   selectedRef.current = selected;
@@ -366,7 +375,10 @@ export default function Structure3DFrame({
     holder.innerHTML = '';
     viewerRef.current = null;
     modelRef.current = null;
-    if (!cif || !structure || !window.$3Dmol) return;
+    if (!cif || !structure || !window.$3Dmol) {
+      viewerReadyRef.current?.(null);
+      return undefined;
+    }
 
     const viewer = window.$3Dmol.createViewer(holder, { backgroundColor: '#f7f9fc' });
     viewer.setProjection('orthographic');
@@ -421,6 +433,11 @@ export default function Structure3DFrame({
     }
     if (spinRef.current) viewer.spin('y', 1.2);
     viewer.render();
+    // 对外交出 viewer：NEB 主从视图据此把缩略图视角与主视图同步
+    viewerReadyRef.current?.(viewer);
+    return () => {
+      viewerReadyRef.current?.(null);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cif, structure]);
 
@@ -474,7 +491,7 @@ export default function Structure3DFrame({
           重置视角
         </Button>
         <span className="s3d-editor__label">Shift + 拖拽 = 框选</span>
-        <span className="s3d-editor__label">双击空白 = 取消选中</span>
+        {toolbarExtra}
       </div>
       <div className="s3d-editor__stage" ref={stageRef}>
         <div ref={holderRef} className="s3d-editor__canvas" style={{ height }} />

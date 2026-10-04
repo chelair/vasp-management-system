@@ -389,6 +389,9 @@ def inspection_detail(task_id: str, request: Request):
                 "force_max": entry.get("force_max"),
                 "force_rms": entry.get("force_rms"),
                 "force_converged": entry.get("force_converged"),
+                # 力收敛阈值（结构优化取自 INCAR 的 EDIFFG，缺失时退回 registry 0.02/0.01）：
+                # 前端画收敛基准线 / 标注「按哪个阈值判的」要用它，不能再写死 0.02。
+                "force_thresholds": entry.get("force_thresholds") or None,
                 "force_history": history,
                 "errors": entry.get("error_messages", []) or [],
                 "notes": entry.get("notes", "") or "",

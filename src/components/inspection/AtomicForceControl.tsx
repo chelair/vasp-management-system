@@ -47,6 +47,8 @@ export function useAtomicForces(taskId: string, image: string | null): AtomicFor
         if (gen !== genRef.current) return;
         setData(null);
         setError(e instanceof Error ? e.message : '读取原子受力失败');
+        // 取不到受力（例如 NEB 还没跑出第一个离子步）→ 开关自动回到关闭，只留提示
+        setEnabled(false);
       } finally {
         if (gen === genRef.current) setLoading(false);
       }
@@ -103,7 +105,7 @@ export function AtomicForceControl({ state, disabledReason, note }: Props) {
         </span>
       </Tooltip>
       {state.enabled && note && <span className="atomic-force__warn">{note}</span>}
-      {state.enabled && state.error && <span className="atomic-force__warn">{state.error}</span>}
+      {state.error && <span className="atomic-force__warn">{state.error}</span>}
     </span>
   );
 }

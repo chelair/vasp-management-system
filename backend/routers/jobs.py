@@ -8,6 +8,7 @@
 """
 
 import base64
+from contextlib import contextmanager
 from datetime import datetime
 import json
 import os
@@ -787,12 +788,37 @@ def open_task_folder(task_id: str):
         return JSONResponse(status_code=500, content=fail(f"打开文件夹失败：{e}"))
 
 
+@contextmanager
+def _task_action_lock(task_id: str):
+    """任务级动作互斥锁（与自动化调度共用同一把锁 `data/locks/task_<id>.lock`）。
+
+    HTTP 动作端点（提交 / 续算 / 生成 frac / 创建 NEB）在锁内执行，与自动化接力
+    串行化，堵住"先检查后执行"窗口里两条路径并发拿到作业号的竞态
+    （2026-09-29 Ag@Al2O3_I4 被提交两次：230578 自动化接力 / 230579 手动）。
+    锁忙时立即 409，不排队等待。
+    """
+    from automation.scheduler import _TaskBusy, _acquire_task_lock, _release_task_lock
+
+    try:
+        lock = _acquire_task_lock(task_id)
+    except _TaskBusy as e:
+        raise ActionError(
+            409, f"该任务正在执行其他操作（提交 / 续算），请稍候再试：{e}"
+        ) from None
+    try:
+        yield
+    finally:
+        _release_task_lock(lock)
+
+
 @router.post("/tasks/{task_id}/continuation")
 def create_same_type_continuation(task_id: str):
     """同类型续算：全部在远程服务器完成，创建 conN 目录并登记续算子任务。"""
     try:
         project, task = _resolve_task(task_id)
-        data = core_continuation(project, task)
+        with _task_action_lock(task_id):
+            project, task = _resolve_task(task_id)  # 锁内二次校验：取最新状态
+            data = core_continuation(project, task)
         if data.get("action") != "created":
             return ok(data.get("message", "续算检查完成"), data)
         return ok("续算目录已创建", data)
@@ -811,7 +837,9 @@ def create_frac(task_id: str, payload: dict = Body(default={})):
     """为结构优化任务构建频率矫正（frac）输入文件（自由能流程）。"""
     try:
         project, task = _resolve_task(task_id)
-        result = core_create_frac(project, task, payload.get("params") or {})
+        with _task_action_lock(task_id):
+            project, task = _resolve_task(task_id)  # 锁内二次校验：取最新状态
+            result = core_create_frac(project, task, payload.get("params") or {})
         return ok("频率矫正输入文件已生成", result)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
@@ -884,7 +912,9 @@ def create_neb(task_id: str, payload: dict = Body(default={})):
     """根据初末态 opt 任务创建 NEB 计算文件（nebmake.pl 插值）。"""
     try:
         project, task = _resolve_task(task_id)
-        result = core_create_neb(project, task, payload)
+        with _task_action_lock(task_id):
+            project, task = _resolve_task(task_id)  # 锁内二次校验：取最新状态
+            result = core_create_neb(project, task, payload)
         return ok("NEB 计算文件已生成", result)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
@@ -1061,7 +1091,9 @@ def submit_task(task_id: str):
     """提交作业：远程目录内执行 bsub < vasp.lsf，登记 job_id 并将状态更新为 queued。"""
     try:
         project, task = _resolve_task(task_id)
-        data = core_submit(project, task)
+        with _task_action_lock(task_id):
+            project, task = _resolve_task(task_id)  # 锁内二次校验：取最新状态
+            data = core_submit(project, task)
         return ok(f"作业 {data['job_id']} 已提交到队列", data)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
@@ -1274,10 +1306,12 @@ def stop_task(task_id: str):
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
         return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
 
-    # 作业已终止：状态回退为待提交（可重新提交或续算）
+    # 作业已终止：状态回退为待提交（可重新提交或续算），并**清掉作业号**——
+    # bkill 后 LSF 不再有该作业，若保留 job_id，续算的"运行中"判定会拿着这个
+    # 旧号去查（查不到）而误判为"可重新提交"（2026-09-29 Ag@Al2O3_I4 残留 230579）。
     try:
         with db_transaction() as db:
-            update_task_status(db, project["name"], task_id, "pending")
+            update_task_status(db, project["name"], task_id, "pending", {"job_id": None})
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001 - 状态落库失败不影响停止事实

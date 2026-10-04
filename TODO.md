@@ -6,14 +6,26 @@
 
 # 发现问题
 
-> ~~本地neb目录到底采用NEB还是neb？只保留一个neb吧；~~ → **已解决（v0.9.20）**：本地统一成小写
-> `neb`（真目录 `NEB` 改名 + 删掉软链接 + 改写 67 条 `dir_path`），工具 `scripts/migrate_neb_case.py`；
-> **远端一律没动**，`Ag/free_energy` 与 `Ag/opt` 也确认未被动（inode + mtime 前后一致）。
-> ~~归档时要同步的文件有CONTCAR、INCAR、KPOINTS、POSCAR、OUTCAR、OSZICAR；~~
-> ~~对于neb作业，本地归档后文件目录结构应该是files/【INCAR、KPOINTS、0X/【POSCAR、CONTCAR、OUTCAR、OSZICAR】】~~
-> → **已解决（v0.9.21）**：普通任务归档拉六件套（存在才下）；NEB 归档落成
-> `files/{INCAR,KPOINTS}` + `files/<映像号>/{POSCAR,CONTCAR,OUTCAR,OSZICAR}`；审计行带
-> `saved/missing/images/img_saved/img_missing`。
+> 核对结论（2026-10-04）：6 条里 ②③ 复核后发现**早已实现**，①④⑤⑥ 本轮已修（最小影响）。
+
+> - ~~生成提交脚本那里每节点核数应该比总核数低~~ → **已修**：`vaspLsf` 与 `SubmitScriptPanel`
+>   双向钳制「每节点核数 ≤ 总核数」（默认 24 核 + 队列 48 核/节点，不再生成 `#BSUB -n 24` + `span[ptile=48]` 这种自相矛盾的脚本）。
+> - ~~页面加载加一点动效（卡片一个个出现 / 圆环环形填充）~~ → **复核早已实现**：StatCard 逐个错峰淡入
+>   （`delay` 0/0.06/0.12/0.18）、总览核数圆环扇区依次展开（v0.9.34，900ms + 每片 70ms 延迟）、
+>   集群面板加载完成入场动画（v0.9.33/34，`prefers-reduced-motion` 下关闭）。仅"卡片内容自上而下逐行淡入"
+>   这一细化没做，需要再补可以说。
+> - ~~自动续算执行次数上限应该是针对任务的，而不是针对规则的~~ → **复核早已实现**：Guard 计数口径本就是
+>   `counts[task_id|action]`（按任务，不是按规则）；v0.9.37/38 已把「已运行 / 上限」与「重置次数」
+>   统一到这一口径展示与清理。
+> - ~~重复提交（2026-09-29 `Ag@Al2O3_I4` 被提交两次：230578 自动化接力 / 230579 手动）~~ → **已修**：
+>   新增任务级动作互斥锁 `_task_action_lock`（与自动化调度共用 `data/locks/task_<id>.lock`），
+>   提交 / 续算 / 生成 frac / 创建 NEB 四个 HTTP 动作端点改为**锁内执行 + 锁内二次校验**；
+>   并发第二条立即 409（不再两条都放行拿到两个作业号）。
+> - ~~续算的"运行中"判定只认 RUN/SSUSP/PSUSP/USUSP，不认 PEND（排队中）~~ → **已修**：
+>   opt / neb 续算脚本的活跃作业判定加入 `PEND`（刚提交、排队的 conN 不再被判成"输入完整、可手动提交"
+>   或被反复续算建 conN+1）。
+> - ~~停止作业（bkill）只把状态回退成 pending，不清 job_id（I4 残留 230579）~~ → **已修**：
+>   `stop_task` 落库时清空 `job_id`（响应仍回传被停止的作业号，前端提示不变）。
 
 ## 当前进度概览
 

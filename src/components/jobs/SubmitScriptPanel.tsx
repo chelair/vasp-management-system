@@ -106,7 +106,8 @@ export default function SubmitScriptPanel({
   /** 队列节点规格：每节点核数默认从队列带出 */
   const queueSpec = snapshot?.queues.find((q) => q.queue === queue);
   useEffect(() => {
-    if (queueSpec?.coresPerNode) setPtile(queueSpec.coresPerNode);
+    // 每节点核数不能超过总核数
+    if (queueSpec?.coresPerNode) setPtile(Math.min(queueSpec.coresPerNode, cores));
   }, [queueSpec?.coresPerNode, queue]);
 
   const opts = useMemo(
@@ -330,7 +331,11 @@ export default function SubmitScriptPanel({
                   min={1}
                   max={512}
                   value={cores}
-                  onChange={(v) => setCores(v ?? 24)}
+                  onChange={(v) => {
+                    const next = v ?? 24;
+                    setCores(next);
+                    setPtile((p) => Math.min(p, next));
+                  }}
                 />
                 <span className="lsf-field__hint">
                   推荐 {snapshot ? getRecommendedCores(snapshot.nodes) : '—'} 核（健康节点最大空闲核数）
@@ -338,7 +343,12 @@ export default function SubmitScriptPanel({
               </div>
               <div className="lsf-field">
                 <span className="lsf-field__label">每节点核数</span>
-                <InputNumber min={1} max={128} value={ptile} onChange={(v) => setPtile(v ?? 1)} />
+                <InputNumber
+                  min={1}
+                  max={128}
+                  value={ptile}
+                  onChange={(v) => setPtile(Math.max(1, Math.min(v ?? 1, cores)))}
+                />
                 <span className="lsf-field__hint">
                   {`#BSUB -R "span[ptile=${ptile}]"（默认取队列规格）`}
                 </span>

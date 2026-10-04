@@ -196,11 +196,11 @@ CON="con$N"
 LATEST=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/||' | sort -V | tail -1)
 if [ -n "$LATEST" ]; then CUR="$RD/$LATEST"; else CUR="$RD"; fi
 RUNJOB=""
-if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then
+if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then
   RUNJOB="$DBJOB"
 else
   for j in $(bjobs -o 'jobid exec_cwd' 2>/dev/null | awk -v d="$CUR" 'NR>1 && $2==d {{print $1}}'); do
-    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
+    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
   done
 fi
 echo "===STATE==="
@@ -258,11 +258,11 @@ LATEST=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/||' | sort -V | tail -1)
 if [ -n "$LATEST" ]; then SRC="$RD/$LATEST"; else SRC="$RD"; fi
 NEW="$RD/$CON"
 RUNJOB=""
-if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then
+if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then
   RUNJOB="$DBJOB"
 else
   for j in $(bjobs -o 'jobid exec_cwd' 2>/dev/null | awk -v d="$SRC" 'NR>1 && ($2==d || index($2, d"/")==1) {{print $1}}'); do
-    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
+    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
   done
 fi
 echo "===STATE==="

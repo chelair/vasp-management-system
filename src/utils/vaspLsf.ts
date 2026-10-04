@@ -64,7 +64,8 @@ export function vaspLsfSections(opts: VaspLsfOptions): VaspLsfSection[] {
   const queue = (opts.queue || '').trim();
   const walltime = opts.walltime || formatWalltime(24, 0);
   const cores = Math.max(1, Math.trunc(opts.cores || 1));
-  const ptile = Math.max(1, Math.trunc(opts.coresPerNode || 1));
+  // 每节点核数不能大于总核数（否则 #BSUB -n 24 + span[ptile=56] 自相矛盾）
+  const ptile = Math.max(1, Math.min(cores, Math.trunc(opts.coresPerNode || 1)));
   const warnMinutes = Math.max(1, Math.trunc(opts.warnMinutes ?? DEFAULT_WARN_MINUTES));
 
   const bsub = [

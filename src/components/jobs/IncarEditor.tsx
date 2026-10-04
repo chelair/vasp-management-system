@@ -44,7 +44,7 @@ import {
   LDAUL_OPTIONS,
   LDAUTYPE_OPTIONS,
   PRESET_INCAR_KEYS,
-  applyIncarGates,
+  incarUploadParams,
   buildIncarText,
   defaultLdauRows,
   incarParamDef,
@@ -157,23 +157,15 @@ export default function IncarEditor({
 
   const handleUploadRemote = async () => {
     try {
-      // 只有参数相对"本次计算实际使用的值"真的变了才提交修改
-      const changed = Object.entries(workspace.incarParams).filter(
-        ([key, value]) => String(value ?? '').trim() !== String(snapshotParams[key] ?? '').trim(),
-      );
-      if (changed.length === 0) {
+      // 只提交相对"本次计算实际使用的值"真的变了的参数（含主开关关掉的整组）；
+      // **留空 = 从 INCAR 里删掉这一项**，所以空值也在提交范围内（见 incarUploadParams）。
+      const params = incarUploadParams(workspace.incarParams, snapshotParams);
+      if (Object.keys(params).length === 0) {
         message.info('参数与本次计算一致，无需同步');
         return;
       }
-      // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改
-      // 留空（空字符串/仅空白）的参数不参与写入：与「生成 INCAR」一致
-      // 主开关关闭的整组参数（DFT+U / 偶极矩修正）也在这里被过滤掉
-      const merged = Object.fromEntries(
-        Object.entries(applyIncarGates(workspace.incarParams)).filter(
-          ([, value]) => String(value ?? '').trim() !== '',
-        ),
-      );
-      const r = await uploadIncar(task.task_id, { params: merged });
+      // 以当前表单参数为基础，后端基于远端旧 INCAR 做统一修改（空值 → 删除该参数行）
+      const r = await uploadIncar(task.task_id, { params });
       onStatePushed?.(r.state);
       const appliedText =
         r.applied.length > 0 ? `，${r.applied.length} 项修改已生效` : '';
@@ -785,7 +777,7 @@ export default function IncarEditor({
         }
         description={
           editing
-            ? '留空的参数不会写入 INCAR；已修改的参数会高亮显示，可在顶部横幅里逐项撤销（撤销主开关会连带撤销整组依赖参数）。'
+            ? '留空 = 不写入；把本次计算里已有的参数删空，「同步到远端」就会把它从 INCAR 里删掉（「确认修改」则记为下次续算时删除）。已修改的参数会高亮显示，可在顶部横幅里逐项撤销。'
             : '点右上角「修改参数」解锁编辑；低/中/高精度会自动填充推荐参数。'
         }
       />

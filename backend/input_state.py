@@ -513,7 +513,12 @@ def _canonical(value: Any) -> str:
 
 
 def set_incar_draft(state: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
-    """写入 INCAR 草稿；值与快照相同（或留空）表示"不改这一项"。"""
+    """写入 INCAR 草稿。
+
+    - 值与本次计算值相同 → "不改这一项"（清掉草稿与待生效记录）；
+    - **留空**且本次计算里**有**这个参数 → "删除这一项"（草稿存空串，同步/续算时把该行删掉）；
+    - 留空且本次计算里本来就没有 → 什么都不做。
+    """
     state = dict(state or {})
     snapshot_params = ((state.get("files") or {}).get("INCAR") or {}).get("params") or {}
     draft = dict(state.get("draft") or {})
@@ -522,13 +527,24 @@ def set_incar_draft(state: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, 
     now = now_iso()
     for key, raw in (params or {}).items():
         key = str(key).strip().upper()
+        if not key:
+            continue
         value = "" if raw is None else str(raw).strip()
-        base = str(snapshot_params.get(key, ""))
-        if not key or value == "" or _canonical(value) == _canonical(base):
+        base = str(snapshot_params.get(key, "")).strip()
+        if value == "":
+            if base == "":
+                # 本次计算里没有这一项，留空 = 不写入，也不需要留草稿
+                incar_draft.pop(key, None)
+                changes = _drop_pending(changes, "INCAR", key)
+                continue
+            # 留空 = 删除该参数：草稿用空串表示（modify_incar 见到空值就删行）
+            incar_draft[key] = ""
+        elif _canonical(value) == _canonical(base):
             incar_draft.pop(key, None)
             changes = _drop_pending(changes, "INCAR", key)
             continue
-        incar_draft[key] = value
+        else:
+            incar_draft[key] = value
         for entry in changes:
             if (
                 entry.get("file") == "INCAR"

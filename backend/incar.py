@@ -57,13 +57,13 @@ def modify_incar(content: str, changes: Dict[str, Any]) -> Tuple[str, List[str]]
     Returns:
         (修改后的文本, 警告列表)，警告如重复参数合并。
 
-    值为空的参数（None / 空字符串 / 仅空白）会被**忽略**：既不加进文件，
-    也不改动已有行——前端把参数框留空就表示"不写入该参数"（例如 NCORE）。
+    值为空的参数（None / 空字符串 / 仅空白）表示**删除该参数**：文件里有就删掉那一行（重复行
+    一起删），文件里本来没有就什么都不做——前端把参数框删空再同步，就是"从 INCAR 里去掉这一项"。
     """
     changes = {
         str(k).strip().upper(): v
         for k, v in (changes or {}).items()
-        if v is not None and str(v).strip() != ""
+        if str(k).strip()
     }
     warnings: List[str] = []
     if not changes:
@@ -90,8 +90,13 @@ def modify_incar(content: str, changes: Dict[str, Any]) -> Tuple[str, List[str]]
     out = list(lines)
     removed: set = set()
     for key, raw_value in changes.items():
-        new_value = format_value(raw_value)
         hit = matches.get(key, [])
+        # 留空 = 删除该参数（把已有的行全部去掉；本来没有就什么都不做）
+        if raw_value is None or str(raw_value).strip() == "":
+            for idx, _ in hit:
+                removed.add(idx)
+            continue
+        new_value = format_value(raw_value)
         if not hit:
             out.append(f"{key} = {new_value}")
             continue

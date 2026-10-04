@@ -512,6 +512,28 @@ export function applyIncarGates(params: Record<string, string>): Record<string, 
 }
 
 /**
+ * 「同步到远端」该提交哪些参数 = 与**本次计算实际值**（快照）真的不同的项。
+ *
+ * 关键：**空值也要提交**——留空表示"从 INCAR 里删掉这一项"。所以这里不能像以前那样
+ * 把空值过滤掉，否则"同步 → 某个参数 → 删空 → 同步"这个流程删不掉远端已有的行。
+ * 另外，快照里有、当前表单里已经没有的键（例如「其他参数」行被删掉）也要一起发出去删。
+ */
+export function incarUploadParams(
+  formParams: Record<string, string>,
+  snapshotParams: Record<string, string>,
+): Record<string, string> {
+  const gated = applyIncarGates(formParams);
+  const keys = new Set([...Object.keys(gated), ...Object.keys(snapshotParams)]);
+  const out: Record<string, string> = {};
+  for (const key of keys) {
+    const next = String(gated[key] ?? '').trim();
+    const base = String(snapshotParams[key] ?? '').trim();
+    if (next !== base) out[key] = next;
+  }
+  return out;
+}
+
+/**
  * 编辑器表单的基线参数 = **本次计算实际值 + 待生效草稿**。
  *
  * 刷新页面后草稿仍然存在（后端 input_state.draft），表单必须把它显示出来，

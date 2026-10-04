@@ -71,7 +71,9 @@ export default function InputSourceBanner({
               <span className="input-source__change-key">{c.key}</span>
               <span className="input-source__change-val">{c.from || '—'}</span>
               <span className="input-source__change-arrow">→</span>
-              <span className="input-source__change-val input-source__change-val--new">{c.to}</span>
+              <span className="input-source__change-val input-source__change-val--new">
+                {c.to === '' ? '（删除）' : c.to}
+              </span>
               <Tooltip
                 title={`只撤销这一项（${c.key} 回到本次计算值）`}
                 placement="left"
@@ -93,7 +95,7 @@ export default function InputSourceBanner({
       {applied.length > 0 && (
         <div className="input-source__applied">
           上次续算已应用 {applied.length} 项：
-          {applied.map((c) => `${c.key} ${c.from}→${c.to}`).join('；')}
+          {applied.map((c) => `${c.key} ${c.from}→${c.to === '' ? '（删除）' : c.to}`).join('；')}
           （{input?.last_applied?.con}）
         </div>
       )}

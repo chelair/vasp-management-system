@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-10-04 · 当前版本：v0.9.40（NEB 映像主从视图 + 全站 3D 统一到 Structure3DFrame + 力收敛阈值按 INCAR EDIFFG）
+> 生成时间：2026-08-29 · 最近更新：2026-10-04 · 当前版本：v0.9.41（巡检详情页「查看原子受力」：逐原子受力上色 + 受力与 CONTCAR 同目录 + 落盘 reports/）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -242,7 +242,36 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.40）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
+
+- v0.9.41（commit `待补`，2026-10-04 用户："巡检中心 frac/opt/neb 类型的任务详情的 3D 视图菜单栏中加一个查看原子受力的按钮…（达到收敛标准为绿色，此外受力越大颜色越红）"）：
+  **巡检详情页新增「查看原子受力」**（只加在巡检，作业管理不显示）。
+  **入口**：opt/frac 在 `StructurePanel`、NEB 在 `NebImageMasterDetail` 的 3D 工具栏里，是个**开关**
+  （开=按受力着色，关=恢复元素配色）；`ele` 不显示；opt 切到「初始（POSCAR）」时置灰并说明原因。
+  **后端**：新增 `atomic_forces.py` + `GET /api/inspections/{task_id}/atomic-forces?image=&refresh=`。
+  一次 exec（base64 下发整段脚本）回传 `stat 指纹 / grep -c 离子步数 / base64 POSCAR / base64 OUTCAR 尾部 256KB`，
+  解析**直接复用 `batch_check.parse_total_force_blocks`**（不复制一套；`parse_poscar_fixed` 同时拆出纯文本版
+  `parse_poscar_layout`，返回原子数/元素/固定标志）。OUTCAR 实测 30–57MB，只读尾部。
+  **NEB 点一次取全部映像**：脚本遍历 `<结构来源目录>/00..NN`，每个映像各自落盘，切换映像即时可见、
+  不再重复连远端（响应里 `sibling_images` 标出同批取回的其它映像）。
+  **目录口径（用户要求"CONTCAR 来自哪个文件夹，受力就应该来哪里"）**：结构同步时新增记录
+  `task.last_structure_dirs`（逐文件真实来源目录，`""` = 任务主目录——因为 `conN` 缺文件时会**逐文件回退主目录**），
+  受力按 `last_structure_dirs.CONTCAR` 取；老数据退回 `last_analysis_dir`，再退回主目录。
+  payload 里带 `source_dir`，缓存命中要求来源目录一致 → **换 conN / 重新同步结构后旧缓存自动失效重取**。
+  **落盘**：`<任务目录>/reports/atomic_forces[_<映像>].json`（与 `files/` 同级，不混进 VASP 输入文件），
+  带远端 OUTCAR 指纹；任务已结束时命中本地缓存、不再连远端；任务在跑则重新取并覆盖；`refresh=1` 强制重取。
+  **着色**（`utils/forceColor.ts`）：每原子取**最大力分量** `max(|Fx|,|Fy|,|Fz|)`（与 VASP 力判据、`force_max` 同口径），
+  阈值取 INCAR 的 `|EDIFFG|`（缺失退回 registry 0.02）；`≤阈值` = **纯绿**（达标），`>阈值` = **黄→红**渐变
+  （**不经过绿色**，一眼分得出哪些还没收敛），上限取 `max(阈值×4, 实测最大)`；固定原子（Selective dynamics）
+  显示灰色。元素序列或原子数与当前 CIF 对不上 → **不着色**并提示。
+  前端着色走 `Structure3DFrame` 新增的**可选属性 `atomColors`**（元素样式之后、选中高亮之前覆盖），
+  共享组件里**不加按钮**，所以作业管理行为不变。
+  **验证**（未碰生产）：后端隔离数据目录 + mock 远端 15 项（按来源目录 con3 取到 0.03 而非 con2 的 0.40、
+  回退主目录、来源目录变化令缓存失效、老数据退回 `last_analysis_dir`、NEB 取 `<来源>/01`、
+  来源目录不存在 → 404 含目录名、一次取全部映像后切换映像 0 次远端调用、opt 落盘 reports/…）；
+  前端 SSR 断言（opt/frac/NEB 有开关、ele 没有、开关默认关闭、`≤阈值` 绿 / 刚超阈黄 / 最大红 / 超阈区间逐点扫描不出现绿、
+  图例文字已移除、元素或原子数不一致时不着色）；`py_compile` + `tsc` + `npm run build` 通过。
+  **影响面**：新增只读接口 + 巡检结构同步多记一个字段；不改巡检流程与归档格式；后端需重启，前端需重构建。
 
 - v0.9.40（commit `0909b7d`，2026-10-04 用户："现在3d视图和其他任务的不一致，我的点击选择原子等功能也不见了" → "能量曲线等有重复元素" → "巡检详情页 opt/frac/ele 的结构分析也换成点击类似 neb 的吧，用同一套系统"）：
   **NEB 映像视图重构为主从视图 + 全站 3D 渲染统一到一套 + 力收敛阈值口径修正**。

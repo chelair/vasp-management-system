@@ -5,6 +5,8 @@ import type { InspectionDetail } from '../../types';
 import { ELEMENT_COLORS, parseCif } from '../../utils/structure3d';
 import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 import NebEnergyCurve from './NebEnergyCurve';
+import { AtomicForceControl, useAtomicForces } from './AtomicForceControl';
+import { buildAtomColors } from '../../utils/forceColor';
 
 type NebImage = NonNullable<NonNullable<InspectionDetail['analysis']>['neb_images']>[number];
 type BarrierImage = NonNullable<InspectionDetail['neb_barrier']>['images'][number];
@@ -12,6 +14,8 @@ type BarrierImage = NonNullable<InspectionDetail['neb_barrier']>['images'][numbe
 /** 合并后的映像条目：能量/受力来自 nebef.pl，结构来自巡检同步的 CONTCAR（可能缺） */
 interface NebEntry {
   label: string;
+  /** 远端映像目录名（如 `03`）——取该映像受力时用；无结构时为 null */
+  dirLabel: string | null;
   relative: number | null;
   energy: number | null;
   max_force: number | null;
@@ -19,6 +23,8 @@ interface NebEntry {
 }
 
 interface Props {
+  /** 任务 id（「查看原子受力」要按任务取远端受力） */
+  taskId: string;
   /** 已同步结构的映像（含 CIF）；可能为空（还没推进到 25 离子步桶） */
   images: NebImage[];
   /** nebef.pl 的全部映像（只含能量/受力，无结构）——用于在还没同步结构时也能看曲线 */
@@ -60,7 +66,7 @@ const normLabel = (value: unknown) => {
  * 能量曲线用 nebef.pl 的**全部**映像（还没同步结构的映像也画点），结构缺失的映像在主视图/
  * 缩略图里显示占位，保证三段索引始终对齐。
  */
-export default function NebImageMasterDetail({ images, barrier, steps }: Props) {
+export default function NebImageMasterDetail({ taskId, images, barrier, steps }: Props) {
   /** 合并映像列表（曲线/缩略图/主视图共用同一份索引） */
   const entries = useMemo<NebEntry[]>(() => {
     const byLabel = new Map<string, NebImage>();
@@ -85,6 +91,7 @@ export default function NebImageMasterDetail({ images, barrier, steps }: Props) 
       const struct = byLabel.get(b.key);
       return {
         label: b.label,
+        dirLabel: struct?.label ?? null,
         relative: b.relative ?? struct?.relative ?? null,
         energy: b.energy ?? struct?.energy ?? null,
         max_force: b.max_force ?? struct?.max_force ?? null,
@@ -158,6 +165,22 @@ export default function NebImageMasterDetail({ images, barrier, steps }: Props) 
   }, [entries, saddle, count]);
 
   const hasAnyStructure = entries.some((e) => e.cif);
+
+  // 「查看原子受力」：按当前映像取（切映像再切回来走组件内缓存）；无结构时禁用
+  const currentEntry = entries[selected] ?? null;
+  const currentDirLabel = currentEntry?.dirLabel ?? pad2(selected);
+  const force = useAtomicForces(taskId, currentEntry?.cif ? currentDirLabel : null);
+  const cifElements = useMemo(() => {
+    const parsed = structures[selected];
+    return parsed ? parsed.atoms.map((a) => a.element) : null;
+  }, [structures, selected]);
+  const atomColorInfo = useMemo(
+    () => buildAtomColors(force.enabled ? force.data : null, cifElements),
+    [force.enabled, force.data, cifElements],
+  );
+  const forceNote =
+    atomColorInfo.note ??
+    (force.enabled && force.data?.warnings?.length ? force.data.warnings.join('；') : null);
 
   // 映像数变化时收敛选中索引
   useEffect(() => {
@@ -391,6 +414,7 @@ export default function NebImageMasterDetail({ images, barrier, steps }: Props) 
                 cif={current.cif}
                 height={MAIN_HEIGHT}
                 selected={selectedAtoms}
+                atomColors={atomColorInfo.colors}
                 onClickAtom={(atom, additive) =>
                   setSelectedAtoms((prev) => {
                     if (!additive) return [atom];
@@ -427,6 +451,13 @@ export default function NebImageMasterDetail({ images, barrier, steps }: Props) 
                         <Switch size="small" checked={syncRotate} onChange={setSyncRotate} />
                       </span>
                     </Tooltip>
+                    <AtomicForceControl
+                      state={force}
+                      note={forceNote}
+                      disabledReason={
+                        current.cif ? null : '该映像尚未同步结构（缺 CONTCAR），无法对应原子受力'
+                      }
+                    />
                   </span>
                 }
               />

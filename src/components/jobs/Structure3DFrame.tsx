@@ -34,6 +34,11 @@ interface Props {
   onViewerReady?: (viewer: any | null) => void;
   /** 追加到工具栏末尾的自定义控件（如 NEB 的「同步旋转」开关） */
   toolbarExtra?: ReactNode;
+  /**
+   * 逐原子颜色覆盖（键 = CIF 原子下标）。巡检详情页「查看原子受力」用它把原子按受力着色；
+   * 传 null 恢复元素配色。作业管理不传，行为不变。
+   */
+  atomColors?: Record<number, string> | null;
 }
 
 /** 左上角坐标块最多显示几行，超出折叠成"…另 N 个原子" */
@@ -62,6 +67,7 @@ export default function Structure3DFrame({
   showSelectedCoords = false,
   onViewerReady,
   toolbarExtra,
+  atomColors,
 }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
@@ -88,6 +94,8 @@ export default function Structure3DFrame({
   const handlersRef = useRef({ onClickAtom, onBoxSelect, onClearSelection });
   const viewerReadyRef = useRef(onViewerReady);
   viewerReadyRef.current = onViewerReady;
+  const atomColorsRef = useRef(atomColors);
+  atomColorsRef.current = atomColors;
   /** Ctrl/⌘ 按下状态（部分环境下 3Dmol 回调不带原生事件时兜底） */
   const modifierRef = useRef(false);
   selectedRef.current = selected;
@@ -192,6 +200,19 @@ export default function Structure3DFrame({
     if (!model || !viewer || !parsed) return;
     for (const element of parsed.elements) {
       model.setStyle({ elem: element }, elementStyle(element, scaleRef.current, ballStickRef.current));
+    }
+    // 逐原子颜色覆盖（受力着色）：必须在元素样式之后、选中金色高亮之前
+    const overrides = atomColorsRef.current;
+    if (overrides) {
+      for (const [key, color] of Object.entries(overrides)) {
+        const index = Number(key);
+        if (!Number.isFinite(index) || !color) continue;
+        const style: Record<string, unknown> = {
+          sphere: { scale: scaleRef.current, color },
+        };
+        if (ballStickRef.current) style.stick = { radius: 0.16, color };
+        model.setStyle({ index }, style);
+      }
     }
     for (const atom of selectedRef.current) {
       model.setStyle(
@@ -445,7 +466,7 @@ export default function Structure3DFrame({
   useEffect(() => {
     paintModel();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, ballStick, scale]);
+  }, [selected, ballStick, scale, atomColors]);
 
   useEffect(() => {
     const viewer = viewerRef.current;

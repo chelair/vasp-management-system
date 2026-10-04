@@ -1197,6 +1197,7 @@ export default function Inspection() {
                 (detailData.analysis?.neb_images?.length ?? 0) > 0 ||
                 (detailData.neb_barrier?.images.length ?? 0) > 0 ? (
                   <NebImageMasterDetail
+                    taskId={detailData.task_id}
                     images={detailData.analysis?.neb_images ?? []}
                     barrier={detailData.neb_barrier?.images}
                     steps={detailData.analysis?.steps}
@@ -1212,6 +1213,7 @@ export default function Inspection() {
                 )
               ) : detailData.analysis ? (
                 <StructurePanel
+                  taskId={detailData.task_id}
                   analysis={detailData.analysis}
                   taskType={detailData.task_type}
                   forceHistory={detailData.force_history}

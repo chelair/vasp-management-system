@@ -224,6 +224,7 @@ def _sync_and_convert_structure(
     project: Dict[str, Any],
     task: Dict[str, Any],
     latest_dir: str = "",
+    used: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """下载 POSCAR / CONTCAR 并用 vasp2cif 转为 CIF。
 
@@ -249,6 +250,9 @@ def _sync_and_convert_structure(
     for filename, remote_path in pairs:
         local_path = local_files / filename
         ok = False
+        # 这次实际用的目录（"" = 任务主目录）：写进 task.last_structure_dirs，
+        # 「查看原子受力」按它取力，保证受力与界面显示的 CONTCAR 来自同一个目录。
+        source_dir = latest_dir
         try:
             ok = ssh.download_file(project["server"], remote_path, str(local_path))
         except Exception as e:  # noqa: BLE001 - 下载失败仅记录标记
@@ -261,7 +265,10 @@ def _sync_and_convert_structure(
             except Exception as e:  # noqa: BLE001
                 markers.append(f"{filename} 回退主目录下载失败：{e}")
             if ok:
+                source_dir = ""
                 markers.append(f"{latest_dir}/ 里没有 {filename}，改用主目录的")
+        if used is not None and ok:
+            used[filename] = source_dir
         if not ok:
             markers.append(
                 "POSCAR缺失或内容为空" if filename == "POSCAR" else "CONTCAR未生成或内容为空"
@@ -472,15 +479,23 @@ def _apply_result(
     extra_fields: Dict[str, Any] = {}
     if should_analyze:
         structure_synced = True
+        used_dirs: Dict[str, str] = {}
         try:
             if task_type == NEB_TYPE:
                 markers = _sync_neb_image_structures(project, task, latest_dir)
+                # NEB 各映像取自 <latest_dir>/<映像>/，受力也按同一目录取
+                used_dirs["CONTCAR"] = latest_dir or ""
             else:
-                markers = _sync_and_convert_structure(project, task, latest_dir)
+                markers = _sync_and_convert_structure(
+                    project, task, latest_dir, used=used_dirs
+                )
         except Exception as e:  # noqa: BLE001 - 结构同步异常不阻塞巡检
             markers.append(f"结构文件同步异常：{e}")
         extra_fields["last_analysis_bucket"] = bucket
         extra_fields["last_analysis_dir"] = latest_dir or ""
+        if used_dirs:
+            # 结构文件实际来源目录（"" = 任务主目录）；供「查看原子受力」对齐
+            extra_fields["last_structure_dirs"] = used_dirs
     notes_markers.extend(markers)
 
     notes = _merge_notes(task.get("notes"), notes_markers)

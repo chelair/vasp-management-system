@@ -11,6 +11,7 @@ from checks_store import collect_results, list_runs, to_frontend_rows
 from cif_convert import read_neb_image_cifs, read_or_convert_cif
 from config import load_settings, load_servers
 from continuation import _remote_latest_con
+from atomic_forces import AtomicForceError, build_atomic_forces
 from envelope import fail, ok
 import permissions
 from inspection_scheduler import scheduler_status, update_schedule
@@ -411,3 +412,40 @@ def inspection_detail(task_id: str, request: Request):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取巡检详情失败：{e}"))
+
+
+@router.get("/{task_id}/atomic-forces")
+def task_atomic_forces(
+    task_id: str,
+    request: Request,
+    image: str = "",
+    refresh: bool = False,
+):
+    """逐原子受力（巡检详情页 3D 视图「查看原子受力」）。
+
+    数据来自远端**最新工作目录** OUTCAR 的最后一个 `TOTAL-FORCE` 块，元素/固定原子标志取同一目录
+    的 POSCAR；结果落到**该任务自己的本地镜像** `<任务目录>/reports/atomic_forces[_<映像>].json`，
+    任务已结束时直接复用本地缓存、不再连远端（任务在跑则每次重新取并覆盖）。
+    """
+    try:
+        db = load_db()
+        pair = None
+        for project in db.get("projects", []):
+            for task in project.get("tasks", []):
+                if task.get("task_id") == task_id:
+                    pair = (project, task)
+                    break
+            if pair:
+                break
+        if pair is None:
+            return JSONResponse(status_code=404, content=fail("未找到任务"))
+        project, task = pair
+        permissions.ensure_project_owner(project, getattr(request.state, "user", None))
+        data = build_atomic_forces(project, task, image=image or None, refresh=refresh)
+        return ok("查询成功", data)
+    except AtomicForceError as e:
+        return JSONResponse(status_code=e.status_code, content=fail(e.message, e.extra or None))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取原子受力失败：{e}"))

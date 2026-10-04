@@ -120,3 +120,69 @@ export async function fetchFreeEnergySummary(
 ): Promise<{ group_id: string; name: string; structures: FreeEnergyStructure[] }> {
   return request(`/free-energy/${encodeURIComponent(groupId)}/summary`);
 }
+
+/** 逐原子受力（巡检详情页 3D 视图「查看原子受力」） */
+export interface AtomicForceAtom {
+  /** CIF / POSCAR 原子下标（0 起，与 3D 视图里的原子一一对应） */
+  index: number;
+  element?: string;
+  fx: number;
+  fy: number;
+  fz: number;
+  /** max(|fx|,|fy|,|fz|) —— 与 VASP 力判据（EDIFFG）同口径 */
+  fmax: number;
+  /** Selective dynamics 固定的原子（不参与收敛判据） */
+  fixed: boolean;
+}
+
+export interface AtomicForces {
+  task_id: string;
+  task_type: string;
+  /** NEB 才有：映像编号 */
+  image: string | null;
+  /** 受力取自哪个远端工作目录 */
+  work_dir: string;
+  /** 结构来源子目录（`""` = 任务主目录）——与界面显示的 CONTCAR 同一个目录 */
+  source_dir?: string;
+  structure: string;
+  /** 第几个离子步（OUTCAR 里 TOTAL-FORCE 块序号） */
+  ionic_step: number | null;
+  energy: number | null;
+  force_max: number | null;
+  force_rms: number | null;
+  threshold: {
+    max_force_threshold: number;
+    rms_force_threshold: number;
+    source: string;
+  } | null;
+  atom_count: number;
+  fixed_count: number;
+  /** POSCAR 展开后的逐原子元素（VASP4 无元素名时为 null） */
+  elements: string[] | null;
+  atoms: AtomicForceAtom[];
+  warnings: string[];
+  /** 命中本地缓存（任务已结束，未连远端） */
+  cached: boolean;
+  /** NEB：同一次调用里一并取回的其它映像编号（都已在本地落盘，切换即时可见） */
+  sibling_images?: string[];
+  fetched_at: string;
+  /** 落盘位置（任务本地镜像 reports/atomic_forces*.json，与 files/ 同级） */
+  cache_path?: string;
+}
+
+/**
+ * 读取逐原子受力。结果落在任务本地镜像 `reports/atomic_forces*.json`（与 `files/` 同级）：
+ * 任务已结束时直接读本地缓存，任务在跑时会重新取远端并覆盖。
+ */
+export async function fetchAtomicForces(
+  taskId: string,
+  options: { image?: string | null; refresh?: boolean } = {},
+): Promise<AtomicForces> {
+  const query = new URLSearchParams();
+  if (options.image) query.set('image', options.image);
+  if (options.refresh) query.set('refresh', '1');
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<AtomicForces>(
+    `/inspections/${encodeURIComponent(taskId)}/atomic-forces${suffix}`,
+  );
+}

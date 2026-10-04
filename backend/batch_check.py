@@ -658,11 +658,17 @@ def parse_total_force_blocks(text: str) -> List[Dict[str, Any]]:
     return blocks
 
 
-def parse_poscar_fixed(poscar_path: Path) -> Optional[List[bool]]:
-    """解析 POSCAR，返回每个原子是否固定（任一方向标记为 F 即固定）。"""
-    if not poscar_path.is_file():
+def parse_poscar_layout(text: str) -> Optional[Dict[str, Any]]:
+    """解析 POSCAR 文本，返回 `{n_atoms, counts, species, fixed}`。
+
+    - `counts`：每种元素的原子数；`species`：VASP5 的元素名（VASP4 无名称时 None）
+    - `fixed`：每个原子是否固定（任一方向标记 F 即固定；无 Selective dynamics 全 False）
+
+    纯文本实现供本地复用（逐原子受力着色），`parse_poscar_fixed()` 仍按文件调用。
+    """
+    if not isinstance(text, str) or not text.strip():
         return None
-    lines = [line.strip() for line in poscar_path.read_text(encoding="utf-8").splitlines()]
+    lines = [line.strip() for line in text.splitlines()]
 
     def _strip_comment(raw: str) -> str:
         for marker in ("#", "!"):
@@ -673,14 +679,22 @@ def parse_poscar_fixed(poscar_path: Path) -> Optional[List[bool]]:
 
     n_atoms: Optional[int] = None
     counts_index: Optional[int] = None
+    counts: List[int] = []
     for index in range(5, min(len(lines), 12)):
         parts = _strip_comment(lines[index]).split()
         if parts and all(p.lstrip("+-").isdigit() for p in parts):
             counts_index = index
-            n_atoms = sum(int(p) for p in parts)
+            counts = [int(p) for p in parts]
+            n_atoms = sum(counts)
             break
     if n_atoms is None:
         return None
+
+    species: Optional[List[str]] = None
+    if counts_index is not None and counts_index - 1 >= 0:
+        names = _strip_comment(lines[counts_index - 1]).split()
+        if names and not all(p.lstrip("+-").isdigit() for p in names) and len(names) == len(counts):
+            species = names
 
     coord_index: Optional[int] = None
     for index in range(counts_index + 1, len(lines)):
@@ -689,7 +703,8 @@ def parse_poscar_fixed(poscar_path: Path) -> Optional[List[bool]]:
             coord_index = index
             break
     if coord_index is None:
-        return None
+        fixed: List[bool] = [False] * n_atoms
+        return {"n_atoms": n_atoms, "counts": counts, "species": species, "fixed": fixed}
 
     has_selective = any(
         lines[index].lower().startswith("selective")
@@ -712,7 +727,20 @@ def parse_poscar_fixed(poscar_path: Path) -> Optional[List[bool]]:
             fixed.append(False)
         if len(fixed) >= n_atoms:
             break
-    return fixed
+    return {"n_atoms": n_atoms, "counts": counts, "species": species, "fixed": fixed}
+
+
+def parse_poscar_fixed_text(text: str) -> Optional[List[bool]]:
+    """（纯文本版）每个原子是否固定。"""
+    layout = parse_poscar_layout(text)
+    return layout["fixed"] if layout else None
+
+
+def parse_poscar_fixed(poscar_path: Path) -> Optional[List[bool]]:
+    """解析 POSCAR 文件，返回每个原子是否固定（任一方向标记为 F 即固定）。"""
+    if not poscar_path.is_file():
+        return None
+    return parse_poscar_fixed_text(poscar_path.read_text(encoding="utf-8"))
 
 
 def compute_force_stats(

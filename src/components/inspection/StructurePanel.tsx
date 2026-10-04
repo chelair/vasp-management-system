@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { CheckCircleOutlined, WarningOutlined } from '@ant-design/icons';
 import { Alert, Empty, Segmented, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { parseCif } from '../../utils/structure3d';
+import { buildAtomColors } from '../../utils/forceColor';
 import type {
   ForceHistoryPoint,
   LatticeParams,
@@ -9,6 +11,7 @@ import type {
 } from '../../types';
 import { TASK_TYPE_LABELS } from '../../types';
 import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
+import { AtomicForceControl, useAtomicForces } from './AtomicForceControl';
 
 interface LatticeRow {
   key: string;
@@ -66,6 +69,8 @@ const latticeColumns: ColumnsType<LatticeRow> = [
 ];
 
 interface Props {
+  /** 任务 id（「查看原子受力」要按任务取远端受力） */
+  taskId: string;
   analysis: StructureAnalysis;
   taskType: string;
   forceHistory: ForceHistoryPoint[];
@@ -75,6 +80,7 @@ interface Props {
 }
 
 export default function StructurePanel({
+  taskId,
   analysis,
   taskType,
   forceHistory,
@@ -91,6 +97,25 @@ export default function StructurePanel({
     structureView === 'contcar' && !hasContcar ? 'poscar' : structureView;
   const activeCif =
     (activeView === 'contcar' ? analysis.contcar_cif : analysis.poscar_cif) ?? null;
+
+  // 「查看原子受力」：力来自最新 conN 的 OUTCAR（只对 opt/frac 开放，ele 不显示按钮）
+  const forceable = taskType === 'opt' || taskType === 'frac';
+  const force = useAtomicForces(taskId, null);
+  const cifElements = useMemo(() => {
+    if (!activeCif) return null;
+    try {
+      return parseCif(activeCif)?.atoms.map((a) => a.element) ?? null;
+    } catch {
+      return null;
+    }
+  }, [activeCif]);
+  const atomColorInfo = useMemo(
+    () => buildAtomColors(force.enabled ? force.data : null, cifElements),
+    [force.enabled, force.data, cifElements],
+  );
+  const forceNote =
+    atomColorInfo.note ??
+    (force.enabled && force.data?.warnings?.length ? force.data.warnings.join('；') : null);
 
   const isifText =
     analysis.isif == null
@@ -248,18 +273,32 @@ export default function StructurePanel({
             cif={activeCif}
             height={460}
             selected={selectedAtoms}
+            atomColors={atomColorInfo.colors}
             toolbarExtra={
-              hasPoscar && hasContcar ? (
-                <Segmented
-                  size="small"
-                  value={activeView}
-                  onChange={(v) => setStructureView(v as 'contcar' | 'poscar')}
-                  options={[
-                    { label: '优化后（CONTCAR）', value: 'contcar' },
-                    { label: '初始（POSCAR）', value: 'poscar' },
-                  ]}
-                />
-              ) : undefined
+              <>
+                {hasPoscar && hasContcar && (
+                  <Segmented
+                    size="small"
+                    value={activeView}
+                    onChange={(v) => setStructureView(v as 'contcar' | 'poscar')}
+                    options={[
+                      { label: '优化后（CONTCAR）', value: 'contcar' },
+                      { label: '初始（POSCAR）', value: 'poscar' },
+                    ]}
+                  />
+                )}
+                {forceable && (
+                  <AtomicForceControl
+                    state={force}
+                    disabledReason={
+                      activeView === 'poscar'
+                        ? '受力对应优化后的结构（CONTCAR），请切到「优化后」再查看'
+                        : null
+                    }
+                    note={forceNote}
+                  />
+                )}
+              </>
             }
             onClickAtom={(atom, additive) =>
               setSelectedAtoms((prev) => {

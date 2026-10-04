@@ -11,8 +11,11 @@
 - NEB：一次把**所有映像目录**（`00..NN`）的受力全取回来（仍然只发**一次**远端调用），
   每个映像各自落盘，前端切换映像即时可见、不再重复连远端。
 
-远端读取一次 exec（遵守项目"合并远端调用"约定）：定位最新 conN → stat 指纹 + grep -c 离子步数
-+ base64 POSCAR + base64 OUTCAR 尾部。OUTCAR 实测 30–57MB，只读尾部 256KB。
+远端读取一次 exec（遵守项目"合并远端调用"约定）：进入结构来源目录 → stat 指纹 + base64 POSCAR
++ base64 OUTCAR 尾部 128KB。OUTCAR 实测 30–57MB，只读尾部（**不做全文件扫描**，否则每张要读几十 MB）。
+
+首/末映像也照常着色：端点的 OUTCAR 是建 NEB 时从初/末态 opt 复制来的，与它显示的初/末态结构
+来自同一目录，属于有效结果；中间映像要等 NEB 真跑出离子步才会有 OUTCAR（没有就不显示受力）。
 
 缓存落盘到该任务本地镜像 `<任务目录>/reports/atomic_forces[_<映像>].json`（与 files/ 同级）：
 任务已结束（status 不在 queued/running）时命中缓存直接返回、不再连远端；任务在跑则重新取并覆盖；
@@ -24,7 +27,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,15 +43,16 @@ from task_paths import task_dir, task_remote_dir
 
 #: 任务目录写不进去时（权限异常）退回这里，保证功能不至于直接报错
 FALLBACK_DIR = DATA_DIR / "forces"
-FORCE_HEADER = "TOTAL-FORCE (eV/Angst)"
-#: 只读 OUTCAR 尾部这些字节，足够覆盖最后一个 TOTAL-FORCE 块（大体系也够）
-TAIL_BYTES = 262144
+#: 只读 OUTCAR 尾部这些字节，足够覆盖最后一个 TOTAL-FORCE 块（140 原子一块约 10KB，留足余量）
+TAIL_BYTES = 131072
 RUNNING_STATUSES = ("queued", "running")
 DEFAULT_THRESHOLDS = {"max_force_threshold": 0.02, "rms_force_threshold": 0.01}
 #: NEB 一次最多取多少个映像（防目录里混入奇怪编号）
 MAX_IMAGES = 200
 #: 缓存载荷版本：字段口径变化时递增，旧缓存自动作废（不必手动清 data/）
-CACHE_SCHEMA = 2
+CACHE_SCHEMA = 3
+#: 远端单次调用超时（秒）：只读尾部 + 两个 grep，正常 2–5s 内
+REMOTE_TIMEOUT = 120
 
 
 class AtomicForceError(Exception):
@@ -131,22 +134,23 @@ def _work_dir_lines(remote_dir: str, analysis_dir: str) -> List[str]:
 
 
 def _image_probe_lines(prefix: str) -> List[str]:
-    """按目录前缀 `prefix`（`"$WORK/"` 或 `"$d/"`）回传指纹 / 离子步 / POSCAR / 尾部 OUTCAR。"""
+    """按目录前缀 `prefix`（`"$WORK/"` 或 `"$d/"`）回传指纹 / POSCAR / 尾部 OUTCAR。
+
+    不在这里做 `grep -c TOTAL-FORCE`（要整读 30–57MB 的 OUTCAR，NEB 一张一张读会明显变慢）；
+    只 `grep -m1` 取尾部…也不需要——尾部里就有完整块，交给本地解析。
+    """
     return [
         "echo \"@@@META\"",
         f"stat -c '%s %Y' \"{prefix}OUTCAR\"",
-        'echo "@@@STEPS"',
-        f"grep -c '{FORCE_HEADER}' \"{prefix}OUTCAR\" || true",
-        # NEB 判据：真正跑过的 NEB 输出里会回显 INCAR 的 `IMAGES = n`；
-        # 建 NEB 时从初/末态 opt 复制过来的端点 OUTCAR 没有这一行（是个普通 opt 结果）。
-        'echo "@@@NEB"',
-        f"grep -m1 -o 'IMAGES *= *[0-9]*' \"{prefix}OUTCAR\" || true",
         'echo "@@@POSCAR"',
         f"base64 \"{prefix}POSCAR\" | tr -d '\\n'",
         "echo",
         'echo "@@@TAIL"',
         f"tail -c {TAIL_BYTES} \"{prefix}OUTCAR\" | base64 | tr -d '\\n'",
         "echo",
+        # 每个映像的探测块显式收尾：后面的 "@@@SKIP xx" 等标记必须落在块外，
+        # 否则会被当成 base64 内容拼进去（曾导致首个映像解析失败）
+        'echo "@@@IMGDONE"',
     ]
 
 
@@ -211,21 +215,16 @@ def _decode(text: str) -> str:
 
 
 def _probe_of(chunk: str) -> Dict[str, Any]:
-    """把一段探测输出解析成 `{poscar, tail, size, mtime, steps}`。"""
-    meta = _slice(chunk, "@@@META\n", "@@@STEPS").split()
-    steps_text = _slice(chunk, "@@@STEPS\n", "@@@NEB").strip()
-    neb_text = _slice(chunk, "@@@NEB\n", "@@@POSCAR").strip()
+    """把一段探测输出解析成 `{poscar, tail, size, mtime}`。"""
+    meta = _slice(chunk, "@@@META\n", "@@@POSCAR").split()
     poscar_b64 = _slice(chunk, "@@@POSCAR\n", "@@@TAIL").strip()
     # 用 _slice 而不是 _after：最后一段后面跟着 "@@@END" 标记，不能混进 base64
-    tail_b64 = _slice(chunk, "@@@TAIL\n", "@@@END").strip()
+    tail_b64 = _slice(chunk, "@@@TAIL\n", "@@@IMGDONE").strip()
     return {
         "poscar": _decode(poscar_b64),
         "tail": _decode(tail_b64),
         "size": int(meta[0]) if len(meta) > 0 and meta[0].isdigit() else None,
         "mtime": int(meta[1]) if len(meta) > 1 and meta[1].isdigit() else None,
-        "steps": int(steps_text) if steps_text.isdigit() else None,
-        # 该 OUTCAR 是不是"本 NEB 跑出来的"（含 IMAGES 回显）——opt 结果没有这一行
-        "is_neb": bool(neb_text),
     }
 
 
@@ -321,7 +320,6 @@ def _build_payload(
             "image": image,
             "work_dir": work_dir,
             "structure": "CONTCAR",
-            "ionic_step": probe["steps"],
             "energy": last.get("energy"),
             "force_max": stats[0] if stats else None,
             "force_rms": stats[1] if stats else None,
@@ -386,9 +384,11 @@ def build_atomic_forces(
             server, remote_dir, structure_dir, task_id, reports_dir
         )
         if image not in payloads:
+            got = "、".join(sorted(payloads)) or "无"
             raise AtomicForceError(
                 404,
-                f"映像 {image} 没有可用的 OUTCAR（可能尚未计算），本次共取到 {len(payloads)} 个映像",
+                f"映像 {image} 还没有 OUTCAR（该映像还没开始或还没算完），暂时没有受力；"
+                f"本次已取到映像 {got}",
             )
         payload = payloads[image]
         others = sorted(k for k in payloads if k != image)
@@ -424,7 +424,9 @@ def build_atomic_forces(
 
 def _run(server: str, script_b64: str) -> str:
     # base64 传输（避免引号转义；本地模拟模式也认这个形式），整段一次 exec
-    result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=300)
+    result = ssh.run_remote(
+        server, f"echo {script_b64} | base64 -d | bash", timeout=REMOTE_TIMEOUT
+    )
     out = str(result.get("stdout") or "")
     # 脚本主动打标记（@@@NODIR 等）退出属于"可解释失败"，交给调用方映射成 404/409
     flagged = any(flag in out for flag in ("@@@NODIR", "@@@NOOUTCAR", "@@@NOPOSCAR"))
@@ -466,24 +468,6 @@ def _fetch_all_images(
         )
 
     work_base = _after(out, "@@@WORK\n").split("\n", 1)[0].strip()
-    # 目录清单（含被跳过的）：用于判断"这个 NEB 到底跑没跑"
-    found = re.findall(r"@@@(IMG|SKIP) ([^\s]+)", out)
-    all_labels = [label for _, label in found]
-    skipped = {label for kind, label in found if kind == "SKIP"}
-    # 端点 OUTCAR 可能是建 NEB 时从初/末态 opt 复制来的伪结果，不代表本 NEB 运行过
-    # （与 batch_check._analyze_neb_status 同一判据）：中间映像有 OUTCAR 才说明跑过第一步
-    if len(all_labels) >= 3:
-        middles = all_labels[1:-1]
-        if middles and not any(label not in skipped for label in middles):
-            raise AtomicForceError(
-                409,
-                "该 NEB 还没有跑出第一个离子步（中间映像还没有 OUTCAR），暂时没有逐原子受力",
-            )
-    elif skipped and all_labels and len(skipped) == len(all_labels):
-        raise AtomicForceError(
-            409, "该 NEB 还没有跑出第一个离子步（所有映像都还没有 OUTCAR）"
-        )
-
     thresholds = _thresholds(task_id)
     payloads: Dict[str, Dict[str, Any]] = {}
     warnings: List[str] = []
@@ -492,18 +476,13 @@ def _fetch_all_images(
         label = label.strip()
         if not label:
             continue
-        probe = _probe_of(rest)
-        if not probe["is_neb"]:
-            # 端点 OUTCAR 来自创建 NEB 时的拷贝（普通 opt 结果）→ 不作为本 NEB 的受力
-            warnings.append(f"映像 {label} 的 OUTCAR 不是本 NEB 的输出（建 NEB 时的拷贝），已跳过")
-            continue
         try:
             payload, block_warnings = _build_payload(
                 task_id=task_id,
                 task_type="neb",
                 image=label,
                 work_dir=f"{work_base}/{label}",
-                probe=probe,
+                probe=_probe_of(rest),
                 thresholds=thresholds,
             )
         except AtomicForceError as e:

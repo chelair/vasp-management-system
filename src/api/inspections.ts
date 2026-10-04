@@ -145,8 +145,6 @@ export interface AtomicForces {
   /** 结构来源子目录（`""` = 任务主目录）——与界面显示的 CONTCAR 同一个目录 */
   source_dir?: string;
   structure: string;
-  /** 第几个离子步（OUTCAR 里 TOTAL-FORCE 块序号） */
-  ionic_step: number | null;
   energy: number | null;
   force_max: number | null;
   force_rms: number | null;

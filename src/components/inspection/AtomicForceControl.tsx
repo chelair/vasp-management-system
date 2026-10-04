@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Switch, Tooltip } from 'antd';
+import { App, Switch, Tooltip } from 'antd';
 import { ThunderboltOutlined } from '@ant-design/icons';
 import { fetchAtomicForces, type AtomicForces } from '../../api/inspections';
 
 export interface AtomicForceHook {
   enabled: boolean;
   loading: boolean;
-  error: string | null;
   data: AtomicForces | null;
   toggle: () => void;
   refresh: () => void;
@@ -19,9 +18,9 @@ export interface AtomicForceHook {
  * 结果本身在后端会落到任务本地镜像 `reports/atomic_forces*.json`，任务已结束时直接读本地。
  */
 export function useAtomicForces(taskId: string, image: string | null): AtomicForceHook {
+  const { message } = App.useApp();
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<AtomicForces | null>(null);
   const cacheRef = useRef<Map<string, AtomicForces>>(new Map());
   const genRef = useRef(0);
@@ -33,11 +32,9 @@ export function useAtomicForces(taskId: string, image: string | null): AtomicFor
       const hit = cacheRef.current.get(key);
       if (!force && hit) {
         setData(hit);
-        setError(null);
         return;
       }
       setLoading(true);
-      setError(null);
       try {
         const res = await fetchAtomicForces(taskId, { image, refresh: force });
         if (gen !== genRef.current) return;
@@ -46,14 +43,14 @@ export function useAtomicForces(taskId: string, image: string | null): AtomicFor
       } catch (e) {
         if (gen !== genRef.current) return;
         setData(null);
-        setError(e instanceof Error ? e.message : '读取原子受力失败');
-        // 取不到受力（例如 NEB 还没跑出第一个离子步）→ 开关自动回到关闭，只留提示
+        // 取不到受力（如该目录还没有 OUTCAR）→ 开关自动回到关闭，并弹一次提示（不常驻）
         setEnabled(false);
+        message.error(e instanceof Error ? e.message : '读取原子受力失败');
       } finally {
         if (gen === genRef.current) setLoading(false);
       }
     },
-    [taskId, image, key],
+    [taskId, image, key, message],
   );
 
   useEffect(() => {
@@ -63,14 +60,12 @@ export function useAtomicForces(taskId: string, image: string | null): AtomicFor
   useEffect(() => {
     if (!enabled) {
       setData(null);
-      setError(null);
     }
   }, [enabled]);
 
   return {
     enabled,
     loading,
-    error,
     data,
     toggle: useCallback(() => setEnabled((v) => !v), []),
     refresh: useCallback(() => {
@@ -89,6 +84,11 @@ interface Props {
 
 /** 3D 工具栏里的「查看原子受力」按钮 + 图例（巡检详情页专用，作业管理不显示）。 */
 export function AtomicForceControl({ state, disabledReason, note }: Props) {
+  const { message } = App.useApp();
+  // 说明（如元素序列与当前结构对不上）用弹窗提示，不在工具栏常驻文字
+  useEffect(() => {
+    if (state.enabled && note) message.warning(note);
+  }, [state.enabled, note, message]);
   return (
     <span className="atomic-force">
       <Tooltip title={disabledReason ?? '按原子受力着色：达标为绿，受力越大越红'}>
@@ -104,8 +104,6 @@ export function AtomicForceControl({ state, disabledReason, note }: Props) {
           查看原子受力
         </span>
       </Tooltip>
-      {state.enabled && note && <span className="atomic-force__warn">{note}</span>}
-      {state.error && <span className="atomic-force__warn">{state.error}</span>}
     </span>
   );
 }

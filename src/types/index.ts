@@ -264,6 +264,22 @@ export interface InspectionDetail {
   } | null;
   force_history: ForceHistoryPoint[];
   errors: string[];
+  /** OUTCAR 报错诊断（巡检知识库）：命中条目含名称/分类/解释/解决方法/原文证据 */
+  check_errors?: {
+    id: string;
+    name: string;
+    kind?: string;
+    severity?: string;
+    category?: string;
+    message?: string;
+    advice?: string[];
+    matched?: string;
+    evidence?: string;
+    /** NEB：报错来自哪个映像 */
+    image?: string;
+  }[];
+  /** 知识库未收录时报错原文（兜底提取） */
+  error_text?: string | null;
   notes: string;
   current_output: CurrentOutput | null;
   /** 自由能组 opt 任务关联的频率矫正子任务数据（无则为 null） */

@@ -395,6 +395,9 @@ def inspection_detail(task_id: str, request: Request):
                 "force_thresholds": entry.get("force_thresholds") or None,
                 "force_history": history,
                 "errors": entry.get("error_messages", []) or [],
+                # OUTCAR 报错诊断（知识库命中 → 结构化条目；未命中 → 兜底提取的原文）
+                "check_errors": entry.get("errors") or [],
+                "error_text": entry.get("error_text") or None,
                 "notes": entry.get("notes", "") or "",
                 "current_output": (
                     _display_current_output(

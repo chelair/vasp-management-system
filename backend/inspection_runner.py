@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import ssh
 from checks_store import archive_results, invalidate_cache, record_run
 from cif_convert import convert_structure_to_cif
-from config import PROJECTS_DIR, load_servers
+from config import CONFIG_DIR, DEFAULTS_DIR, PROJECTS_DIR, ensure_data_dirs, load_servers
 from continuation import compute_g_correction
 from dates import now_iso
 from paths import to_remote_rel
@@ -166,7 +166,7 @@ def _find_task(
 
 
 def _ensure_scripts(server: str) -> None:
-    """把 batch_check.py 与 check_registry.json 上传到服务器（每个服务器每轮一次）。"""
+    """把 batch_check.py / check_registry.json / check_errors.json 上传到服务器（每服务器每轮一次）。"""
     servers = load_servers()
     cfg = servers.get(server)
     if cfg is None:
@@ -177,11 +177,18 @@ def _ensure_scripts(server: str) -> None:
 
     script_local = Path(__file__).resolve().parent / "batch_check.py"
     registry_local = Path(__file__).resolve().parent / "check_registry.json"
+    # 报错知识库：优先用用户可编辑的 data/config/check_errors.json（改完下一轮生效），
+    # 缺失时退回仓库默认值
+    ensure_data_dirs()
+    errors_local = CONFIG_DIR / "check_errors.json"
+    if not errors_local.is_file():
+        errors_local = DEFAULTS_DIR / "check_errors.json"
     # Windows 上 Path.__str__ 会把正斜杠转成反斜杠，远程路径必须统一为正斜杠
     script_dir = str(Path(batch_path).parent).replace("\\", "/")
     ssh.mkdir_remote(server, script_dir)
     ssh.upload_file(server, str(script_local), batch_path)
     ssh.upload_file(server, str(registry_local), f"{script_dir}/check_registry.json")
+    ssh.upload_file(server, str(errors_local), f"{script_dir}/check_errors.json")
 
 
 def _run_server_batch(

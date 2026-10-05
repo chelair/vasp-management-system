@@ -4623,6 +4623,79 @@ body.is-atom-selecting * {
 
 /* ---------- 「查看原子受力」按钮 + 图例（巡检详情页 3D 工具栏，v0.9.41） ---------- */
 
+/* OUTCAR 报错诊断面板（巡检详情页，v0.9.42） */
+.check-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.check-errors__item {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.check-errors__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.check-errors__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.check-errors__id {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.check-errors__msg {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--color-text-secondary);
+}
+
+.check-errors__subtitle {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+.check-errors__advice {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-text);
+}
+
+.check-errors__advice li {
+  margin: 2px 0;
+}
+
+.check-errors__evidence pre,
+.check-errors__raw {
+  margin: 4px 0 0;
+  max-height: 190px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: #f7f9fc;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .atomic-force {
   display: inline-flex;
   align-items: center;

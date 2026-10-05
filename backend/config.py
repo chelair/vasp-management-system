@@ -21,6 +21,8 @@ DEFAULT_CONFIG_FILES = (
     "task_registry.json",
     "path_mapping.json",
     "report_rules.json",
+    # OUTCAR 报错知识库（可在 data/config/check_errors.json 增删改，改完下一轮巡检生效）
+    "check_errors.json",
 )
 
 

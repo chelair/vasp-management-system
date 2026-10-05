@@ -43,6 +43,7 @@ import {
 import type { InspectionMeta } from '../api/inspections';
 import { archiveTask, calculateCorrection, unarchiveTask } from '../api/jobs';
 import ForceHistoryCharts from '../components/inspection/ForceHistoryCharts';
+import CheckErrorsPanel from '../components/inspection/CheckErrorsPanel';
 import EleAnalysisPanel from '../components/inspection/EleAnalysisPanel';
 import PathSummaryModal from '../components/inspection/PathSummaryModal';
 import StructurePanel from '../components/inspection/StructurePanel';
@@ -1175,6 +1176,16 @@ export default function Inspection() {
                 </Descriptions.Item>
               )}
             </Descriptions>
+
+            {((detailData.check_errors?.length ?? 0) > 0 || detailData.error_text) && (
+              <div className="inspection-detail__section">
+                <h3>OUTCAR 报错诊断</h3>
+                <CheckErrorsPanel
+                  errors={detailData.check_errors ?? []}
+                  errorText={detailData.error_text ?? null}
+                />
+              </div>
+            )}
 
             {detailData.force_history.length > 0 && (
               <div className="inspection-detail__section">

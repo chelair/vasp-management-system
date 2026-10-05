@@ -1,0 +1,195 @@
+{
+  "schema_version": "1.0.0",
+  "note": "OUTCAR 报错知识库（声明式）。巡检时本文件会随 batch_check.py 一起上传到远端，改完**下一轮巡检生效**（无需重启）。实际生效的是 data/config/check_errors.json，可在其中增删改。字段：id/name/kind(error=报错，anomaly=指标类异常，预留)/severity/category/match{all,any,regex,ignore_case}/message/advice[]/evidence_lines。match 语义：all 里的子串必须全部出现；any 里的子串命中任意一个；regex 里的正则命中任意一个；三者都写了就都要满足。库里没有的报错会自动提取原文（error_text）。OUTCAR 的 WARNING 暂不处理。",
+  "errors": [
+    {
+      "id": "E_ZHEGV",
+      "name": "EDDDAV: Call to ZHEGV failed（电子步求解失败）",
+      "kind": "error",
+      "severity": "high",
+      "category": "电子步/线代",
+      "match": { "any": ["Call to ZHEGV failed", "EDDDAV: Call to ZHEGV"] },
+      "message": "电子步的子空间对角化（ZHEGV）失败。常见原因：初始结构原子严重重叠、POTCAR 与 POSCAR 不一致、NCORE/KPAR 与并行环境不匹配，或 WAVECAR 与当前结构不匹配。",
+      "advice": [
+        "检查 POSCAR/CONTCAR 是否存在原子重叠（最近邻距离 < 0.5 Å），必要时先做一次粗优化",
+        "确认 POTCAR 的元素种类与顺序和 POSCAR 完全一致",
+        "把 NCORE 调小（1 或 2）、去掉 KPAR，再重新提交",
+        "若换了结构：删掉旧 WAVECAR（或设 ISTART=0、ICHARG=2）重新开始"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_ZPOTRF",
+      "name": "ZPOTRF 失败（矩阵分解失败 / POTCAR 或结构问题）",
+      "kind": "error",
+      "severity": "high",
+      "category": "电子步/线代",
+      "match": { "any": ["Routine ZPOTRF failed", "Call to ZPOTRF failed"] },
+      "message": "重叠矩阵分解失败，通常不是数值问题，而是 POTCAR 不匹配、原子重叠或并行参数（NCORE/KPAR）不当。",
+      "advice": [
+        "核对 POTCAR：元素顺序必须与 POSCAR 一致、且每个元素只有一段（不要重复拼接）",
+        "确认 POSCAR 中没有两个原子距离过近",
+        "NCORE 设为 1 或 2 后重试"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_SGRCON",
+      "name": "VERY BAD NEWS: SGRCON（对称性处理失败）",
+      "kind": "error",
+      "severity": "high",
+      "category": "对称性",
+      "match": { "any": ["internal error in subroutine SGRCON"] },
+      "message": "空间群/对称性分析失败，多出现在结构接近对称但坐标有微小偏差、或吸附体系对称性判断失败时。",
+      "advice": [
+        "在 INCAR 里加 ISYM = 0（关闭对称性）后重新提交",
+        "检查 POSCAR 是否有数值上几乎重合的原子",
+        "确认 KPOINTS 与晶格匹配（不要用与当前晶格不匹配的 KPOINTS）"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_IBZKPT",
+      "name": "VERY BAD NEWS: IBZKPT（k 点生成失败）",
+      "kind": "error",
+      "severity": "high",
+      "category": "k 点/对称性",
+      "match": { "any": ["internal error in subroutine IBZKPT"] },
+      "message": "不可约 k 点生成失败，通常是 KPOINTS 的晶格与 POSCAR 不匹配，或对称性处理异常。",
+      "advice": [
+        "确认 KPOINTS 是自动网格（如 0 / Gamma / n1 n2 n3）而不是沿用其它体系的手工 k 点",
+        "先用 ISYM = 0 排除对称性问题",
+        "检查 POSCAR 晶格是否被上一次优化改坏（对照 CONTCAR）"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_INVGRP",
+      "name": "VERY BAD NEWS: INVGRP / PRICEL（对称操作求逆失败）",
+      "kind": "error",
+      "severity": "high",
+      "category": "对称性",
+      "match": {
+        "regex": ["internal error in subroutine (INVGRP|PRICEL)"]
+      },
+      "message": "对称操作矩阵求逆/平移处理失败，一般仍是结构对称性与坐标精度问题。",
+      "advice": [
+        "INCAR 加 ISYM = 0 后重新提交",
+        "把 POSCAR 坐标统一到较高精度（保留 8 位以上小数）",
+        "确认晶格矢量没有接近共线（体积不要接近 0）"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_ZBRENT",
+      "name": "ZBRENT: fatal error in bracketing（能量插值失败）",
+      "kind": "error",
+      "severity": "high",
+      "category": "电子步/收敛",
+      "match": { "any": ["ZBRENT: fatal error in bracketing", "ZBRENT: fatal internal in bracketing"] },
+      "message": "电子步能量插值失败，常见于初始电荷/磁矩不合理、体系金属性强而 SMEARING 设置不当、或结构严重畸变。",
+      "advice": [
+        "检查 MAGMOM 初值是否过大/过小（磁性体系尤其常见）",
+        "金属体系把 ISMEAR=1/2 且 SIGMA 设 0.1 左右；绝缘体用 ISMEAR=0",
+        "确认没有重复元素段或 POTCAR 错配",
+        "必要时减小混合参数 AMIX/BMIX（如 AMIX=0.2、BMIX=0.0001、AMIX_MAG=0.2、BMIX_MAG=0.0001）"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_POTCAR",
+      "name": "POTCAR 缺失/不匹配",
+      "kind": "error",
+      "severity": "high",
+      "category": "输入文件",
+      "match": {
+        "regex": [
+          "(?i)POTCAR[^\\n]{0,60}(not found|missing|is not|inconsistent|error)",
+          "(?i)(cannot open|unable to open|error reading)[^\\n]{0,40}POTCAR",
+          "(?i)POTCAR and POSCAR are not consistent"
+        ]
+      },
+      "message": "POTCAR 读不到、为空，或元素顺序/种类与 POSCAR 不一致。",
+      "advice": [
+        "在远端工作目录确认 POTCAR 存在且非空（cat POTCAR | head 看 TITEL 行）",
+        "POTCAR 必须按 POSCAR 的元素顺序拼接，且不能重复元素段",
+        "重新执行「生成 POTCAR」或在作业管理里同步 POTCAR 后重新提交"
+      ],
+      "evidence_lines": 4
+    },
+    {
+      "id": "E_FORRTL",
+      "name": "Intel Fortran 运行时错误（forrtl: severe/error）",
+      "kind": "error",
+      "severity": "high",
+      "category": "运行时/系统",
+      "match": { "regex": ["forrtl: (severe|error) \\(\\d+\\)"] },
+      "message": "Intel Fortran 运行时异常（段错误、数组越界、文件读写失败等），常见于内存不足、磁盘写满或输入文件损坏。",
+      "advice": [
+        "看括号里的错误号：174=SIGSEGV（段错误）、78/79=进程被杀（常见于内存超限）",
+        "检查内存/磁盘配额（远程 df -h、bqueues 的资源限制）",
+        "确认工作目录可写、KPOINTS/INCAR/POSCAR 没有截断",
+        "适当减小核数后重试，排除并行相关崩溃"
+      ],
+      "evidence_lines": 8
+    },
+    {
+      "id": "E_SEGFAULT",
+      "name": "段错误 / 总线错误（进程崩溃）",
+      "kind": "error",
+      "severity": "high",
+      "category": "运行时/系统",
+      "match": { "any": ["Segmentation fault", "Bus error", "Killed"] },
+      "message": "进程被系统杀死或崩溃，最常见的是内存超限被 OOM Killer 杀掉，其次是并行/环境问题。",
+      "advice": [
+        "检查是否超出队列内存（bqueues/bhosts 的内存限制）",
+        "减小核数或关闭 KPAR；必要时降低 NCORE",
+        "确认 VASP 可执行文件与队列环境匹配（模块/MPI 版本）"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_OOM",
+      "name": "内存分配失败（out of memory / allocation failed）",
+      "kind": "error",
+      "severity": "high",
+      "category": "运行时/系统",
+      "match": {
+        "regex": [
+          "(?i)out of memory",
+          "(?i)not enough memory",
+          "(?i)cannot allocate memory",
+          "(?i)allocation (of|failed)"
+        ]
+      },
+      "message": "内存不足：体系太大、核数过多（每个 MPI 进程都有副本）、或 NCORE/KPAR 导致内存放大。",
+      "advice": [
+        "增大队列内存档位，或减少核数（每核内存随之提高）",
+        "把 NCORE 从 1 调大（如 NCORE=4）以降低内存",
+        "大体系可先降 KPOINTS 密度跑通，再提高精度续算"
+      ],
+      "evidence_lines": 6
+    },
+    {
+      "id": "E_MPI",
+      "name": "MPI 层致命错误（PMPI_xxx / MPI_ABORT）",
+      "kind": "error",
+      "severity": "high",
+      "category": "运行时/系统",
+      "match": {
+        "regex": [
+          "(?i)fatal error in PMPI_",
+          "(?i)MPI_ABORT",
+          "(?i)mpiexec[^\\n]{0,40}(failed|error)"
+        ]
+      },
+      "message": "MPI 通信层报错，通常是节点分配异常、网络/IB 故障，或某个 rank 已崩溃导致整体 abort。",
+      "advice": [
+        "看是否伴随 forrtl/Segfault（先解决单进程崩溃）",
+        "换节点或稍后重试，排除瞬时硬件/网络故障",
+        "确认 I_MPI_FABRICS 等环境变量与队列一致（不要手改 submit 脚本的 MPI 设置）"
+      ],
+      "evidence_lines": 8
+    }
+  ]
+}

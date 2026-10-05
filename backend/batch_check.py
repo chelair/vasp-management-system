@@ -118,6 +118,182 @@ def load_thresholds() -> Dict[str, float]:
     return dict(DEFAULT_THRESHOLDS)
 
 
+# ---------------------------------------------------------------------------
+# OUTCAR 报错知识库（声明式，可扩展）
+# ---------------------------------------------------------------------------
+
+#: 库里没命中时的"像不像报错"兜底特征。**正常完成的 OUTCAR 不含这些串**——
+#: 已用生产归档逐条核对过（注意：PRICEL/POTCAR/IBZKPT 这些词在正常输出里也会出现，
+#: 所以只能配上下文使用，不能单独当特征）。
+GENERIC_ERROR_SIGNATURES = (
+    "VERY BAD NEWS",
+    "forrtl: severe",
+    "forrtl: error",
+    "Segmentation fault",
+    "Fatal error",
+    "Error EDDDAV",
+    "ZBRENT",
+    "LAPACK: Routine",
+    "EEEE",
+)
+
+#: 库外兜底：更宽松的按行特征（正则合并成一次扫描，避免多趟遍历几十 MB 的 OUTCAR）。
+#: 同样用 79 份**正常** OUTCAR 核对过：下面这些词正常输出里都不出现。
+#: 注意 **不能**把 `error` / `abort` 收进来——正常 OUTCAR 里到处是
+#: "kinetic energy error" / "aborting loop because EDIFF is reached"。
+GENERIC_LINE_PATTERN = re.compile(
+    r"(?i)(\bfatal\b|internal error|\bpanic\b|\bsevere\b|segmentation fault"
+    r"|stopped in|cannot open|\bfailed\b)"
+)
+
+#: 报错只可能出现在 OUTCAR 的**开头**（POTCAR/对称性/MPI 初始化阶段的报错）或**结尾**
+#: （计算中途崩溃时文件就断在那里）——所以只扫这两段窗口。
+#: 实测全文（28–53MB）跑十几条规则要 8–15s，扫窗口后 <10ms；正常输出里这些词本来也不出现。
+ERROR_SCAN_HEAD = 65536
+ERROR_SCAN_TAIL = 262144
+
+
+def error_scan_text(text: str) -> str:
+    """取用于报错扫描的文本窗口（首 64KB + 尾 256KB；短文件原样返回）。"""
+    if len(text) <= ERROR_SCAN_HEAD + ERROR_SCAN_TAIL:
+        return text
+    return text[:ERROR_SCAN_HEAD] + "\n...\n" + text[-ERROR_SCAN_TAIL:]
+
+
+def load_error_kb() -> List[Dict[str, Any]]:
+    """读取 OUTCAR 报错知识库（`VASP_CHECK_ERRORS` 或脚本同目录 check_errors.json）。
+
+    知识库随 batch_check.py 一起上传，改完下一轮巡检生效；文件损坏/缺失时返回空表
+    （不报错、退化为"只做兜底提取"）。
+    """
+    candidates = [
+        os.environ.get("VASP_CHECK_ERRORS"),
+        str(Path(__file__).resolve().parent / "check_errors.json"),
+        # 本地直接跑（模拟模式/测试）时用仓库里的默认知识库
+        str(Path(__file__).resolve().parent / "defaults" / "check_errors.json"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - 知识库损坏不影响巡检
+            continue
+        rules = data.get("errors") if isinstance(data, dict) else data
+        if isinstance(rules, list):
+            return [r for r in rules if isinstance(r, dict)]
+    return []
+
+
+def _rule_matches(rule: Dict[str, Any], text: str) -> Optional[str]:
+    """规则是否命中；命中返回触发它的片段（用来定位证据行），否则 None。
+
+    match 语义：`all` 子串必须全部出现；`any` 子串命中任一即可；`regex` 正则命中任一即可；
+    三组都写了就都要满足（AND 组合）。
+    """
+    match = rule.get("match")
+    if not isinstance(match, dict):
+        return None
+    ignore_case = bool(match.get("ignore_case"))
+    haystack = text.lower() if ignore_case else text
+
+    def _find(token: str) -> Optional[str]:
+        token = str(token)
+        needle = token.lower() if ignore_case else token
+        if not needle:
+            return None
+        return token if needle in haystack else None
+
+    all_tokens = [str(t) for t in (match.get("all") or [])]
+    if all_tokens and not all(_find(t) for t in all_tokens):
+        return None
+
+    hit: Optional[str] = None
+    any_tokens = [str(t) for t in (match.get("any") or [])]
+    for token in any_tokens:
+        found = _find(token)
+        if found:
+            hit = found
+            break
+    patterns = [str(p) for p in (match.get("regex") or [])]
+    if not hit:
+        for pattern in patterns:
+            try:
+                m = re.search(pattern, text, re.IGNORECASE if ignore_case else 0)
+            except re.error:
+                continue
+            if m:
+                hit = m.group(0)
+                break
+    if (any_tokens or patterns) and not hit:
+        return None
+    return hit or (all_tokens[0] if all_tokens else None)
+
+
+def _evidence(text: str, token: Optional[str], lines: int = 6) -> str:
+    """取命中行的上下文（token 所在行前后各 `lines` 行，去掉空行）。"""
+    if not token:
+        return ""
+    idx = text.find(token)
+    if idx < 0:
+        idx = text.lower().find(str(token).lower())
+    if idx < 0:
+        return ""
+    line_no = text.count("\n", 0, idx)
+    rows = text.splitlines()
+    lo = max(0, line_no - max(0, lines))
+    hi = min(len(rows), line_no + max(0, lines) + 1)
+    return "\n".join(ln.rstrip() for ln in rows[lo:hi] if ln.strip())
+
+
+def diagnose_errors(
+    text: str, kb: Optional[List[Dict[str, Any]]] = None
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """按知识库诊断 OUTCAR 报错；库里没有则兜底提取报错原文。
+
+    返回 `(命中条目列表, 兜底报错原文)`——两者最多只有一个非空。
+    只处理 `kind=error` 的条目；`kind=anomaly`（指标类异常，如电子步不收敛、受力振荡）
+    本轮不参与文本匹配，留给后续实现。
+    """
+    if not isinstance(text, str) or not text:
+        return [], None
+    rules = load_error_kb() if kb is None else kb
+    # 只在首尾窗口里匹配（几十 MB 的 OUTCAR 全文扫十几条规则要十几秒）
+    window = error_scan_text(text)
+    hits: List[Dict[str, Any]] = []
+    for rule in rules:
+        if str(rule.get("kind") or "error") != "error":
+            continue
+        token = _rule_matches(rule, window)
+        if not token:
+            continue
+        hits.append(
+            {
+                "id": str(rule.get("id") or ""),
+                "name": str(rule.get("name") or ""),
+                "kind": "error",
+                "severity": str(rule.get("severity") or "high"),
+                "category": str(rule.get("category") or ""),
+                "message": str(rule.get("message") or ""),
+                "advice": [str(a) for a in (rule.get("advice") or [])],
+                "matched": token,
+                "evidence": _evidence(window, token, int(rule.get("evidence_lines") or 6)),
+            }
+        )
+    if hits:
+        return hits, None
+    for signature in GENERIC_ERROR_SIGNATURES:
+        if signature in window:
+            return [], _evidence(window, signature, 8)
+    loose = GENERIC_LINE_PATTERN.search(window)
+    if loose:
+        return [], _evidence(window, loose.group(0), 8)
+    return [], None
+
+
 def load_precision_requirements() -> Dict[str, Any]:
     """读取精度检查要求（check_registry.json 的 precision 段，缺省用默认要求）。"""
     candidates = [
@@ -791,6 +967,9 @@ def _new_result(task: Dict[str, Any]) -> Dict[str, Any]:
         "lattice_abc": None,
         "force_thresholds": None,
         "precision": None,
+        # OUTCAR 报错诊断（知识库命中 / 兜底提取原文）
+        "errors": [],
+        "error_text": None,
     }
 
 
@@ -823,8 +1002,24 @@ def _analyze_outcar(
         return
 
     result["last_energy"] = extract_toten(text)
+    errors, generic = diagnose_errors(text)
+    if errors:
+        result["errors"] = errors
+    elif generic:
+        result["error_text"] = generic
     if any(marker in text for marker in SUCCESS_MARKERS):
         result["status"] = "completed"
+    elif errors or generic:
+        # 知识库命中（或兜底提取到报错原文）：直接判异常，并把"解法"写进消息
+        result["status"] = "zombied"
+        for item in errors:
+            suffix = f"（{item['category']}）" if item.get("category") else ""
+            result["error_messages"].append(f"OUTCAR 报错：{item['name']}{suffix}")
+        if generic and not errors:
+            first = next((ln.strip() for ln in generic.splitlines() if ln.strip()), "")
+            result["error_messages"].append(
+                f"OUTCAR 疑似报错（知识库未收录，已提取原文）：{first}"
+            )
     elif any(keyword in text for keyword in ERROR_KEYWORDS):
         result["status"] = "zombied"
         matched = [k for k in ERROR_KEYWORDS if k in text]
@@ -1017,6 +1212,7 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
     middle = [n for n in names if lo < n < hi]
     missing: List[str] = []
     unfinished: List[str] = []
+    neb_errors: List[Dict[str, Any]] = []
     # 中间映像的离子步：取各映像 OUTCAR 的 TOTAL-FORCE 块数最大值，
     # 作为「NEB 带推进了多少步」的度量（端点 OUTCAR 是 IS/FS 的伪结果，不计入）
     band_steps = 0
@@ -1034,7 +1230,36 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
         band_steps = max(band_steps, blocks)
         if not finished:
             unfinished.append(img)
+            # 未正常结束的映像：读尾部做 OUTCAR 报错诊断（只读 256KB，代价可忽略）
+            tail = _read_tail(outcar, 262144) or ""
+            img_errors, generic = diagnose_errors(tail)
+            for item in img_errors:
+                item["image"] = img
+                neb_errors.append(item)
+            if not img_errors and generic:
+                neb_errors.append(
+                    {
+                        "id": "",
+                        "name": "疑似报错（知识库未收录）",
+                        "kind": "error",
+                        "severity": "high",
+                        "category": "",
+                        "message": "",
+                        "advice": [
+                            "把下面的原文补进 data/config/check_errors.json 即可让下一轮自动识别"
+                        ],
+                        "matched": "",
+                        "evidence": generic,
+                        "image": img,
+                    }
+                )
     result["neb_band_steps"] = band_steps
+    if neb_errors:
+        result["errors"] = neb_errors
+        for item in neb_errors:
+            result["error_messages"].append(
+                f"映像 {item.get('image')} OUTCAR 报错：{item['name']}"
+            )
     if not missing and not unfinished:
         result["status"] = "completed"
         try:

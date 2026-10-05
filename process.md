@@ -855,10 +855,11 @@ server {
   实测约 **1.5 s/张**（6 张约 8 s）。
 - 若要常驻：systemd 加常驻 `Xvfb :99` + `Environment=DISPLAY=:99`，或渲染时用 `xvfb-run` 包一层。
   **动 systemd 前先确认**。
-- 代码侧 2026-10-06 修的三个坑（commit `096a129`）：① 改写 `.vesta` 的 LORIENT 只换前三列（旋转），
+- 代码侧 2026-10-06 修的坑（commit `096a129` + 后续视角修正）：① 改写 `.vesta` 的 LORIENT 只换前三列（旋转），
   **后三列视图中心必须保留**（清零 → VESTA 段错误 / `invalid image`）；② `_kill_vesta` 原来只管 Windows，
-  Linux 上 VESTA 会 fork `sh -c → VESTA-gui` 收不了尾 → 改 `start_new_session=True` + 按**进程组**结束；
-  ③ LORIENT 第二行是**视线方向**（不是"垂直向量"），`b` 视图原来与 `a` 重复 → 修正为
-  `a: ab 面 / b: bc 面 / c: ac 面`。
+  Linux 上 VESTA 会 fork `sh -c → VESTA-gui` 收不了尾 → 改 `start_new_session=True` + 按**进程组**结束，
+  且 **pgid 必须在启动瞬间记下**（启动器 fork 后自己先退出，之后再取 pgid 会失败）；
+  ③ 视角口径：LORIENT 两行是**直格子坐标**，第二行是**视线方向** → 三视图按用户口径定义为
+  **沿 a / b / c 轴本身看**（不是"垂直于轴的三个面"；本项目晶胞常有 γ=120°，两者不同）。
 - 已知限制：渲染缓存**不感知** `AXIS_VECTORS` / `vesta_zoom` 变化，改了视角定义要手动清
   `reports/structure/*.png` 才会重画。

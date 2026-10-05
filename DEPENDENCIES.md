@@ -100,9 +100,13 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
    —— 清零会让 VESTA 直接段错误、导出无效图（Windows 上一直没暴露）；
 2. `_kill_vesta()` 原来只处理 Windows → Linux 上 VESTA（启动器再 fork `sh -c → VESTA-gui`）
    收不了尾、进程越积越多；现改为 `start_new_session=True` + **按进程组** SIGTERM→SIGKILL；
-3. 视角语义：LORIENT 第二行是**视线方向**（不是脚本注释写的"垂直向量"）；`b` 原来又填 `(0,0,1)`
-   → 画出来与 `a` 同为 ab 面（只换了水平轴），现改为 `(1,0,0)`，三视图 = **a: ab 面（俯视）·
-   b: bc 面 · c: ac 面**，与纯 Python `structure_views(ab/bc/ac)` 口径一致。
+3. 视角语义与口径：LORIENT 两行是**直格子坐标**（u·a+v·b+w·c），第一行 = 屏幕水平轴、
+   第二行 = **视线方向**（不是脚本注释写的"垂直向量"）。用户要的是**沿 a / b / c 轴本身看**
+   （不是"垂直于 a/b/c 的三个面"，后者等价于 a*/b*/c* 方向，只在正交晶胞里才相同——本项目晶胞常
+   有 γ=120°，必须区分）。现定义 `a: 水平b·视线a`、`b: 水平a·视线b`、`c: 水平a·视线c`，
+   实测三张图里被看的那个轴正好是"指向屏幕外的点"，符合"沿该轴看"。
+   （顺带修了 `_kill_vesta` 的一处竞态：**pgid 必须在启动瞬间记下**——VESTA 启动器 fork 出
+   `sh -c → VESTA-gui` 后自己先退出，之后再 `os.getpgid(pid)` 会失败 → GUI 残留。）
 
 > 体积/风险：xvfb 很小；真正的代价是**渲染耗时**（约 1.5 s/张）与**缓存不感知视角定义变化**
 > （改了 `AXIS_VECTORS`/`vesta_zoom` 后需清掉 `reports/structure/*.png` 才会重画）。

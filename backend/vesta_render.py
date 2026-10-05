@@ -19,18 +19,18 @@ from typing import Any, Dict, Optional
 from config import load_settings
 from task_paths import task_files_dir
 
-#: 各晶轴视图向量：(水平轴 v1, 视线方向 v2)
+#: 各晶轴视图向量：(水平轴 v1, 视线方向 v2)，**都是直格子坐标**（u·a + v·b + w·c）
 #:
-#: **注意**：VESTA 的 LORIENT 第二行是**视线方向（指向屏幕外）**，不是"垂直向量"
-#: （2026-10-06 用 a=3/b=6/c=12 的合成晶胞实测判定）。所以要看的那个"面"由 v2 决定：
-#:   a → v2=(0,0,1)：沿 c 看，看 a-b 面
-#:   b → v2=(1,0,0)：沿 a 看，看 b-c 面   ← 原来写成 (0,0,1)，画出来又是 a-b 面（只换了水平轴），
-#:                                         与纯 Python 的 structure_views(ab/bc/ac) 口径对不上
-#:   c → v2=(0,1,0)：沿 b 看，看 a-c 面
+#: 语义（2026-10-06 实测确认，用 a=3/b=6/c=12 合成晶胞 + 斜晶胞对照）：
+#:   第一行 = 屏幕水平方向对应的晶轴；第二行 = **视线方向**（指向屏幕外）——不是"垂直向量"。
+#:
+#: **口径**：用户要的是「**沿 a / b / c 轴本身看**」的三视图（a、b、c 方向），
+#: 而不是「垂直于 a/b/c 的三个面」（ab/bc/ac，等价于 a*/b*/c* 方向）。
+#: 两者只在正交晶胞里相同；本项目晶胞常有 γ=120°，必须区分（2026-10-06 用户指出方向不对）。
 AXIS_VECTORS: Dict[str, tuple] = {
-    "a": ((1, 0, 0), (0, 0, 1)),
-    "b": ((0, 1, 0), (1, 0, 0)),
-    "c": ((0, 0, 1), (0, 1, 0)),
+    "a": ((0, 1, 0), (1, 0, 0)),  # 沿 a 轴看：水平取 b
+    "b": ((1, 0, 0), (0, 1, 0)),  # 沿 b 轴看：水平取 a
+    "c": ((1, 0, 0), (0, 0, 1)),  # 沿 c 轴看：水平取 a
 }
 
 RENDER_WAIT = 12  # 秒：等待 VESTA 输出文件的最长时间
@@ -43,7 +43,9 @@ def _vesta_exe() -> str:
     return str(settings.get("vesta_path") or "vesta")
 
 
-#: 本进程启动过的 VESTA 子进程（用于收尾时精确结束，不误伤别人的 VESTA）
+#: 本进程启动过的 VESTA 子进程：(Popen, 进程组 id)。
+#: **pgid 必须在启动瞬间记下** —— VESTA 启动器会 fork 出 `sh -c → VESTA-gui` 后自己退出，
+#: 之后再 `os.getpgid(pid)` 会因"进程已不存在"失败，导致 GUI 残留（2026-10-06 实测踩到）。
 _VESTA_PROCS: list = []
 
 
@@ -106,14 +108,14 @@ def _kill_vesta() -> None:
     （之前只处理 Windows，Linux 上渲染完 VESTA 不退出、会越积越多 —— 2026-10-06 实测）。
     """
     while _VESTA_PROCS:
-        proc = _VESTA_PROCS.pop()
+        proc, pgid = _VESTA_PROCS.pop()
         try:
+            _terminate_tree(proc, pgid)
             if proc.poll() is None:
-                _terminate_tree(proc)
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    _kill_tree(proc)
+                    _kill_tree(proc, pgid)
                     try:
                         proc.wait(timeout=3)
                     except subprocess.TimeoutExpired:
@@ -132,21 +134,21 @@ def _kill_vesta() -> None:
             pass
 
 
-def _terminate_tree(proc) -> None:
+def _terminate_tree(proc, pgid: int) -> None:
     """结束整个进程组。
 
     VESTA 启动器会再 fork `sh -c … VESTA-gui`，只 terminate 启动器会留下
     孙进程（GUI 常驻不退出）——所以按**进程组**结束（Popen 时开了 start_new_session）。
     """
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except Exception:  # noqa: BLE001 - 非 POSIX / 进程组已消失
         proc.terminate()
 
 
-def _kill_tree(proc) -> None:
+def _kill_tree(proc, pgid: int) -> None:
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        os.killpg(pgid, signal.SIGKILL)
     except Exception:  # noqa: BLE001
         proc.kill()
 
@@ -165,7 +167,11 @@ def _run_vesta_cli(command, expected_path: Path, wait_seconds: int = RENDER_WAIT
             # 收尾时可整组结束，避免 GUI 孙进程残留
             start_new_session=True,
         )
-        _VESTA_PROCS.append(proc)
+        try:
+            pgid = os.getpgid(proc.pid)
+        except Exception:  # noqa: BLE001 - 取不到就退回进程自身
+            pgid = proc.pid
+        _VESTA_PROCS.append((proc, pgid))
     except Exception:  # noqa: BLE001 - VESTA 不可用
         return False
     deadline = time.time() + wait_seconds

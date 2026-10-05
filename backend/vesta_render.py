@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -18,10 +19,17 @@ from typing import Any, Dict, Optional
 from config import load_settings
 from task_paths import task_files_dir
 
-#: 各晶轴视图向量：(水平向量 v1, 垂直向量 v2)
+#: 各晶轴视图向量：(水平轴 v1, 视线方向 v2)
+#:
+#: **注意**：VESTA 的 LORIENT 第二行是**视线方向（指向屏幕外）**，不是"垂直向量"
+#: （2026-10-06 用 a=3/b=6/c=12 的合成晶胞实测判定）。所以要看的那个"面"由 v2 决定：
+#:   a → v2=(0,0,1)：沿 c 看，看 a-b 面
+#:   b → v2=(1,0,0)：沿 a 看，看 b-c 面   ← 原来写成 (0,0,1)，画出来又是 a-b 面（只换了水平轴），
+#:                                         与纯 Python 的 structure_views(ab/bc/ac) 口径对不上
+#:   c → v2=(0,1,0)：沿 b 看，看 a-c 面
 AXIS_VECTORS: Dict[str, tuple] = {
     "a": ((1, 0, 0), (0, 0, 1)),
-    "b": ((0, 1, 0), (0, 0, 1)),
+    "b": ((0, 1, 0), (1, 0, 0)),
     "c": ((0, 0, 1), (0, 1, 0)),
 }
 
@@ -35,6 +43,10 @@ def _vesta_exe() -> str:
     return str(settings.get("vesta_path") or "vesta")
 
 
+#: 本进程启动过的 VESTA 子进程（用于收尾时精确结束，不误伤别人的 VESTA）
+_VESTA_PROCS: list = []
+
+
 def _vesta_zoom() -> float:
     settings = load_settings()
     try:
@@ -44,7 +56,12 @@ def _vesta_zoom() -> float:
 
 
 def _apply_axis_settings(template_text: str, axis: str, zoom: float) -> str:
-    """替换 .vesta 中的 PROJT 缩放比例与 LORIENT 视角矩阵。"""
+    """替换 .vesta 中的 PROJT 缩放比例与 LORIENT 视角矩阵。
+
+    只替换 LORIENT 的**前三列（旋转）**，后三列（视图中心/平移）必须原样保留
+    ——清零会让 VESTA 直接段错误、导不出图（2026-10-06 在 Linux 上实测，
+    Windows 上一直没暴露：`Segmentation fault (core dumped)` + `invalid image`）。
+    """
     text = re.sub(
         r"(?m)^PROJT\s+0\s+[-+\d.eE]+\s*$",
         f"PROJT 0  {zoom:.3f}",
@@ -54,8 +71,6 @@ def _apply_axis_settings(template_text: str, axis: str, zoom: float) -> str:
         text += f"\nPROJT 0  {zoom:.3f}\n"
 
     v1, v2 = AXIS_VECTORS[axis]
-    row1 = f" {v1[0]:.6f}  {v1[1]:.6f}  {v1[2]:.6f}  0.000000  0.000000  0.000000\n"
-    row2 = f" {v2[0]:.6f}  {v2[1]:.6f}  {v2[2]:.6f}  0.000000  0.000000  0.000000\n"
 
     lines = text.splitlines(keepends=True)
     lorient_idx = next(
@@ -63,10 +78,20 @@ def _apply_axis_settings(template_text: str, axis: str, zoom: float) -> str:
         None,
     )
     if lorient_idx is not None and lorient_idx + 4 <= len(lines):
+        def _offset(row_index: int) -> str:
+            """沿用原行的视图中心（后三列）；原行不成 6 列时退回全 0。"""
+            parts = lines[row_index].split()
+            values = parts[3:6] if len(parts) >= 6 else ["0.000000"] * 3
+            return "  " + "  ".join(values)
+
+        row1 = f" {v1[0]:.6f}  {v1[1]:.6f}  {v1[2]:.6f}{_offset(lorient_idx + 2)}\n"
+        row2 = f" {v2[0]:.6f}  {v2[1]:.6f}  {v2[2]:.6f}{_offset(lorient_idx + 3)}\n"
         new_text = (
             "".join(lines[: lorient_idx + 2]) + row1 + row2 + "".join(lines[lorient_idx + 4 :])
         )
     else:
+        row1 = f" {v1[0]:.6f}  {v1[1]:.6f}  {v1[2]:.6f}  0.000000  0.000000  0.000000\n"
+        row2 = f" {v2[0]:.6f}  {v2[1]:.6f}  {v2[2]:.6f}  0.000000  0.000000  0.000000\n"
         new_text = (
             text
             + f"\nLORIENT\n 1.000000  0.000000  0.000000  0.000000  0.000000  0.000000\n{row1}{row2}"
@@ -75,24 +100,72 @@ def _apply_axis_settings(template_text: str, axis: str, zoom: float) -> str:
 
 
 def _kill_vesta() -> None:
-    """强制结束所有 VESTA 进程（Windows taskkill），防止 GUI 卡死残留。"""
-    try:
-        if os.name == "nt":
+    """结束**本次渲染启动的** VESTA 进程，防止 GUI 卡死残留。
+
+    Windows 用 taskkill；Linux/macOS 走 Popen 句柄 terminate→kill
+    （之前只处理 Windows，Linux 上渲染完 VESTA 不退出、会越积越多 —— 2026-10-06 实测）。
+    """
+    while _VESTA_PROCS:
+        proc = _VESTA_PROCS.pop()
+        try:
+            if proc.poll() is None:
+                _terminate_tree(proc)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    _kill_tree(proc)
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        pass
+        except Exception:  # noqa: BLE001 - 清理失败不影响主流程
+            pass
+    if os.name == "nt":
+        try:
             subprocess.run(
                 ["taskkill", "/IM", "VESTA.exe", "/F"],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-    except Exception:  # noqa: BLE001 - 清理失败不影响主流程
-        pass
+        except Exception:  # noqa: BLE001 - 清理失败不影响主流程
+            pass
+
+
+def _terminate_tree(proc) -> None:
+    """结束整个进程组。
+
+    VESTA 启动器会再 fork `sh -c … VESTA-gui`，只 terminate 启动器会留下
+    孙进程（GUI 常驻不退出）——所以按**进程组**结束（Popen 时开了 start_new_session）。
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:  # noqa: BLE001 - 非 POSIX / 进程组已消失
+        proc.terminate()
+
+
+def _kill_tree(proc) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        proc.kill()
 
 
 def _run_vesta_cli(command, expected_path: Path, wait_seconds: int = RENDER_WAIT) -> bool:
     """后台启动 VESTA CLI，轮询输出文件生成，超时/结束后强制清理进程。"""
     _kill_vesta()
     try:
-        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            # VESTA 是 GTK 程序：无 DISPLAY 时直接报"Unable to initialize GTK+"，
+            # 由外部（桌面会话的 DISPLAY/XAUTHORITY 或 xvfb-run）提供显示环境
+            # start_new_session：让 VESTA（及其 fork 出的 sh→VESTA-gui）自成一个进程组，
+            # 收尾时可整组结束，避免 GUI 孙进程残留
+            start_new_session=True,
+        )
+        _VESTA_PROCS.append(proc)
     except Exception:  # noqa: BLE001 - VESTA 不可用
         return False
     deadline = time.time() + wait_seconds

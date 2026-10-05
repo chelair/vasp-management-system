@@ -100,16 +100,18 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
    —— 清零会让 VESTA 直接段错误、导出无效图（Windows 上一直没暴露）；
 2. `_kill_vesta()` 原来只处理 Windows → Linux 上 VESTA（启动器再 fork `sh -c → VESTA-gui`）
    收不了尾、进程越积越多；现改为 `start_new_session=True` + **按进程组** SIGTERM→SIGKILL；
-3. 视角语义与口径：LORIENT 两行是**直格子坐标**（u·a+v·b+w·c），第一行 = 屏幕水平轴、
-   第二行 = **视线方向**（不是脚本注释写的"垂直向量"）。用户要的是**沿 a / b / c 轴本身看**
-   （不是"垂直于 a/b/c 的三个面"，后者等价于 a*/b*/c* 方向，只在正交晶胞里才相同——本项目晶胞常
-   有 γ=120°，必须区分）。现定义 `a: 水平b·视线a`、`b: 水平a·视线b`、`c: 水平a·视线c`，
-   实测三张图里被看的那个轴正好是"指向屏幕外的点"，符合"沿该轴看"。
+3. **视角语义（2026-10-06 实测定稿）**：`.vesta` 里真正决定画面的是 `SCENE`（生效朝向 = `SCENE · LMATRIX`），
+   `LMATRIX` 单独改不动画面、`LORIENT` 只是 VESTA 自己的备注（单改它会得到默认的 a*/b*/c* 那组，
+   就是用户第一次说"方向不对"的那种图）。现在按用户口径改写 `SCENE` 前三行：
+   **a = 沿 a 轴看、c 朝上；b = 沿 b 轴看、c 朝上；c = 沿 c 轴看、a 朝右**（写死这张 `AXIS_VIEW` 表，
+   想调朝向只改它；改完把 `VIEW_VERSION` +1 会自动作废旧图）。
+   另外两件事：给 VESTA 一个整体旋转过的结构**没用**（它按晶胞参数重算朝向）；
+   窗口模式要用位置参数 `VESTA <文件>`，`VESTA -open <文件>` 会多弹一个空白窗口。
    （顺带修了 `_kill_vesta` 的一处竞态：**pgid 必须在启动瞬间记下**——VESTA 启动器 fork 出
    `sh -c → VESTA-gui` 后自己先退出，之后再 `os.getpgid(pid)` 会失败 → GUI 残留。）
 
-> 体积/风险：xvfb 很小；真正的代价是**渲染耗时**（约 1.5 s/张）与**缓存不感知视角定义变化**
-> （改了 `AXIS_VECTORS`/`vesta_zoom` 后需清掉 `reports/structure/*.png` 才会重画）。
+> 体积/风险：xvfb 很小；真正的代价是**渲染耗时**（约 1.5 s/张）。缓存按 `reports/structure/.view_version`
+> 判断，改了视角定义（`AXIS_VIEW` / `VIEW_VERSION`）会自动作废重画，不用手动删图。
 
 ## 4. pymatgen 专项说明
 

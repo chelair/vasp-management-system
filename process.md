@@ -855,11 +855,17 @@ server {
   实测约 **1.5 s/张**（6 张约 8 s）。
 - 若要常驻：systemd 加常驻 `Xvfb :99` + `Environment=DISPLAY=:99`，或渲染时用 `xvfb-run` 包一层。
   **动 systemd 前先确认**。
-- 代码侧 2026-10-06 修的坑（commit `096a129` + 后续视角修正）：① 改写 `.vesta` 的 LORIENT 只换前三列（旋转），
-  **后三列视图中心必须保留**（清零 → VESTA 段错误 / `invalid image`）；② `_kill_vesta` 原来只管 Windows，
-  Linux 上 VESTA 会 fork `sh -c → VESTA-gui` 收不了尾 → 改 `start_new_session=True` + 按**进程组**结束，
-  且 **pgid 必须在启动瞬间记下**（启动器 fork 后自己先退出，之后再取 pgid 会失败）；
-  ③ 视角口径：LORIENT 两行是**直格子坐标**，第二行是**视线方向** → 三视图按用户口径定义为
-  **沿 a / b / c 轴本身看**（不是"垂直于轴的三个面"；本项目晶胞常有 γ=120°，两者不同）。
-- 已知限制：渲染缓存**不感知** `AXIS_VECTORS` / `vesta_zoom` 变化，改了视角定义要手动清
-  `reports/structure/*.png` 才会重画。
+- **视角怎么设（2026-10-06 定稿）**：`.vesta` 里真正生效的朝向 = `SCENE · LMATRIX`，**不是** `LORIENT`
+  （逐项实测：只改 `LMATRIX` 画面完全不动；只改 `LORIENT` 得到的是 VESTA 默认的 a*/b*/c* 那组；
+  只有 `SCENE` 决定画面）。三视图 = 改写 `SCENE` 前三行：**a = 沿 a 看、c 朝上；b = 沿 b 看、c 朝上；
+  c = 沿 c 看、a 朝右**。这张表叫 `AXIS_VIEW`（`backend/vesta_render.py`），**想调朝向只改它**；
+  改完把 `VIEW_VERSION` +1，旧图会自动作废重画。
+- 其余踩过的坑：改写 `LORIENT` 的视图中心（后三列）清零 → VESTA 段错误 / `invalid image`（现在的代码不碰 LORIENT）；
+  `_kill_vesta` 原来只管 Windows，Linux 上 VESTA 会 fork `sh -c → VESTA-gui` 收不了尾 →
+  改 `start_new_session=True` + 按**进程组**结束，且 **pgid 必须在启动瞬间记下**（启动器 fork 后自己先退出）；
+  窗口模式**别用 `VESTA -open <文件>`**（会多弹一个空白窗口，用户报的"两个窗口"就是这个），
+  用位置参数 `VESTA <文件>`；给 VESTA 一个整体旋转过的结构文件**没用** —— 它按晶胞参数重算朝向（实测转 30° 出的图一样）。
+- 快测脚本 `scripts/vesta_view.py <结构> [a|b|c|all] [--png]`：生成的 `.vesta` 落在 `<结构目录>/vesta_view/`
+  （会打印绝对路径），可用 `--view/--up/--right` 临时改朝向。
+- 渲染缓存按 `reports/structure/.view_version` 判断：视角定义一变（`VIEW_VERSION` +1）自动重画，
+  不用再手动删 `reports/structure/*.png`。

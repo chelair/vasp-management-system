@@ -2,13 +2,14 @@
 """按 a / b / c 视图用 VESTA 打开结构（或 --png 导出），用于快速核对方向。
 
 用法（在仓库根目录执行即可；脚本被复制到别处也能用，会自动找仓库根）：
-    .venv/bin/python scripts/vesta_view.py data/projects/temp/CONTCAR a
     .venv/bin/python scripts/vesta_view.py data/projects/temp/CONTCAR          # a/b/c 各开一个窗口
+    .venv/bin/python scripts/vesta_view.py data/projects/temp/CONTCAR b        # 只开 b 视图
     .venv/bin/python scripts/vesta_view.py data/projects/temp/CONTCAR all --png # 离屏导 PNG
-    .venv/bin/python scripts/vesta_view.py data/projects/temp/CONTCAR a --vectors "0,1,0;1,0,0"
+    .venv/bin/python scripts/vesta_view.py data/projects/temp/CONTCAR c --view c --right a
 
-向量表在 backend/vesta_render.py 的 `AXIS_VECTORS`：第 1 行 = 屏幕水平方向，第 2 行 = 视线方向
-（指向屏幕外）；写回 .vesta 时后三列（视图中心偏移）沿用原文件，清零会让 VESTA 段错误。
+朝向表在 backend/vesta_render.py 的 `AXIS_VIEW`（view=视线方向、up=屏幕向上、right=屏幕向右），
+命令行 --view/--up/--right 可以临时覆盖某一项（值写 a/b/c 或 x,y,z）而不改文件。
+生成的 .vesta 会打印出绝对路径（默认 <结构文件所在目录>/vesta_view/ 下）。
 """
 
 from __future__ import annotations
@@ -39,11 +40,13 @@ def backend_dir() -> Path:
 sys.path.insert(0, str(backend_dir()))
 
 from vesta_render import (  # noqa: E402
-    AXIS_VECTORS,
+    AXIS_VIEW,
     _apply_axis_settings,
+    _parse_cellp,
     _run_vesta_cli,
     _vesta_exe,
     _vesta_zoom,
+    axis_view_matrix,
 )
 
 
@@ -59,14 +62,18 @@ def ensure_display() -> None:
             os.environ["XAUTHORITY"] = cookies[0]
 
 
-def with_override(patched: str, row1: tuple, row2: tuple) -> str:
-    """把 LORIENT 前两行的前三列换成给定向量（后三列偏移原样保留）。"""
-    lines = patched.splitlines(keepends=True)
-    i = next(i for i, l in enumerate(lines) if l.rstrip("\n").strip() == "LORIENT")
-    for row, k in ((row1, i + 2), (row2, i + 3)):
-        offset = lines[k].split()[3:6]
-        lines[k] = " " + "  ".join(f"{v:.6f}" for v in row) + "  " + "  ".join(offset) + "\n"
-    return "".join(lines)
+def override_spec(axis: str, view: str, up: str, right: str):
+    """把 --view/--up/--right 拼成 AXIS_VIEW 那样的 spec；没给就返回 None。"""
+    if not (view or up or right):
+        return None
+    base = dict(AXIS_VIEW.get(axis) or AXIS_VIEW["a"])
+    if view:
+        base["view"] = view
+    if up or right:
+        # 命令行一旦给了 up/right，就以命令行为准（另一个没给 = 自动算）
+        base["up"] = up or None
+        base["right"] = right or None
+    return base
 
 
 def main() -> int:
@@ -75,7 +82,10 @@ def main() -> int:
     ap.add_argument("axis", nargs="?", default="all", choices=["a", "b", "c", "all"])
     ap.add_argument("--png", action="store_true", help="离屏导出 PNG（自动用 xvfb + 软件 GL）")
     ap.add_argument("--out", default="/tmp/vesta_view", help="--png 输出目录")
-    ap.add_argument("--vectors", default="", help='"hx,hy,hz;vx,vy,vz" 临时覆盖向量')
+    ap.add_argument("--view", default="", help="临时改视线方向（a/b/c 或 x,y,z）")
+    ap.add_argument("--up", default="", help="临时改屏幕向上方向")
+    ap.add_argument("--right", default="", help="临时改屏幕向右方向")
+    ap.add_argument("--out-dir", default="", help=".vesta 输出目录（默认 <结构目录>/vesta_view）")
     ap.add_argument("--_make-template", metavar="OUT", help=argparse.SUPPRESS)  # 内部：只生成模板
     args = ap.parse_args()
 
@@ -108,18 +118,18 @@ def main() -> int:
         return 0
 
     axes = ["a", "b", "c"] if args.axis == "all" else [args.axis]
-    override = None
-    if args.vectors:
-        h, v = args.vectors.split(";")
-        override = (
-            tuple(float(x) for x in h.split(",")),
-            tuple(float(x) for x in v.split(",")),
-        )
 
     ensure_display()
     exe = _vesta_exe()
     zoom = _vesta_zoom()
-    work = Path(tempfile.mkdtemp(prefix="vesta_view_"))
+    # 输出目录固定、可预期（用户要能自己找到 .vesta 手改）：<结构目录>/vesta_view/
+    if args.out_dir:
+        work = Path(args.out_dir).expanduser()
+    elif os.access(structure.parent, os.W_OK):
+        work = structure.parent / "vesta_view"
+    else:
+        work = Path(tempfile.mkdtemp(prefix="vesta_view_"))
+    work.mkdir(parents=True, exist_ok=True)
     template = work / "_template.vesta"
     if structure.suffix.lower() == ".vesta":
         template = structure  # 已经是 .vesta 就直接用，省掉一次窗口
@@ -154,13 +164,22 @@ def main() -> int:
     if not template.is_file():
         raise SystemExit("生成 .vesta 模板失败：检查 settings.json 的 vesta_path")
     text = template.read_text(encoding="utf-8")
+    cell = _parse_cellp(text)
 
     for axis in axes:
-        row1, row2 = override or AXIS_VECTORS.get(axis, AXIS_VECTORS["a"])
+        spec = override_spec(axis, args.view, args.up, args.right)
+        matrix = axis_view_matrix(cell, axis, spec)
         target = work / f"{structure.stem}_{axis}.vesta"
-        patched = with_override(_apply_axis_settings(text, axis, zoom), row1, row2)
+        patched = _apply_axis_settings(text, axis, zoom, spec)
         target.write_text(patched, encoding="utf-8")
-        print(f"[{axis}] 水平={row1} 视线={row2}\n     .vesta: {target}")
+        shown = spec or AXIS_VIEW.get(axis) or AXIS_VIEW["a"]
+        print(
+            f"[{axis}] 视线={shown.get('view')} 向上={shown.get('up')} 向右={shown.get('right')}"
+        )
+        if matrix:
+            for row_name, row in zip(("屏幕x", "屏幕y", "屏幕z"), matrix):
+                print(f"     {row_name} = ({row[0]: .6f}, {row[1]: .6f}, {row[2]: .6f})")
+        print(f"     .vesta: {target}")
         if args.png:
             out = Path(args.out).expanduser()
             out.mkdir(parents=True, exist_ok=True)
@@ -174,7 +193,8 @@ def main() -> int:
             print(f"     PNG: {'OK' if ok else '失败'} {png if ok else ''}")
         else:
             subprocess.Popen(
-                [exe, "-open", str(target)],
+                # 直接给"位置参数"：用 `-open` 时 VESTA 会额外开一个空白窗口（2026-10-06 实测）
+                [exe, str(target)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,

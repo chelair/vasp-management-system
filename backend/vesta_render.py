@@ -20,19 +20,23 @@ from typing import Any, Dict, Optional, Tuple
 from config import load_settings
 from task_paths import task_files_dir
 
-#: 三个视图的 LORIENT 向量：**想调方向就只改这张表**（各写 3 个分量，可写小数/负数）。
-#: 格式 `(水平向量 v1, 视线向量 v2)`：
-#:   - 第 1 行 v1 = **屏幕水平方向**（画面里朝右的那个方向）
-#:   - 第 2 行 v2 = **视线方向**（指向屏幕外，也就是"沿哪个方向看"）
-#: 这两行会被写进 .vesta 的 LORIENT 段（每行 6 个数 = 3 旋转 + 3 视图中心偏移；
-#: **偏移沿用原文件的值，不要清零** —— 清零会让 VESTA 段错误、导出无效图）。
-#: 下面这组是脚本最初的取值；正交晶胞里 "a"=ab 面、"b"=ab 面(b 水平)、"c"=ac 面。
-AXIS_VECTORS: Dict[str, tuple] = {
-    "a": ((1, 0, 0), (0, 0, 1)),
-    "b": ((0, 1, 0), (0, 0, 1)),
-    "c": ((0, 0, 1), (0, 1, 0)),
+#: 三视图口径：**想调朝向只改这张表**。
+#:   view  = 视线方向 —— 写哪根晶轴，哪根轴就指向屏幕外（"沿这根轴看"）
+#:   up    = 屏幕竖直向上（写另一根晶轴；会自动对视线方向正交化）
+#:   right = 屏幕水平向右（留 None = 用 right = up × view 自动算，保证右手系、不出镜像）
+#: 值可以写 'a'/'b'/'c'，也可以直接写 3 个分量的晶格向量 (x, y, z)。
+#: 用户口径（2026-10-06 用他手点 VESTA 存下的 .vesta 逐一对过）：
+#:   a 视图 = 沿 a 看、c 朝上（b 在画面里偏右）；b 视图 = 沿 b 看、c 朝上；c 视图 = 沿 c 看、a 朝右。
+AXIS_VIEW: Dict[str, Dict[str, Any]] = {
+    "a": {"view": "a", "up": "c", "right": None},
+    "b": {"view": "b", "up": "c", "right": None},
+    "c": {"view": "c", "up": None, "right": "a"},
 }
 
+#: 视角定义（AXIS_VIEW）/缩放变了就把这个版本号 +1：渲染前会比对
+#: reports/structure/.view_version，对不上就整批重画 —— 以前改了视角要手动删
+#: reports/structure/*.png 才会更新（缓存只看文件在不在）。
+VIEW_VERSION = 2
 
 RENDER_WAIT = 12  # 秒：等待 VESTA 输出文件的最长时间
 MIN_IONIC_STEPS = 5
@@ -58,12 +62,138 @@ def _vesta_zoom() -> float:
         return 1.7
 
 
-def _apply_axis_settings(template_text: str, axis: str, zoom: float) -> str:
-    """替换 .vesta 中的 PROJT 缩放比例与 LORIENT 视角矩阵。
+def _unit(v) -> Optional[tuple]:
+    if v is None:
+        return None
+    norm = math.sqrt(sum(float(x) * float(x) for x in v))
+    if norm < 1e-9:
+        return None
+    return tuple(float(x) / norm for x in v)
 
-    只替换 LORIENT 的**前三列（旋转）**，后三列（视图中心/平移）必须原样保留
-    ——清零会让 VESTA 直接段错误、导不出图（2026-10-06 在 Linux 上实测，
-    Windows 上一直没暴露：`Segmentation fault (core dumped)` + `invalid image`）。
+
+def _cross(u, v) -> tuple:
+    return (
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    )
+
+
+def _dot(u, v) -> float:
+    return sum(float(a) * float(b) for a, b in zip(u, v))
+
+
+def _orthogonal(v, ref) -> Optional[tuple]:
+    """把 v 对 ref 正交化（Gram-Schmidt）；退化成 0 时返回 None。"""
+    if v is None or ref is None:
+        return None
+    k = _dot(v, ref)
+    return _unit(tuple(float(v[i]) - k * float(ref[i]) for i in range(3)))
+
+
+def _parse_cellp(text: str) -> Optional[tuple]:
+    """从 .vesta 模板里读 CELLP：a, b, c, alpha, beta, gamma。"""
+    m = re.search(
+        r"(?m)^CELLP[^\n]*\n\s*([-+\d.eE]+)\s+([-+\d.eE]+)\s+([-+\d.eE]+)"
+        r"\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s+([-+\d.eE]+)",
+        text,
+    )
+    if not m:
+        return None
+    try:
+        return tuple(float(g) for g in m.groups())
+    except ValueError:
+        return None
+
+
+def _lattice_vectors(cell: tuple) -> Optional[Dict[str, tuple]]:
+    """由晶胞参数算三根晶格向量的笛卡尔分量（VESTA 口径：a 沿 x、b 落 xy 面内）。"""
+    if not cell:
+        return None
+    a, b, c, alpha, beta, gamma = cell
+    al, be, ga = (math.radians(x) for x in (alpha, beta, gamma))
+    sa, sb, sg = math.sin(al), math.sin(be), math.sin(ga)
+    ca, cb, cg = math.cos(al), math.cos(be), math.cos(ga)
+    if abs(sg) < 1e-6:
+        return None
+    cy = c * (ca - cb * cg) / sg
+    cz2 = c * c - (c * cb) ** 2 - cy * cy
+    if cz2 <= 0:
+        return None
+    return {
+        "a": (a, 0.0, 0.0),
+        "b": (b * cg, b * sg, 0.0),
+        "c": (c * cb, cy, math.sqrt(cz2)),
+    }
+
+
+def axis_view_matrix(cell: Optional[tuple], axis: str, spec: Optional[dict] = None):
+    """算某个视图的"场景矩阵" M：三个行向量 = 屏幕的 x（右）/ y（上）/ z（视线，指向屏幕外）。
+
+    **VESTA 里实际生效的视角 = SCENE · LMATRIX**（2026-10-06 逐项实测：
+    单改 LMATRIX 完全不影响画面、单改 LORIENT 只是把默认的 a*/b*/c* 换一个、
+    只有 SCENE 与 LMATRIX 的乘积决定视角）。LORIENT 只是 VESTA 自己记的备注，
+    所以这里不碰它 —— 写它既不改视角，动错列还会让 VESTA 段错误。
+    """
+    vecs = _lattice_vectors(cell) if cell else None
+    if not vecs:
+        return None
+    spec = spec or AXIS_VIEW.get(axis) or AXIS_VIEW["a"]
+
+    def _pick(key: str) -> Optional[tuple]:
+        raw = spec.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            return vecs.get(raw.strip().lower())
+        return tuple(float(x) for x in raw)
+
+    view = _unit(_pick("view"))
+    if view is None:
+        return None
+    right, up = _pick("right"), _pick("up")
+    if right is not None:
+        # 斜晶胞里 "向右" 那根轴未必⊥视线（例如 c 视图、β≠90°）→ 先对视线正交化
+        right = _orthogonal(_unit(right), view)
+        up = _unit(_cross(view, right)) if right else None
+    elif up is not None:
+        up = _orthogonal(_unit(up), view)
+        right = _unit(_cross(up, view)) if up else None
+    else:
+        return None
+    if right is None or up is None:
+        return None
+    return [right, up, view]
+
+
+def _parse_lmatrix(text: str) -> Optional[list]:
+    """读 .vesta 的 LMATRIX 前三行（绕某个轴的旋转）；非正交矩阵就返回 None。"""
+    m = re.search(
+        r"(?m)^LMATRIX[^\n]*\n((?:[^\n]*\n){3})",
+        text,
+    )
+    if not m:
+        return None
+    try:
+        rows = [[float(x) for x in line.split()[:3]] for line in m.group(1).splitlines()]
+    except (ValueError, IndexError):
+        return None
+    if len(rows) != 3 or any(len(r) != 3 for r in rows):
+        return None
+    # 只接受正交矩阵（VESTA 正常情况下写的就是单位阵）：否则不敢拿它换算
+    for i in range(3):
+        if abs(_dot(rows[i], rows[i]) - 1.0) > 1e-3:
+            return None
+    return rows
+
+
+def _apply_axis_settings(
+    template_text: str, axis: str, zoom: float, spec: Optional[dict] = None
+) -> str:
+    """改写 .vesta 模板：PROJT 缩放 + SCENE 视角（让某根晶轴指向屏幕外）。
+
+    只替换 SCENE 的**前三行（旋转）**，第 4 行与后面 3 行小参数原样保留
+    ——（2026-10-06 实测）LORIENT 段的视图中心清零会让 VESTA 段错误 / 导不出图。
     """
     text = re.sub(
         r"(?m)^PROJT\s+0\s+[-+\d.eE]+\s*$",
@@ -73,33 +203,32 @@ def _apply_axis_settings(template_text: str, axis: str, zoom: float) -> str:
     if "PROJT" not in text:
         text += f"\nPROJT 0  {zoom:.3f}\n"
 
-    v1, v2 = AXIS_VECTORS.get(axis, AXIS_VECTORS["a"])
+    view = axis_view_matrix(_parse_cellp(text), axis, spec)
+    if view is None:
+        return text  # 晶胞读不出来就保持 VESTA 默认视角，别把图搞崩
+
+    lmat = _parse_lmatrix(text)
+    if lmat is None:
+        scene = view
+    else:
+        # SCENE = M_target · LMATRIX^T（LMATRIX 正交，转置即逆）
+        scene = [
+            [sum(view[i][k] * lmat[j][k] for k in range(3)) for j in range(3)]
+            for i in range(3)
+        ]
 
     lines = text.splitlines(keepends=True)
-    lorient_idx = next(
-        (i for i, line in enumerate(lines) if line.rstrip("\n").strip() == "LORIENT"),
-        None,
-    )
-    if lorient_idx is not None and lorient_idx + 4 <= len(lines):
-        def _offset(row_index: int) -> str:
-            """沿用原行的视图中心（后三列）；原行不成 6 列时退回全 0。"""
-            parts = lines[row_index].split()
-            values = parts[3:6] if len(parts) >= 6 else ["0.000000"] * 3
-            return "  " + "  ".join(values)
+    idx = next((i for i, line in enumerate(lines) if line.rstrip("\n").strip() == "SCENE"), None)
+    if idx is None or idx + 3 >= len(lines):
+        return text
+    rows = [
+        " " + "  ".join(f"{v:.6f}" for v in scene[i]) + "  0.000000\n" for i in range(3)
+    ]
+    return "".join(lines[: idx + 1]) + "".join(rows) + "".join(lines[idx + 4 :])
 
-        row1 = f" {v1[0]:.6f}  {v1[1]:.6f}  {v1[2]:.6f}{_offset(lorient_idx + 2)}\n"
-        row2 = f" {v2[0]:.6f}  {v2[1]:.6f}  {v2[2]:.6f}{_offset(lorient_idx + 3)}\n"
-        new_text = (
-            "".join(lines[: lorient_idx + 2]) + row1 + row2 + "".join(lines[lorient_idx + 4 :])
-        )
-    else:
-        row1 = f" {v1[0]:.6f}  {v1[1]:.6f}  {v1[2]:.6f}  0.000000  0.000000  0.000000\n"
-        row2 = f" {v2[0]:.6f}  {v2[1]:.6f}  {v2[2]:.6f}  0.000000  0.000000  0.000000\n"
-        new_text = (
-            text
-            + f"\nLORIENT\n 1.000000  0.000000  0.000000  0.000000  0.000000  0.000000\n{row1}{row2}"
-        )
-    return new_text
+
+#: 兼容旧名字（外部若还 import AXIS_VECTORS 不至于直接 ImportError）
+AXIS_VECTORS = AXIS_VIEW
 
 
 def _kill_vesta() -> None:
@@ -264,6 +393,34 @@ def _render_axis(work_dir: Path, template_text: str, axis: str, zoom: float, png
     return ok
 
 
+def _cache_version_file(reports_dir: Path) -> Path:
+    return reports_dir / ".view_version"
+
+
+def _cache_is_current(reports_dir: Path) -> bool:
+    """缓存是否由当前视角定义（VIEW_VERSION）画出。"""
+    try:
+        return _cache_version_file(reports_dir).read_text(encoding="utf-8").strip() == str(
+            VIEW_VERSION
+        )
+    except OSError:
+        return False
+
+
+def _mark_cache(reports_dir: Path) -> None:
+    try:
+        _cache_version_file(reports_dir).write_text(f"{VIEW_VERSION}\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _drop_stale_cache(reports_dir: Path) -> None:
+    """视角定义变了：清掉旧图，否则只按"文件在不在"判断的缓存永远不会重画。"""
+    for label in ("poscar", "contcar"):
+        for axis in ("a", "b", "c"):
+            (reports_dir / f"{label}_{axis}.png").unlink(missing_ok=True)
+
+
 def render_task(
     project: Dict[str, Any],
     task: Dict[str, Any],
@@ -298,6 +455,9 @@ def render_task(
 
     reports_dir = files_dir.parent / "reports" / "structure"
     reports_dir.mkdir(parents=True, exist_ok=True)
+    if not _cache_is_current(reports_dir):
+        _drop_stale_cache(reports_dir)
+        warnings.append(f"视角定义已更新（v{VIEW_VERSION}），旧结构图作废重画")
     zoom = _vesta_zoom()
     images: Dict[str, Dict[str, str]] = {"poscar": {}, "contcar": {}}
 
@@ -343,6 +503,7 @@ def render_task(
                 else:
                     warnings.append(f"{label} {axis} 轴渲染失败")
 
+    _mark_cache(reports_dir)
     if not any(images["poscar"].values()) and not any(images["contcar"].values()):
         return {
             "task_id": task_id,

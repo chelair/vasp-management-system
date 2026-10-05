@@ -17,7 +17,6 @@ interface Props {
   onSelect: (index: number) => void;
 }
 
-const H = 196;
 const M = { left: 54, right: 22, top: 22, bottom: 32 };
 const LINE = '#7B61D6';
 const LINE_SOFT = '#A78BFA';
@@ -32,14 +31,19 @@ const signed = (v: number, d = 3) => `${v >= 0 ? '+' : ''}${v.toFixed(d)}`;
  * 选中点突出、鞍点单独标记、零线虚线、曲线下方渐变填充；点密时自动缩小并省略编号。
  */
 export default function NebEnergyCurve({ images, selected, saddle, onSelect }: Props) {
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState(880);
+  const plotRef = useRef<HTMLDivElement | null>(null);
+  /** 画布尺寸跟随容器：高度也一起量（曲线面板固定高，曲线才不会被压扁） */
+  const [size, setSize] = useState({ w: 640, h: 240 });
   const [hover, setHover] = useState<number | null>(null);
 
   useEffect(() => {
-    const el = wrapRef.current;
+    const el = plotRef.current;
     if (!el) return undefined;
-    const apply = () => setWidth(Math.max(320, el.clientWidth || 880));
+    const apply = () =>
+      setSize({
+        w: Math.max(280, el.clientWidth || 640),
+        h: Math.max(150, el.clientHeight || 240),
+      });
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(el);
@@ -48,7 +52,8 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
 
   const n = images.length;
   const geo = useMemo(() => {
-    const W = width;
+    const W = size.w;
+    const H = size.h;
     const plotW = Math.max(10, W - M.left - M.right);
     const plotH = H - M.top - M.bottom;
     const rels = images
@@ -73,10 +78,10 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
       n > 1 ? M.left + (i * plotW) / (n - 1) : M.left + plotW / 2;
     const py = (v: number) => M.top + plotH * (1 - (v - lo) / (hi - lo));
     const ticks = Array.from({ length: 4 }, (_, k) => lo + ((hi - lo) * (k + 0.5)) / 4);
-    return { W, plotW, plotH, px, py, ticks, y0: py(0) };
-  }, [images, width, n]);
+    return { W, H, plotW, plotH, px, py, ticks, y0: py(0) };
+  }, [images, size, n]);
 
-  const { W, plotW, plotH, px, py, ticks, y0 } = geo;
+  const { W, H, plotW, plotH, px, py, ticks, y0 } = geo;
   const rBase = n > 16 ? 3 : n > 10 ? 3.6 : 4.4;
   const labelStep = n > 16 ? Math.ceil(n / 12) : 1;
 
@@ -107,7 +112,7 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
   const hasEnergy = images.some((x) => x.relative != null);
 
   return (
-    <div className="nebmd-curve" ref={wrapRef}>
+    <div className="nebmd-curve">
       <div className="nebmd-curve__head">
         <span className="nebmd-curve__title">能量曲线</span>
         <span className="nebmd-curve__hint">相对初态（映像 00）的能量差 · 点击数据点切换主视图</span>
@@ -121,14 +126,15 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
           </span>
         )}
       </div>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        width="100%"
-        height={H}
-        className="nebmd-curve__svg"
-        role="img"
-        aria-label="NEB 映像相对能量曲线"
-      >
+      <div className="nebmd-curve__plot" ref={plotRef}>
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          width="100%"
+          height={H}
+          className="nebmd-curve__svg"
+          role="img"
+          aria-label="NEB 映像相对能量曲线"
+        >
         <defs>
           <linearGradient id="nebmdArea" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={LINE} stopOpacity="0.24" />
@@ -247,7 +253,8 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
             />
           );
         })}
-      </svg>
+        </svg>
+      </div>
     </div>
   );
 }

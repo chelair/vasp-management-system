@@ -3844,12 +3844,41 @@ body.is-atom-selecting * {
 }
 
 /* ① 能量曲线 */
+.nebmd__row {
+  display: grid;
+  /* 左：曲线（宽一点）；右：映像明细表。两侧**固定同高**，3/5/7/20 个映像都不会忽长忽短 */
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.nebmd__row > * {
+  height: 304px;
+}
+
+.nebmd-curve {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: #fff;
+}
+
 .nebmd-curve__head {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 2px;
+  flex: 0 0 auto;
+}
+
+/* 曲线画布：高度跟着面板走（之前是固定 196px 且占满整页宽 → 很扁） */
+.nebmd-curve__plot {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .nebmd-curve__title {
@@ -4097,7 +4126,8 @@ body.is-atom-selecting * {
 
 /* 映像明细表：不用悬停曲线也能看到每个映像的能量/受力 */
 .nebmd__table {
-  max-height: 232px;
+  height: 100%;
+  max-height: none;
   overflow: auto;
   border: 1px solid var(--color-border-soft);
   border-radius: 10px;
@@ -4172,6 +4202,17 @@ body.is-atom-selecting * {
 @media (max-width: 720px) {
   .nebmd__hint {
     display: none;
+  }
+}
+
+/* 窄屏：曲线与明细表改成上下排列（窄屏一行塞两列会挤扁曲线） */
+@media (max-width: 1100px) {
+  .nebmd__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nebmd__row > * {
+    height: 260px;
   }
 }
 

@@ -406,7 +406,48 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
         </div>
       </div>
 
-      <NebEnergyCurve images={entries} selected={selected} saddle={saddle} onSelect={goto} />
+      {/* 能量曲线 + 映像明细表同一行：两侧固定同高，3/5/7/20 个映像都不会忽长忽短 */}
+      <div className="nebmd__row">
+        <NebEnergyCurve images={entries} selected={selected} saddle={saddle} onSelect={goto} />
+        <div className="nebmd__table">
+          <table>
+            <thead>
+              <tr>
+                <th>映像</th>
+                <th>角色</th>
+                <th>ΔE (eV)</th>
+                <th>E (eV)</th>
+                <th>最大受力 (eV/Å)</th>
+                <th>结构</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry, i) => {
+                const isSaddle = i === saddle;
+                return (
+                  <tr
+                    key={`${entry.label}-${i}`}
+                    className={`${i === selected ? 'is-selected' : ''}${
+                      isSaddle ? ' is-saddle' : ''
+                    }`}
+                    onClick={() => goto(i)}
+                    title={`切换到映像 ${pad2(i)}`}
+                  >
+                    <td className="nebmd__table-idx">{pad2(i)}</td>
+                    <td>
+                      {isSaddle ? '鞍点' : i === 0 ? '初态' : i === count - 1 ? '末态' : '中间态'}
+                    </td>
+                    <td>{entry.relative != null ? signed(entry.relative, 4) : '—'}</td>
+                    <td>{entry.energy != null ? entry.energy.toFixed(4) : '—'}</td>
+                    <td>{entry.max_force != null ? entry.max_force.toFixed(4) : '—'}</td>
+                    <td className="nebmd__table-struct">{entry.cif ? '已同步' : '无'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {!hasAnyStructure ? (
         <div className="analysis-chart-empty">
@@ -548,45 +589,6 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
             })}
           </div>
 
-          {/* 映像明细表：不用悬停曲线也能看到每个映像的能量/受力（点击行切换主视图） */}
-          <div className="nebmd__table">
-            <table>
-              <thead>
-                <tr>
-                  <th>映像</th>
-                  <th>角色</th>
-                  <th>ΔE (eV)</th>
-                  <th>E (eV)</th>
-                  <th>最大受力 (eV/Å)</th>
-                  <th>结构</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry, i) => {
-                  const isSaddle = i === saddle;
-                  return (
-                    <tr
-                      key={`${entry.label}-${i}`}
-                      className={`${i === selected ? 'is-selected' : ''}${
-                        isSaddle ? ' is-saddle' : ''
-                      }`}
-                      onClick={() => goto(i)}
-                      title={`切换到映像 ${pad2(i)}`}
-                    >
-                      <td className="nebmd__table-idx">{pad2(i)}</td>
-                      <td>
-                        {isSaddle ? '鞍点' : i === 0 ? '初态' : i === count - 1 ? '末态' : '中间态'}
-                      </td>
-                      <td>{entry.relative != null ? signed(entry.relative, 4) : '—'}</td>
-                      <td>{entry.energy != null ? entry.energy.toFixed(4) : '—'}</td>
-                      <td>{entry.max_force != null ? entry.max_force.toFixed(4) : '—'}</td>
-                      <td className="nebmd__table-struct">{entry.cif ? '已同步' : '无'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
         </>
       )}
 

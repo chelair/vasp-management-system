@@ -3868,11 +3868,18 @@ body.is-atom-selecting * {
 
 .nebmd-curve__head {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
   margin-bottom: 2px;
   flex: 0 0 auto;
+}
+
+.nebmd-curve__titleline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* 曲线画布：高度跟着面板走（之前是固定 196px 且占满整页宽 → 很扁） */
@@ -3892,16 +3899,34 @@ body.is-atom-selecting * {
   color: var(--color-text-muted);
 }
 
+/* 读数单独一行、不换行：之前和标题/说明挤一行，末尾的「鞍点」标签被顶到第二行 */
 .nebmd-curve__read {
-  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+}
+
+/* 各项之间用分隔点，避免看上去连成一片 */
+.nebmd-curve__read > span:not(:first-child)::before {
+  content: '·';
+  margin-right: 8px;
+  color: var(--color-text-muted);
+}
+
+.nebmd-curve__read-img {
+  font-weight: 600;
+  color: var(--color-text);
 }
 
 .nebmd-curve__saddle {
-  margin-left: 6px;
+  flex: 0 0 auto;
   font-style: normal;
   font-size: 11px;
   color: #c8434b;
@@ -3909,6 +3934,7 @@ body.is-atom-selecting * {
   border: 1px solid #f3c3c7;
   border-radius: 999px;
   padding: 0 6px;
+  white-space: nowrap;
 }
 
 .nebmd-curve__svg {

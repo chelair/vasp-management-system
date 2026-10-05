@@ -114,16 +114,24 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
   return (
     <div className="nebmd-curve">
       <div className="nebmd-curve__head">
-        <span className="nebmd-curve__title">能量曲线</span>
-        <span className="nebmd-curve__hint">相对初态（映像 00）的能量差 · 点击数据点切换主视图</span>
+        <div className="nebmd-curve__titleline" title="点击数据点切换主视图">
+          <span className="nebmd-curve__title">能量曲线</span>
+          <span className="nebmd-curve__hint">相对初态（00）· 点击切换</span>
+        </div>
         {activeImg && (
-          <span className="nebmd-curve__read">
-            映像 {String(active).padStart(2, '0')}
-            {activeImg.relative != null ? ` · ΔE ${signed(activeImg.relative)} eV` : ''}
-            {activeImg.max_force != null ? ` · F ${activeImg.max_force.toFixed(3)}` : ''}
-            {activeImg.energy != null ? ` · E ${activeImg.energy.toFixed(4)} eV` : ''}
+          <div className="nebmd-curve__read">
+            <span className="nebmd-curve__read-img">
+              映像 {String(active).padStart(2, '0')}
+            </span>
+            {activeImg.relative != null && (
+              <span>ΔE {signed(activeImg.relative)} eV</span>
+            )}
+            {activeImg.max_force != null && (
+              <span>F {activeImg.max_force.toFixed(3)} eV/Å</span>
+            )}
+            {activeImg.energy != null && <span>E {activeImg.energy.toFixed(3)} eV</span>}
             {active === saddle && <em className="nebmd-curve__saddle">鞍点</em>}
-          </span>
+          </div>
         )}
       </div>
       <div className="nebmd-curve__plot" ref={plotRef}>

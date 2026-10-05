@@ -10,28 +10,96 @@ from __future__ import annotations
 import os
 import re
 import signal
+import math
 import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from config import load_settings
 from task_paths import task_files_dir
 
-#: 各晶轴视图向量：(水平轴 v1, 视线方向 v2)，**都是直格子坐标**（u·a + v·b + w·c）
-#:
-#: 语义（2026-10-06 实测确认，用 a=3/b=6/c=12 合成晶胞 + 斜晶胞对照）：
-#:   第一行 = 屏幕水平方向对应的晶轴；第二行 = **视线方向**（指向屏幕外）——不是"垂直向量"。
-#:
-#: **口径**：用户要的是「**沿 a / b / c 轴本身看**」的三视图（a、b、c 方向），
-#: 而不是「垂直于 a/b/c 的三个面」（ab/bc/ac，等价于 a*/b*/c* 方向）。
-#: 两者只在正交晶胞里相同；本项目晶胞常有 γ=120°，必须区分（2026-10-06 用户指出方向不对）。
-AXIS_VECTORS: Dict[str, tuple] = {
-    "a": ((0, 1, 0), (1, 0, 0)),  # 沿 a 轴看：水平取 b
-    "b": ((1, 0, 0), (0, 1, 0)),  # 沿 b 轴看：水平取 a
-    "c": ((1, 0, 0), (0, 0, 1)),  # 沿 c 轴看：水平取 a
+#: 各晶轴视图：沿这个轴看（视线方向），水平方向取"另一个轴在该视线平面内的分量"
+#: （直格子坐标 u·a+v·b+w·c；具体向量由 `_axis_vectors()` 按晶胞参数算出）
+AXIS_VIEW = {
+    "a": {"view": (1, 0, 0), "across": (0, 1, 0)},  # 沿 a 看，水平 = b 垂直于 a 的分量
+    "b": {"view": (0, 1, 0), "across": (1, 0, 0)},  # 沿 b 看，水平 = a 垂直于 b 的分量
+    "c": {"view": (0, 0, 1), "across": (1, 0, 0)},  # 沿 c 看，水平 = a 垂直于 c 的分量
 }
+
+
+def _cell_from_template(template_text: str) -> Optional[Tuple[float, float, float, float, float, float]]:
+    """从 .vesta 模板的 CELLP 段读 (a, b, c, alpha, beta, gamma)——用于算直格子坐标下的投影。"""
+    lines = template_text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().upper() != "CELLP":
+            continue
+        for offset in (1, 2):  # 紧随其后的第一行才是 a b c α β γ
+            if index + offset >= len(lines):
+                break
+            parts = lines[index + offset].split()
+            if len(parts) >= 6:
+                try:
+                    return tuple(float(x) for x in parts[:6])  # type: ignore[return-value]
+                except ValueError:
+                    continue
+        break
+    return None
+
+
+def _lattice_vectors(cell: Tuple[float, ...]) -> Tuple[Tuple[float, float, float], ...]:
+    """由 (a,b,c,α,β,γ) 算笛卡尔晶格矢量（a 沿 x、b 在 xy 面——与 POSCAR 约定一致）。"""
+    a, b, c, alpha, beta, gamma = cell
+    ca = math.cos(math.radians(alpha))
+    cb = math.cos(math.radians(beta))
+    cg = math.cos(math.radians(gamma))
+    sg = math.sin(math.radians(gamma)) or 1e-12
+    av = (a, 0.0, 0.0)
+    bv = (b * cg, b * sg, 0.0)
+    cx = c * cb
+    cy = c * (ca - cb * cg) / sg
+    cz = math.sqrt(max(0.0, c * c - cx * cx - cy * cy))
+    return av, bv, (cx, cy, cz)
+
+
+def _axis_vectors(
+    axis: str, cell: Optional[Tuple[float, ...]]
+) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+    """算出该视图的 (水平向量, 视线向量)——**笛卡尔坐标**（VESTA 的 LORIENT 就是笛卡尔）。
+
+    关键：**水平方向必须垂直于视线**，否则 VESTA 画出来的"水平轴"是歪的；斜晶胞（如 γ=120°）
+    下看 a/b 就不是"直立矩形"（2026-10-06 用户用参考图指正）。做法：
+        视线 = 该轴的笛卡尔矢量；水平 = 另一个轴的笛卡尔矢量对视线正交化。
+    取不到晶胞参数时退回"直格子近似"（正交晶胞下两者一致）。
+    """
+    spec = AXIS_VIEW[axis]
+    view = tuple(float(x) for x in spec["view"])
+    across = tuple(float(x) for x in spec["across"])
+    if not cell:
+        return across, view
+    av, bv, cv = _lattice_vectors(cell)
+
+    def combine(vec):
+        return tuple(sum(vec[i] * (av, bv, cv)[i][k] for i in range(3)) for k in range(3))
+
+    def dot(u, v):
+        return sum(u[i] * v[i] for i in range(3))
+
+    def norm(u):
+        length = math.sqrt(dot(u, u)) or 1.0
+        return tuple(x / length for x in u)
+
+    view_dir = combine(view)
+    across_dir = combine(across)
+    denom = dot(view_dir, view_dir)
+    if denom <= 0:
+        return across, view
+    factor = dot(across_dir, view_dir) / denom
+    horizontal = tuple(across_dir[i] - factor * view_dir[i] for i in range(3))
+    if all(abs(x) < 1e-9 for x in horizontal):
+        return across, view
+    return norm(horizontal), norm(view_dir)
 
 RENDER_WAIT = 12  # 秒：等待 VESTA 输出文件的最长时间
 MIN_IONIC_STEPS = 5
@@ -72,7 +140,7 @@ def _apply_axis_settings(template_text: str, axis: str, zoom: float) -> str:
     if "PROJT" not in text:
         text += f"\nPROJT 0  {zoom:.3f}\n"
 
-    v1, v2 = AXIS_VECTORS[axis]
+    v1, v2 = _axis_vectors(axis, _cell_from_template(template_text))
 
     lines = text.splitlines(keepends=True)
     lorient_idx = next(
@@ -153,9 +221,36 @@ def _kill_tree(proc, pgid: int) -> None:
         proc.kill()
 
 
-def _run_vesta_cli(command, expected_path: Path, wait_seconds: int = RENDER_WAIT) -> bool:
+def _sweep_by_marker(marker: str) -> None:
+    """兜底清理：按命令行里的**唯一标记**结束 VESTA 进程。
+
+    VESTA 启动器会 double-fork 出 GUI 并**逃出我们的进程组**（新会话），只按 pgid kill
+    会漏掉它。这里用"本次生成的临时 .vesta 路径"做标记精确匹配（路径唯一），
+    **不会误伤用户自己开的 VESTA**。
+    """
+    if not marker:
+        return
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", marker], capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception:  # noqa: BLE001 - 没有 pgrep 就算了，不影响主流程
+        return
+    for text in out.split():
+        if not text.strip().isdigit():
+            continue
+        try:
+            os.kill(int(text), signal.SIGKILL)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _run_vesta_cli(
+    command, expected_path: Path, wait_seconds: int = RENDER_WAIT, marker: str = ""
+) -> bool:
     """后台启动 VESTA CLI，轮询输出文件生成，超时/结束后强制清理进程。"""
     _kill_vesta()
+    _sweep_by_marker(marker)
     try:
         proc = subprocess.Popen(
             command,
@@ -180,6 +275,7 @@ def _run_vesta_cli(command, expected_path: Path, wait_seconds: int = RENDER_WAIT
             break
         time.sleep(0.5)
     _kill_vesta()
+    _sweep_by_marker(marker)
     return expected_path.is_file() and expected_path.stat().st_size > 0
 
 
@@ -189,6 +285,7 @@ def _build_vesta_template(structure_path: Path, work_dir: Path) -> Optional[Path
     ok = _run_vesta_cli(
         [_vesta_exe(), "-open", str(structure_path), "-save", str(template_path), "-close", ""],
         template_path,
+        marker=str(template_path),
     )
     return template_path if ok else None
 
@@ -210,6 +307,7 @@ def _render_axis(work_dir: Path, template_text: str, axis: str, zoom: float, png
             str(custom_vesta),
         ],
         png_path,
+        marker=str(custom_vesta),
     )
     if not ok:
         png_path.unlink(missing_ok=True)

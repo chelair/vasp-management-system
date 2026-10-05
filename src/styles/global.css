@@ -3936,7 +3936,11 @@ body.is-atom-selecting * {
   color: var(--color-text-secondary);
   font-size: 13px;
   cursor: pointer;
-  opacity: 0;
+  /* 平时就看得见，鼠标移到 3D 区域/按钮上时变实心。
+     （原来是 opacity:0 + 依赖 .nebmd__stage--hover 淡入，那个 class 在重写组件时丢了，
+      导致左右切换箭头永远不出现 —— 2026-10-06 用户反馈） */
+  opacity: 0.6;
+  box-shadow: 0 2px 8px rgba(35, 48, 67, 0.16);
   transition:
     opacity 0.18s ease,
     background 0.18s ease,
@@ -3944,7 +3948,8 @@ body.is-atom-selecting * {
   z-index: 2;
 }
 
-.nebmd__stage--hover:hover .nebmd__nav:not(:disabled),
+.nebmd__stage:hover .nebmd__nav:not(:disabled),
+.nebmd__nav:hover:not(:disabled),
 .nebmd__nav:focus-visible {
   opacity: 1;
 }
@@ -3952,11 +3957,13 @@ body.is-atom-selecting * {
 .nebmd__nav:hover:not(:disabled) {
   background: #fff;
   box-shadow: 0 6px 16px rgba(35, 48, 67, 0.14);
+  color: var(--color-primary);
 }
 
 .nebmd__nav:disabled {
   cursor: default;
-  opacity: 0;
+  opacity: 0.18;
+  box-shadow: none;
 }
 
 .nebmd__nav--prev {
@@ -3999,7 +4006,7 @@ body.is-atom-selecting * {
 
 .nebmd__thumb {
   flex: 0 0 auto;
-  width: 154px;
+  width: 168px;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -4061,6 +4068,7 @@ body.is-atom-selecting * {
 .nebmd__thumb-cap {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 4px 8px;
   border-top: 1px solid var(--color-border-soft);
@@ -4079,10 +4087,76 @@ body.is-atom-selecting * {
   color: var(--color-text-muted);
 }
 
-.nebmd__thumb-de {
+.nebmd__thumb-metrics {
+  display: flex;
+  gap: 8px;
   margin-left: auto;
-  color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* 映像明细表：不用悬停曲线也能看到每个映像的能量/受力 */
+.nebmd__table {
+  max-height: 232px;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.nebmd__table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nebmd__table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: #f9fbfd;
+  border-bottom: 1px solid var(--color-border-soft);
+  white-space: nowrap;
+}
+
+.nebmd__table tbody td {
+  padding: 5px 10px;
+  border-bottom: 1px solid #f4f7fb;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.nebmd__table tbody tr {
+  cursor: pointer;
+}
+
+.nebmd__table tbody tr:hover td {
+  background: #f6f9ff;
+}
+
+.nebmd__table tbody tr.is-selected td {
+  background: rgba(91, 141, 239, 0.1);
+}
+
+.nebmd__table tbody tr.is-saddle td {
+  color: #c8434b;
+}
+
+.nebmd__table tbody tr.is-selected.is-saddle td {
+  background: rgba(217, 83, 91, 0.1);
+}
+
+.nebmd__table-idx {
+  font-weight: 700;
+}
+
+.nebmd__table-struct {
+  color: var(--color-text-muted);
 }
 
 @media (prefers-reduced-motion: reduce) {

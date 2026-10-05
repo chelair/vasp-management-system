@@ -43,7 +43,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   critical: { label: '异常', color: 'error' },
 };
 
-/** 工作量与工期（后端按「1 当量 = 600 核时、200 核 × 24h × 70% 产能」折算） */
+/** 工作量与工期（后端按「1 当量 = 1728 核时（24 核 × 3 天）、200 核 × 24h × 70% 产能」折算） */
 interface ReportWorkload {
   total_units: number;
   done_units: number;

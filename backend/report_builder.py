@@ -84,9 +84,10 @@ CATEGORY_ORDER = ("结构优化", "自由能路径", "NEB 过渡态", "电子结
 STATUS_DONE = ("completed", "archived")
 DEFAULT_WORKLOAD_WEIGHT = 1.0
 
-# 当量 → 核时 → 工期（2026-09-13 用户口径）
-#   1 当量 ≈ 600 核时；服务器最大算力 200 核 × 24 h；实际可用按 70% 折算
-DEFAULT_CORE_HOURS_PER_WEIGHT = 600.0
+# 当量 → 核时 → 工期（2026-10-06 用户更新口径）
+#   1 当量（= 一次结构优化）＝ 24 核 × 24 h/天 × 3 天 = **1728 核时**；
+#   服务器最大算力 200 核 × 24 h；实际可用按 70% 折算
+DEFAULT_CORE_HOURS_PER_WEIGHT = 1728.0
 DEFAULT_CLUSTER_MAX_CORES = 200.0
 DEFAULT_CLUSTER_UTILIZATION = 0.7
 CAPACITY_KEYS = ("core_hours_per_weight", "cluster_max_cores", "cluster_utilization")
@@ -165,7 +166,7 @@ def _registry() -> Dict[str, Any]:
 
 
 def _capacity() -> Dict[str, float]:
-    """算力口径（settings.json 可改）：1 当量 = 600 核时，200 核 × 24h × 70%。"""
+    """算力口径（settings.json 可改）：1 当量 = 1728 核时（24 核 × 3 天），200 核 × 24h × 70%。"""
     try:
         settings = load_settings()
     except Exception:  # noqa: BLE001
@@ -1454,7 +1455,7 @@ def build_report(
             "days_left": deadline_days,
             "deadline": str(project.get("deadline") or ""),
             "current_stage": _current_stage(active_facts, counter),
-            # 预估完成时间：剩余当量 × 600 核时 ÷（200 核 × 24h × 70%）
+            # 预估完成时间：剩余当量 × 1728 核时（24 核 × 3 天）÷（200 核 × 24h × 70%）
             "estimated_completion": plan["eta_at"],
             "eta_days": plan["eta_days"],
             "stage_breakdown": [

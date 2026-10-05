@@ -233,12 +233,12 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
    - **口径**：①「运行中任务」取 LSF 实时 `RUN` 作业数（不是任务表状态，任务状态要等巡检回填）；②「核数占用」优先用 `blimits` 的 SLOTS 已用/上限（按队列组），`settings.json: dashboard_total_cores` 可手动覆盖上限，两者都没有时退回 bjobs 汇总；③「项目进度」分母为**可见任务**（不含 conN 续算目录），与作业管理页口径一致；④「今日完成」= 当天巡检观察到 completed 且前一天未完成的任务；⑤「节点满载」按 RUN≥MAX 判定（LSF 常把跑满节点置为 closed）。
   - 每次成功查询把 `{ts, usedCores, runningTasks, pendingTasks} `追加到 `data/dashboard/core_history.json`（10 分钟内不重复采样，最多 4000 条），趋势图按天取峰值；**历史从 v0.6.0 上线那天开始累积**，之前不可回溯；「提交作业数」由 `data/audit_submit.log` 回溯统计，是完整历史。
 
-10. **报告的工作量 / 工期口径（2026-09-13 定，用户要求）**：一切都按**任务当量**折算——
+10. **报告的工作量 / 工期口径（2026-09-13 定，2026-10-06 更新当量核时）**：一切都按**任务当量**折算——
     - 当量 = `task_registry.workload_weight` 按类别累加（结构优化 1 · 频率矫正 1 · NEB 5 · 电子结构 0.4；自由能路径的中间体与 frac 各计 1）；**归档/已完成都算已完成当量**。
-    - **1 当量 ≈ 600 核时**（`settings.json: core_hours_per_weight`）。
+    - **1 当量 = 1728 核时**（= 24 核 × 24h/天 × 3 天，即一次结构优化的实测量级；`settings.json: core_hours_per_weight`，2026-10-06 由 600 调整为 1728）。
     - **有效算力 = 200 核 × 24h × 70% = 3,360 核时/天**（`cluster_max_cores` / `cluster_utilization`）。
     - 主进度 = 已完成当量 / 总当量；**预计完成 = 今天 + 剩余核时 ÷ 有效算力**；剩余为 0 时记"已收尾"。
-    - 落地位置：`report_builder._workload_plan()` → 结构化的 `basic_info.workload` / `progress.workload` / `progress.eta_days`，进度图 `report_panels.segmented_progress_chart(notes=...)` 与报告头 meta 都会显示（Ag 实测：87 当量 = 52,200 核时，已完成 31,800，剩余 20,400 → 还需 6.1 天）。
+    - 落地位置：`report_builder._workload_plan()` → 结构化的 `basic_info.workload` / `progress.workload` / `progress.eta_days`，进度图 `report_panels.segmented_progress_chart(notes=...)` 与报告头 meta 都会显示（**新口径 Ag 实测**：87 当量 = 150,336 核时 → 全部完成约 44.7 天）。
 
 ---
 

@@ -62,8 +62,10 @@ python3 -m venv .venv
 ### 3b. VESTA + Xvfb（结构渲染的外部依赖 · 2026-10-06 定，**沿用此方案**）
 
 用途：调 VESTA 命令行按晶轴渲染 POSCAR/CONTCAR 的 PNG 对比图
-（`backend/vesta_render.py`；该路径当前**未被任何模块调用**——巡检详情已改用浏览器端 3Dmol，
-报告用的是纯 Python 的 `report_charts.structure_views`。以后要用它出报告/详情图时按本节准备环境）。
+（`backend/vesta_render.py::render_task`）。入口约定（2026-10-06 定）：读
+**`<任务目录>/files/{POSCAR,CONTCAR}`**，图写到 **与 files/ 同级**的
+`<任务目录>/images/{poscar,contcar}_{a,b,c}.png`，**同名覆盖**；默认"图比结构新就复用"，
+`force=True` 强制重画。**报告生成以后直接调它**（巡检详情另走浏览器端 3Dmol）。
 
 **依赖三件（都属系统层，非 pip 包）**：
 
@@ -100,6 +102,10 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
    —— 清零会让 VESTA 直接段错误、导出无效图（Windows 上一直没暴露）；
 2. `_kill_vesta()` 原来只处理 Windows → Linux 上 VESTA（启动器再 fork `sh -c → VESTA-gui`）
    收不了尾、进程越积越多；现改为 `start_new_session=True` + **按进程组** SIGTERM→SIGKILL；
+2b. **关窗口要发 WM_DELETE_WINDOW，不要杀进程**（2026-10-06 实测）：VESTA 是**单实例多窗口**
+   —— 后开的文件会被转进已经在跑的那个进程，杀进程会**连用户自己开的窗口一起杀掉**；
+   而 `VESTA -close <文件>` 只关文档、窗口留成空白（越关越多）。现用
+   `vesta_render.close_x_windows()`（纯 ctypes 调 libX11，**不新增依赖**）按窗口标题精确关闭。
 3. **视角语义（2026-10-06 实测定稿）**：`.vesta` 里真正决定画面的是 `SCENE`（生效朝向 = `SCENE · LMATRIX`），
    `LMATRIX` 单独改不动画面、`LORIENT` 只是 VESTA 自己的备注（单改它会得到默认的 a*/b*/c* 那组，
    就是用户第一次说"方向不对"的那种图）。现在按用户口径改写 `SCENE` 前三行：
@@ -110,7 +116,7 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
    （顺带修了 `_kill_vesta` 的一处竞态：**pgid 必须在启动瞬间记下**——VESTA 启动器 fork 出
    `sh -c → VESTA-gui` 后自己先退出，之后再 `os.getpgid(pid)` 会失败 → GUI 残留。）
 
-> 体积/风险：xvfb 很小；真正的代价是**渲染耗时**（约 1.5 s/张）。缓存按 `reports/structure/.view_version`
+> 体积/风险：xvfb 很小；真正的代价是**渲染耗时**（约 1.5 s/张）。缓存按 `<任务目录>/images/.view_version`
 > 判断，改了视角定义（`AXIS_VIEW` / `VIEW_VERSION`）会自动作废重画，不用手动删图。
 
 ## 4. pymatgen 专项说明

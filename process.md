@@ -842,8 +842,14 @@ server {
 ### 11.7 可选：VESTA 结构渲染（需 Xvfb · 2026-10-06 定，沿用此方案）
 
 `backend/vesta_render.py` 调 VESTA CLI 按晶轴出 a/b/c 的 PNG（POSCAR/CONTCAR 对比图）。
-**该路径当前未被任何模块调用**（巡检详情用浏览器端 3Dmol、报告用纯 Python `report_charts.structure_views`）；
-以后要用它出图时按这里准备环境。依赖与做法已登记在 **DEPENDENCIES.md §3b**，要点：
+入口是 `backend/vesta_render.py::render_task(project, task, steps=None, force=False)`：
+读 **`<任务目录>/files/{POSCAR,CONTCAR}`**，图写到 **与 files/ 同级**的
+`<任务目录>/images/{poscar,contcar}_{a,b,c}.png`（**同名覆盖**，不留历史副本）。
+默认"图比结构文件新就复用"（第二次调用 0 秒），结构更新过 / `VIEW_VERSION` 变了 / `force=True`
+都会重画。**报告生成以后直接调它**（调用方负责套 xvfb，见下）。依赖与做法登记在 **DEPENDENCIES.md §3b**，要点：
+
+> 历史遗留：老任务里 `reports/structure/*.png` 是**以前留下的图**（2026-08 就存在），
+> 新口径不再写那里，也没去动它们；要不要清由用户决定。
 
 - **必须有图形环境**：VESTA 是 GTK/OpenGL GUI 程序。headless 服务无 `DISPLAY` → `Unable to initialize GTK+`；
   借桌面会话的 `DISPLAY=:0` 也不行（GL 画布渲染不出内容 → 导出报 `invalid image`）。
@@ -867,5 +873,11 @@ server {
   用位置参数 `VESTA <文件>`；给 VESTA 一个整体旋转过的结构文件**没用** —— 它按晶胞参数重算朝向（实测转 30° 出的图一样）。
 - 快测脚本 `scripts/vesta_view.py <结构> [a|b|c|all] [--png]`：生成的 `.vesta` 落在 `<结构目录>/vesta_view/`
   （会打印绝对路径），可用 `--view/--up/--right` 临时改朝向。
-- 渲染缓存按 `reports/structure/.view_version` 判断：视角定义一变（`VIEW_VERSION` +1）自动重画，
-  不用再手动删 `reports/structure/*.png`。
+- 渲染缓存按 `<任务目录>/images/.view_version` 判断：视角定义一变（`VIEW_VERSION` +1）自动重画。
+- **窗口生命周期（2026-10-06 实测）**：VESTA 是**单实例多窗口**（后开的文件被转进已在跑的进程），
+  所以"关窗口"必须**给那个窗口发 WM_DELETE_WINDOW**（= 点右上角 ×，`vesta_render.close_x_windows`，
+  纯 ctypes 调 libX11，不装任何东西）—— 杀进程会连用户自己的窗口一起杀掉，`VESTA -close <文件>`
+  只关文档、窗口留成空白越攒越多。脚本侧：`--close`（关本结构）/`--close-all`（关脚本开过的）/
+  `--close-blank`（清空白窗口）/`--list`；再开同一个 `.vesta` 前会先回收上次那个窗口，并**确认窗口真的出现**
+  （单实例转发偶尔丢窗口，会重试）。实测：开 3 个 → 关 3 个 → 连开 5 轮窗口数始终 3→0，
+  同时开着的"用户自己的窗口"在 `--close-all` 后依然健在。

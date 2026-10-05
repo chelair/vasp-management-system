@@ -1,12 +1,16 @@
-"""VESTA 结构渲染（供巡检详情结构分析使用，适配 web 系统）。
+"""VESTA 结构渲染：按 a/b/c 晶轴出 POSCAR/CONTCAR 的 PNG（供报告/详情用）。
 
-按 a/b/c 晶轴渲染 POSCAR/CONTCAR 的 PNG 对比图；VESTA 缺失/执行异常
-仅记录警告并返回 skipped，不影响巡检主流程。渲染结果缓存到任务
-reports/structure/ 目录，重复打开详情不再重新渲染。
+入口 `render_task(project, task)`：读 `<任务目录>/files/{POSCAR,CONTCAR}`，
+图写到**与 files/ 同级**的 `<任务目录>/images/{poscar,contcar}_{a,b,c}.png`，
+同名覆盖、不产生副本（详见函数 docstring）。VESTA 缺失/执行异常只记 warning，
+不影响主流程。也可以在命令行用 scripts/vesta_view.py 手动看/导图。
+
+调用方注意：VESTA 是 GTK 程序，必须在 Xvfb + 软件 GL 里跑（DEPENDENCIES.md §3b）。
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import signal
@@ -18,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from config import load_settings
-from task_paths import task_files_dir
+from task_paths import task_dir, task_files_dir
 
 #: 三视图口径：**想调朝向只改这张表**。
 #:   view  = 视线方向 —— 写哪根晶轴，哪根轴就指向屏幕外（"沿这根轴看"）
@@ -283,27 +287,26 @@ def _kill_tree(proc, pgid: int) -> None:
         proc.kill()
 
 
-def _sweep_by_marker(marker: str) -> None:
-    """兜底清理：按命令行里的**唯一标记**结束 VESTA 进程。
+def vesta_pids_for_marker(marker: str) -> list:
+    """找出"命令行里同时含 marker 和 VESTA 可执行文件"的进程（= 我们自己起的 VESTA）。
 
-    VESTA 启动器会 double-fork 出 GUI 并**逃出我们的进程组**（新会话），只按 pgid kill
-    会漏掉它。这里用"本次生成的临时 .vesta 路径"做标记精确匹配（路径唯一），
-    **不会误伤用户自己开的 VESTA**。
+    marker 一律用**唯一的 .vesta 路径**：用户自己开的 VESTA（别的文件）不会被命中。
 
     两个必要条件（否则会把调用者自己杀掉 —— 2026-10-06 实测踩到：模板路径写在命令行里时
     `pgrep -f <路径>` 会匹配到本进程，SIGKILL 后主程序直接 exit 137）：
       ① 跳过本进程与父进程；② 该进程的命令行里必须出现 VESTA 可执行文件路径。
     """
     if not marker:
-        return
+        return []
     try:
         out = subprocess.run(
             ["pgrep", "-f", marker], capture_output=True, text=True, timeout=5
         ).stdout
     except Exception:  # noqa: BLE001 - 没有 pgrep 就算了，不影响主流程
-        return
+        return []
     self_pids = {os.getpid(), os.getppid()}
     exe = _vesta_exe()
+    pids = []
     for text in out.split():
         if not text.strip().isdigit():
             continue
@@ -318,6 +321,18 @@ def _sweep_by_marker(marker: str) -> None:
             continue
         if exe not in args:
             continue
+        pids.append(pid)
+    return pids
+
+
+def _sweep_by_marker(marker: str) -> None:
+    """兜底清理：按命令行里的**唯一标记**结束 VESTA 进程。
+
+    VESTA 启动器会 double-fork 出 GUI 并**逃出我们的进程组**（新会话），只按 pgid kill
+    会漏掉它。这里用"本次生成的临时 .vesta 路径"做标记精确匹配（路径唯一），
+    **不会误伤用户自己开的 VESTA**。
+    """
+    for pid in vesta_pids_for_marker(marker):
         try:
             os.kill(pid, signal.SIGKILL)
         except Exception:  # noqa: BLE001
@@ -358,6 +373,162 @@ def _run_vesta_cli(
     return expected_path.is_file() and expected_path.stat().st_size > 0
 
 
+# ---------------------------------------------------------------------------
+# X11 窗口辅助：只给"打开窗口看结构"的模式用（渲染路径跑在 Xvfb 里，用不到）
+#
+# 为什么不用杀进程的方式关窗口（2026-10-06 实测踩到）：VESTA 是**单实例多窗口**——
+# 后开的文件会被转发进已经在跑的那个进程，于是"杀进程"会连**用户自己开的窗口一起杀掉**；
+# 而 VESTA 的 `-close <文件>` 只关文档、窗口本身留着（变成一个空白 VESTA 窗口，越关越多）。
+# 正确做法是给那个窗口发 WM_DELETE_WINDOW（等价于点窗口右上角的 ×）。
+# 这里用 ctypes 直接调 libX11，**不引入任何新依赖**（不需要 xdotool / python-xlib）。
+# ---------------------------------------------------------------------------
+
+
+class _XClientMessage(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("serial", ctypes.c_ulong),
+        ("send_event", ctypes.c_int),
+        ("display", ctypes.c_void_p),
+        ("window", ctypes.c_ulong),
+        ("message_type", ctypes.c_ulong),
+        ("format", ctypes.c_int),
+        ("data", ctypes.c_long * 5),
+        ("_pad", ctypes.c_long * 12),  # 撑到 XEvent 的大小
+    ]
+
+
+_X11_LIB = None
+
+
+def _x11():
+    """加载 libX11（失败返回 None，调用方按"没有 X 环境"处理）。"""
+    global _X11_LIB
+    if _X11_LIB is not None:
+        return _X11_LIB or None
+    try:
+        import ctypes.util
+
+        lib = ctypes.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
+        lib.XOpenDisplay.restype = ctypes.c_void_p
+        lib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        lib.XDefaultRootWindow.restype = ctypes.c_ulong
+        lib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        lib.XInternAtom.restype = ctypes.c_ulong
+        lib.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        lib.XQueryTree.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        lib.XFetchName.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_char_p),
+        ]
+        lib.XFree.argtypes = [ctypes.c_void_p]
+        lib.XSendEvent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_long,
+            ctypes.POINTER(_XClientMessage),
+        ]
+        lib.XFlush.argtypes = [ctypes.c_void_p]
+        lib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        _X11_LIB = lib
+    except Exception:  # noqa: BLE001 - 没装/加载不了就当没有
+        _X11_LIB = False
+    return _X11_LIB or None
+
+
+def _x11_children(dpy, win) -> list:
+    lib = _x11()
+    root_ret, parent_ret = ctypes.c_ulong(), ctypes.c_ulong()
+    kids = ctypes.POINTER(ctypes.c_ulong)()
+    n = ctypes.c_uint()
+    if not lib.XQueryTree(dpy, win, ctypes.byref(root_ret), ctypes.byref(parent_ret),
+                          ctypes.byref(kids), ctypes.byref(n)):
+        return []
+    try:
+        return [kids[i] for i in range(n.value)]
+    finally:
+        if kids:
+            lib.XFree(kids)
+
+
+def _x11_title(dpy, win) -> str:
+    lib = _x11()
+    name = ctypes.c_char_p()
+    if lib.XFetchName(dpy, win, ctypes.byref(name)) and name.value:
+        title = name.value.decode("utf-8", "replace")
+        lib.XFree(name)
+        return title
+    return ""
+
+
+def list_x_windows(titles: Optional[set] = None) -> list:
+    """列出当前 DISPLAY 上的窗口 (window_id, 标题)；给了 titles 就只返回标题命中的。"""
+    lib = _x11()
+    if lib is None:
+        return []
+    dpy = lib.XOpenDisplay(None)
+    if not dpy:
+        return []
+    found, stack = [], [lib.XDefaultRootWindow(dpy)]
+    try:
+        while stack:
+            win = stack.pop()
+            title = _x11_title(dpy, win)
+            if title and (titles is None or title in titles):
+                found.append((win, title))
+            stack.extend(_x11_children(dpy, win))
+    finally:
+        lib.XCloseDisplay(ctypes.c_void_p(dpy))
+    return found
+
+
+def close_x_windows(titles: set) -> list:
+    """给标题命中的窗口发 WM_DELETE_WINDOW（= 点右上角 ×），返回 (window_id, 标题) 列表。
+
+    只关这些窗口，**不动 VESTA 进程**，所以同一个 VESTA 进程里用户自己开的窗口不受影响。
+    """
+    lib = _x11()
+    if lib is None or not titles:
+        return []
+    dpy = lib.XOpenDisplay(None)
+    if not dpy:
+        return []
+    wm_protocols = lib.XInternAtom(dpy, b"WM_PROTOCOLS", 0)
+    wm_delete = lib.XInternAtom(dpy, b"WM_DELETE_WINDOW", 0)
+    closed = []
+    try:
+        for win, title in list_x_windows(titles):
+            ev = _XClientMessage()
+            ev.type = 33  # ClientMessage
+            ev.send_event = 1
+            ev.display = ctypes.c_void_p(dpy)
+            ev.window = win
+            ev.message_type = wm_protocols
+            ev.format = 32
+            ev.data[0] = wm_delete
+            ev.data[1] = 0  # CurrentTime
+            lib.XSendEvent(dpy, win, 0, 0, ctypes.byref(ev))
+            closed.append((win, title))
+        lib.XFlush(dpy)
+    finally:
+        lib.XCloseDisplay(ctypes.c_void_p(dpy))
+    return closed
+
+
+def vesta_window_titles(vesta_paths) -> set:
+    """我们生成的 .vesta 在 VESTA 窗口标题里的样子：`<文件名> - VESTA`。"""
+    return {f"{Path(p).name} - VESTA" for p in vesta_paths}
+
+
 def _build_vesta_template(structure_path: Path, work_dir: Path) -> Optional[Path]:
     """调用 VESTA 由结构文件生成基础 .vesta 模板；失败返回 None。"""
     template_path = work_dir / f"_temp_{structure_path.stem}.vesta"
@@ -393,40 +564,67 @@ def _render_axis(work_dir: Path, template_text: str, axis: str, zoom: float, png
     return ok
 
 
-def _cache_version_file(reports_dir: Path) -> Path:
-    return reports_dir / ".view_version"
+def structure_image_dir(project: Dict[str, Any], task: Dict[str, Any]) -> Path:
+    """结构图输出目录：**与任务目录里的 files/ 同级**的 images/。
+
+    即 `<任务目录>/images/`（不是 reports/ 下面）：和 `files/` 平级，报告生成直接取这里的图。
+    用 `task_dir` 而不是 `task_files_dir` 拼 —— 后者在没有 files/ 的老任务上会退化成任务目录本身。
+    """
+    return task_dir(project["name"], task) / "images"
 
 
-def _cache_is_current(reports_dir: Path) -> bool:
+def _cache_version_file(image_dir: Path) -> Path:
+    return image_dir / ".view_version"
+
+
+def _cache_is_current(image_dir: Path) -> bool:
     """缓存是否由当前视角定义（VIEW_VERSION）画出。"""
     try:
-        return _cache_version_file(reports_dir).read_text(encoding="utf-8").strip() == str(
+        return _cache_version_file(image_dir).read_text(encoding="utf-8").strip() == str(
             VIEW_VERSION
         )
     except OSError:
         return False
 
 
-def _mark_cache(reports_dir: Path) -> None:
+def _mark_cache(image_dir: Path) -> None:
     try:
-        _cache_version_file(reports_dir).write_text(f"{VIEW_VERSION}\n", encoding="utf-8")
+        _cache_version_file(image_dir).write_text(f"{VIEW_VERSION}\n", encoding="utf-8")
     except OSError:
         pass
 
 
-def _drop_stale_cache(reports_dir: Path) -> None:
+def _drop_stale_cache(image_dir: Path) -> None:
     """视角定义变了：清掉旧图，否则只按"文件在不在"判断的缓存永远不会重画。"""
     for label in ("poscar", "contcar"):
         for axis in ("a", "b", "c"):
-            (reports_dir / f"{label}_{axis}.png").unlink(missing_ok=True)
+            (image_dir / f"{label}_{axis}.png").unlink(missing_ok=True)
+
+
+def _image_is_fresh(png: Path, structure: Path) -> bool:
+    """图已存在且比结构文件新 → 可以直接用（下次调用就是"覆盖式更新"）。"""
+    try:
+        return png.is_file() and png.stat().st_size > 0 and png.stat().st_mtime >= structure.stat().st_mtime
+    except OSError:
+        return False
 
 
 def render_task(
     project: Dict[str, Any],
     task: Dict[str, Any],
     steps: Optional[int] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
-    """渲染单个结构优化任务的 a/b/c 轴 POSCAR/CONTCAR 对比图（带缓存）。"""
+    """渲染单个任务的 a/b/c 轴 POSCAR/CONTCAR 对比图，写进 `<任务目录>/images/`。
+
+    - 结构读 `files/POSCAR`、`files/CONTCAR`（缺一个就直接跳过，不报错）；
+    - 输出 `<任务目录>/images/{poscar,contcar}_{a,b,c}.png`，**同名覆盖**，不产生历史副本；
+    - `force=False`（默认）时，图比结构文件新就直接复用（省 6 次 VESTA 启动）；
+      结构更新过 / 视角定义变了（`VIEW_VERSION`）/ `force=True` 都会重新画并覆盖。
+
+    返回 {"task_id", "steps", "images": {"poscar": {...}, "contcar": {...}}, "warnings", "skipped"}。
+    报告生成以后直接调这个函数即可（调用方负责在 xvfb 里跑，见 DEPENDENCIES.md §3b）。
+    """
     task_id = task["task_id"]
     files_dir = task_files_dir(project["name"], task)
     warnings: list = []
@@ -453,49 +651,37 @@ def render_task(
             "skipped": f"离子步数 {steps} < {MIN_IONIC_STEPS}，结构几乎未弛豫，跳过渲染",
         }
 
-    reports_dir = files_dir.parent / "reports" / "structure"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    if not _cache_is_current(reports_dir):
-        _drop_stale_cache(reports_dir)
+    image_dir = structure_image_dir(project, task)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    version_ok = _cache_is_current(image_dir)
+    if force or not version_ok:
+        _drop_stale_cache(image_dir)
+    if not version_ok:
         warnings.append(f"视角定义已更新（v{VIEW_VERSION}），旧结构图作废重画")
     zoom = _vesta_zoom()
     images: Dict[str, Dict[str, str]] = {"poscar": {}, "contcar": {}}
 
-    # 全量缓存命中：六张图都已生成则直接复用，避免再次启动 VESTA
-    cached = all(
-        (reports_dir / f"{label}_{axis}.png").is_file()
-        and (reports_dir / f"{label}_{axis}.png").stat().st_size > 0
-        for label in ("poscar", "contcar")
-        for axis in ("a", "b", "c")
-    )
-    if cached:
-        images = {
-            label: {
-                axis: str(reports_dir / f"{label}_{axis}.png")
-                for axis in ("a", "b", "c")
-            }
-            for label in ("poscar", "contcar")
-        }
-        return {
-            "task_id": task_id,
-            "steps": steps,
-            "images": images,
-            "warnings": warnings,
-            "skipped": None,
-        }
-
     with tempfile.TemporaryDirectory() as tmp:
         work_dir = Path(tmp)
         for label, structure_path in (("poscar", poscar), ("contcar", contcar)):
+            # 六张图都比结构文件新 → 整批跳过（连 VESTA 都不启动）
+            if all(
+                _image_is_fresh(image_dir / f"{label}_{axis}.png", structure_path)
+                for axis in ("a", "b", "c")
+            ):
+                images[label] = {
+                    axis: str(image_dir / f"{label}_{axis}.png") for axis in ("a", "b", "c")
+                }
+                continue
             template = _build_vesta_template(structure_path, work_dir)
             if template is None:
                 warnings.append(f"{label} VESTA 模板生成失败（检查 vesta_path 配置）")
                 continue
             template_text = template.read_text(encoding="utf-8", errors="replace")
             for axis in ("a", "b", "c"):
-                png_path = reports_dir / f"{label}_{axis}.png"
-                if png_path.is_file() and png_path.stat().st_size > 0:
-                    # 缓存命中：结构文件未变化时直接复用
+                png_path = image_dir / f"{label}_{axis}.png"
+                if _image_is_fresh(png_path, structure_path):
+                    # 结构没更新过 → 复用（否则每次报告都重画 6 张）
                     images[label][axis] = str(png_path)
                     continue
                 if _render_axis(work_dir, template_text, axis, zoom, png_path):
@@ -503,7 +689,7 @@ def render_task(
                 else:
                     warnings.append(f"{label} {axis} 轴渲染失败")
 
-    _mark_cache(reports_dir)
+    _mark_cache(image_dir)
     if not any(images["poscar"].values()) and not any(images["contcar"].values()):
         return {
             "task_id": task_id,

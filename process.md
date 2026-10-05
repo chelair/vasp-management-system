@@ -838,3 +838,27 @@ server {
 1. 数据没动过：直接回旧机跑（旧机保留一份完整 `data/` 副本）；
 2. 新机已产生新数据（巡检/报告/续算）而想退回：把整份 `data/` 拷回旧机，**不要只拷 `projects.json`**（`checks/`、`reports/`、`projects/` 是配套的）；
 3. 迁移前的自动备份：`data/backups/project_db_*.json`（最近 20 份）+ `data/backups/migration_*/`。
+
+### 11.7 可选：VESTA 结构渲染（需 Xvfb · 2026-10-06 定，沿用此方案）
+
+`backend/vesta_render.py` 调 VESTA CLI 按晶轴出 a/b/c 的 PNG（POSCAR/CONTCAR 对比图）。
+**该路径当前未被任何模块调用**（巡检详情用浏览器端 3Dmol、报告用纯 Python `report_charts.structure_views`）；
+以后要用它出图时按这里准备环境。依赖与做法已登记在 **DEPENDENCIES.md §3b**，要点：
+
+- **必须有图形环境**：VESTA 是 GTK/OpenGL GUI 程序。headless 服务无 `DISPLAY` → `Unable to initialize GTK+`；
+  借桌面会话的 `DISPLAY=:0` 也不行（GL 画布渲染不出内容 → 导出报 `invalid image`）。
+- **用 Xvfb + 软件 GL**（`xvfb` 已于 2026-10-06 装到生产机；Mesa 软件 GL 随桌面环境已有）：
+  ```bash
+  LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+    xvfb-run -a -s "-screen 0 1400x1000x24" .venv/bin/python <你的渲染入口>
+  ```
+  实测约 **1.5 s/张**（6 张约 8 s）。
+- 若要常驻：systemd 加常驻 `Xvfb :99` + `Environment=DISPLAY=:99`，或渲染时用 `xvfb-run` 包一层。
+  **动 systemd 前先确认**。
+- 代码侧 2026-10-06 修的三个坑（commit `096a129`）：① 改写 `.vesta` 的 LORIENT 只换前三列（旋转），
+  **后三列视图中心必须保留**（清零 → VESTA 段错误 / `invalid image`）；② `_kill_vesta` 原来只管 Windows，
+  Linux 上 VESTA 会 fork `sh -c → VESTA-gui` 收不了尾 → 改 `start_new_session=True` + 按**进程组**结束；
+  ③ LORIENT 第二行是**视线方向**（不是"垂直向量"），`b` 视图原来与 `a` 重复 → 修正为
+  `a: ab 面 / b: bc 面 / c: ac 面`。
+- 已知限制：渲染缓存**不感知** `AXIS_VECTORS` / `vesta_zoom` 变化，改了视角定义要手动清
+  `reports/structure/*.png` 才会重画。

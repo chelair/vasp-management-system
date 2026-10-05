@@ -10,6 +10,7 @@
 | 前端 | Node.js ≥ 20.19（生产机 22.22.1 / npm 9.2.0） | React 18 / Vite 7 / AntD 5 / Framer Motion / React Router 7（package.json） | 构建前端 `npm ci && npm run build`（150 包，约 25 s） |
 | 后端核心 | Python ≥ 3.11（生产机 3.14.4，**已实测可用**） | fastapi / uvicorn / paramiko | 启动后端（生产机用仓库内 `.venv/bin/python backend/run.py`）必需 |
 | 后端可选 | 同上 | pymatgen / ase / apscheduler / openai | 仅对应功能用到时才装，见 §3 |
+| 系统工具（可选） | Linux 无头服务器 | **Xvfb** + Mesa 软件 GL（`libgl1-mesa-dri`） | **VESTA 结构渲染**（`backend/vesta_render.py`）需要图形环境；该渲染路径当前未被调用，接入后必需，见 §3b |
 
 安装策略：**只装核心依赖即可运行**；可选依赖由 `backend/dependencies.py` 在启动时
 后台检查缺失并提示，不影响核心功能。国内网络建议加镜像：
@@ -57,6 +58,54 @@ python3 -m venv .venv
   接入时必须做**可降级**（渲染失败就退回现有 SVG 或跳过结构图，不能阻塞报告生成）。
 - 实现要点：ASE 读结构 → 生成 .pov 场景 → POV-Ray 渲染 PNG/SVG → 按 CIF 哈希缓存到本地，
   避免批量生成报告时重复渲染。
+
+### 3b. VESTA + Xvfb（结构渲染的外部依赖 · 2026-10-06 定，**沿用此方案**）
+
+用途：调 VESTA 命令行按晶轴渲染 POSCAR/CONTCAR 的 PNG 对比图
+（`backend/vesta_render.py`；该路径当前**未被任何模块调用**——巡检详情已改用浏览器端 3Dmol，
+报告用的是纯 Python 的 `report_charts.structure_views`。以后要用它出报告/详情图时按本节准备环境）。
+
+**依赖三件（都属系统层，非 pip 包）**：
+
+| 依赖 | 说明 | 生产机状态 |
+| --- | --- | --- |
+| VESTA（外部二进制） | 路径取 `data/config/settings.json` 的 `vesta_path` | 已装：`/home/zouyuxi/APPs/VESTA-gtk3-x86_64/VESTA` |
+| **Xvfb**（虚拟 X 服务器） | `sudo apt-get install -y xvfb`（约 1 MB，不装服务、不改配置） | **2026-10-06 已装**（`/usr/bin/Xvfb`、`/usr/bin/xvfb-run`） |
+| Mesa 软件 GL（`libgl1-mesa-dri` / `libglx-mesa0`） | 让 Xvfb 里有可用的 OpenGL（llvmpipe） | 已随桌面环境安装（26.0.8） |
+
+**为什么必须要 Xvfb**（2026-10-06 在 Linux 上实测）：
+
+- VESTA 是 GTK/OpenGL **GUI** 程序：没有 `DISPLAY` 直接 `Unable to initialize GTK+`；
+- 借用桌面会话的 `DISPLAY=:0` 能起 GUI、也能 `-save` 出 `.vesta`，但 **GL 画布渲染不出内容**
+  → 导出报 `image.cpp: assert "IsOk()" failed in SaveFile(): invalid image`，拿不到 PNG；
+- 在 **Xvfb + 软件 GL** 下稳定出图，实测约 **1.5 s/张**（a/b/c × POSCAR/CONTCAR 共 6 张约 8 s）。
+
+**调用方式**（无头环境里用 `xvfb-run` 自动起/停 Xvfb）：
+
+```bash
+cd /home/zouyuxi/projects/vasp-manager
+LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+  xvfb-run -a -s "-screen 0 1400x1000x24" \
+  .venv/bin/python -c "import sys; sys.path.insert(0,'backend'); \
+    from vesta_render import render_task; print(render_task({'name':'temp','server':'server1'}, \
+    {'task_id':'t','task_type':'opt','model_name':'temp','dir_path':'temp','remote_dir':'temp'}, steps=99))"
+```
+
+若以后要常驻（接入巡检/报告），二选一：① systemd 里加常驻 `Xvfb :99` + `Environment=DISPLAY=:99`；
+② 后端调用 VESTA 时用 `xvfb-run` 包一层（改动更小，每次渲染多一次进程启动）。
+**动 systemd 属于生产变更，实施前先确认。**
+
+**代码侧已修的三点（2026-10-06，commit `096a129`）**：
+1. 改写 `.vesta` 的 LORIENT 时**只替换前三列（旋转）**，后三列（视图中心）必须原样保留
+   —— 清零会让 VESTA 直接段错误、导出无效图（Windows 上一直没暴露）；
+2. `_kill_vesta()` 原来只处理 Windows → Linux 上 VESTA（启动器再 fork `sh -c → VESTA-gui`）
+   收不了尾、进程越积越多；现改为 `start_new_session=True` + **按进程组** SIGTERM→SIGKILL；
+3. 视角语义：LORIENT 第二行是**视线方向**（不是脚本注释写的"垂直向量"）；`b` 原来又填 `(0,0,1)`
+   → 画出来与 `a` 同为 ab 面（只换了水平轴），现改为 `(1,0,0)`，三视图 = **a: ab 面（俯视）·
+   b: bc 面 · c: ac 面**，与纯 Python `structure_views(ab/bc/ac)` 口径一致。
+
+> 体积/风险：xvfb 很小；真正的代价是**渲染耗时**（约 1.5 s/张）与**缓存不感知视角定义变化**
+> （改了 `AXIS_VECTORS`/`vesta_zoom` 后需清掉 `reports/structure/*.png` 才会重画）。
 
 ## 4. pymatgen 专项说明
 
@@ -121,6 +170,9 @@ python -m pip install pymatgen
 
 ## 7. 变更记录
 
+- 2026-10-06：登记 **VESTA 结构渲染**的外部依赖（§3b）——Linux 无头服务器需要 **Xvfb + Mesa 软件 GL**
+  （生产机已装 xvfb；VESTA 二进制已存在），并记录调用方式、实测耗时与代码侧修的三点（LORIENT 视图中心、
+  进程组收尾、b 视图视线方向）。该渲染路径当前未被调用，属"以后接入时按此方案准备"。
 - 2026-08-31：新增本文件；登记 `scripts/vasp2cif.py` 对 pymatgen 的依赖，
   记录 Windows 旧 pip 安装失败与升级方案、拖带依赖树与体积提示。
   同日改用自包含 vasp2cif 脚本（经典实现 Python 3 移植，零第三方依赖），

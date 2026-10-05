@@ -160,6 +160,10 @@ def _sweep_by_marker(marker: str) -> None:
     VESTA 启动器会 double-fork 出 GUI 并**逃出我们的进程组**（新会话），只按 pgid kill
     会漏掉它。这里用"本次生成的临时 .vesta 路径"做标记精确匹配（路径唯一），
     **不会误伤用户自己开的 VESTA**。
+
+    两个必要条件（否则会把调用者自己杀掉 —— 2026-10-06 实测踩到：模板路径写在命令行里时
+    `pgrep -f <路径>` 会匹配到本进程，SIGKILL 后主程序直接 exit 137）：
+      ① 跳过本进程与父进程；② 该进程的命令行里必须出现 VESTA 可执行文件路径。
     """
     if not marker:
         return
@@ -169,11 +173,24 @@ def _sweep_by_marker(marker: str) -> None:
         ).stdout
     except Exception:  # noqa: BLE001 - 没有 pgrep 就算了，不影响主流程
         return
+    self_pids = {os.getpid(), os.getppid()}
+    exe = _vesta_exe()
     for text in out.split():
         if not text.strip().isdigit():
             continue
+        pid = int(text)
+        if pid in self_pids:
+            continue
         try:
-            os.kill(int(text), signal.SIGKILL)
+            args = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", "replace"
+            )
+        except OSError:
+            continue
+        if exe not in args:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
         except Exception:  # noqa: BLE001
             pass
 

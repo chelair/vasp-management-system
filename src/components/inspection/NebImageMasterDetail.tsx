@@ -3,7 +3,7 @@ import { Switch, Tooltip } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { InspectionDetail } from '../../types';
 import { ELEMENT_COLORS, parseCif } from '../../utils/structure3d';
-import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
+import Structure3DFrame, { type AtomForce, type AtomRef } from '../jobs/Structure3DFrame';
 import NebEnergyCurve from './NebEnergyCurve';
 import { AtomicForceControl, useAtomicForces } from './AtomicForceControl';
 import { buildAtomColors } from '../../utils/forceColor';
@@ -181,6 +181,13 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
   const forceNote =
     atomColorInfo.note ??
     (force.enabled && force.data?.warnings?.length ? force.data.warnings.join('；') : null);
+  /** 打开「查看原子受力」时，选中原子面板显示受力（而不是分数坐标） */
+  const atomForces = useMemo(() => {
+    if (!force.enabled || !force.data) return null;
+    const map: Record<number, AtomForce> = {};
+    for (const atom of force.data.atoms) map[atom.index] = atom;
+    return map;
+  }, [force.enabled, force.data]);
 
   // 映像数变化时收敛选中索引
   useEffect(() => {
@@ -415,6 +422,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
                 height={MAIN_HEIGHT}
                 selected={selectedAtoms}
                 atomColors={atomColorInfo.colors}
+                atomForces={atomForces}
                 onClickAtom={(atom, additive) =>
                   setSelectedAtoms((prev) => {
                     if (!additive) return [atom];

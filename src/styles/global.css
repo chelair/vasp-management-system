@@ -1668,6 +1668,11 @@ body.is-atom-selecting * {
   color: var(--color-text-secondary);
 }
 
+/* 受力模式：每行更长（Fx Fy Fz |F|），放宽面板宽度 */
+.s3d-editor__coords--force {
+  max-width: 82%;
+}
+
 .s3d-editor__coord-row {
   display: flex;
   gap: 10px;

@@ -10,7 +10,7 @@ import type {
   StructureAnalysis,
 } from '../../types';
 import { TASK_TYPE_LABELS } from '../../types';
-import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
+import Structure3DFrame, { type AtomForce, type AtomRef } from '../jobs/Structure3DFrame';
 import { AtomicForceControl, useAtomicForces } from './AtomicForceControl';
 
 interface LatticeRow {
@@ -116,6 +116,13 @@ export default function StructurePanel({
   const forceNote =
     atomColorInfo.note ??
     (force.enabled && force.data?.warnings?.length ? force.data.warnings.join('；') : null);
+  /** 打开「查看原子受力」时，选中原子面板显示受力（而不是分数坐标） */
+  const atomForces = useMemo(() => {
+    if (!force.enabled || !force.data) return null;
+    const map: Record<number, AtomForce> = {};
+    for (const atom of force.data.atoms) map[atom.index] = atom;
+    return map;
+  }, [force.enabled, force.data]);
 
   const isifText =
     analysis.isif == null
@@ -274,6 +281,7 @@ export default function StructurePanel({
             height={460}
             selected={selectedAtoms}
             atomColors={atomColorInfo.colors}
+            atomForces={atomForces}
             toolbarExtra={
               <>
                 {hasPoscar && hasContcar && (

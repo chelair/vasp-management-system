@@ -18,6 +18,17 @@ export interface AtomRef {
   element: string;
 }
 
+/** 逐原子受力（键 = CIF 原子下标）；巡检详情页打开「查看原子受力」时传给 3D 视图 */
+export interface AtomForce {
+  fx: number;
+  fy: number;
+  fz: number;
+  /** max(|fx|,|fy|,|fz|)（eV/Å） */
+  fmax: number;
+  /** Selective dynamics 固定的原子 */
+  fixed?: boolean;
+}
+
 interface Props {
   cif: string | null;
   height?: number;
@@ -30,6 +41,11 @@ interface Props {
   onClearSelection: () => void;
   /** 在结构图左上角显示选中原子的分数坐标（灰色小字，默认关闭） */
   showSelectedCoords?: boolean;
+  /**
+   * 逐原子受力。传了它（=「查看原子受力」打开）时，左上角"选中原子"面板
+   * **显示受力而不是分数坐标**；没传则维持原来的坐标显示。
+   */
+  atomForces?: Record<number, AtomForce> | null;
   /** 3Dmol viewer 就绪回调（创建后给出 viewer，销毁/切换时给 null）——供外部同步视角用 */
   onViewerReady?: (viewer: any | null) => void;
   /** 追加到工具栏末尾的自定义控件（如 NEB 的「同步旋转」开关） */
@@ -68,6 +84,7 @@ export default function Structure3DFrame({
   onViewerReady,
   toolbarExtra,
   atomColors,
+  atomForces,
 }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
@@ -163,24 +180,36 @@ export default function Structure3DFrame({
   structureRef.current = structure;
 
   /**
-   * 左上角"选中原子坐标"：取 CIF（= vasp2cif 从 POSCAR/CONTCAR 转出）里的分数坐标，
-   * 与 POSCAR 坐标行一一对应，按 POSCAR 序号排序后逐行显示。
+   * 左上角"选中原子"面板：默认显示分数坐标（取 CIF，与 POSCAR 坐标行一一对应，按 POSCAR
+   * 序号排序）；**打开「查看原子受力」时改为显示该原子的受力**（Fx Fy Fz |F|，eV/Å）。
    */
+  const forceMode = Boolean(atomForces);
   const selectedCoords = useMemo(() => {
     if (!showSelectedCoords || !structure) return [];
     return [...selected]
       .sort((a, b) => a.poscarIndex - b.poscarIndex)
       .map((atom) => {
         const parsed = structure.atoms[atom.index];
+        const force = atomForces?.[atom.index];
+        let text: string;
+        if (force) {
+          const mag = Math.sqrt(force.fx ** 2 + force.fy ** 2 + force.fz ** 2);
+          const num = (v: number) => `${v >= 0 ? ' ' : ''}${v.toFixed(4)}`;
+          text =
+            `Fx ${num(force.fx)}  Fy ${num(force.fy)}  Fz ${num(force.fz)}` +
+            `  |F| ${mag.toFixed(4)}${force.fixed ? '  · 固定' : ''}`;
+        } else if (parsed) {
+          text = [formatCoord(parsed.fx), formatCoord(parsed.fy), formatCoord(parsed.fz)].join('  ');
+        } else {
+          text = '—';
+        }
         return {
           key: `${atom.element}-${atom.poscarIndex}`,
           label: `${atom.element}${atom.poscarIndex}`,
-          coords: parsed
-            ? [formatCoord(parsed.fx), formatCoord(parsed.fy), formatCoord(parsed.fz)].join('  ')
-            : '—',
+          text,
         };
       });
-  }, [showSelectedCoords, structure, selected]);
+  }, [showSelectedCoords, structure, selected, atomForces]);
 
   /** 每个元素一套球棍/空间填充样式 */
   function elementStyle(element: string, s: number, ball: boolean) {
@@ -557,14 +586,16 @@ export default function Structure3DFrame({
           )}
           {shiftHeld && !band && <div className="s3d-editor__band-hint">按住拖动框选原子</div>}
         </div>
-        {/* 选中原子坐标（灰色小字，不拦截鼠标事件，不影响点选/框选） */}
+        {/* 选中原子信息（灰色小字，不拦截鼠标事件）：默认分数坐标，受力模式下显示受力 */}
         {selectedCoords.length > 0 && (
-          <div className="s3d-editor__coords">
-            <div className="s3d-editor__coords-title">选中原子 · 分数坐标</div>
+          <div className={`s3d-editor__coords${forceMode ? ' s3d-editor__coords--force' : ''}`}>
+            <div className="s3d-editor__coords-title">
+              {forceMode ? '选中原子 · 受力 (eV/Å) · Fx Fy Fz |F|' : '选中原子 · 分数坐标'}
+            </div>
             {selectedCoords.slice(0, COORD_MAX_ROWS).map((item) => (
               <div className="s3d-editor__coord-row" key={item.key}>
                 <span className="s3d-editor__coord-label">{item.label}</span>
-                <span>{item.coords}</span>
+                <span>{item.text}</span>
               </div>
             ))}
             {selectedCoords.length > COORD_MAX_ROWS && (

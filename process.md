@@ -892,6 +892,10 @@ server {
   用位置参数 `VESTA <文件>`；给 VESTA 一个整体旋转过的结构文件**没用** —— 它按晶胞参数重算朝向（实测转 30° 出的图一样）。
 - 快测脚本 `scripts/vesta_view.py <结构> [a|b|c|all] [--png]`：生成的 `.vesta` 落在 `<结构目录>/vesta_view/`
   （会打印绝对路径），可用 `--view/--up/--right` 临时改朝向。
+- **导出图像质量（倍数）默认 2**（2026-10-06 用户口径）：VESTA CLI 是
+  `-export_img <文件> scale=N`，`scale=2` → 1126×649 变成 2252×1298。统一在
+  `_vesta_image_scale()` 里加，取值 `data/config/settings.json: vesta_image_scale`（现 2）；
+  改了倍数要把 `VIEW_VERSION` +1（现 v3），否则旧图不会重画。
 - 渲染缓存按 `<任务目录>/images/.view_version` 判断：视角定义一变（`VIEW_VERSION` +1）自动重画。
 - **窗口生命周期（2026-10-06 实测）**：VESTA 是**单实例多窗口**（后开的文件被转进已在跑的进程），
   所以"关窗口"必须**给那个窗口发 WM_DELETE_WINDOW**（= 点右上角 ×，`vesta_render.close_x_windows`，

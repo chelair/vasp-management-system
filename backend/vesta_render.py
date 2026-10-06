@@ -37,10 +37,11 @@ AXIS_VIEW: Dict[str, Dict[str, Any]] = {
     "c": {"view": "c", "up": None, "right": "a"},
 }
 
-#: 视角定义（AXIS_VIEW）/缩放变了就把这个版本号 +1：渲染前会比对
-#: reports/structure/.view_version，对不上就整批重画 —— 以前改了视角要手动删
-#: reports/structure/*.png 才会更新（缓存只看文件在不在）。
-VIEW_VERSION = 2
+#: **渲染口径版本**：视角定义（AXIS_VIEW）/缩放/导出倍数（vesta_image_scale）变了就 +1。
+#: 渲染前会比对 <任务目录>/images/.view_version，对不上就整批重画 ——
+#: 以前改了视角要手动删 PNG 才会更新（缓存只看"文件比结构新"）。
+#: v3：导出倍数改成 2（`-export_img ... scale=2`，2026-10-06）。
+VIEW_VERSION = 3
 
 RENDER_WAIT = 12  # 秒：等待 VESTA 输出文件的最长时间
 MIN_IONIC_STEPS = 5
@@ -64,6 +65,20 @@ def _vesta_zoom() -> float:
         return float(settings.get("vesta_zoom", 1.7))
     except (TypeError, ValueError):
         return 1.7
+
+
+def _vesta_image_scale() -> int:
+    """导出图片的放大倍数（= "图像质量"）：VESTA CLI 的 `-export_img <file> scale=N`。
+
+    实测（2026-10-06）：`scale=2` 把 1126×649 的导出图变成 2252×1298 ——
+    缩放到同样显示尺寸时线条/球体明显更锐利。用户口径：**默认 2**。
+    想调就改 `data/config/settings.json` 的 `vesta_image_scale`（1 = 与画布同尺寸）。
+    """
+    settings = load_settings()
+    try:
+        return max(1, int(float(settings.get("vesta_image_scale", 2))))
+    except (TypeError, ValueError):
+        return 2
 
 
 def _unit(v) -> Optional[tuple]:
@@ -541,7 +556,7 @@ def _build_vesta_template(structure_path: Path, work_dir: Path) -> Optional[Path
 
 
 def _render_axis(work_dir: Path, template_text: str, axis: str, zoom: float, png_path: Path) -> bool:
-    """修改 LORIENT/PROJT 后用 VESTA 导出单轴 PNG。"""
+    """修改 SCENE/PROJT 后用 VESTA 导出单轴 PNG（默认 2 倍分辨率，见 `_vesta_image_scale`）。"""
     custom_vesta = work_dir / f"_temp_{axis}.vesta"
     custom_vesta.write_text(
         _apply_axis_settings(template_text, axis, zoom), encoding="utf-8"
@@ -553,6 +568,7 @@ def _render_axis(work_dir: Path, template_text: str, axis: str, zoom: float, png
             str(custom_vesta),
             "-export_img",
             str(png_path),
+            f"scale={_vesta_image_scale()}",
             "-close",
             str(custom_vesta),
         ],

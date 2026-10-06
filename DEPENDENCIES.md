@@ -81,6 +81,12 @@ python3 -m venv .venv
 - 借用桌面会话的 `DISPLAY=:0` 能起 GUI、也能 `-save` 出 `.vesta`，但 **GL 画布渲染不出内容**
   → 导出报 `image.cpp: assert "IsOk()" failed in SaveFile(): invalid image`，拿不到 PNG；
 - 在 **Xvfb + 软件 GL** 下稳定出图，实测约 **1.5 s/张**（a/b/c × POSCAR/CONTCAR 共 6 张约 8 s）。
+- **导出倍数（"图像质量"）默认 2**：VESTA CLI 支持 `-export_img <文件> scale=N`（2026-10-06 实测：
+  `scale=2` 把 1126×649 变成 2252×1298，放大到同尺寸显示时线条/球体明显更锐利）。
+  代码里由 `backend/vesta_render.py::_vesta_image_scale()` 统一加参数，默认取
+  `data/config/settings.json` 的 **`vesta_image_scale`（现为 2）**；改成 1 就回到与画布同尺寸。
+  **改了导出倍数（或视角定义）要把 `VIEW_VERSION` +1**，否则 `<任务目录>/images/.view_version`
+  对得上、旧图会被当成"还是新的"而不重画（现为 v3）。
 
 **调用方式**（无头环境里用 `xvfb-run` 自动起/停 Xvfb）：
 

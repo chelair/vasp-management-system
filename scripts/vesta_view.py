@@ -55,6 +55,7 @@ from vesta_render import (  # noqa: E402
     _parse_cellp,
     _run_vesta_cli,
     _vesta_exe,
+    _vesta_image_scale,
     _vesta_zoom,
     axis_view_matrix,
     close_x_windows,
@@ -332,7 +333,16 @@ def main() -> int:
             png = out / f"{structure.stem}_{axis}.png"
             png.unlink(missing_ok=True)
             ok = _run_vesta_cli(
-                [exe, "-open", str(target), "-export_img", str(png), "-close", str(target)],
+                [
+                    exe,
+                    "-open",
+                    str(target),
+                    "-export_img",
+                    str(png),
+                    f"scale={_vesta_image_scale()}",  # 默认 2 倍分辨率（settings.json: vesta_image_scale）
+                    "-close",
+                    str(target),
+                ],
                 png,
                 marker=str(target),
             )

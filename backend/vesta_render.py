@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import load_settings
 from task_paths import task_dir, task_files_dir
@@ -651,6 +651,99 @@ def _mark_cache(image_dir: Path) -> None:
         _cache_version_file(image_dir).write_text(f"{VIEW_VERSION}\n", encoding="utf-8")
     except OSError:
         pass
+
+
+#: NEB 映像图存放：`<任务目录>/images/<映像号>/{a,b,c}.png`
+NEB_IMAGE_SUBDIR = "[0-9]*"
+
+
+def neb_image_dir(image_dir: Path, label: str) -> Path:
+    return image_dir / str(label)
+
+
+def neb_image_paths(image_dir: Path, label: str) -> Dict[str, Path]:
+    return {axis: neb_image_dir(image_dir, label) / f"{axis}.png" for axis in ("a", "b", "c")}
+
+
+def render_neb_images(
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    force: bool = False,
+) -> Dict[str, Any]:
+    """渲染 NEB 各映像的 a/b/c 三视图 PNG（报告弹窗用）。
+
+    结构取 `files/<映像号>/CONTCAR`，端点（最小/最大编号）没有 CONTCAR 时退回 POSCAR
+    —— 和巡检同步 CIF 的口径一致（`inspection_runner._sync_neb_image_structures`）。
+    图写到 `<任务目录>/images/<映像号>/{a,b,c}.png`，**同名覆盖**；
+    默认"图比结构文件新就复用"，`force=True` 或 `VIEW_VERSION` 变了就重画。
+    """
+    task_id = task.get("task_id")
+    files_dir = task_files_dir(project["name"], task)
+    image_dir = structure_image_dir(project, task)
+    image_dir.mkdir(parents=True, exist_ok=True)
+    warnings: List[str] = []
+    rendered: Dict[str, Dict[str, str]] = {}
+
+    if force or not _cache_is_current(image_dir):
+        for old in image_dir.glob(f"{NEB_IMAGE_SUBDIR}/[abc].png"):
+            old.unlink(missing_ok=True)
+        if not _cache_is_current(image_dir):
+            warnings.append(f"视角定义已更新（v{VIEW_VERSION}），旧结构图作废重画")
+
+    # 映像编号：优先 files/ 下的数字子目录（归档同步下来的），没有再翻 NEB 输入目录
+    labels = sorted(
+        {p.name for p in files_dir.glob(NEB_IMAGE_SUBDIR) if p.is_dir() and p.name.isdigit()},
+        key=int,
+    )
+    if not labels:
+        return {
+            "task_id": task_id,
+            "images": {},
+            "warnings": warnings + ["没有找到 NEB 映像目录（files/<映像号>/）"],
+        }
+    first, last = labels[0], labels[-1]
+
+    zoom = _vesta_zoom()
+    with tempfile.TemporaryDirectory() as tmp:
+        work_dir = Path(tmp)
+        for label in labels:
+            src_dir = files_dir / label
+            structure = src_dir / "CONTCAR"
+            if not structure.is_file() or structure.stat().st_size == 0:
+                # 端点没有 CONTCAR（POSCAR 就是优化后的初/末态）；中间映像缺 CONTCAR 直接跳过
+                if label in (first, last) and (src_dir / "POSCAR").is_file():
+                    structure = src_dir / "POSCAR"
+                else:
+                    warnings.append(f"映像 {label} 缺 CONTCAR，跳过")
+                    continue
+            paths = neb_image_paths(image_dir, label)
+            fresh = (not force) and all(
+                _image_is_fresh(paths[axis], structure) for axis in ("a", "b", "c")
+            )
+            if fresh:
+                rendered[label] = {axis: str(paths[axis]) for axis in ("a", "b", "c")}
+                continue
+            template = _build_vesta_template(structure, work_dir)
+            if template is None:
+                warnings.append(f"映像 {label} VESTA 模板生成失败（检查 vesta_path 配置）")
+                continue
+            template_text = template.read_text(encoding="utf-8", errors="replace")
+            got: Dict[str, str] = {}
+            for axis in ("a", "b", "c"):
+                png_path = paths[axis]
+                png_path.parent.mkdir(parents=True, exist_ok=True)
+                if _image_is_fresh(png_path, structure) and not force:
+                    got[axis] = str(png_path)
+                    continue
+                if _render_axis(work_dir, template_text, axis, zoom, png_path):
+                    got[axis] = str(png_path)
+                else:
+                    warnings.append(f"映像 {label} {axis} 轴渲染失败")
+            if got:
+                rendered[label] = got
+
+    _mark_cache(image_dir)
+    return {"task_id": task_id, "images": rendered, "warnings": warnings}
 
 
 def _drop_stale_cache(image_dir: Path) -> None:

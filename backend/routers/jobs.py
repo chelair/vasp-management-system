@@ -1552,6 +1552,28 @@ def _schedule_archive_outputs(
                 f"OK saved={','.join(result.get('saved') or []) or '-'} "
                 f"missing={','.join(result.get('missing') or []) or '-'}{extra}",
             )
+            # 文件同步完成后**再触发一次**结构三视图渲染：归档刚拉回/更新了 CONTCAR / 各映像结构，
+            # 这时画的图才是最新的（用刚 reload 出来的 task，状态已是 archived）
+            try:
+                db2 = load_db()
+                project2 = next(
+                    (p for p in db2.get("projects", []) if p.get("name") == project_name),
+                    None,
+                )
+                task2 = next(
+                    (
+                        t
+                        for t in (project2 or {}).get("tasks", [])
+                        if t.get("task_id") == task_id
+                    ),
+                    None,
+                )
+                if task2 is not None:
+                    import structure_images
+
+                    structure_images.schedule(project_name, task2)
+            except Exception as e:  # noqa: BLE001 - 渲染调度失败不影响归档
+                _audit_log(project_name, task_id, "", "structure-images", f"FAILED: {e}")
         except permissions.PermissionDenied:
             raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception as e:  # noqa: BLE001 - 后台下载失败只记审计

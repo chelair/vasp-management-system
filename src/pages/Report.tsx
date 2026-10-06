@@ -28,6 +28,7 @@ import {
   fetchProjectReports,
   generateProjectReports,
   reportChartUrl,
+  reportImageUrl,
   reportHtmlUrl,
   reportMarkdownUrl,
 } from '../api/reports';
@@ -220,8 +221,13 @@ export default function Report() {
       visibleSections.map((section) => ({
         ...section,
         html: renderMarkdown(section.markdown, {
+          // charts/xxx.svg 与 images/xxx.png 都按报告目录解析（后端两个接口）
           chartResolver: (path) =>
-            detail ? reportChartUrl(detail.meta.report_id, path) : path,
+            detail
+              ? path.startsWith('images/')
+                ? reportImageUrl(detail.meta.report_id, path)
+                : reportChartUrl(detail.meta.report_id, path)
+              : path,
         }),
       })),
     [visibleSections, detail],

@@ -4679,6 +4679,35 @@ body.is-atom-selecting * {
   color: var(--color-text-muted);
 }
 
+/* 报告里的"结构 N / 映像 N"标签（网页版；导出的单文件 HTML 里是可点开的 chip）。
+   三视图（images/ 下的 VESTA PNG）在网页里按图表同等对待：连着的三张横向排一行 */
+.report-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 1px 9px;
+  border: 1px solid #cfe0ff;
+  border-radius: 999px;
+  background: #f2f7ff;
+  color: #2d5fcc;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.report-markdown .report-figure + .report-figure {
+  display: inline-block;
+  width: 32%;
+  vertical-align: top;
+  margin: 0 0.6% 6px;
+}
+
+@media (max-width: 720px) {
+  .report-markdown .report-figure + .report-figure {
+    width: 100%;
+    margin: 6px 0;
+  }
+}
+
 .report-structured {
   margin: 12px 0 0;
   padding: 12px;

@@ -720,4 +720,12 @@ def _apply_batch(
                 enriched_entry["markers"] = row["markers"]
             enriched.append(enriched_entry)
         archived = archive_results(enriched, server, ts)
+    # 巡检回填结束：给"已收敛 / 已归档"的 opt、以及已完成的 NEB 排结构三视图渲染
+    # （后台线程 + xvfb，串行；失败只写日志，不影响巡检）
+    try:
+        import structure_images
+
+        structure_images.schedule_for_project_tasks(project_name)
+    except Exception:  # noqa: BLE001 - 调度失败不影响巡检
+        pass
     return server_rows, archived

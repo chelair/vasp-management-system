@@ -88,6 +88,12 @@ export function reportChartUrl(reportId: string, chartPath: string): string {
   return `/api/reports/project/${encodeURIComponent(reportId)}/files/${encodeURIComponent(name)}`;
 }
 
+/** 报告里的结构三视图（VESTA PNG，images/xxx.png）→ 可访问 URL */
+export function reportImageUrl(reportId: string, imagePath: string): string {
+  const name = imagePath.split('/').pop() ?? imagePath;
+  return `/api/reports/project/${encodeURIComponent(reportId)}/images/${encodeURIComponent(name)}`;
+}
+
 /** 报告 schema 清单（版本 / 枚举 / 单位 / 章节） */
 export async function fetchReportSchema(): Promise<Record<string, unknown>> {
   return request<Record<string, unknown>>('/reports/project/schema');

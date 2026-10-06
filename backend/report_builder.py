@@ -45,6 +45,7 @@ from report_schema import (
 )
 from storage import load_db
 from structure_analysis import analyze as analyze_structure
+import structure_images
 from task_paths import is_continuation_task, task_dir
 
 AUDIT_FILE = DATA_DIR / "audit_submit.log"
@@ -74,6 +75,52 @@ SUBTYPE_LABELS = {
 ANOMALY_CATEGORIES = ("convergence", "resource", "file", "ssh", "queue")
 
 MAX_STRUCTURE_TASKS = 6  # 单项目正文最多展示多少个结构优化任务（其余只进结构化数据），控制篇幅
+
+
+def _views_dialog(
+    project_name: str,
+    task_obj: Dict[str, Any],
+    dialog_id: str,
+    title: str,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, str]]:
+    """把一个任务（opt/ele）的 a/b/c 三视图打包成弹窗规格。
+
+    返回 `(弹窗规格, {报告内的图片相对路径: 磁盘源文件})`；没有图就返回 `(None, {})` ——
+    报告**优先用 `<任务目录>/images/` 里 VESTA 渲染好的三视图**，没有就跳过（用户口径 2026-10-07）。
+    """
+    if not task_obj:
+        return None, {}
+    views = structure_images.task_views(project_name, task_obj)
+    rows: List[Dict[str, Any]] = []
+    images: Dict[str, str] = {}
+    for key, label in (("poscar", "初始（POSCAR）"), ("contcar", "优化后（CONTCAR）")):
+        axis_views = views.get(key) or {}
+        if len(axis_views) < 3:
+            continue
+        row: Dict[str, Any] = {"label": label, "views": {}}
+        for axis in ("a", "b", "c"):
+            name = f"{dialog_id}_{key}_{axis}.png"
+            images[name] = axis_views[axis]
+            row["views"][axis] = f"images/{name}"
+        rows.append(row)
+    if not rows:
+        return None, {}
+    return {"id": dialog_id, "title": title, "rows": rows}, images
+
+
+def _neb_image_dialog(
+    dialog_id: str, title: str, views: Dict[str, str]
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, str]]:
+    """NEB 单个映像的三视图弹窗规格（结构与 `_views_dialog` 一致）。"""
+    if len(views) < 3:
+        return None, {}
+    row: Dict[str, Any] = {"label": "优化后（CONTCAR）", "views": {}}
+    images: Dict[str, str] = {}
+    for axis in ("a", "b", "c"):
+        name = f"{dialog_id}_{axis}.png"
+        images[name] = views[axis]
+        row["views"][axis] = f"images/{name}"
+    return {"id": dialog_id, "title": title, "rows": [row]}, images
 CHART_WIDTH = 1000  # 报告里所有图表统一宽度（页面按 1:1 展示，排版与字号才一致）
 OPT_VIEW_PANEL = 146  # 三视图单格边长（3 格 = 438）
 OPT_CURVE_W = 538  # 面板里右侧能量/力曲线宽度（4+438+16+538+4 = 1000）
@@ -711,6 +758,12 @@ def _sections_markdown(report, charts):
             f"下列展示其中 {len(opt_items)} 个，其余仅保留在报告数据中。每条包含结构三视图与能量/力曲线。"
             "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n\n"
         )
+        skipped_unconverged = int(science.get("opt_skipped_unconverged") or 0)
+        if skipped_unconverged:
+            blocks.append(
+                f"另有 **{skipped_unconverged} 个结构优化任务尚未收敛**（或未归档），"
+                "按口径不展开结构三视图；收敛/归档后会自动出现在下一份报告里。\n\n"
+            )
         entries: List[str] = []
         for item in opt_items:
             converge = "✅ 已收敛" if item["converged"] else "⚠️ 未收敛"
@@ -723,6 +776,12 @@ def _sections_markdown(report, charts):
             panel = item["charts"].get("panel") or item["charts"].get("energy_force")
             if panel:
                 lines.append(f"![{item['task_name']} 结构三视图与能量/力曲线]({panel})")
+            # VESTA 三视图（a/b/c，横向排列；报告生成时按用户口径优先用 images/ 里的图）
+            for row in item.get("structure_views") or []:
+                for axis in ("a", "b", "c"):
+                    src = (row.get("views") or {}).get(axis)
+                    if src:
+                        lines.append(f"![{row['label']} · {axis} 视图]({src})")
             entries.append("\n\n".join(lines))
         # 任务之间用分隔线隔开，避免上下两个任务的面板图糊成一片
         blocks.append("\n\n---\n\n".join(entries) + "\n")
@@ -752,7 +811,11 @@ def _sections_markdown(report, charts):
                     ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
                     [
                         [
-                            f"结构 {s['structure_label']}",
+                            (
+                                f"[结构 {s['structure_label']}](#{s['dialog']})"
+                                if s.get("dialog")
+                                else f"结构 {s['structure_label']}"
+                            ),
                             _fmt(s["dft_energy_ev"]),
                             ("—" if s["correction_ev"] is None else f"{float(s['correction_ev']):+.4f}"),
                             _fmt(s["free_energy_ev"]),
@@ -808,7 +871,11 @@ def _sections_markdown(report, charts):
                         ["映像", "相对能垒 (eV)", "绝对能量 (eV)", "最大受力 (eV/Å)", "角色"],
                         [
                             [
-                                f"映像 {img['label']}",
+                                (
+                                    f"[映像 {img['label']}](#{img['dialog']})"
+                                    if img.get("dialog")
+                                    else f"映像 {img['label']}"
+                                ),
                                 _fmt(img["relative_energy_ev"], 4),
                                 _fmt(img["energy_ev"], 4),
                                 _fmt(img["max_force_ev_per_a"], 4)
@@ -1033,12 +1100,23 @@ def build_report(
     # ---------------- 图表
     charts: Dict[str, str] = {}
     opt_science: List[Dict[str, Any]] = []
+    # 结构三视图弹窗（点击「结构 N」/「映像 N」打开）与要复制进报告的 PNG 清单
+    dialogs: List[Dict[str, Any]] = []
+    dialog_images: Dict[str, str] = {}
     # 只把**独立**结构优化任务（不含自由能路径中间体 / NEB 初末态优化）计入本节
     opt_facts = [f for f in facts if f["task_type"] == "opt" and _task_category(f) == "结构优化"]
     opt_total = len([f for f in opt_facts if f.get("force_history")])
+    opt_skipped_unconverged = 0
     for fact in opt_facts:
         history = fact.get("force_history") or []
         if not history or len(opt_science) >= MAX_STRUCTURE_TASKS:
+            continue
+        # 用户口径（2026-10-07）：**未收敛的 opt 任务不输出详细内容**，不生成空壳
+        converged = (
+            bool(fact["converged"]) if fact.get("converged") is not None else fact["status"] in STATUS_DONE
+        )
+        if not (converged or fact["status"] == "archived"):
+            opt_skipped_unconverged += 1
             continue
         points = [
             {
@@ -1066,8 +1144,18 @@ def build_report(
             contcar_cif = read_or_convert_cif(project, task_obj, "CONTCAR")
         except Exception as e:  # noqa: BLE001
             collection_errors.append(f"{fact['task_name']} 结构 CIF 读取失败：{e}")
+        # 三视图优先用 VESTA 渲染好的 PNG（images/），没有就走原来的 CIF 示意三视图
+        dialog, dialog_pngs = _views_dialog(
+            project_name,
+            task_obj,
+            f"dlg_{fact['task_id']}",
+            f"{fact['task_name']} 结构三视图",
+        )
+        if dialog:
+            dialogs.append(dialog)
+            dialog_images.update(dialog_pngs)
         view_cif = contcar_cif or poscar_cif
-        if view_cif:
+        if view_cif and not dialog:
             vname = f"{fact['task_id']}_views.svg"
             views_svg = structure_views(
                 view_cif,
@@ -1082,6 +1170,7 @@ def build_report(
             charts[pname] = task_panel(views_svg, curve_svg, gap=16)
             chart_refs["panel"] = f"charts/{pname}"
         else:
+            # 有 VESTA 三视图时，曲线单独出一张（三视图另走 images/ 的 PNG）
             ename = f"{fact['task_id']}_energy_force.svg"
             charts[ename] = curve_svg
             chart_refs["energy_force"] = f"charts/{ename}"
@@ -1093,15 +1182,15 @@ def build_report(
                 "status_label": fact["status_label"],
                 "final_energy_ev": fact["last_energy"],
                 "force_max_ev_per_a": fact["force_max"],
-                "converged": bool(fact["converged"])
-                if fact["converged"] is not None
-                else fact["status"] in STATUS_DONE,
+                "converged": converged,
                 "ionic_steps": fact["steps"],
                 "energy_force_series": points,
                 "structure": {
                     "poscar_cif": poscar_cif,
                     "contcar_cif": contcar_cif,
                 },
+                "structure_dialog": dialog["id"] if dialog else None,
+                "structure_views": dialog["rows"] if dialog else [],
                 "charts": chart_refs,
             }
         )
@@ -1110,6 +1199,26 @@ def build_report(
     for path in free_paths:
         if not any(s.get("free_energy_ev") is not None for s in path["structures"]):
             continue
+        # 每个中间体的三视图弹窗（点「结构 N」打开）
+        for s in path["structures"]:
+            opt_obj = next(
+                (
+                    x
+                    for x in project.get("tasks", [])
+                    if str(x.get("task_id")) == str(s.get("opt_task_id"))
+                ),
+                {},
+            )
+            dialog, pngs = _views_dialog(
+                project_name,
+                opt_obj,
+                f"dlg_{s.get('opt_task_id') or s['structure_label']}",
+                f"结构 {s['structure_label']} · {opt_obj.get('model_name') or ''}".strip(" ·"),
+            )
+            if dialog:
+                dialogs.append(dialog)
+                dialog_images.update(pngs)
+                s["dialog"] = dialog["id"]
         name = f"{path['group_id']}_step.svg"
         # 与巡检详情页的自由能路径看板同版式：统计卡 + 台阶图
         charts[name] = free_energy_panel(path, title=f"{path['group_name']} 自由能路径看板")
@@ -1119,6 +1228,27 @@ def build_report(
     for item in neb_science:
         if not item["images"]:
             continue
+        # 每个映像的三视图弹窗（点「映像 N」打开）
+        neb_obj = next(
+            (
+                x
+                for x in project.get("tasks", [])
+                if str(x.get("task_id")) == str(item["task_id"])
+            ),
+            {},
+        )
+        views_by_label = structure_images.neb_views(project_name, neb_obj) if neb_obj else {}
+        for img in item["images"]:
+            label_key = structure_images.image_label_key(img["label"])
+            dialog, pngs = _neb_image_dialog(
+                f"dlg_{item['task_id']}_{label_key}",
+                f"映像 {img['label']} · {item['task_name']}",
+                views_by_label.get(label_key) or {},
+            )
+            if dialog:
+                dialogs.append(dialog)
+                dialog_images.update(pngs)
+                img["dialog"] = dialog["id"]
         name = f"{item['task_id']}_barrier.svg"
         # 与巡检详情页的 NEB 能垒看板同版式：统计卡 + 能垒曲线
         charts[name] = neb_panel(item, title=f"{item['task_name']} NEB 能垒看板")
@@ -1520,6 +1650,8 @@ def build_report(
         "science": {
             "opt": opt_science,
             "opt_total": opt_total,
+            # 未收敛（且未归档）的 opt 任务按用户口径不展开（2026-10-07）
+            "opt_skipped_unconverged": opt_skipped_unconverged,
             "free_energy": free_paths,
             "neb": neb_science,
             "ele": {
@@ -1632,8 +1764,12 @@ def build_report(
             },
             "collection_errors": collection_errors,
             "charts": [{"name": f"charts/{name}", "bytes": len(svg)} for name, svg in charts.items()],
+            # 结构三视图弹窗（<dialog>）+ 需要复制进报告目录的 PNG 清单
         },
     }
+    # 结构三视图弹窗（<dialog>）与内联 PNG 清单：放在报告根节点，导出 HTML 时用
+    report["dialogs"] = dialogs
+    report["images"] = dialog_images
 
     sections = _sections_markdown(report, charts)
     report["markdown_sections"] = sections

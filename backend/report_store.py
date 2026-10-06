@@ -10,12 +10,25 @@
 """
 
 import json
+import base64
 import shutil
 import threading
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import DATA_DIR
+from report_export import render_html
+
+
+def image_data_uri(path: Path) -> Optional[str]:
+    """把 PNG 读成 `data:image/png;base64,...`（HTML 内联用）；读不到返回 None。"""
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return None
+        return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        return None
 
 REPORTS_DIR = DATA_DIR / "reports"
 INDEX_FILE = REPORTS_DIR / "index.json"
@@ -83,16 +96,41 @@ def save_report(
     if tmp.exists():
         shutil.rmtree(tmp)
     (tmp / "charts").mkdir(parents=True, exist_ok=True)
+    (tmp / "images").mkdir(parents=True, exist_ok=True)
     (tmp / "report.json").write_text(
         json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (tmp / "report.md").write_text(markdown, encoding="utf-8")
     for name, svg in charts.items():
         (tmp / "charts" / name).write_text(svg, encoding="utf-8")
+    # 结构三视图 PNG 也存进报告目录（报告自包含：HTML 里是 base64，这里留原件备查）
+    for name, src in (doc.get("images") or {}).items():
+        try:
+            shutil.copyfile(str(src), tmp / "images" / Path(str(name)).name)
+        except OSError:
+            continue
     if target.exists():
         shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp.replace(target)
+
+    # 单文件自包含 HTML（命名带日期，放在项目报告目录下）：用户口径 2026-10-07
+    html_path: Optional[Path] = None
+    try:
+        html_text = render_html(
+            doc,
+            doc.get("markdown_sections") or [],
+            chart_loader=lambda name: (target / "charts" / name).read_text(
+                encoding="utf-8", errors="replace"
+            )
+            if (target / "charts" / name).is_file()
+            else None,
+            image_loader=lambda rel: image_data_uri(target / rel),
+        )
+        html_path = target.parent / f"report_{date.today().isoformat()}.html"
+        html_path.write_text(html_text, encoding="utf-8")
+    except Exception:  # noqa: BLE001 - HTML 生成失败不影响报告本体
+        html_path = None
 
     entry = {
         "report_id": report_id,
@@ -110,6 +148,10 @@ def save_report(
         "chart_count": len(charts),
         "json_path": f"{_safe_name(project_name)}/{report_id}/report.json",
         "markdown_path": f"{_safe_name(project_name)}/{report_id}/report.md",
+        "html_path": (
+            f"{_safe_name(project_name)}/{html_path.name}" if html_path else ""
+        ),
+        "html_bytes": html_path.stat().st_size if html_path else 0,
         # 目录用**相对 data/reports 的相对路径**（跨机器迁移后仍然有效）
         "directory": f"{_safe_name(project_name)}/{report_id}",
     }
@@ -165,6 +207,19 @@ def read_chart(report_id: str, relative_path: str) -> Optional[str]:
     if not name.endswith(".svg") or not path.is_file():
         return None
     return path.read_text(encoding="utf-8")
+
+
+def read_image_data_uri(report_id: str, relative_path: str) -> Optional[str]:
+    """报告目录里的结构三视图 → base64 data URI（HTML 导出内联用）。"""
+    directory = report_dir(report_id)
+    if directory is None:
+        return None
+    target = (directory / relative_path).resolve()
+    try:
+        target.relative_to(directory.resolve())  # 防目录穿越
+    except ValueError:
+        return None
+    return image_data_uri(target)
 
 
 def delete_report(report_id: str) -> bool:

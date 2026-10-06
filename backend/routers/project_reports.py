@@ -17,6 +17,8 @@ from report_store import (
     list_reports,
     load_report,
     read_chart,
+    read_image_data_uri,
+    report_dir,
     save_report,
 )
 from storage import load_db
@@ -245,6 +247,7 @@ def project_report_html(
             doc.get("markdown_sections") or [],
             sections=chosen,
             chart_loader=(lambda name: read_chart(report_id, name)) if inline else None,
+            image_loader=(lambda rel: read_image_data_uri(report_id, rel)) if inline else None,
             auto_print=print,
         )
         filename = f"{report_id}.html"
@@ -269,6 +272,17 @@ def project_report_chart(report_id: str, name: str, request: Request):
     if svg is None:
         return JSONResponse(status_code=404, content=fail("图表不存在"))
     return Response(content=svg, media_type="image/svg+xml")
+
+
+@router.get("/{report_id}/images/{name}")
+def project_report_image(report_id: str, name: str, request: Request):
+    """结构三视图 PNG（报告页面在线查看用；单文件 HTML 里是 base64 内联）。"""
+    _ensure_report_access(report_id, request)
+    directory = report_dir(report_id)
+    path = (directory / "images" / Path(name).name) if directory else None
+    if path is None or not path.is_file():
+        return JSONResponse(status_code=404, content=fail("图片不存在"))
+    return Response(content=path.read_bytes(), media_type="image/png")
 
 
 @router.delete("/{report_id}")

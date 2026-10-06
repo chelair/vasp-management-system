@@ -31,7 +31,10 @@ function inline(text: string, chartResolver?: (path: string) => string): string 
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
   out = out.replace(/(?<![A-Za-z0-9_])_([^_]+)_(?![A-Za-z0-9_])/g, '<em>$1</em>');
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, href: string) => {
-    const url = chartResolver && !/^(https?:|mailto:|#|\/)/i.test(href) && href.startsWith('charts/')
+    // 指向结构三视图弹窗的链接（导出 HTML 里是可点的 <dialog> 触发器）：网页里只当标签显示
+    if (href.startsWith('#dlg_')) return `<span class="report-chip">${label}</span>`;
+    const url = chartResolver && !/^(https?:|mailto:|#|\/)/i.test(href) &&
+      (href.startsWith('charts/') || href.startsWith('images/'))
       ? chartResolver(href)
       : href;
     return `<a href="${safeUrl(url)}" target="_blank" rel="noreferrer">${label}</a>`;
@@ -105,7 +108,7 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
     const img = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(line);
     if (img) {
       const alt = img[1];
-      const src = img[2].startsWith('charts/') && chartResolver
+      const src = (img[2].startsWith('charts/') || img[2].startsWith('images/')) && chartResolver
         ? chartResolver(img[2])
         : img[2];
       html.push(

@@ -72,12 +72,84 @@ a { color: #3F68B8; text-decoration: none; }
   body { padding: 0; font-size: 12px; }
   h2 { page-break-before: auto; }
   .no-print { display: none !important; }
+  .img-row { page-break-inside: avoid; }
+}
+
+/* ---------------- 结构三视图（VESTA PNG，横向紧凑、等宽等高） ---------------- */
+.img-row {
+  display: flex; gap: 8px; align-items: stretch; justify-content: center;
+  margin: 10px 0 14px; page-break-inside: avoid;
+}
+.img-row figure { flex: 1 1 0; min-width: 0; margin: 0; }
+.img-row img { width: 100%; height: auto; display: block; border-radius: 6px; }
+.img-row figcaption { font-size: 11px; }
+.row-label { margin: 14px 0 2px; font-size: 12.5px; color: #5A6B85; font-weight: 600; }
+
+/* ---------------- 可点击标签（点开结构三视图弹窗） ---------------- */
+button.chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 28px; padding: 2px 10px; border: 1px solid #CFE0FF; border-radius: 999px;
+  background: #F2F7FF; color: #2D5FCC; font: inherit; font-size: 12px; font-weight: 500;
+  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+button.chip:hover { background: #E7F0FF; }
+button.chip:active { background: #DCE9FF; }
+
+/* ---------------- 弹窗（原生 <dialog>） ---------------- */
+dialog.viewer {
+  width: min(1100px, 92vw); max-height: 90vh; padding: 0; border: none; border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(20, 40, 80, .28); color: #233043;
+}
+dialog.viewer::backdrop { background: rgba(16, 26, 44, .55); }
+dialog.viewer header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border-bottom: 1px solid #E7EDF6;
+}
+dialog.viewer h3 { margin: 0; font-size: 15px; }
+dialog.viewer .close {
+  min-width: 44px; min-height: 44px; border: none; background: transparent; color: #7A89A0;
+  font-size: 24px; line-height: 1; cursor: pointer; border-radius: 8px;
+}
+dialog.viewer .close:hover { background: #F2F5FA; }
+dialog.viewer .body { padding: 10px 14px 16px; overflow: auto; max-height: calc(90vh - 62px); }
+
+/* ---------------- 手机（≤720px）：表格变卡片、三视图竖排、弹窗全屏 ---------------- */
+@media (max-width: 720px) {
+  body { padding: 16px 13px 28px; font-size: 13.5px; }
+  h1 { font-size: 20px; }
+  table, thead, tbody, tr, th, td { display: block; width: 100%; }
+  thead { display: none; }
+  table { border: none; }
+  tbody tr {
+    border: 1px solid #E3E9F2; border-radius: 10px; margin: 8px 0; padding: 4px 0;
+    background: #fff;
+  }
+  tbody tr:nth-child(even) td { background: transparent; }
+  td {
+    border: none; display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; padding: 5px 12px; text-align: right;
+  }
+  td::before {
+    content: attr(data-label); color: #8A98AC; font-weight: 500; text-align: left;
+    flex: 0 0 auto;
+  }
+  td:first-child { color: #233043; font-weight: 600; }
+  .img-row { flex-direction: column; gap: 10px; }
+  button.chip { min-height: 44px; padding: 6px 14px; }
+  dialog.viewer {
+    width: 100vw; height: 100vh; max-width: none; max-height: none; border-radius: 0; margin: 0;
+  }
+  dialog.viewer .body { max-height: calc(100vh - 60px); }
 }
 """
 
 
 def _inline(text: str) -> str:
-    """行内语法：**加粗**、`代码`、_斜体_、[文字](链接)。"""
+    """行内语法：**加粗**、`代码`、_斜体_、[文字](链接)。
+
+    `[结构 1](#dlg_xxx)` 这种"指向弹窗"的链接会渲染成可点击的 chip（原生 <dialog> 打开），
+    Markdown 本身还是普通链接，`.md` 读起来不受影响。
+    """
     out = html_lib.escape(text, quote=False)
     out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
     out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
@@ -85,6 +157,11 @@ def _inline(text: str) -> str:
 
     def link(m: "re.Match[str]") -> str:
         label, href = m.group(1), m.group(2)
+        if href.startswith("#dlg_"):
+            return (
+                f'<button type="button" class="chip" data-dialog="{html_lib.escape(href[1:])}">'
+                f"{label}</button>"
+            )
         safe = href if not href.lower().startswith(("javascript:", "data:")) else "#"
         return f'<a href="{safe}">{label}</a>'
 
@@ -95,9 +172,15 @@ def markdown_to_html(
     markdown: str,
     *,
     chart_loader: Optional[Callable[[str], Optional[str]]] = None,
+    image_loader: Optional[Callable[[str], Optional[str]]] = None,
     inline_charts: bool = True,
 ) -> str:
-    """把报告 Markdown 子集转为 HTML（表格 / 列表 / 图片 / 加粗 / 代码）。"""
+    """把报告 Markdown 子集转为 HTML（表格 / 列表 / 图片 / 加粗 / 代码）。
+
+    - `charts/xxx.svg` → 内联 SVG（原行为）；
+    - `images/xxx.png` → `image_loader` 给的 base64 data URI（结构三视图，**拿不到就整块跳过**）；
+    - 连续的图片行（a/b/c 三视图）合并成一行 `.img-row`，等宽紧凑。
+    """
     lines = (markdown or "").split("\n")
     out: List[str] = []
     i = 0
@@ -127,7 +210,12 @@ def markdown_to_html(
                 out.append("</tr></thead><tbody>")
                 for row in body:
                     out.append("<tr>")
-                    out.extend(f"<td>{_inline(c)}</td>" for c in row)
+                    for idx, cell in enumerate(row):
+                        label = head[idx] if idx < len(head) else ""
+                        out.append(
+                            f'<td data-label="{html_lib.escape(label, quote=True)}">'
+                            f"{_inline(cell)}</td>"
+                        )
                     out.append("</tr>")
                 out.append("</tbody></table>")
             continue
@@ -146,21 +234,39 @@ def markdown_to_html(
             out.append("</ul>")
             continue
 
-        # 图片
-        m = re.fullmatch(r"!\[([^\]]*)\]\(([^)]+)\)", stripped)
-        if m:
-            alt, src = m.group(1), m.group(2)
-            svg = None
-            if inline_charts and chart_loader is not None and src.startswith("charts/"):
-                svg = chart_loader(src.split("/", 1)[1])
-            if svg:
-                out.append(f"<figure>{svg}<figcaption>{_inline(alt)}</figcaption></figure>")
+        # 图片（连续多张合并成一行）
+        if re.fullmatch(r"!\[([^\]]*)\]\(([^)]+)\)", stripped):
+            figures: List[str] = []
+            while i < len(lines):
+                mm = re.fullmatch(r"!\[([^\]]*)\]\(([^)]+)\)", lines[i].strip())
+                if not mm:
+                    break
+                alt, src = mm.group(1), mm.group(2)
+                svg = None
+                data_uri = None
+                if inline_charts and chart_loader is not None and src.startswith("charts/"):
+                    svg = chart_loader(src.split("/", 1)[1])
+                elif image_loader is not None and src.startswith("images/"):
+                    data_uri = image_loader(src)
+                if svg:
+                    figures.append(f"<figure>{svg}<figcaption>{_inline(alt)}</figcaption></figure>")
+                elif data_uri:
+                    figures.append(
+                        f'<figure><img src="{data_uri}" alt="{html_lib.escape(alt)}"/>'
+                        f"<figcaption>{_inline(alt)}</figcaption></figure>"
+                    )
+                elif src.startswith("images/"):
+                    pass  # 结构图缺失：跳过（用户口径：没有就跳过）
+                else:
+                    figures.append(
+                        f'<figure><img src="{html_lib.escape(src)}" alt="{html_lib.escape(alt)}"/>'
+                        f"<figcaption>{_inline(alt)}</figcaption></figure>"
+                    )
+                i += 1
+            if len(figures) > 1:
+                out.append('<div class="img-row">' + "".join(figures) + "</div>")
             else:
-                out.append(
-                    f'<figure><img src="{html_lib.escape(src)}" alt="{html_lib.escape(alt)}"/>'
-                    f"<figcaption>{_inline(alt)}</figcaption></figure>"
-                )
-            i += 1
+                out.extend(figures)
             continue
 
         # 标题
@@ -188,15 +294,95 @@ def markdown_to_html(
     return "\n".join(out)
 
 
+VIEWER_SCRIPT = """
+(function () {
+  var lastOpen = 0;
+  function openDialog(target) {
+    if (!target || !target.closest) return false;
+    var btn = target.closest('[data-dialog]');
+    if (!btn) return false;
+    var dlg = document.getElementById(btn.getAttribute('data-dialog'));
+    if (!dlg || typeof dlg.showModal !== 'function') return false;
+    if (!dlg.open) dlg.showModal();
+    return true;
+  }
+  // 触摸：pointerup 立即响应（手机上不用等 click 的 300ms）
+  document.addEventListener('pointerup', function (ev) {
+    if (ev.pointerType === 'touch' && openDialog(ev.target)) lastOpen = Date.now();
+  });
+  document.addEventListener('click', function (ev) {
+    if (Date.now() - lastOpen < 600) return;
+    if (openDialog(ev.target)) return;
+    var closeBtn = ev.target.closest && ev.target.closest('dialog.viewer [data-close]');
+    if (closeBtn) { closeBtn.closest('dialog').close(); return; }
+    // 点弹窗外的遮罩关闭
+    var dlg = ev.target.closest && ev.target.closest('dialog.viewer');
+    if (dlg && ev.target === dlg) dlg.close();
+  });
+  // 原生 <dialog> 自带 Esc 关闭与焦点管理；这里只补键盘可达性
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') {
+      document.querySelectorAll('dialog.viewer[open]').forEach(function (d) { d.close(); });
+    }
+  });
+})();
+"""
+
+
+def render_dialogs(
+    dialogs: List[Dict[str, Any]],
+    *,
+    image_loader: Optional[Callable[[str], Optional[str]]] = None,
+) -> str:
+    """结构三视图弹窗（原生 `<dialog>`）：标题 + 每行 a/b/c 三视图（base64 内联）。"""
+    parts: List[str] = []
+    for dialog in dialogs or []:
+        dialog_id = html_lib.escape(str(dialog.get("id") or ""), quote=True)
+        if not dialog_id:
+            continue
+        rows_html: List[str] = []
+        for row in dialog.get("rows") or []:
+            views = row.get("views") or {}
+            figures: List[str] = []
+            for axis in ("a", "b", "c"):
+                src = views.get(axis)
+                if not src:
+                    continue
+                data_uri = image_loader(src) if image_loader else None
+                if not data_uri:
+                    continue  # 缺图就跳过这一张（不挂图）
+                figures.append(
+                    f'<figure><img src="{data_uri}" alt="{axis} 视图"/>'
+                    f"<figcaption>{axis} 视图</figcaption></figure>"
+                )
+            if not figures:
+                continue
+            rows_html.append(f'<p class="row-label">{_inline(str(row.get("label") or ""))}</p>')
+            rows_html.append('<div class="img-row">' + "".join(figures) + "</div>")
+        if not rows_html:
+            continue  # 一张图都没有 → 不输出空弹窗
+        parts.append(
+            f'<dialog class="viewer" id="{dialog_id}">'
+            f"<header><h3>{_inline(str(dialog.get('title') or '结构三视图'))}</h3>"
+            f'<button type="button" class="close" data-close aria-label="关闭">×</button></header>'
+            f'<div class="body">{"".join(rows_html)}</div></dialog>'
+        )
+    return "".join(parts)
+
+
 def render_html(
     doc: Dict[str, Any],
     markdown_sections: List[Dict[str, str]],
     *,
     sections: Optional[List[str]] = None,
     chart_loader: Optional[Callable[[str], Optional[str]]] = None,
+    image_loader: Optional[Callable[[str], Optional[str]]] = None,
     auto_print: bool = False,
 ) -> str:
-    """生成自包含 HTML。`sections` 为空表示导出全部章节。"""
+    """生成自包含 HTML（单文件：CSS/JS 内联、SVG 内联、PNG 走 base64）。
+
+    `sections` 为空表示导出全部章节；`image_loader("images/x.png")` 返回 data URI。
+    """
     meta = doc.get("metadata") or {}
     chosen = set(sections) if sections else {s["key"] for s in markdown_sections}
     body_parts: List[str] = []
@@ -209,9 +395,11 @@ def render_html(
             markdown_to_html(
                 section.get("markdown", ""),
                 chart_loader=chart_loader,
+                image_loader=image_loader,
                 inline_charts=True,
             )
         )
+    dialogs_html = render_dialogs(doc.get("dialogs") or [], image_loader=image_loader)
     risk_summary = (doc.get("risks") or {}).get("summary") or {}
     footer = (
         f"报告 ID：{meta.get('report_id', '')} · 项目：{meta.get('project_name', '')} · "
@@ -230,6 +418,8 @@ def render_html(
         f" · 生成于 {html_lib.escape(str(meta.get('generated_at', '')))}</div>"
         + "".join(body_parts)
         + f'<div class="footer">{html_lib.escape(footer)}</div>'
+        + dialogs_html
+        + f"<script>{VIEWER_SCRIPT}</script>"
         + auto
         + "</body></html>"
     )

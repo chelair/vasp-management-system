@@ -244,6 +244,34 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-07（用户："智能报告重构 — 单 HTML 内联版"）：**报告改单文件自包含 + 结构三视图进报告**。
+  **目标**：报告不再依赖任何外部资源（无 CDN / 无外链 JS·CSS / 图片全部 base64 内联），
+  断网、换机器、发微信都能直接打开；手机能看。
+  **落点**：
+  ① **结构三视图走 VESTA**（不再用 3Dmol）：新模块 `backend/structure_images.py` 决定"该不该画"
+  （opt/ele 已收敛 `completed` 或已归档、NEB 已完成/已归档；**频率矫正 frac 不画**），
+  渲染复用 `vesta_render.render_task`（opt，`images/{poscar,contcar}_{a,b,c}.png`）与新增的
+  `vesta_render.render_neb_images`（NEB，`images/<映像号>/{a,b,c}.png`；端点缺 CONTCAR 时用 POSCAR）。
+  **触发时机**：巡检回填后（`inspection_runner._apply_project`）+ 归档文件同步完成后
+  （`jobs._schedule_archive_outputs`），都丢进**后台队列**（`structure_images.schedule*`），
+  走 `xvfb-run` 子进程串行执行；同项目批量只起一次 Xvfb；图已是最新则秒过（缓存）。
+  手动补课：`.venv/bin/python scripts/render_structure_images.py <项目> [--limit N] | --all`。
+  ② **报告**：`report_builder` 收集三视图弹窗规格（`doc["dialogs"]`）与 PNG 清单（`doc["images"]`），
+  自由能表格的「结构 N」、NEB 表格的「映像 N」在 Markdown 里写成 `[结构 N](#dlg_xxx)`；
+  `report_export` 把 `#dlg_` 链接渲染成 chip、把 `images/*.png` 用 base64 内联、把连续的三张图
+  合成一行（`.img-row` 等宽紧凑），并输出原生 `<dialog>` 弹窗 + 一段内联 JS
+  （Pointer Events + click，ESC/遮罩关闭，手机全屏）。
+  **未收敛的 opt 任务不展开**（只报一个计数）。
+  ③ **单文件 HTML 落盘**：`report_store.save_report()` 生成 `data/reports/<项目>/report_<日期>.html`
+  （项目报告目录下、命名带日期；同名覆盖），报告目录同时留一份 `images/` 原件；
+  网页版走新接口 `GET /api/reports/project/{id}/images/{name}` 显示同样三视图。
+  **实测（Ag_20260830）**：报告 10.3 MB、**0 个外部引用**、8 个 `<dialog>`、7 个可点 chip、
+  39 张 base64 图（首张 2252×1298、IEND 完整）、276 个 `data-label`（手机表格转卡片）、
+  `@media (max-width:720px)` 生效；三视图与报告都能按需重画覆盖。
+  **影响面**：新增 `structure_images.py` + 巡检/归档各一处钩子 + 报告导出/存储 + 一个只读图片接口；
+  前端报告页把 `images/` 与 `charts/` 同样解析为报告目录 URL（`reportImageUrl`）；
+  后端需重启、前端需重新构建。
+
 - 2026-10-06（用户："Ag 的 neb 的 path2 归档后没有同步文件"）：
   **修 NEB 归档同步的源目录口径**。**现象**：`Ag_20260830/neb/PATH2/neb` 归档后本地只有
   5 个映像 POSCAR + 2 个端点 OUTCAR（审计 `img_saved=7 img_missing=13`），各映像的

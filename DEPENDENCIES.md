@@ -67,6 +67,12 @@ python3 -m venv .venv
 `<任务目录>/images/{poscar,contcar}_{a,b,c}.png`，**同名覆盖**；默认"图比结构新就复用"，
 `force=True` 强制重画。**报告生成以后直接调它**（巡检详情另走浏览器端 3Dmol）。
 
+> **2026-10-07 起**：报告里的结构三视图就走这条路 —— `backend/structure_images.py` 按
+> 「opt/ele 已收敛或已归档、NEB 已完成/已归档」筛任务，巡检回填后与归档同步完成后各触发一次
+> （后台队列 + `xvfb-run` 子进程，串行；NEB 走 `render_neb_images` 写到 `images/<映像号>/{a,b,c}.png`）。
+> 报告生成时把 `<任务目录>/images/` 里的 PNG **base64 内联**进单文件 HTML，没有就跳过。
+> 手动补课：`scripts/render_structure_images.py <项目> [--limit N] | --all`。
+
 **依赖三件（都属系统层，非 pip 包）**：
 
 | 依赖 | 说明 | 生产机状态 |

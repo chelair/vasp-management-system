@@ -104,19 +104,30 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
       continue;
     }
 
-    // 图片
-    const img = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(line);
-    if (img) {
-      const alt = img[1];
-      const src = (img[2].startsWith('charts/') || img[2].startsWith('images/')) && chartResolver
-        ? chartResolver(img[2])
-        : img[2];
+    // 图片：连续多张（a/b/c 三视图）包成一行，等宽紧凑；单张还是普通 figure
+    const imgRe = /^!\[([^\]]*)\]\(([^)]+)\)$/;
+    if (imgRe.test(line)) {
+      const figures: string[] = [];
+      while (i < lines.length) {
+        const m = imgRe.exec(lines[i].trim());
+        if (!m) break;
+        const alt = m[1];
+        const src =
+          (m[2].startsWith('charts/') || m[2].startsWith('images/')) && chartResolver
+            ? chartResolver(m[2])
+            : m[2];
+        // 报告页一屏内会挂十几张图，用 eager + async 解码：既不会出现"滚到才加载"的空白，
+        // 也不会阻塞正文渲染（lazy 在部分内嵌浏览器里会一直不加载）
+        figures.push(
+          `<figure class="${figureClass}"><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="eager" decoding="async"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
+        );
+        i += 1;
+      }
       html.push(
-      // 报告页一屏内会挂十几张图，用 eager + async 解码：既不会出现"滚到才加载"的空白，
-      // 也不会阻塞正文渲染（lazy 在部分内嵌浏览器里会一直不加载）
-      `<figure class="${figureClass}"><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="eager" decoding="async"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
+        figures.length > 1
+          ? `<div class="report-img-row">${figures.join('')}</div>`
+          : figures.join(''),
       );
-      i += 1;
       continue;
     }
 

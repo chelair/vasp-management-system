@@ -4,6 +4,8 @@
 （巡检详情里的自由能 / NEB 看板）冲突。
 """
 
+from pathlib import Path
+
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 

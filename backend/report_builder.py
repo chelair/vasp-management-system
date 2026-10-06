@@ -777,11 +777,16 @@ def _sections_markdown(report, charts):
             if panel:
                 lines.append(f"![{item['task_name']} 结构三视图与能量/力曲线]({panel})")
             # VESTA 三视图（a/b/c，横向排列；报告生成时按用户口径优先用 images/ 里的图）
+            # 同一行（初始 / 优化后）的 3 张图必须**连着写**（中间不留空行），
+            # 导出器与前端才会把它们合成一行 .img-row；空行会把一行拆成三张竖排。
             for row in item.get("structure_views") or []:
-                for axis in ("a", "b", "c"):
-                    src = (row.get("views") or {}).get(axis)
-                    if src:
-                        lines.append(f"![{row['label']} · {axis} 视图]({src})")
+                row_lines = [
+                    f"![{row['label']} · {axis} 视图]({(row.get('views') or {}).get(axis)})"
+                    for axis in ("a", "b", "c")
+                    if (row.get("views") or {}).get(axis)
+                ]
+                if row_lines:
+                    lines.append("\n".join(row_lines))
             entries.append("\n\n".join(lines))
         # 任务之间用分隔线隔开，避免上下两个任务的面板图糊成一片
         blocks.append("\n\n---\n\n".join(entries) + "\n")

@@ -4694,17 +4694,30 @@ body.is-atom-selecting * {
   font-weight: 500;
 }
 
-.report-markdown .report-figure + .report-figure {
-  display: inline-block;
-  width: 32%;
-  vertical-align: top;
-  margin: 0 0.6% 6px;
+/* 三视图一行：等宽等高、间距紧凑（导出 HTML 与网页版同一套类名） */
+.report-img-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  justify-content: center;
+  margin: 10px 0 14px;
+}
+
+.report-img-row .report-figure {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+}
+
+.report-img-row .report-figure img {
+  width: 100%;
+  height: auto;
 }
 
 @media (max-width: 720px) {
-  .report-markdown .report-figure + .report-figure {
-    width: 100%;
-    margin: 6px 0;
+  .report-img-row {
+    flex-direction: column;
+    gap: 10px;
   }
 }
 

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { MouseEvent as ReactMouseEvent } from 'react';
 import {
   App,
   Button,
@@ -34,6 +33,7 @@ import {
   reportMarkdownUrl,
 } from '../api/reports';
 import { fetchProjects } from '../api/projects';
+import { getToken } from '../api/client';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import type { Project, ProjectReportDetail, ProjectReportMeta } from '../types';
@@ -235,7 +235,7 @@ export default function Report() {
   );
 
   /** 点「结构 N / 映像 N」→ 打开对应的原生 <dialog> 三视图弹窗；点遮罩/× 关闭。 */
-  const handleReportViewerClick = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+  const handleReportViewerClick = useCallback((event: { target: EventTarget | null }) => {
     const target = event.target as HTMLElement;
     const trigger = target.closest('[data-dialog]') as HTMLElement | null;
     if (trigger) {
@@ -251,6 +251,23 @@ export default function Report() {
     }
     const dialog = target.closest('dialog.report-viewer');
     if (dialog instanceof HTMLDialogElement && target === dialog) dialog.close();
+  }, []);
+
+  /**
+   * 图片兜底：`<img src="/api/reports/...">` 只带 Cookie 不带 Authorization，
+   * Cookie 缺失/过期时会 401 裂图 —— 这里在 onError 时带 token 重新拉一次，转成 blob URL。
+   */
+  const handleReportAssetError = useCallback((event: { target: EventTarget | null }) => {
+    const img = event.target as HTMLImageElement;
+    if (!img || img.tagName !== 'IMG' || img.dataset.authRetry) return;
+    img.dataset.authRetry = '1';
+    const token = getToken();
+    fetch(img.src, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
+      .then((res) => (res.ok ? res.blob() : null))
+      .then((blob) => {
+        if (blob) img.src = URL.createObjectURL(blob);
+      })
+      .catch(() => undefined);
   }, []);
 
   /** 当量 → 核时 → 工期（后端 basic_info.workload，口径见 process.md §6） */
@@ -556,6 +573,7 @@ export default function Report() {
                         <div
                           className="report-markdown"
                           onClick={handleReportViewerClick}
+                          onErrorCapture={handleReportAssetError}
                           dangerouslySetInnerHTML={{ __html: s.html }}
                         />
                       </section>
@@ -567,6 +585,7 @@ export default function Report() {
                         id={dialog.id}
                         className="report-viewer"
                         onClick={handleReportViewerClick}
+                        onErrorCapture={handleReportAssetError}
                       >
                         <header>
                           <h3>{dialog.title}</h3>

@@ -25,8 +25,6 @@ from report_charts import (
     energy_force_chart,
     progress_bar,
     structure_matrix,
-    structure_views,
-    task_panel,
 )
 from report_panels import (
     COLOR_PRIMARY,
@@ -122,7 +120,6 @@ def _neb_image_dialog(
         row["views"][axis] = f"images/{name}"
     return {"id": dialog_id, "title": title, "rows": [row]}, images
 CHART_WIDTH = 1000  # 报告里所有图表统一宽度（页面按 1:1 展示，排版与字号才一致）
-OPT_VIEW_PANEL = 146  # 三视图单格边长（3 格 = 438）
 OPT_CURVE_W = 538  # 面板里右侧能量/力曲线宽度（4+438+16+538+4 = 1000）
 OPT_CURVE_H = 250
 
@@ -1160,25 +1157,13 @@ def build_report(
             dialogs.append(dialog)
             dialog_images.update(dialog_pngs)
         view_cif = contcar_cif or poscar_cif
-        if view_cif and not dialog:
-            vname = f"{fact['task_id']}_views.svg"
-            views_svg = structure_views(
-                view_cif,
-                panel=OPT_VIEW_PANEL,
-                title="",
-                labels=["a-b 视图", "b-c 视图", "a-c 视图"],
-            )
-            charts[vname] = views_svg
-            chart_refs["views"] = f"charts/{vname}"
-            # 三视图 + 曲线横向拼成一张面板图（前端与导出所见即所得）
-            pname = f"{fact['task_id']}_panel.svg"
-            charts[pname] = task_panel(views_svg, curve_svg, gap=16)
-            chart_refs["panel"] = f"charts/{pname}"
-        else:
-            # 有 VESTA 三视图时，曲线单独出一张（三视图另走 images/ 的 PNG）
-            ename = f"{fact['task_id']}_energy_force.svg"
-            charts[ename] = curve_svg
-            chart_refs["energy_force"] = f"charts/{ename}"
+        # 三视图统一用 VESTA 渲染的 PNG（images/）；**没有就不再退回旧的 CIF 示意三视图**
+        # ——用户口径 2026-10-07："报告优先用 images 里的，没有就跳过"，
+        # 否则同一份报告里有的任务是新三视图、有的是旧版示意（Ag24/Ag111 被问过）。
+        # 曲线永远单独出一张。
+        ename = f"{fact['task_id']}_energy_force.svg"
+        charts[ename] = curve_svg
+        chart_refs["energy_force"] = f"charts/{ename}"
         opt_science.append(
             {
                 "task_id": fact["task_id"],

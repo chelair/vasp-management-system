@@ -113,10 +113,27 @@ async def auth_middleware(request: Request, call_next):
     # 供深层调用（jobs._resolve_task 等"唯一入口"）做归属校验用
     permissions.set_current_user(user)
     try:
-        return await call_next(request)
+        response = await call_next(request)
     finally:
         # 防御性清理：避免极少数情况下 contextvar 残留到后续处理
         permissions.clear_current_user()
+    # 用 Authorization 头认证的请求，顺手把 `vasp_token` Cookie 刷成同一个 token：
+    # 浏览器里 `<img src="/api/...">` 这类请求**只带 Cookie、不带 Authorization 头**，
+    # 而 Cookie 只在登录那一刻写过（14 天过期）——过期/换浏览器后就只剩网页能打开、
+    # 图表与三视图全 401 裂图（2026-10-07 用户报"只有网页端有问题"）。
+    if token and (request.cookies.get(COOKIE_NAME) or "").strip() != token:
+        try:
+            response.set_cookie(
+                COOKIE_NAME,
+                token,
+                max_age=SESSION_EXTEND_SECONDS,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        except Exception:  # noqa: BLE001 - 刷 Cookie 失败不影响响应
+            pass
+    return response
 
 
 def install(app: FastAPI) -> None:

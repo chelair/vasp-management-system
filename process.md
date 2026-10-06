@@ -896,6 +896,10 @@ server {
   `-export_img <文件> scale=N`，`scale=2` → 1126×649 变成 2252×1298。统一在
   `_vesta_image_scale()` 里加，取值 `data/config/settings.json: vesta_image_scale`（现 2）；
   改了倍数要把 `VIEW_VERSION` +1（现 v3），否则旧图不会重画。
+- **别在 VESTA 还在写文件时收尾**（2026-10-06 用户报"有一个 POSCAR 的 a 视图损坏"）：
+  它是边渲染边写，文件刚出现只有几 KB，原来的"存在且非空就 kill"会留下**截断的 PNG**
+  （实测 `images/poscar_a.png` 4096 字节、打不开）。现在等 **大小稳定 + PNG 有 IEND** 才 kill，
+  且 `_image_is_fresh()` 把截断的图判成过期自动重画（temp 任务已按此修复，data 下 240 张 PNG 复扫全部完整）。
 - 渲染缓存按 `<任务目录>/images/.view_version` 判断：视角定义一变（`VIEW_VERSION` +1）自动重画。
 - **窗口生命周期（2026-10-06 实测）**：VESTA 是**单实例多窗口**（后开的文件被转进已在跑的进程），
   所以"关窗口"必须**给那个窗口发 WM_DELETE_WINDOW**（= 点右上角 ×，`vesta_render.close_x_windows`，

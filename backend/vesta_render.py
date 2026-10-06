@@ -354,10 +354,42 @@ def _sweep_by_marker(marker: str) -> None:
             pass
 
 
+def _png_complete(path: Path) -> bool:
+    """PNG 是否写完：末尾必须能找到 IEND 块。
+
+    VESTA 是**边渲染边写**：文件刚出现时还是半截，太早 kill 就会留下**打不开的截断 PNG**
+    （2026-10-06 实测：`images/poscar_a.png` 只写了半张，`zlib: incomplete or truncated stream`）。
+    """
+    try:
+        if path.stat().st_size < 128:
+            return False
+        with open(path, "rb") as fh:
+            fh.seek(-64, os.SEEK_END)
+            return b"IEND" in fh.read()
+    except OSError:
+        return False
+
+
+def _output_ready(path: Path) -> bool:
+    """输出文件是否已经写完（PNG 看 IEND；其它格式只看非空）。"""
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+    except OSError:
+        return False
+    if path.suffix.lower() == ".png":
+        return _png_complete(path)
+    return True
+
+
 def _run_vesta_cli(
     command, expected_path: Path, wait_seconds: int = RENDER_WAIT, marker: str = ""
 ) -> bool:
-    """后台启动 VESTA CLI，轮询输出文件生成，超时/结束后强制清理进程。"""
+    """后台启动 VESTA CLI，**等输出文件写完**再收尾，超时/结束后强制清理进程。
+
+    判定"写完" = 大小连续两次没变 **且** `_output_ready()`（PNG 要有 IEND）——
+    只看"文件存在且非空"会在 VESTA 还在写的时候就把它杀掉，留下截断的图。
+    """
     _kill_vesta()
     _sweep_by_marker(marker)
     try:
@@ -379,13 +411,24 @@ def _run_vesta_cli(
     except Exception:  # noqa: BLE001 - VESTA 不可用
         return False
     deadline = time.time() + wait_seconds
+    last_size = -1
+    stable = 0
     while time.time() < deadline:
-        if expected_path.is_file() and expected_path.stat().st_size > 0:
-            break
-        time.sleep(0.5)
+        try:
+            size = expected_path.stat().st_size if expected_path.is_file() else 0
+        except OSError:
+            size = 0
+        if size > 0 and size == last_size:
+            stable += 1
+            if stable >= 2 and _output_ready(expected_path):
+                break
+        else:
+            stable = 0
+        last_size = size
+        time.sleep(0.4)
     _kill_vesta()
     _sweep_by_marker(marker)
-    return expected_path.is_file() and expected_path.stat().st_size > 0
+    return _output_ready(expected_path)
 
 
 # ---------------------------------------------------------------------------
@@ -618,9 +661,14 @@ def _drop_stale_cache(image_dir: Path) -> None:
 
 
 def _image_is_fresh(png: Path, structure: Path) -> bool:
-    """图已存在且比结构文件新 → 可以直接用（下次调用就是"覆盖式更新"）。"""
+    """图已存在、比结构文件新、而且**是完整的图** → 可以直接用。"""
     try:
-        return png.is_file() and png.stat().st_size > 0 and png.stat().st_mtime >= structure.stat().st_mtime
+        return (
+            png.is_file()
+            and png.stat().st_size > 0
+            and png.stat().st_mtime >= structure.stat().st_mtime
+            and _output_ready(png)  # 截断的旧图（VESTA 被杀太早）要重画
+        )
     except OSError:
         return False
 

@@ -83,10 +83,15 @@ python3 -m venv .venv
 - 在 **Xvfb + 软件 GL** 下稳定出图，实测约 **1.5 s/张**（a/b/c × POSCAR/CONTCAR 共 6 张约 8 s）。
 - **导出倍数（"图像质量"）默认 2**：VESTA CLI 支持 `-export_img <文件> scale=N`（2026-10-06 实测：
   `scale=2` 把 1126×649 变成 2252×1298，放大到同尺寸显示时线条/球体明显更锐利）。
-  代码里由 `backend/vesta_render.py::_vesta_image_scale()` 统一加参数，默认取
+ 代码里由 `backend/vesta_render.py::_vesta_image_scale()` 统一加参数，默认取
   `data/config/settings.json` 的 **`vesta_image_scale`（现为 2）**；改成 1 就回到与画布同尺寸。
   **改了导出倍数（或视角定义）要把 `VIEW_VERSION` +1**，否则 `<任务目录>/images/.view_version`
   对得上、旧图会被当成"还是新的"而不重画（现为 v3）。
+- **收尾时机（2026-10-06 踩到，用户报"poscar_a 损坏"）**：VESTA 是**边渲染边写**，
+  文件刚出现时只有几 KB。原来"文件存在且非空就 kill"会留下**打不开的截断 PNG**
+  （实测 `images/poscar_a.png` 只有 4096 字节，`zlib: incomplete or truncated stream`）。
+  现在 `_run_vesta_cli()` 等 **大小连续两次不变 + `_output_ready()`**（PNG 末尾要有 IEND 块）
+  才收尾；`_image_is_fresh()` 也把截断的旧图判成过期 → 下次自动重画。
 
 **调用方式**（无头环境里用 `xvfb-run` 自动起/停 Xvfb）：
 

@@ -244,6 +244,25 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-06（用户："Ag 的 neb 的 path2 归档后没有同步文件"）：
+  **修 NEB 归档同步的源目录口径**。**现象**：`Ag_20260830/neb/PATH2/neb` 归档后本地只有
+  5 个映像 POSCAR + 2 个端点 OUTCAR（审计 `img_saved=7 img_missing=13`），各映像的
+  **CONTCAR / OSZICAR 一个都没下来**（PATH1/PATH3 正常）。**根因**：NEB 分支原来把
+  "编号最大的 conN" 当唯一源目录，而 PATH2 编号最大的 `con10` 是**刚建好、还没产出结果**的一轮
+  （映像子目录里只有 POSCAR/WAVECAR，`00`/`NN` 的 OUTCAR 还是端点拷过来的），
+  于是该有的文件被当成 missing；真正带结果的是 `con9`。
+  **修法**：`backend/input_state.py` 新增 `_neb_candidate_dirs()` / `_neb_file_map()` / `_neb_pick()` ——
+  一次 exec 扫出"每个候选目录（con N 新→旧 + 任务主目录）里有哪些文件"，然后**按映像选锚目录**
+  （锚 = 最新一个带该映像 CONTCAR 的 conN），各映像的 POSCAR/CONTCAR/OUTCAR/OSZICAR 都优先从锚取、
+  锚里没有才回退到"最新的、确实有这个文件"的目录；共享文件（INCAR/KPOINTS/POTCAR）取最新的。
+  这样既不会漏文件、也不会出现"POSCAR 与 CONTCAR 来自不同轮次"（本地 POSCAR 与 CONTCAR 变成同一份、
+  界面「初始/优化后」看起来一样）——审计新增 `src=con10,con9` 记录实际用到的源。
+  **实测**（真远端）：PATH1 → 全部取 con3；PATH2 → 映像 01/02/03 取 con9、端点与共享文件取 con10，
+  `img_saved=16 img_missing=4`（缺的 4 个是端点 `00/04` 的 CONTCAR/OSZICAR，远端本来就没有，
+  与 PATH1/PATH3 完全同型）；PATH3 → con17；PAYH2_TS2 → con4。已按新口径把 PATH2 的本地镜像补齐
+  （`files/01..03` 现在有 POSCAR/CONTCAR/OUTCAR/OSZICAR）。**影响面**：只动归档后台同步的取文件逻辑，
+  不改归档状态机、不动远端；后端需 `sudo systemctl restart vasp-manager`。
+
 - v0.9.41（commit `e2a18bc`，2026-10-04 用户："巡检中心 frac/opt/neb 类型的任务详情的 3D 视图菜单栏中加一个查看原子受力的按钮…（达到收敛标准为绿色，此外受力越大颜色越红）"）：
   **巡检详情页新增「查看原子受力」**（只加在巡检，作业管理不显示）。
   **入口**：opt/frac 在 `StructurePanel`、NEB 在 `NebImageMasterDetail` 的 3D 工具栏里，是个**开关**

@@ -1538,6 +1538,10 @@ def _schedule_archive_outputs(
                 )
             elif image_missing:
                 extra = f" img_missing={len(image_missing)}"
+            sources = result.get("sources") or []
+            if len(sources) > 1:
+                # NEB 归档可能跨多个 conN 取（每个文件取最新的那个），审计里记一下
+                extra += " src=" + ",".join(s.rsplit("/", 1)[-1] for s in sources)
             if result.get("overwrote_draft"):
                 extra += f" overwrote_draft={','.join(result['overwrote_draft'])}"
             _audit_log(

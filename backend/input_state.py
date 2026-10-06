@@ -399,6 +399,63 @@ def _archive_one_dir(
     return saved, missing, overwrote
 
 
+def _con_index(name: str) -> int:
+    digits = "".join(ch for ch in str(name) if ch.isdigit())
+    return int(digits or 0)
+
+
+def _neb_candidate_dirs(server: str, remote_dir: str) -> List[str]:
+    """NEB 归档的候选源目录，**新 → 旧**：编号最大的 conN 起，最后是任务主目录。"""
+    base = remote_dir.rstrip("/")
+    cons = _list_remote_dirs(server, base, "con[0-9]*")  # 已按编号升序
+    return [f"{base}/{name}" for name in reversed(cons)] + [base]
+
+
+def _neb_file_map(server: str, candidates: List[str]) -> Dict[str, set]:
+    """一次 exec 扫出每个候选目录里有哪些文件：{目录: {相对路径, ...}}（按新→旧顺序）。
+
+    相对路径形如 `INCAR`（共享文件）或 `01/CONTCAR`（映像文件）。
+
+    **为什么要跨 conN 找**（2026-10-06 用户报的 Ag/PATH2 归档）：最近一次续算可能刚建好 ——
+    映像子目录里只有 POSCAR / WAVECAR，`00`/`NN` 里的 OUTCAR 还是端点拷过来的，CONTCAR /
+    OSZICAR 全没有；只照"编号最大的 conN"整目录下载，就会把这些文件判成 missing，
+    结果本地只剩 5 个 POSCAR + 2 个端点 OUTCAR。而 con9 里明明有各映像的
+    CONTCAR / OSZICAR / OUTCAR。
+    """
+    roots = " ".join(f'"{c}"' for c in candidates)
+    script = (
+        f"for r in {roots}; do "
+        'for f in "$r"/INCAR "$r"/KPOINTS "$r"/POTCAR '
+        '"$r"/*/CONTCAR "$r"/*/OSZICAR "$r"/*/OUTCAR "$r"/*/POSCAR; do '
+        '[ -s "$f" ] && echo "$r|${f#$r/}"; done; done'
+    )
+    result = ssh.run_remote(server, f"bash -c '{script}'", timeout=60)
+    if result.get("exit_code") != 0:
+        detail = (result.get("stderr") or result.get("stdout") or "").strip()
+        raise RuntimeError(detail[:200] or "远端列出 NEB 归档文件失败")
+    file_map: Dict[str, set] = {}
+    for line in str(result.get("stdout") or "").splitlines():
+        if "|" not in line:
+            continue
+        root, rel = line.split("|", 1)
+        rel = rel.strip().lstrip("/")
+        if rel:
+            file_map.setdefault(root.strip(), set()).add(rel)
+    return file_map
+
+
+def _neb_pick(
+    file_map: Dict[str, set], candidates: List[str], rel: str, preferred: Optional[str] = None
+) -> Optional[str]:
+    """某个相对路径从哪个目录取：优先 `preferred`（认定的锚目录），否则按新→旧取最新的。"""
+    if preferred and rel in file_map.get(preferred, set()):
+        return preferred
+    for directory in candidates:
+        if rel in file_map.get(directory, set()):
+            return directory
+    return None
+
+
 def download_archive_outputs(server: str, task: Dict[str, Any]) -> Dict[str, Any]:
     """归档（关闭任务）时静默把"本次计算用到的文件"拉回本地镜像。
 
@@ -406,7 +463,7 @@ def download_archive_outputs(server: str, task: Dict[str, Any]) -> Dict[str, Any
       拉 `CONTCAR / INCAR / KPOINTS / POSCAR / OUTCAR / OSZICAR`（存在才下）；
     - **NEB 任务**：共享文件 `INCAR / KPOINTS` 放 `files/`，各映像 `00..NN` 的
       `POSCAR / CONTCAR / OUTCAR / OSZICAR` 放 `files/<映像号>/`
-      （源目录 = 最大编号 conN，无则任务主目录）。
+      （源目录**按文件跨 conN 找最新的那个**，见 `_neb_file_map`；`sources` 里能看到实际用到几个 conN）。
 
     单文件失败只记录、不抛错 —— 归档本身不依赖它。
     """
@@ -418,23 +475,60 @@ def download_archive_outputs(server: str, task: Dict[str, Any]) -> Dict[str, Any
     pending = pending_files(task)
 
     if str(task.get("task_type") or "") == "neb":
-        cons = _list_remote_dirs(server, remote_dir, "con[0-9]*")
-        source_dir = f"{remote_dir}/{cons[-1]}" if cons else remote_dir
-        saved, missing, overwrote = _archive_one_dir(
-            server, task, source_dir, ARCHIVE_NEB_SHARED, drafted=pending
+        # 跨 conN 找文件（见 _neb_file_map）：只按编号最大的 conN 整目录下载会漏掉上一次续算
+        # 留下的映像结果（2026-10-06 Ag/PATH2）。**按映像选锚目录**，保证 POSCAR 与 CONTCAR
+        # 来自同一轮续算（否则本地会出现"初始 == 优化后"这种自相矛盾的展示）。
+        candidates = _neb_candidate_dirs(server, remote_dir)
+        file_map = _neb_file_map(server, candidates)
+
+        saved: List[str] = []
+        missing: List[str] = []
+        overwrote: List[str] = []
+        picks: Dict[str, str] = {}  # 相对路径 → 实际取用的目录（审计用）
+        for name in ARCHIVE_NEB_SHARED:
+            source = _neb_pick(file_map, candidates, name)
+            if source and _download_mirror_file(server, task, f"{source}/{name}", name):
+                saved.append(name)
+                picks[name] = source
+                if name in pending:
+                    overwrote.append(name)
+            else:
+                missing.append(name)
+
+        images = sorted(
+            {rel.split("/", 1)[0] for rels in file_map.values() for rel in rels if "/" in rel},
+            key=_con_index,
         )
-        images = _list_remote_dirs(server, source_dir, "[0-9]*")
         image_saved: List[str] = []
         image_missing: List[str] = []
         for image in images:
-            got, lost, _ = _archive_one_dir(
-                server, task, source_dir, ARCHIVE_NEB_IMAGE_FILES, subdir=image
-            )
-            image_saved += got
-            image_missing += lost
+            # 锚目录 = 最新一个带该映像 CONTCAR 的 conN（没有 CONTCAR 的映像取各自最新）
+            anchor = _neb_pick(file_map, candidates, f"{image}/CONTCAR")
+            for name in ARCHIVE_NEB_IMAGE_FILES:
+                rel = f"{image}/{name}"
+                source = _neb_pick(file_map, candidates, rel, preferred=anchor)
+                if source and _download_mirror_file(server, task, f"{source}/{rel}", rel):
+                    image_saved.append(rel)
+                    picks[rel] = source
+                else:
+                    image_missing.append(rel)
+
+        counts = {
+            src: sum(1 for rel in (saved + image_saved) if picks.get(rel) == src)
+            for src in set(picks.values())
+        }
+        # 审计里 `dir=` 用"提供文件最多的那个目录"，一眼能看出主源是哪个 conN
+        main_source = (
+            max(counts, key=lambda s: counts[s])
+            if counts
+            else (candidates[0] if candidates else remote_dir)
+        )
         return {
-            "source_dir": source_dir,
-            "latest_dir": cons[-1] if cons else "",
+            "source_dir": main_source,
+            "latest_dir": (
+                main_source.rsplit("/", 1)[-1] if main_source != remote_dir else ""
+            ),
+            "sources": sorted(counts, key=lambda p: _con_index(p.rsplit("/", 1)[-1]), reverse=True),
             "saved": saved,
             "missing": missing,
             "images": images,

@@ -338,10 +338,25 @@ export interface ProjectReportDetail {
   schema_version: string;
   markdown: string;
   markdown_sections: ProjectReportSection[];
+  /** 结构三视图弹窗（点「结构 N / 映像 N」打开；图片按报告目录解析） */
+  dialogs: ProjectReportDialog[];
   sections: { key: string; title: string }[];
   charts: { name?: string; path: string }[] | string[];
   /** 结构化数据（字段随 schema 版本演进，前端按需读取） */
   structured: Record<string, unknown>;
+}
+
+export interface ProjectReportDialogRow {
+  /** 行标签，如「优化后（CONTCAR）」 */
+  label: string;
+  /** a/b/c → 报告目录下的相对路径（images/xxx.png） */
+  views: Record<string, string>;
+}
+
+export interface ProjectReportDialog {
+  id: string;
+  title: string;
+  rows: ProjectReportDialogRow[];
 }
 
 export interface ProjectReportGenerateResult {

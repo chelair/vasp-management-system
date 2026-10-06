@@ -31,8 +31,10 @@ function inline(text: string, chartResolver?: (path: string) => string): string 
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
   out = out.replace(/(?<![A-Za-z0-9_])_([^_]+)_(?![A-Za-z0-9_])/g, '<em>$1</em>');
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, href: string) => {
-    // 指向结构三视图弹窗的链接（导出 HTML 里是可点的 <dialog> 触发器）：网页里只当标签显示
-    if (href.startsWith('#dlg_')) return `<span class="report-chip">${label}</span>`;
+    // 指向结构三视图弹窗的链接：网页里也是可点按钮（点击 → 打开对应 <dialog>）
+    if (href.startsWith('#dlg_')) {
+      return `<button type="button" class="report-chip" data-dialog="${escapeHtml(href.slice(1))}">${label}</button>`;
+    }
     const url = chartResolver && !/^(https?:|mailto:|#|\/)/i.test(href) &&
       (href.startsWith('charts/') || href.startsWith('images/'))
       ? chartResolver(href)

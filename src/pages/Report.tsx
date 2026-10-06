@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import {
   App,
   Button,
@@ -232,6 +233,25 @@ export default function Report() {
       })),
     [visibleSections, detail],
   );
+
+  /** 点「结构 N / 映像 N」→ 打开对应的原生 <dialog> 三视图弹窗；点遮罩/× 关闭。 */
+  const handleReportViewerClick = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    const trigger = target.closest('[data-dialog]') as HTMLElement | null;
+    if (trigger) {
+      const dialog = document.getElementById(trigger.dataset.dialog ?? '');
+      if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
+      return;
+    }
+    const closeBtn = target.closest('[data-close]') as HTMLElement | null;
+    if (closeBtn) {
+      const dialog = closeBtn.closest('dialog');
+      if (dialog instanceof HTMLDialogElement) dialog.close();
+      return;
+    }
+    const dialog = target.closest('dialog.report-viewer');
+    if (dialog instanceof HTMLDialogElement && target === dialog) dialog.close();
+  }, []);
 
   /** 当量 → 核时 → 工期（后端 basic_info.workload，口径见 process.md §6） */
   const detailBasic = useMemo(() => {
@@ -535,9 +555,48 @@ export default function Report() {
                         <h2 className="report-section-title">{s.title}</h2>
                         <div
                           className="report-markdown"
+                          onClick={handleReportViewerClick}
                           dangerouslySetInnerHTML={{ __html: s.html }}
                         />
                       </section>
+                    ))}
+                    {/* 结构三视图弹窗：与导出的单文件 HTML 同一份数据（detail.dialogs） */}
+                    {(detail?.dialogs ?? []).map((dialog) => (
+                      <dialog
+                        key={dialog.id}
+                        id={dialog.id}
+                        className="report-viewer"
+                        onClick={handleReportViewerClick}
+                      >
+                        <header>
+                          <h3>{dialog.title}</h3>
+                          <button type="button" className="close" data-close aria-label="关闭">
+                            ×
+                          </button>
+                        </header>
+                        <div className="body">
+                          {dialog.rows.map((row) => (
+                            <div key={row.label}>
+                              <p className="row-label">{row.label}</p>
+                              <div className="report-img-row">
+                                {(['a', 'b', 'c'] as const)
+                                  .filter((axis) => row.views[axis])
+                                  .map((axis) => (
+                                    <figure className="report-figure" key={axis}>
+                                      <img
+                                        src={reportImageUrl(detail.meta.report_id, row.views[axis])}
+                                        alt={`${axis} 视图`}
+                                        loading="eager"
+                                        decoding="async"
+                                      />
+                                      <figcaption>{axis} 视图</figcaption>
+                                    </figure>
+                                  ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </dialog>
                     ))}
                     {renderedSections.length === 0 && (
                       <Empty description="未勾选任何章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />

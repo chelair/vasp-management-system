@@ -168,6 +168,8 @@ def project_report_detail(report_id: str, request: Request):
                 "schema_version": doc.get("schema_version"),
                 "markdown": markdown,
                 "markdown_sections": doc.get("markdown_sections") or [],
+                # 结构三视图弹窗规格（页面里点「结构 N / 映像 N」用同一个 <dialog>）
+                "dialogs": doc.get("dialogs") or [],
                 "sections": [
                     {"key": s["key"], "title": s["title"]}
                     for s in (doc.get("markdown_sections") or [])

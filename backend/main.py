@@ -210,4 +210,9 @@ if (dist_dir / "index.html").exists():
     def spa(path: str):
         if path.startswith("api"):
             raise HTTPException(status_code=404, detail="Not Found")
-        return FileResponse(dist_dir / "index.html")
+        # index.html 必须每次校验：否则浏览器会拿缓存里的旧 index → 继续引用旧 bundle，
+        # 前端改了也"刷新了还是老样子"（2026-10-07 踩到）
+        return FileResponse(
+            dist_dir / "index.html",
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )

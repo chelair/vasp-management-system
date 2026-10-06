@@ -605,7 +605,7 @@ export default function Report() {
                                       <img
                                         src={reportImageUrl(detail.meta.report_id, row.views[axis])}
                                         alt={`${axis} 视图`}
-                                        loading="eager"
+                                        loading="lazy"
                                         decoding="async"
                                       />
                                       <figcaption>{axis} 视图</figcaption>

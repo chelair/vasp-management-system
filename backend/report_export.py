@@ -352,8 +352,8 @@ def render_dialogs(
                 if not data_uri:
                     continue  # 缺图就跳过这一张（不挂图）
                 figures.append(
-                    f'<figure><img src="{data_uri}" alt="{axis} 视图"/>'
-                    f"<figcaption>{axis} 视图</figcaption></figure>"
+                    f'<figure><img src="{data_uri}" alt="{axis} 视图" loading="lazy" '
+                    f'decoding="async"/><figcaption>{axis} 视图</figcaption></figure>'
                 )
             if not figures:
                 continue

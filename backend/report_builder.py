@@ -24,7 +24,6 @@ from report_charts import (
     donut_chart,
     energy_force_chart,
     progress_bar,
-    structure_matrix,
 )
 from report_panels import (
     COLOR_PRIMARY,
@@ -888,8 +887,10 @@ def _sections_markdown(report, charts):
                         ],
                     )
                 )
-            if item.get("matrix_chart"):
-                lines.append(f"![{item['task_name']} 映像结构对比]({item['matrix_chart']})")
+            if any(not img.get("dialog") for img in images):
+                lines.append(
+                    "_该 NEB 任务的映像三视图尚未生成（巡检/归档后自动用 VESTA 渲染）_"
+                )
             entries.append("\n\n".join(lines))
         blocks.append("\n\n---\n\n".join(entries) + "\n")
     if not blocks:
@@ -1243,31 +1244,10 @@ def build_report(
         # 与巡检详情页的 NEB 能垒看板同版式：统计卡 + 能垒曲线
         charts[name] = neb_panel(item, title=f"{item['task_name']} NEB 能垒看板")
         item["chart"] = f"charts/{name}"
-        # 映像结构对比矩阵（行 = a-b / b-c / a-c 视图，列 = 映像 IS → FS）
-        try:
-            task_obj = next(
-                (x for x in project.get("tasks", []) if str(x.get("task_id")) == item["task_id"]),
-                {},
-            )
-            image_cifs = read_neb_image_cifs(project, task_obj)
-            if len(image_cifs) >= 2:
-                matrix_items = [
-                    {"label": label, "cif": cif} for label, cif in image_cifs.items()
-                ]
-                item["images_with_structure"] = [
-                    {"label": i["label"], "cif": image_cifs.get(i["label"])} for i in item["images"]
-                ]
-                mname = f"{item['task_id']}_images.svg"
-                charts[mname] = structure_matrix(
-                    matrix_items,
-                    panel=max(120, min(240, CHART_WIDTH // max(len(matrix_items), 1))),
-                    title=f"{item['task_name']} 映像结构对比",
-                )
-                item["matrix_chart"] = f"charts/{mname}"
-            else:
-                item["note"] = "尚未同步映像结构（巡检推进到 25 离子步桶后自动抓取）"
-        except Exception as e:  # noqa: BLE001
-            collection_errors.append(f"{item['task_name']} 映像结构读取失败：{e}")
+        # 映像结构：**不再画 Python 投影矩阵**（旧的 a-b/b-c/a-c 示意），统一用 VESTA 三视图
+        # ——点表格里的「映像 N」弹窗看该映像的 a/b/c（用户口径 2026-10-07）。
+        if not views_by_label:
+            item["note"] = "该 NEB 任务还没出 VESTA 三视图（巡检/归档后自动渲染）"
 
     project_cores = next(
         (g["cores"] for g in (cores.get("byProject") or []) if g["project_name"] == project_name),

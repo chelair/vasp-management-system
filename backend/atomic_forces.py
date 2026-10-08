@@ -50,7 +50,7 @@ DEFAULT_THRESHOLDS = {"max_force_threshold": 0.02, "rms_force_threshold": 0.01}
 #: NEB 一次最多取多少个映像（防目录里混入奇怪编号）
 MAX_IMAGES = 200
 #: 缓存载荷版本：字段口径变化时递增，旧缓存自动作废（不必手动清 data/）
-CACHE_SCHEMA = 3
+CACHE_SCHEMA = 4  # v4：受力来源改成"候选目录列表 + 实际命中目录"（见 _structure_dirs）
 #: 远端单次调用超时（秒）：只读尾部 + 两个 grep，正常 2–5s 内
 REMOTE_TIMEOUT = 120
 
@@ -120,14 +120,27 @@ def _write_cache(
 # ---------------------------------------------------------------- 远端脚本
 
 
-def _work_dir_lines(remote_dir: str, analysis_dir: str) -> List[str]:
-    """工作目录 = 任务主目录 + 结构来源子目录（`""` 即主目录本身）。"""
-    sub = f"/{analysis_dir}" if analysis_dir else ""
+def _work_dir_lines(remote_dir: str, analysis_dirs: List[str]) -> List[str]:
+    """挑出**真正存在且有结果**的工作目录。
+
+    候选子目录按优先级排列（`""` = 任务主目录本身）。顺序试：谁的 OUTCAR 非空（opt）
+    或谁的映像子目录里有非空 OUTCAR（NEB）就用谁 —— 这样"记录里的 conN 已经被删/换过"
+    时不会取到空目录（2026-10-08 用户：PAYH3_TS2 记录里还是 con8，但远端只剩 con1–con6）。
+    """
+    subs = " ".join(f'"{d}"' for d in analysis_dirs)
     return [
         "set -e",
         f'RD="{remote_dir}"',
-        f'WORK="$RD{sub}"',
-        '[ -d "$WORK" ] || { echo "@@@NODIR"; exit 3; }',
+        'WORK=""',
+        f"for SUB in {subs}; do",
+        '  CAND="$RD/$SUB"',
+        '  [ -d "$CAND" ] || continue',
+        '  if [ -s "$CAND/OUTCAR" ]; then WORK="$CAND"; break; fi',
+        '  for f in "$CAND"/[0-9]*/OUTCAR; do',
+        '    if [ -s "$f" ]; then WORK="$CAND"; break 2; fi',
+        "  done",
+        "done",
+        '[ -n "$WORK" ] || { echo "@@@NODIR"; exit 3; }',
         'echo "@@@WORK"',
         'echo "$WORK"',
     ]
@@ -154,9 +167,9 @@ def _image_probe_lines(prefix: str) -> List[str]:
     ]
 
 
-def _single_script(remote_dir: str, analysis_dir: str) -> str:
+def _single_script(remote_dir: str, analysis_dirs: List[str]) -> str:
     """opt / frac 的单目录脚本（结构来源目录）。"""
-    lines = _work_dir_lines(remote_dir, analysis_dir)
+    lines = _work_dir_lines(remote_dir, analysis_dirs)
     lines += [
         'cd "$WORK" 2>/dev/null || { echo "@@@NODIR"; exit 3; }',
         '[ -s OUTCAR ] || { echo "@@@NOOUTCAR"; exit 4; }',
@@ -167,9 +180,9 @@ def _single_script(remote_dir: str, analysis_dir: str) -> str:
     return "\n".join(lines)
 
 
-def _all_images_script(remote_dir: str, analysis_dir: str) -> str:
+def _all_images_script(remote_dir: str, analysis_dirs: List[str]) -> str:
     """NEB：一次 exec 遍历所有映像目录（`00..NN`）。"""
-    lines = _work_dir_lines(remote_dir, analysis_dir)
+    lines = _work_dir_lines(remote_dir, analysis_dirs)
     lines += [
         "COUNT=0",
         'for d in "$WORK"/[0-9]*; do',
@@ -254,16 +267,44 @@ def _thresholds(task_id: str) -> Dict[str, Any]:
     return {**DEFAULT_THRESHOLDS, "source": "registry"}
 
 
-def _structure_dir(task: Dict[str, Any]) -> str:
-    """结构（CONTCAR）实际来源子目录：`""` = 任务主目录。
+def _structure_dirs(task: Dict[str, Any]) -> List[str]:
+    """受力该读哪个子目录：按优先级给一串候选（`""` = 任务主目录），远端会挑第一个真有结果的。
 
-    优先用巡检同步结构时记录的 `last_structure_dirs.CONTCAR`（含"回退主目录"的真实情况）；
-    老数据没有该字段时退回 `last_analysis_dir`。
+    用户口径："**CONTCAR 来自哪个文件夹，受力就来自哪里**"。候选顺序：
+      1. `last_structure_dirs`（巡检同步结构时记的真实来源，含"回退主目录"的情况）；
+      2. `input_state.source.con` —— **本地镜像（files/ 里的 CONTCAR/POSCAR）是从哪个 conN 同步来的**，
+         也就是界面/文件里看到的那份 CONTCAR 的实际来源；
+      3. `last_analysis_dir`（老数据只有这个字段）；
+      4. `""` 任务主目录。
+    为什么要给一串：记录里的 conN 可能已经被清理/换名（2026-10-08 PAYH3_TS2 记录还是 con8、
+    远端只剩 con1–con6），只认死一个就会取到空目录、白屏或报"没有 OUTCAR"。
     """
+    candidates: List[str] = []
+
+    def _add(value: Any) -> None:
+        text = str(value or "").strip().strip("/")
+        if text and text not in candidates:
+            candidates.append(text)
+
     dirs = task.get("last_structure_dirs")
-    if isinstance(dirs, dict) and "CONTCAR" in dirs:
-        return str(dirs.get("CONTCAR") or "")
-    return str(task.get("last_analysis_dir") or "")
+    if isinstance(dirs, dict):
+        for key in ("CONTCAR", "POSCAR", "OUTCAR"):
+            if key in dirs:
+                _add(dirs.get(key))
+    source = (task.get("input_state") or {}).get("source") or {}
+    _add(source.get("con"))
+    _add(task.get("last_analysis_dir"))
+    _add("")
+    return candidates
+
+
+def _relative_dir(remote_dir: str, work_dir: str) -> str:
+    """远端返回的工作目录（绝对路径）→ 相对任务目录的子目录（主目录本身 = ""）。"""
+    base = str(remote_dir or "").rstrip("/")
+    work = str(work_dir or "").rstrip("/")
+    if not base or not work.startswith(base):
+        return ""
+    return work[len(base) :].lstrip("/")
 
 
 def _build_payload(
@@ -365,13 +406,13 @@ def build_atomic_forces(
         raise AtomicForceError(404, "任务缺少远程目录")
 
     reports_dir = _forces_dir(str(project.get("name") or ""), task)
-    structure_dir = _structure_dir(task)
+    structure_dirs = _structure_dirs(task)
+    structure_key = ",".join(structure_dirs)  # 候选变了（换过 conN / 重新同步结构）就要重取
     running = str(task.get("status") or "") in RUNNING_STATUSES
     cached = _read_cache(reports_dir, task_id, image)
-    # 缓存有效性：结构来源目录必须一致（换过 conN / 重新同步结构就要重取）
     if (
         cached
-        and cached.get("source_dir") == structure_dir
+        and cached.get("source_dirs") == structure_key
         and not running
         and not refresh
     ):
@@ -381,7 +422,7 @@ def build_atomic_forces(
         if not image:
             raise AtomicForceError(400, "NEB 请指定映像编号（image），或直接切换映像后重试")
         payloads = _fetch_all_images(
-            server, remote_dir, structure_dir, task_id, reports_dir
+            server, remote_dir, structure_dirs, task_id, reports_dir
         )
         if image not in payloads:
             got = "、".join(sorted(payloads)) or "无"
@@ -398,12 +439,10 @@ def build_atomic_forces(
 
     thresholds = _thresholds(task_id)
     script = base64.b64encode(
-        _single_script(remote_dir, structure_dir).encode("utf-8")
+        _single_script(remote_dir, structure_dirs).encode("utf-8")
     ).decode("ascii")
     out = _run(server, script)
-    _raise_for_flags(
-        out, f"{remote_dir}/{structure_dir}" if structure_dir else remote_dir
-    )
+    _raise_for_flags(out, remote_dir)
     work_dir = _after(out, "@@@WORK\n").split("\n", 1)[0].strip()
     probe = _probe_of(out)
     payload, warnings = _build_payload(
@@ -414,7 +453,8 @@ def build_atomic_forces(
         probe=probe,
         thresholds=thresholds,
     )
-    payload["source_dir"] = structure_dir
+    payload["source_dir"] = _relative_dir(remote_dir, work_dir)
+    payload["source_dirs"] = structure_key
     payload["cache_path"] = _write_cache(reports_dir, task_id, None, payload)
     if warnings:
         payload["warnings"] = warnings
@@ -451,21 +491,18 @@ def _raise_for_flags(out: str, remote_dir: str) -> None:
 def _fetch_all_images(
     server: str,
     remote_dir: str,
-    structure_dir: str,
+    structure_dirs: List[str],
     task_id: str,
     reports_dir: Path,
 ) -> Dict[str, Dict[str, Any]]:
     """NEB：一次 exec 取回所有映像的受力，逐个落盘，返回 `{映像: payload}`。"""
     script = base64.b64encode(
-        _all_images_script(remote_dir, structure_dir).encode("utf-8")
+        _all_images_script(remote_dir, structure_dirs).encode("utf-8")
     ).decode("ascii")
     out = _run(server, script)
     if "@@@NODIR" in out:
-        raise AtomicForceError(
-            404,
-            f"远端结构目录不存在：{remote_dir}"
-            + (f"/{structure_dir}" if structure_dir else ""),
-        )
+        tried = "、".join(d or "任务主目录" for d in structure_dirs)
+        raise AtomicForceError(404, f"远端没有可用的结构目录（试过：{tried}）")
 
     work_base = _after(out, "@@@WORK\n").split("\n", 1)[0].strip()
     thresholds = _thresholds(task_id)
@@ -489,7 +526,8 @@ def _fetch_all_images(
             warnings.append(f"映像 {label}：{e.message}")
             continue
         payload["warnings"] = block_warnings
-        payload["source_dir"] = structure_dir
+        payload["source_dir"] = _relative_dir(remote_dir, work_base)
+        payload["source_dirs"] = ",".join(structure_dirs)
         payload["cache_path"] = _write_cache(reports_dir, task_id, label, payload)
         payloads[label] = payload
     if not payloads:

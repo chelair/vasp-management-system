@@ -456,6 +456,12 @@ def _apply_result(
         for key in ("dir", "contcar_path", "outcar_path", "oszicar_path"):
             if current_output.get(key):
                 current_output[key] = to_remote_rel(server, str(current_output[key]))
+    if not latest_dir:
+        # 巡检没认出"正常结束"的 conN（NEB 的 OUTCAR 在映像子目录里，顶层没有）→
+        # 用**本地镜像（files/）这次的同步来源**兜底：结构与受力都必须跟着界面上那份
+        # CONTCAR 走（用户口径"CONTCAR 来自哪个文件夹，受力就来自哪里"，2026-10-08 PAYH3_TS2）。
+        mirror_source = (task.get("input_state") or {}).get("source") or {}
+        latest_dir = str(mirror_source.get("con") or "")
     old_output = task.get("current_output")
     old_latest = (
         old_output.get("latest_dir") if isinstance(old_output, dict) else None
@@ -479,7 +485,11 @@ def _apply_result(
     dir_changed = (latest_dir or "") != prev_dir
     effective_prev_bucket = -1 if dir_changed else prev_bucket
     # 结构分析触发条件（opt 与 neb 相同）：25 步一桶、桶号推进才触发、目录变化重置
-    should_analyze = task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and bucket >= 1 and bucket > effective_prev_bucket
+    # - 目录变化（含"上次同步的 conN 已经被清理/换成新的"）→ **立刻重新同步**：
+    #   界面上的结构来源必须跟着当前 conN 走（用户口径 2026-10-08：受力与 CONTCAR 同源）。
+    should_analyze = task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and (
+        dir_changed or (bucket >= 1 and bucket > effective_prev_bucket)
+    )
 
     markers: List[str] = []
     structure_synced = False

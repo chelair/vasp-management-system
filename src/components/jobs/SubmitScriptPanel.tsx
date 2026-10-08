@@ -64,6 +64,8 @@ export default function SubmitScriptPanel({
   /** 组 2：资源 */
   const [cores, setCores] = useState<number>(24);
   const [ptile, setPtile] = useState<number>(1);
+  /** "总核数 ≥ 每节点核数" 的**输入结束提示**：输入过程中只提示、不偷偷改另一个框 */
+  const [ptileNotice, setPtileNotice] = useState<string>('');
   /** 组 3：软结束模块 */
   const [softKill, setSoftKill] = useState<boolean>(true);
   const [warnMinutes, setWarnMinutes] = useState<number>(DEFAULT_WARN_MINUTES);
@@ -106,9 +108,26 @@ export default function SubmitScriptPanel({
   /** 队列节点规格：每节点核数默认从队列带出 */
   const queueSpec = snapshot?.queues.find((q) => q.queue === queue);
   useEffect(() => {
-    // 每节点核数不能超过总核数
-    if (queueSpec?.coresPerNode) setPtile(Math.min(queueSpec.coresPerNode, cores));
+    // 换队列时按队列规格带出每节点核数；**不再顺手按总核数裁剪** —— 统一交给
+    // "输入结束（失焦）时提示+修正"，避免切队列时把用户正在编辑的值悄悄改掉
+    if (queueSpec?.coresPerNode) setPtile(queueSpec.coresPerNode);
   }, [queueSpec?.coresPerNode, queue]);
+
+  /** 跨字段约束：输入过程中**只提示不改值**（用户口径 2026-10-08：等输入完再起效） */
+  const ptileMismatch = ptile > cores;
+  // 修正提示显示 8 秒后自动消失（不能"一修正就清掉"，否则用户根本看不到被改过）
+  useEffect(() => {
+    if (!ptileNotice) return;
+    const timer = window.setTimeout(() => setPtileNotice(''), 8000);
+    return () => window.clearTimeout(timer);
+  }, [ptileNotice]);
+
+  /** 失焦（= 输入结束）时才按总核数修正，并把修正结果写在提示里，避免"被悄悄改掉" */
+  const clampPtileToCores = () => {
+    if (ptile <= cores) return;
+    setPtile(cores);
+    setPtileNotice(`每节点核数不能大于总核数，已按总核数 ${cores} 调整`);
+  };
 
   const opts = useMemo(
     () => ({
@@ -331,14 +350,15 @@ export default function SubmitScriptPanel({
                   min={1}
                   max={512}
                   value={cores}
-                  onChange={(v) => {
-                    const next = v ?? 24;
-                    setCores(next);
-                    setPtile((p) => Math.min(p, next));
-                  }}
+                  status={ptileMismatch ? 'warning' : undefined}
+                  // 输入过程中**不**动"每节点核数"：覆盖输入 72 时中间态 7 会把 24 压成 7（用户踩过）
+                  onChange={(v) => setCores(v ?? 24)}
+                  onBlur={clampPtileToCores}
                 />
                 <span className="lsf-field__hint">
-                  推荐 {snapshot ? getRecommendedCores(snapshot.nodes) : '—'} 核（健康节点最大空闲核数）
+                  {ptileMismatch
+                    ? `每节点核数（${ptile}）大于总核数（${cores}）：输入结束后会按总核数调整`
+                    : `推荐 ${snapshot ? getRecommendedCores(snapshot.nodes) : '—'} 核（健康节点最大空闲核数）`}
                 </span>
               </div>
               <div className="lsf-field">
@@ -347,10 +367,15 @@ export default function SubmitScriptPanel({
                   min={1}
                   max={128}
                   value={ptile}
-                  onChange={(v) => setPtile(Math.max(1, Math.min(v ?? 1, cores)))}
+                  status={ptileMismatch ? 'warning' : undefined}
+                  // 输入过程中不做跨字段裁剪（否则想输入 80 会被当前总核数截断）
+                  onChange={(v) => setPtile(Math.max(1, v ?? 1))}
+                  onBlur={clampPtileToCores}
                 />
                 <span className="lsf-field__hint">
-                  {`#BSUB -R "span[ptile=${ptile}]"（默认取队列规格）`}
+                  {ptileNotice
+                    ? ptileNotice
+                    : `#BSUB -R "span[ptile=${ptile}]"（默认取队列规格）`}
                 </span>
               </div>
               <div className="lsf-field">

@@ -1079,11 +1079,13 @@ def ai_generate_notes(
 
 
 #: 注解的「类型级」落点（用户 2026-10-13 口径）：markdown 标题 → 注解 key。
-#: **只在「重点科学结果分析」章节内有注解**；电子结构子任务未完成，暂不提供。
+#: **只在「重点科学结果分析」章节内有注解**；四个类型各一条"总的"（电子结构目前是占位区块，
+#: 只有类型级没有子项级 —— 子任务还没做完，按用户要求暂不提供）。
 NOTE_TYPE_KEYS: Dict[str, str] = {
     "结构优化": "type_opt",
     "自由能路径": "type_free_energy",
     "NEB 过渡态": "type_neb",
+    "电子结构": "type_ele",
 }
 
 #: 自由能路径的「组级」注解 key 前缀（每个路径一条）：`path:<group_id>`
@@ -1097,12 +1099,13 @@ def attach_report_notes(report: Dict[str, Any], report_id: str) -> Dict[str, Any
 
     | 落点 | key | 说明 |
     | --- | --- | --- |
-    | 类型级（总的） | `type_opt` / `type_free_energy` / `type_neb` | 每个类型一条 |
+    | 类型级（总的） | `type_opt` / `type_free_energy` / `type_neb` / `type_ele` | 每个类型一条 |
     | 结构优化子项 | `task_id` | 每个任务一条 |
     | NEB 组 | `task_id` | 每个 NEB 任务（= 一组）一条 |
     | 自由能路径组 | `path:<group_id>` | 每条路径一条；路径内各结构仍按各自 `task_id` |
 
-    电子结构暂不提供（子任务未完成）。函数幂等：只写 `notes` / `note_blocks`
+    电子结构**只有类型级**（`type_ele`）—— 其子任务未完成，子项级暂不提供。
+    函数幂等：只写 `notes` / `note_blocks`
     与各条目的 `analysis_note` / `paper_note`，不改其它字段。
 
     `note_blocks`（导出 HTML 用）：key = markdown 里 `#### 标题`（任务名 / 路径名），

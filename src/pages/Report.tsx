@@ -81,12 +81,14 @@ interface NoteTarget {
 
 /**
  * 注解的「类型级」落点（用户 2026-10-13 口径）：科学结果分析章节里 markdown `### 标题` → 注解 key。
- * 电子结构子任务未完成，暂不提供；与后端 `report_builder.NOTE_TYPE_KEYS` 保持一致。
+ * 四个类型各一条"总的"；电子结构目前是占位区块（子任务未完成），只有类型级没有子项级。
+ * 与后端 `report_builder.NOTE_TYPE_KEYS` 保持一致。
  */
 const NOTE_TYPE_KEYS: Record<string, string> = {
   结构优化: 'type_opt',
   自由能路径: 'type_free_energy',
   'NEB 过渡态': 'type_neb',
+  电子结构: 'type_ele',
 };
 
 /**
@@ -378,7 +380,7 @@ export default function Report() {
         return anchor;
       };
 
-      // 类型级（总的）：结构优化 / 自由能路径 / NEB 过渡态；电子结构不提供
+      // 类型级（总的）：结构优化 / 自由能路径 / NEB 过渡态 / 电子结构（后者无子项级）
       children.forEach((el, index) => {
         if (el.tagName !== 'H5') return;
         const label = headingLabel(el);

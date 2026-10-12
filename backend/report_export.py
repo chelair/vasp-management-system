@@ -449,13 +449,15 @@ _TYPE_NOTE_KEYS = {
     "结构优化": "type_opt",
     "自由能路径": "type_free_energy",
     "NEB 过渡态": "type_neb",
+    "电子结构": "type_ele",
 }
 
 
 def _inject_type_notes(body_html: str, notes: Dict[str, Any]) -> str:
     """把「类型级」（该类型一条总的）注解插到类型标题正下方（`<h4>` 之后）。
 
-    只有 §7 的三类落点，电子结构不提供；空注解不产生空壳（`notes_panel` 会返回空串）。
+    四个类型都有类型级落点（电子结构是占位区块，只有类型级、没有子项级）；
+    空注解不产生空壳（`notes_panel` 会返回空串）。
     """
     if not notes or "<h4>" not in body_html:
         return body_html

@@ -8,6 +8,12 @@
 总览页已是集群实时视图（bjobs 作业、blimits 核数配额、bhosts/bqueues 节点队列、df 存储），
 接口文档（面向自动化 / 智能体接入，含观测面与执行面、调用参数与前置条件）见 [`API.md`](./API.md)；跨窗口交接说明见 [`process.md`](./process.md)。
 
+**AI 接入地基（v0.9.42）**：智能体用**受限身份**接入 —— agent 账号带 `delegate_to`（继承某用户的可见范围）、token 带 `scope`
+（`read` 只读 / `propose` 只能提案 / `write` 可直接执行动作）；危险动作走**待确认队列**（AI 提案 → 人工批准，`/api/pending-actions`）；
+统一入口 `GET /api/ai`（含数据契约、任务上下文 `task_context`、OUTCAR 尾部）。另外从本版起积累**知识层**（`data/knowledge/`：
+VASP 错误对照表 / INCAR 速查 / 错误案例库）与**报告结构化副本**（`data/reports/structured/`）。
+详见 [`API.md`](./API.md) §2.4 / §4.5 / §4.6 / §4.7。
+
 **前端不再有 Mock 数据**（`src/data/mock/` 仅保留编辑器默认参数与 VASP 输入文件模板）。
 
 > 跨窗口交接看 `process.md`（版本、改动记录、已知坑、待办）；`TODO.md` 为历史清单，个别条目已过时。

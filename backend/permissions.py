@@ -103,16 +103,63 @@ def owned_by(project: Optional[Dict[str, Any]], user: Optional[Dict[str, Any]]) 
     if not project:
         return False
     owner = auth.normalize_username(project.get("owner"))
-    name = username_of(user)
+    name = effective_owner_name(user)
     return bool(owner) and owner == name
 
 
+#: agent token 的能力范围（2026-10-13）：read（默认）/ propose（可进待确认队列）/ write（可直接执行动作）
+SCOPES = ("read", "propose", "write")
+
+
+def effective_owner_name(user: Optional[Dict[str, Any]]) -> str:
+    """可见范围的归属人：**agent 账号带 `delegate_to` 时继承被委托用户的可见范围**。
+
+    例：`role=agent, delegate_to=zouyuxi` → 看得到 zouyuxi 的全部项目（只读或按 token scope 限制）。
+    """
+    if not user:
+        return ""
+    role = str(user.get("role") or "")
+    target = auth.normalize_username(user.get("delegate_to"))
+    if role == "agent" and target:
+        return target
+    return username_of(user)
+
+
+def token_scope(session: Optional[Dict[str, Any]]) -> Optional[List[str]]:
+    """token 的能力范围；`None` = 不限（人类会话 / 未设置）。"""
+    if not isinstance(session, dict):
+        return None
+    raw = session.get("scope")
+    if not raw:
+        return None
+    return [str(x) for x in raw]
+
+
+def has_scope(session: Optional[Dict[str, Any]], needed: str) -> bool:
+    """是否允许 `needed`（read/propose/write）。未设置 scope（人类会话）恒为允许。"""
+    scope = token_scope(session)
+    if scope is None:
+        return True
+    if needed == "read":
+        return True
+    if needed in scope:
+        return True
+    # write 隐含 propose（能直接做就能提案）
+    return needed == "propose" and "write" in scope
+
+
+def ensure_scope(session: Optional[Dict[str, Any]], needed: str) -> None:
+    """agent token 越权 → 403（人类会话/未设 scope 不受影响）。"""
+    if not has_scope(session, needed):
+        raise PermissionDenied(f"该 token 的能力范围不含 {needed}")
+
+
 def visible_projects(db: Dict[str, Any], user: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """当前用户可见的项目列表（admin 全部，普通用户只看自己的）。"""
+    """当前用户可见的项目列表（admin 全部；普通用户看自己的；agent 看 delegate_to 那位用户的）。"""
     projects = list(db.get("projects", []) or [])
     if is_admin(user):
         return projects
-    name = username_of(user)
+    name = effective_owner_name(user)
     if not name:
         return []
     return [p for p in projects if auth.normalize_username(p.get("owner")) == name]

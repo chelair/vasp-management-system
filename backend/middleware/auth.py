@@ -46,6 +46,20 @@ COOKIE_NAME = "vasp_token"
 SESSION_EXTEND_SECONDS = auth.SESSION_TTL_DAYS * 24 * 3600
 
 
+def _needed_scope(method: str, path: str) -> str:
+    """这条请求需要什么能力：读 → `read`；AI 提交待确认动作 → `propose`；其余写操作 → `write`。
+
+    规则刻意只覆盖"写"这一类：`read` 永远允许（能看见才谈得上读），
+    所以只给 agent token 配了 `scope` 才生效，人类会话不受影响。
+    """
+    if method.upper() in SAFE_METHODS:
+        return "read"
+    # AI 只能"提案"的动作：提交待确认队列（人工批准后才真正执行）
+    if method.upper() == "POST" and path.rstrip("/") == "/api/pending-actions":
+        return "propose"
+    return "write"
+
+
 def _unauthorized(message: str, status_code: int = 401) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -105,6 +119,20 @@ async def auth_middleware(request: Request, call_next):
         return _unauthorized("登录已失效（token 无效 / 已过期 / 账号被禁用），请重新登录")
 
     session, user = verified
+
+    # agent token 的能力范围（2026-10-13）：read / propose / write。
+    # **只影响带 scope 的 agent token**；人类会话没有 scope → 一律放行（现有功能零影响）。
+    needed = _needed_scope(method, path)
+    if needed != "read" and not permissions.has_scope(session, needed):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "success": False,
+                "message": f"该 token 的能力范围不含 {needed}（当前：{session.get('scope') or '未设置'}）",
+                "data": {},
+            },
+        )
+
     request.state.token = token
     request.state.session = session
     request.state.user = user

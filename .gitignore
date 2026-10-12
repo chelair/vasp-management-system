@@ -7,7 +7,10 @@ vite_dev.log*
 backend_server.log*
 .DS_Store
 Thumbs.db
-/data/
+/data/*
+# 例外：知识层是人工沉淀的内容（错误对照表 / INCAR 速查 / 错误案例库），随代码一起版本管理
+# （其余 data/ 下都是运行时数据：项目库、巡检归档、报告、账号会话、待确认队列 …… 不进 git）
+!/data/knowledge/
 __pycache__/
 *.pyc
 .venv/

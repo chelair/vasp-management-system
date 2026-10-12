@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-10-04 · 当前版本：v0.9.41（巡检详情页「查看原子受力」：逐原子受力上色 + 受力与 CONTCAR 同目录 + 落盘 reports/）
+> 生成时间：2026-08-29 · 最近更新：2026-10-13 · 当前版本：v0.9.42（AI 接入四件套：agent 账号 `delegate_to` + token `scope` + 待确认队列 + `/api/ai` 专用入口 + 知识层与报告结构化落盘）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -50,6 +50,10 @@ data/
 │   └── core_history.json      # 总览集群采样历史（核数/运行中任务，v0.6.0 起累积）
 ├── projects/                  # 本地项目镜像目录（每个任务一份 files/，见 §3）
 ├── reports/                   # 分项目报告（v0.7.0 起）：<项目>/<报告ID>/{report.json,report.md,charts/*.svg} + index.json
+│                              # v0.9.42 起另落 structured/<报告ID>.json（规范化 AI 视图，供后续向量化/RAG）
+├── knowledge/                 # 知识层（v0.9.42 起人工积累，暂不接推理）：
+│                              # vasp_errors.md（30 类错误对照表）/ incar_reference.md / error_cases.jsonl（案例库）
+├── pending_actions.json       # 待确认动作队列（v0.9.42：AI 提案 → 人工批准/驳回，见 §4）
 ├── trash/                     # 删除任务/项目的回收站
 ├── aux_molecules/             # 辅助分子全局目录（opt|frac）
 └── config/
@@ -137,9 +141,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `routers/automation.py` | **动作与自动化接口（v0.9.6，仅 admin）**：`GET/POST /api/actions[/{name}]`、`GET /api/actions/runs/{run_id}`、`/api/automation/{status,settings,rules,rules/{id},rules/{id}/run,reload,decisions,runs}` |
 | `routers/jobs.py`（v0.9.6） | 四个业务核心抽成 `core_continuation / core_submit / core_create_frac / core_create_neb`（+ `ActionError`），**HTTP 接口与自动化动作层共用同一份实现**；submit 支持 `dry_run=True`（脚本跑到检查就退出，不 bsub、不改状态） |
 | `ssh.py`（v0.9.6） | mock 模式增强：除 `python3 <脚本>` 外，支持 `echo <b64> \| base64 -d \| bash`（路径单遍重写到模拟根、把 `<模拟根>/_mock_bin` 放进 PATH），**仅 mock 生效**，用于离线端到端验证提交/续算等 bash 脚本 |
-| `permissions.py` | **归属判断（v0.9.2）**：`visible_projects/visible_project_names`（列表过滤）、`ensure_project_owner/ensure_task_owner`（单对象，越权抛 `PermissionDenied` → 全局 403）、`enforce_task`（给 `jobs._resolve_task` 这类唯一入口用，从认证中间件写入的 contextvar 取用户，**后台线程无用户时自动放行**）、`current_username` 审计助手。**只做归属判断，不含业务逻辑** |
-| `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天 |
-| `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期）/列出/吊销（按 `session_id`） |
+| `permissions.py` | **归属判断（v0.9.2）**：`visible_projects/visible_project_names`（列表过滤）、`ensure_project_owner/ensure_task_owner`（单对象，越权抛 `PermissionDenied` → 全局 403）、`enforce_task`（给 `jobs._resolve_task` 这类唯一入口用，从认证中间件写入的 contextvar 取用户，**后台线程无用户时自动放行**）、`current_username` 审计助手。**只做归属判断，不含业务逻辑**；**v0.9.42** 加 `effective_owner_name`（agent 账号 `delegate_to` → 继承被委托用户可见范围）、`SCOPES/token_scope/has_scope/ensure_scope`（token 能力范围 read/propose/write） |
+| `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天；**v0.9.42** 加 `_needed_scope()`（GET→read / `POST /pending-actions`→propose / 其余写→write），**只对带 `scope` 的 token 生效**（人类会话不受影响） |
+| `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期/吊销）；**v0.9.42** 加 `POST /api/auth/users`（建号，支持 `role=agent` + `delegate_to`）与 `scope` 参数 |
+| `pending_actions.py` + `routers/pending_actions.py` | **待确认队列（v0.9.42）**：AI 触发的 confirm 级动作先入队等人批准。`data/pending_actions.json`（原子写 + 锁），状态机 `pending → approved / failed / rejected`；入队时做归属校验；**agent 角色不能 approve/reject**；批准时复用 `automation/actions.py` 的 preflight+execute；提案/批准/驳回各写 `auth.pending-*` 审计 |
+| `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
 | `task_paths.py` | 任务目录推导、`is_continuation_task`、类型→顶层分类目录 |
 | `storage.py` | 文件型 DB：原子写 + 备份 + `update_task_status`（无流转白名单） |
@@ -242,7 +248,37 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.42）
+
+- 2026-10-13（用户："需要一个接口让 AI 能拿到 task_context / AI 专用认证（delegate_to + scope） /
+  待确认队列 / 知识层准备"）：**AI 接入的"身份 + 闸门 + 入口 + 素材"四件套**（v0.9.42，只加不改）。
+  ① **AI 专用认证**：`auth.create_user(delegate_to=…)` 给 agent 账号记委托对象、
+  `auth.create_session(scope=…)` 给 token 记能力范围；`permissions.effective_owner_name()` 让 agent **继承被委托用户的
+  可见范围**（已接进 `visible_projects` / `owned_by`）；新增 `permissions.SCOPES/token_scope/has_scope/ensure_scope`；
+  中间件新增 `_needed_scope()`：GET→`read`、`POST /api/pending-actions`→`propose`、其余写→`write`，
+  **只对带 scope 的 token 生效**（人类会话 scope=null → 一律放行，现有功能零影响）。新增
+  `POST /api/auth/users`（admin 建号，可带 `role=agent` + `delegate_to`，密码只回显一次），
+  `POST /api/auth/tokens` 支持 `scope`（agent 不传默认 `["read"]`，非法值 400），`_public_user/_public_session` 回显
+  `delegate_to`/`scope`。② **待确认队列**：新增 `backend/pending_actions.py`（`data/pending_actions.json`，原子写+锁，
+  状态机 pending→approved/failed/rejected，重复处理 400）与 `routers/pending_actions.py`
+  （`GET /catalog`、`POST /`、`GET /`（status/project/limit + counts）、`POST /{id}/approve|reject`）；
+  **入队时做归属校验**（带 task_id 的提案反查项目 + `ensure_project_owner`），
+  **agent 角色不能 approve/reject**（AI 不能自审自批），批准时复用 `automation/actions.py` 的 preflight+execute
+  （执行失败标 `failed` 并留 `error`，不抛给调用方），提案/批准/驳回各写一条 `auth.pending-*` 审计。
+  ③ **AI 专用入口**：新增 `routers/ai.py`（别名，不复制业务逻辑）：`GET /api/ai`（入口清单 + 自身
+  actor/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、
+  `/api/ai/pending-actions`。④ **知识层**：`data/knowledge/vasp_errors.md`（30 类错误对照表，每行带机器库 id，
+  对照 `data/config/check_errors.json`）、`data/knowledge/incar_reference.md`（7 组参数速查）、
+  `data/knowledge/error_cases.jsonl`（案例库，含一行模板）+ `scripts/log_error_case.py`（纯标准库，可自动摘
+  任务 `reports/outcar_tail.txt`）；知识层第 4 项（历史报告）落地：`report_store.save_report()` 额外把**规范化 AI 视图**写到
+  `data/reports/structured/<report_id>.json`（实测 27.7KB，含 `ai_view/schema_version/generated_at`），失败不影响报告本体。
+  **验收实测 25/25 通过**：建 agent 账号（delegate_to 回显）、read token 提案 → 403、
+  propose token 提案 → 200（`requested_kind=agent`）、propose token 直接 submit → 403、
+  提案不存在任务 → 404、read token 读 task_context → 200、agent approve（propose/write token 均）→ 403、
+  `GET /projects` 只返回被委托用户的项目（6 个）、人类会话提案+驳回 → 200、
+  approve 假任务 → `failed` + `ActionError: 任务不存在`、重复 approve → 400。
+  临时账号/会话/队列条目已清理（`data/pending_actions.json` 仅留 1 条早期测试条目）。**回归**：既有接口、
+  前端零改动（本次全在 `/api/ai`、`/api/pending-actions`、`/api/auth/*` 的新增部分）。
 
 - 2026-10-13（用户："若任务异常结束，点击错误信息可弹出一个窗口显示 OUTCAR 最后数行"）：
   **巡检页错误信息可点开看 OUTCAR 尾部**。新增 `GET /api/jobs/tasks/{id}/outcar-tail?lines&image`
@@ -877,7 +913,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 11. **自动执行 / 大模型动作接口**（2026-09-20 审计，**设计已定、尚未实现**）：为「定时执行 + 大模型决策后自动执行（续算/固定原子/建 NEB 等）」准备统一动作层。现状审计：73 个接口（32 读 / 41 写）散落在 jobs/projects/groups 路由，**没有统一动作目录、没有 dry-run 前置校验（只有 submit 内嵌五件套检查）、没有幂等键、长动作同步阻塞（NEB 创建远端 300s、巡检 75-90s）、没有统一动作台账（仅 `jobs.py::_audit_log` 文本行且只覆盖部分动作）、没有审批闸门与通知出口**；已有半成品：`report_rules.json`（13 条声明式规则）→ `risks[].advice` → `actions.items[{action_id,priority,task_id,action(自然语言),reason}]` + `llm_context{key_findings,open_questions,data_references,constraints}`。建议新增：`GET /actions`（动作目录，含参数 schema/前置/风险/幂等/是否长任务）、`POST /actions/{name}`（`dry_run` + `idempotency_key` + `requested_by/reason`）、`GET /actions/runs/{id}`（长动作轮询）、`/approve`·`/cancel`、`GET /actions/ledger`、`GET /observe/context`（一次给出巡检 findings + 任务事实 + 集群 + 动作历史，供大模型消费）。落地顺序：①动作目录+统一执行端点+给续算/固定原子/NEB 补 preflight → ②台账+幂等键+审批闸门 → ③异步 run+轮询+重试 → ④LLM 闭环（先只放开低风险动作）。**待用户拍板**：无人值守白名单、是否先全审、是否只允许选"参数档"而非任意 INCAR 键值、台账位置与保留量、失败重试与通知渠道。详见 TODO.md §12。
 
 12. **接口文档 `API.md`**（2026-09-20 新建，随版本维护）：面向**自动化 / 智能体接入**的接口清单与调用约定——观测面（`/projects`、`/inspections`、`/inspections/{task_id}`、`/dashboard/*`、`/jobs/tasks/{id}/input`）、执行面（提交 / 续算 / 改 INCAR 的四种粒度 / create-frac / create-neb-files / 巡检 / 归档 …）、五个核心动作的前置条件与耗时、闭环建议与现状缺口（无鉴权、无 dry-run、无幂等键、长动作同步阻塞）。**接自动化前先读它**。
-13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策；**规则化自动执行部分已在 v0.9.6 落地**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。**v0.9.6 已实现**：事件总线（巡检只发事件）、规则层（`config/rules/*.json`）、调度层（冷却/上限/幂等/熔断/全局暂停）、统一动作入口 `/api/actions/*`（四个动作，preflight + dry_run + run_id）、五态审计与前端自动化页；**尚未做**：`role=agent` 的 token scope、待确认队列、大模型决策闭环（`delegate_to`）。
+13. **智能体闭环：巡检 → 判断 → 执行**（2026-09-20 用户决策；**规则化自动执行部分已在 v0.9.6 落地**）：用户目标"巡检 → 根据结果判断下一步 → 执行"，要求**尽量降低对系统的影响**。设计 = 观测层（复用现有只读接口）+ 判断层（`data/config/agent_rules.json` 声明式规则，纯只读）+ 执行层（白名单动作 + dry_run + 幂等键 + 冷却 + 台账 `data/agent/actions.jsonl`，内部复用现有函数/端点）。落地顺序与低影响原则详见 TODO.md §13。**v0.9.6 已实现**：事件总线（巡检只发事件）、规则层（`config/rules/*.json`）、调度层（冷却/上限/幂等/熔断/全局暂停）、统一动作入口 `/api/actions/*`（四个动作，preflight + dry_run + run_id）、五态审计与前端自动化页；**v0.9.42 已补**：`role=agent` 的 token scope、待确认队列、`delegate_to`（见本文件 §7 顶端条目 + `API.md` §2.4/§4.5/§4.6）；**仍未做**：大模型决策闭环本身（系统侧只提供观测面 + 闸门，外部 agent 自己决策）。
 14. **账号 + 认证 + 授权**（2026-09-20 用户要求）：① 认证——客机必须登录后才能调用系统（`POST /api/auth/login` → Bearer token，中间件白名单外一律 401）；② 授权——每个账号只能管理/查看**自己创建的项目**（`project.owner` + `permissions.visible_projects/ensure_owner`，单对象越权 403）。方案、要覆盖的查询面、5 步实施清单与回滚方式详见 TODO.md §14。
     - **第 1～5 步已完成**（用户与会话底座 / 登录认证上线 / 归属字段与迁移 / 授权生效 / 前端角色化收尾），并在 v0.9.5 做了登录审计与安全加固：`backend/auth.py`（scrypt 密码哈希 / token 生成与 sha256 存盘 / 会话读写 / 首次启动自动建 `zouyuxi`(admin) 并打印随机密码）+ `scripts/set_password.py`（列表/建号/改密/禁用/启用/会话/强制下线）+ `main.py` 启动钩子（建号 + 清理过期会话）。数据落 `data/users/{users,sessions}.json`（原子写 + 文件锁 + 0600/0700，零新依赖）；**尚未接入任何接口**（`/api` 行为不变）。第 3 步（v0.9.1）给项目加 `owner/created_at` 并让新建项目自动归属；**第 4 步（v0.9.2）已按 owner 过滤并返回 403**（admin 全可见）。
 
@@ -902,6 +938,9 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
    ① 巡检异常规则引擎（TODO §11）；② 自动执行 / 大模型动作接口（TODO §12，含 5 个待决策项）；
    ③ **智能体闭环（巡检→判断→执行）**（TODO §13，用户 2026-09-20 决策：先只写待办与接口文档，暂不实现自动执行；最低影响优先）；
    ④ **账号 + 认证 + 授权**（TODO §14，用户 2026-09-20 要求：先方案与清单）——先登录才能调用系统，每个账号只能管理/查看自己创建的项目。
+   ⑤ **AI 接入（v0.9.42 已完成地基）**：AI 专用认证（agent `delegate_to` + token `scope`）、待确认队列、
+   `GET /api/ai` 入口、任务上下文 `task_context`、知识层 `data/knowledge/`、报告结构化落盘。
+   **下一步**：写外部 agent 的提示词与策略（系统侧不再改接口即可直接接）。
 
 ## 11. 部署与运维（Linux 生产机）
 

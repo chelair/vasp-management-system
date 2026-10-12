@@ -25,6 +25,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
 import auth
+import permissions
 from envelope import fail, ok
 from middleware.auth import COOKIE_NAME, SESSION_EXTEND_SECONDS, current_user, is_admin
 
@@ -79,6 +80,8 @@ def _public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "role": user.get("role"),
         "enabled": bool(user.get("enabled")),
         "created_at": user.get("created_at"),
+        # 2026-10-13：agent 账号的委托对象（继承其可见范围）；人类账号为 None
+        "delegate_to": user.get("delegate_to") or None,
     }
 
 
@@ -90,6 +93,8 @@ def _public_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": session.get("created_at"),
         "last_seen": session.get("last_seen"),
         "expires_at": session.get("expires_at"),
+        # 2026-10-13：token 能力范围（read/propose/write）；人类会话为 None = 不限
+        "scope": session.get("scope") or None,
     }
 
 
@@ -134,6 +139,7 @@ def login(request: Request, payload: dict = Body(default={})):
             {
                 "token": token,
                 "expires_at": session.get("expires_at"),
+                "scope": session.get("scope"),
                 "user": _public_user(user),
                 "session": _public_session(session),
             },
@@ -183,6 +189,42 @@ def me(request: Request):
     )
 
 
+@router.post("/users")
+def create_user_api(request: Request, payload: dict = Body(default={})):
+    """建账号（仅 admin）：**agent 账号**可带 `delegate_to` 继承某用户的可见范围（2026-10-13 新增）。
+
+    body: `{username, password?, role?, delegate_to?}`；不传 password 则生成随机密码并只回显一次。
+    """
+    if not is_admin(request):
+        return JSONResponse(status_code=403, content=fail("只有管理员可以建账号"))
+    admin = current_user(request)
+    data = payload or {}
+    try:
+        user, plain = auth.create_user(
+            username=str(data.get("username") or ""),
+            password=str(data["password"]) if data.get("password") else None,
+            role=str(data.get("role") or "user"),
+            enabled=bool(data.get("enabled", True)),
+            delegate_to=str(data.get("delegate_to") or "") or None,
+        )
+    except auth.AuthError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    auth.audit(
+        "user-create",
+        "OK",
+        admin.get("username"),
+        _client_ip(request),
+        detail=f"user={user.get('username')} role={user.get('role')} delegate_to={user.get('delegate_to')}",
+    )
+    return JSONResponse(
+        content=ok(
+            "账号已创建（密码只显示这一次）",
+            {"user": _public_user(user), "password": plain},
+        ),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/tokens")
 def create_token(request: Request, payload: dict = Body(default={})):
     """签发长期 token（仅 admin）：给脚本 / 智能体用，可命名、可设过期、可吊销。"""
@@ -219,6 +261,18 @@ def create_token(request: Request, payload: dict = Body(default={})):
         if ttl_days <= 0:
             return JSONResponse(status_code=400, content=fail("expires_days 必须大于 0"))
 
+    # scope（2026-10-13）：agent token 的能力范围；不传则按角色给默认
+    raw_scope = (payload or {}).get("scope")
+    if raw_scope is None:
+        scope = ["read"] if str(target.get("role") or "") == "agent" else None
+    else:
+        scope = [str(x).strip().lower() for x in (raw_scope or []) if str(x).strip()]
+        bad = [s for s in scope if s not in permissions.SCOPES]
+        if bad:
+            return JSONResponse(
+                status_code=400,
+                content=fail(f"scope 仅支持 {'/'.join(permissions.SCOPES)}，收到 {bad}"),
+            )
     token, session = auth.create_session(
         target,
         name=name,
@@ -226,6 +280,7 @@ def create_token(request: Request, payload: dict = Body(default={})):
         kind="token",
         created_by=str(admin.get("username") or ""),
         never_expires=ttl_days is None,
+        scope=scope,
     )
     auth.audit(
         "token-issue",

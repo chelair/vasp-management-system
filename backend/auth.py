@@ -272,6 +272,7 @@ def create_user(
     password: Optional[str] = None,
     role: str = "user",
     enabled: bool = True,
+    delegate_to: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[str]]:
     """建号；不传密码则生成随机密码。
 
@@ -299,6 +300,8 @@ def create_user(
             "role": role,
             "enabled": bool(enabled),
             "created_at": now_iso(),
+            # 2026-10-13：agent 账号可委托给某个用户，继承其可见范围（见 permissions.effective_owner_name）
+            "delegate_to": normalize_username(delegate_to) or None,
         }
         users.append(record)
         _write_json(USERS_FILE, doc)
@@ -417,11 +420,14 @@ def create_session(
     kind: str = "session",
     created_by: Optional[str] = None,
     never_expires: bool = False,
+    scope: Optional[List[str]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """为用户创建会话 / 长期 token，返回 `(明文 token, 记录)`；明文只在此刻出现一次。
 
     - `kind="session"`：登录会话（滑动续期）；`kind="token"`：给脚本/智能体的长期 token；
-    - `never_expires=True` 时 `expires_at` 为 None（永不过期，仅 admin 可签发）。
+    - `never_expires=True` 时 `expires_at` 为 None（永不过期，仅 admin 可签发）；
+    - `scope`（2026-10-13）：agent token 的能力范围，取值 `read` / `propose` / `write`；
+      `None` = 不限（人类会话）。`propose` = 只能进待确认队列，`write` = 允许直接执行动作。
     """
     if not user or not user.get("user_id"):
         raise AuthError("创建会话需要一个有效用户记录")
@@ -441,6 +447,8 @@ def create_session(
         "name": str(name or "").strip() or None,
         "kind": kind,
         "created_by": created_by,
+        # 2026-10-13：agent token 的能力范围（None = 不限，人类会话默认 None）
+        "scope": [str(x) for x in (scope or [])] or None,
     }
     with _locked():
         doc = _read_json(SESSIONS_FILE, None)

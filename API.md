@@ -50,7 +50,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 | `POST /api/auth/login` | `{username, password, name?}` | 返回 `{token, expires_at, user, session}`；**失败限速 5 次 / 15 分钟**（第 6 次 `429`）；同时写 HttpOnly Cookie（仅供浏览器打开 `/docs`，只对 GET/HEAD 生效） |
 | `POST /api/auth/logout` | 带头即可 | 删除当前会话，**旧 token 立即失效** |
 | `GET /api/auth/me` | 带头即可 | `{user, session, is_admin}`，前端启动时校验登录态 |
-| `POST /api/auth/tokens` | `{username? \| user_id?, name?, expires_days?}`（**仅 admin**） | 签发长期 token（给脚本 / 智能体）；不传 `expires_days` 即长期有效；**明文只返回一次** |
+| `POST /api/auth/users` | `{username, password?, role?, delegate_to?}`（**仅 admin**） | 建账号（v0.9.42）：`role=agent` + `delegate_to=<用户名>` = **AI 账号继承该用户的可见范围**；不传 `password` 则生成随机密码，**只回显一次** |
+| `POST /api/auth/tokens` | `{username? \| user_id?, name?, expires_days?, scope?}`（**仅 admin**） | 签发长期 token（给脚本 / 智能体）；不传 `expires_days` 即长期有效；`scope` 见 §2.4（不传时 agent 默认 `["read"]`，人类默认不限）；**明文只返回一次** |
 | `GET /api/auth/tokens` | 带头即可 | admin 看全部 token，其他用户只看自己的；返回 `session_id`（吊销时用） |
 | `DELETE /api/auth/tokens/{session_id}` | 带头即可 | 吊销指定 token；admin 可吊销任意，其他用户只能吊销自己的（否则 403） |
 
@@ -92,7 +93,48 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 - **集群级信息**（节点 / 队列 / 存储 / 趋势采样）不涉及项目归属，保持全局可见（`/dashboard/cluster-health`、`/jobs/nodes`）。
 - **审计**：写操作审计双写 —— `data/audit/actions.jsonl`（JSONL，含 `username`）+ 旧 `data/audit_submit.log`（原格式 + 行尾 `user=`）。
 - 前端（v0.9.3）：按角色隐藏入口（侧栏 SSH/全局配置、巡检开关与触发按钮），非 admin 强访问 `/ssh` 跳首页；**403 只弹轻提示、不跳登录页**。前端隐藏是体验优化，后端 403 才是防线。
-- 仍未做：`role=agent` 的 token scope、多人共享项目（members）、用户管理/日志/在线会话页、HTTPS。HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。
+- 仍未做：多人共享项目（members）、用户管理/日志/在线会话页、HTTPS。HPC 侧仍是共享 `mdye` 账号（鉴权≠算力隔离）。
+  （`role=agent` 的 token scope **已于 v0.9.42 生效**，见 §2.4）
+
+### 2.4 AI 专用认证（v0.9.42 已生效）
+
+给大模型 / 智能体用的**受限身份**：账号继承可见范围，token 限制能做什么。**人类账号与既有 token 完全不受影响**
+（没有 `scope` 的会话 = 不限；`scope` 只在 token 上生效）。
+
+| 概念 | 位置 | 取值 | 说明 |
+| --- | --- | --- | --- |
+| `delegate_to` | **账号**（`users[].delegate_to`） | 用户名 | `role=agent` 时**继承该用户的可见范围**（`GET /projects` 等只返回他的项目）；人类账号为空 |
+| `scope` | **token**（`sessions[].scope`） | `read` / `propose` / `write` | 见下；不传时 agent token 默认 `["read"]`，人类会话为 `null`（不限） |
+
+**scope 语义**（中间件按"这条请求需要什么能力"判定，`backend/middleware/auth.py::_needed_scope`）：
+
+| 请求 | 需要 | 说明 |
+| --- | --- | --- |
+| 所有 `GET` / `HEAD` | `read` | 永远允许（能看见才谈得上读） |
+| `POST /api/pending-actions` | `propose` | AI 只能"提案"，进待确认队列等人工批准（§4.5） |
+| 其它所有写操作 | `write` | 提交 / 续算 / 生成 frac / 归档 / 改草稿 … 直接执行 |
+
+组合规则：`write` 隐含 `propose`（能直接做就能提案）；`scope` 不足 → **403**，
+消息形如 `该 token 的能力范围不含 write（当前：['read']）`。
+
+**典型用法**：给巡检型 AI 签 `read`（看上下文、写分析、不改任何东西）；给需要处置的 AI 签 `propose`
+（危险动作落进待确认队列，由人批准）；只有确定可信的自动化才签 `write`。
+
+```bash
+# 1) 建一个 AI 账号，继承 zouyuxi 的可见范围
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"username":"agent_a","role":"agent","delegate_to":"zouyuxi"}' \
+  http://192.168.1.20:3001/api/auth/users | jq '.data'
+
+# 2) 给它签一个"只能提案"的长期 token
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"username":"agent_a","name":"agent-a-propose","expires_days":90,"scope":["propose"]}' \
+  http://192.168.1.20:3001/api/auth/tokens | jq -r '.data.token'
+
+# 3) 吊销：DELETE /api/auth/tokens/{session_id}（session_id 见 GET /api/auth/tokens）
+```
+
+`GET /api/ai` 会回显当前 token 的 `role` / `delegate_to` / `scope`，便于 AI 自查自己有多大权限。
 
 ## 3. 只读接口（观测面）
 
@@ -388,9 +430,94 @@ body: {
 - 两种模式都支持「立即触发」：`POST /api/automation/rules/{id}/run`。全局开关在 `data/config/automation.json`：
 `{enabled, dry_run, schedules_enabled, disabled_rules, failure_threshold}`。
 
+## 4.5 待确认队列：AI 提案 → 人工批准（v0.9.42）
+
+**AI 触发的 confirm 级动作不直接执行**，先入队；人工看过再决定执行/驳回。
+动作的实现与自动化调度**完全共用**（`automation/actions.py` 的 `preflight` + `execute`），
+入队不占用算力、不改任务状态。
+
+| 接口 | 谁用 | 说明 |
+| --- | --- | --- |
+| `GET /api/pending-actions/catalog` | 双方 | 可用动作目录（动作名 / 说明 / 是否长动作 / 参数提示），= `GET /api/actions` 的内容 |
+| `POST /api/pending-actions` | **AI**（token scope 需 `propose`） | 提交提案：`{action, payload:{task_id,...}, reason?, project_name?, task_name?}`；**只入库不执行** |
+| `GET /api/pending-actions` | 人工 | 队列（新 → 旧）：`?status=pending,approved,rejected,failed` / `?project=<项目名>` / `?limit=`，返回 `{items, counts, available_actions}` |
+| `POST /api/pending-actions/{id}/approve` | **人工** | 批准 → 真正执行；执行失败标 `failed` 并留 `error`（不抛给调用方） |
+| `POST /api/pending-actions/{id}/reject` | **人工** | 驳回，只改状态 |
+
+返回值与约束：
+
+- 提案条目字段：`id`（`pa_00001`）/ `created_at` / `status` / `action` / `action_label` / `payload` /
+  `reason` / `requested_by` / `requested_kind`（`agent` | `user`）/ `project_name` / `task_id` / `task_name` /
+  `decided_at` / `decided_by` / `decision_note` / `result` / `error`；
+- 状态机：`pending` → `approved`（执行成功）/ `failed`（执行报错，`error` 有原因）/ `rejected`（人工驳回），
+  已处理的条目**重复处理返回 400**；
+- **归属校验在入队时做**：带 `task_id` 的提案会反查项目并 `ensure_project_owner`，AI 只能对自己可见的任务提案
+  （不可见的任务返回 403，不存在的返回 404）；
+- **agent 账号不能批准/驳回**（`role=agent` 一律 403：`AI 不能自审自批`），只有人类会话能处置；
+- 落盘 `data/pending_actions.json`（原子写 + 进程内锁）；**提案 / 批准 / 驳回各写一条审计**
+  （`data/audit/actions.jsonl`，`command` 为 `auth.pending-propose` / `auth.pending-approve` / `auth.pending-reject`，
+  带 `ip` 与 `detail`，便于追溯"谁让 AI 做了什么"）。
+
+```bash
+# AI 侧：发现某任务该续算 → 提案（不执行）
+curl -s -X POST -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"action":"task.continuation","payload":{"task_id":"task_1789455573013_1"},"reason":"连续两轮 unconverged，建议续算"}' \
+  http://192.168.1.20:3001/api/pending-actions | jq '.data.item.id'
+
+# 人工侧：看队列并批准
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" 'http://192.168.1.20:3001/api/pending-actions?status=pending' | jq '.data.items'
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://192.168.1.20:3001/api/pending-actions/pa_00002/approve | jq '.data.item.status'
+```
+
+---
+
+## 4.6 AI 专用入口（`/api/ai`，v0.9.42）
+
+给智能体的**稳定调用面**：只做别名与自查，**不复制业务逻辑**（内部转调既有实现）。
+
+| 接口 | 等价于 | 说明 |
+| --- | --- | --- |
+| `GET /api/ai` | — | **入口清单** + 自身身份：`{actor:{username, role, delegate_to, scope, scope_meaning}, entrypoints[], hint}` |
+| `GET /api/ai/contract` | `GET /api/reports/project/schema` | 数据契约：状态族 / 单位 / 时间格式 / 字段别名 |
+| `GET /api/ai/tasks/{task_id}/context` | `GET /api/jobs/tasks/{id}/context` | **任务上下文**（AI 决策的唯一入口）：`?n_checks&n_actions&refresh` |
+| `GET /api/ai/tasks/{task_id}/outcar-tail` | `GET /api/jobs/tasks/{id}/outcar-tail` | OUTCAR 尾部：`?lines&image` |
+| `GET /api/ai/pending-actions` | `GET /api/pending-actions` | 自己的提案在队列里的状态：`?status&limit` |
+| `POST /api/pending-actions` | — | 提交提案（需 `scope=propose`），见 §4.5 |
+
+建议顺序：`GET /api/ai`（我能做什么）→ `GET /api/ai/contract`（字段怎么读）→
+`GET /api/ai/tasks/{id}/context`（这个任务发生了什么，含 `hints.missing`）→ 需要时
+`POST /api/pending-actions`（把结论变成待人工批准的动作）。
+
+---
+
+## 4.7 知识层（`data/knowledge/`，v0.9.42 起积累）
+
+给"异常识别 / 处置建议 / 报告撰写"逐步积累素材，**只落文件，暂不接推理**：
+
+| 文件 | 内容 | 维护方式 |
+| --- | --- | --- |
+| `data/knowledge/vasp_errors.md` | **VASP 常见错误对照表**（30 类：电子步 / 结构 / 运行时 / NEB / DFT+U），每行带「机器库 id」与 `data/config/check_errors.json` 对照 | 手工补充；新增机器规则时同步 |
+| `data/knowledge/incar_reference.md` | INCAR 常用参数速查（作用 / 取值 / 搭配 / 相互影响） | 手工补充 |
+| `data/knowledge/error_cases.jsonl` | **错误案例库**：一行一案例（错误特征 / OUTCAR 片段 / 处理方式 / 结果） | 处理完真实错误后 `python3 scripts/log_error_case.py ...` 追加 |
+| `data/reports/structured/<report_id>.json` | **报告结构化副本**（含 `ai_view` 规范化视图） | 生成报告时自动落盘（`report_store.save_report`），供后续向量化/RAG |
+
+```bash
+# 记一条错误处理案例（纯标准库，不需要 venv；--outcar 省略时自动取任务 reports/outcar_tail.txt）
+python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_1 \
+  --error E_ZBRENT --keywords "ZBRENT: fatal error in bracketing" \
+  --summary "POTIM 0.5→0.2，IBRION=2→1 重跑" --changes "IBRION=2->1,POTIM=0.5->0.2" \
+  --outcome resolved --note "续算第 12 离子步达标"
+```
+
+---
+
 ## 5. 智能体闭环：巡检 → 判断 → 执行（建议用法）
 
 目标：**只读为主、动作最少、影响最小**。三个阶段各自的推荐调用：
+
+> v0.9.42 起，智能体有**专用入口**（`GET /api/ai`，见 §4.6）与**受限身份**（agent 账号 + token scope，见 §2.4）；
+> 拿不准的动作走**待确认队列**（§4.5）而不是直接执行 —— AI 提案、人工批准。
 
 ```text
 ① 巡检（观测）
@@ -424,6 +551,7 @@ body: {
 | 缺口 | 影响 | 建议 |
 | --- | --- | --- |
 | ~~无鉴权~~ | v0.9.0 已解决 | 智能体用 `POST /api/auth/tokens` 签发的**长期 token**（可命名/设过期/随时吊销） |
+| ~~AI 权限过大~~ | v0.9.42 已解决 | agent 账号 `delegate_to` 收窄可见范围 + token `scope`（read/propose/write）限制动作 + 危险动作走待确认队列（§2.4 / §4.5） |
 | 无 dry-run | 动作直接落盘/占算力 | 增加 `?dry_run=1`（只跑 preflight 返回"将会发生什么"） |
 | 无幂等键 | 重试可能重复建目录/重复提交 | 加 `Idempotency-Key` 请求头 |
 | 长动作同步阻塞 | 300s 占住连接、超时易重试 | 加 `run_id` + 轮询（异步执行） |

@@ -15,6 +15,8 @@ from envelope import fail
 from middleware.auth import install as install_auth_middleware
 from permissions import PermissionDenied
 from routers import auth as auth_router
+from routers import pending_actions as pending_actions_router
+from routers import ai as ai_router
 from routers import automation as automation_router
 from routers import auxiliary as aux
 from routers import free_energy
@@ -193,6 +195,8 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(project_reports.router, prefix="/api")
 app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
+app.include_router(pending_actions_router.router, prefix="/api")
+app.include_router(ai_router.router, prefix="/api")
 
 
 # 生产模式：同时托管前端 dist/（单端口部署）

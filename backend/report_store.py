@@ -220,6 +220,27 @@ def save_report(
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp.replace(target)
 
+    # 结构化数据副本（2026-10-13，§4.4）：`data/reports/structured/<report_id>.json`
+    # 只落**规范化 AI 视图**（ai_view）+ 元信息，供后续向量化/RAG 检索；失败不影响报告本体
+    try:
+        view = (doc.get("ai_view") or {})
+        if isinstance(view, dict) and view:
+            structured_dir = REPORTS_DIR / "structured"
+            structured_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "report_id": report_id,
+                "project_name": project_name,
+                "project_id": meta.get("project_id") or "",
+                "generated_at": view.get("generated_at") or meta.get("generated_at"),
+                "schema_version": doc.get("schema_version"),
+                "ai_view": view,
+            }
+            (structured_dir / f"{_safe_name(report_id)}.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+    except Exception:  # noqa: BLE001 - 结构化副本失败不影响报告
+        pass
+
     # 单文件自包含 HTML（命名带日期，放在项目报告目录下）：用户口径 2026-10-07
     html_path: Optional[Path] = None
     try:

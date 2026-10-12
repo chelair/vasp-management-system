@@ -489,7 +489,9 @@ export default function Report() {
               </span>
             </span>
             <span className="report-item__footer">
-              <span className="path-cell">{item.report_id}</span>
+              {/* 报告代码（rpt_…）不再显示：太长会把「删除」挤没（2026-10-12 用户反馈）；
+                  搜索仍然按它匹配（见 filteredReports） */}
+              <span className="report-item__hint">点开查看 / 导出</span>
               <Popconfirm
                 title="删除该报告？"
                 okText="删除"

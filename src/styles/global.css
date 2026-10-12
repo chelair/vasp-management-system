@@ -4390,6 +4390,25 @@ body.is-atom-selecting * {
 .report-item__delete {
   color: #d9535b;
   cursor: pointer;
+  flex: 0 0 auto;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 左栏报告项底部提示（原先是报告代码，太长挤掉删除按钮） */
+.report-item__hint {
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .report-item__delete {
+    min-height: 44px;
+  }
 }
 
 .report-detail__head {

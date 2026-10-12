@@ -14,7 +14,7 @@ from checks_store import task_check_summary
 from dates import now_iso
 from envelope import fail, ok
 from mappers import map_project
-from models import AddProjectPayload
+from models import AddProjectPayload, ProjectPatchIn
 import permissions
 from paths import resolve_remote_path, to_local_rel, to_remote_rel
 from priority import compute_priority
@@ -135,6 +135,10 @@ def create_project(payload: AddProjectPayload, request: Request):
 
         project = {
             **p.model_dump(),
+            # 报告辅助字段统一存空串（缺省不写 null，报告端渲染更省事）
+            "description": str(p.description or ""),
+            "calc_description": str(p.calc_description or ""),
+            "expected_results": str(p.expected_results or ""),
             "owner": owner,
             "workload": priority["workload"],
             "urgency": priority["urgency"],
@@ -221,6 +225,48 @@ def create_project(payload: AddProjectPayload, request: Request):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"服务器内部错误：{e}"))
+
+
+@router.put("/{project_id}")
+def update_project(project_id: str, payload: ProjectPatchIn, request: Request):
+    """编辑项目基础信息 + 两个报告辅助字段（2026-10-12 新增）。
+
+    - 只改传进来的字段（其余保持原值）；`deadline` 变更会重算 urgency / priority_quadrant；
+    - 名称不可改（目录名 = 项目名），优先级是算出来的，都不接受写入；
+    - 归属校验沿用 `ensure_project_owner`：普通用户只能改自己的项目。
+    """
+    try:
+        patch = payload.model_dump(exclude_unset=True, exclude_none=True)
+        if not patch:
+            return JSONResponse(status_code=400, content=fail("没有需要修改的字段"))
+        with db_transaction() as db:
+            project = _find_project(db, project_id)
+            if project is None:
+                return JSONResponse(status_code=404, content=fail("项目不存在"))
+            permissions.ensure_project_owner(project, getattr(request.state, "user", None))
+            # 文本字段统一按字符串存（None → 空串），避免报告端拿到 null 报错
+            for key in ("description", "calc_description", "expected_results"):
+                if key in patch:
+                    project[key] = str(patch[key] or "")
+            if "estimated_hours" in patch:
+                project["estimated_hours"] = patch["estimated_hours"]
+            if "deadline" in patch:
+                project["deadline"] = str(patch["deadline"])
+                priority = compute_priority(
+                    project["deadline"],
+                    [t for t in project.get("tasks", []) if not is_continuation_task(t)],
+                    load_task_registry(),
+                    load_settings(),
+                )
+                project["workload"] = priority["workload"]
+                project["urgency"] = priority["urgency"]
+                project["priority_quadrant"] = priority["quadrant"]
+            updated = map_project(project, task_check_summary(db))
+        return ok("项目已更新", {"project": updated})
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"更新项目失败：{e}"))
 
 
 @router.post("/{project_id}/close")

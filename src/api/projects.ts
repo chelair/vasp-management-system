@@ -90,6 +90,25 @@ export async function createProject(
 }
 
 /** 删除项目（本地目录移入回收站，远端目录不删除） */
+export interface ProjectUpdatePayload {
+  description?: string;
+  deadline?: string;
+  calc_description?: string;
+  expected_results?: string;
+  estimated_hours?: number | null;
+}
+
+/** 编辑项目基础信息 + 两个报告辅助字段（2026-10-12 新增） */
+export async function updateProject(
+  projectId: string,
+  payload: ProjectUpdatePayload,
+): Promise<{ project: Project }> {
+  return request(`/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function deleteProject(projectId: string): Promise<{
   project_id: string;
   project_name: string;

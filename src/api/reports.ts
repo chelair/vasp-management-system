@@ -74,10 +74,13 @@ export function reportHtmlUrl(
   reportId: string,
   sections?: string[],
   print = false,
+  hidden?: string[],
 ): string {
   const params = new URLSearchParams();
   if (sections && sections.length) params.set('sections', sections.join(','));
   if (print) params.set('print', '1');
+  // 前端隐藏的章节/元素：导出时一并排除（section:x / task:<章节>:<标题> / figure:<章节>:<序号>）
+  if (hidden && hidden.length) params.set('hide', hidden.join(','));
   const query = params.toString();
   return `/api/reports/project/${encodeURIComponent(reportId)}/export.html${query ? `?${query}` : ''}`;
 }
@@ -92,6 +95,48 @@ export function reportChartUrl(reportId: string, chartPath: string): string {
 export function reportImageUrl(reportId: string, imagePath: string): string {
   const name = imagePath.split('/').pop() ?? imagePath;
   return `/api/reports/project/${encodeURIComponent(reportId)}/images/${encodeURIComponent(name)}`;
+}
+
+/** 报告注解（结果分析描述 / 论文写作参考） */
+export async function fetchReportNotes(reportId: string): Promise<{
+  notes: Record<string, { analysis_note: string; paper_note: string; updated_at?: string }>;
+}> {
+  return request(`/reports/project/${encodeURIComponent(reportId)}/notes`);
+}
+
+/** 写一条报告注解（两条都空 = 删除） */
+export async function saveReportNote(
+  reportId: string,
+  key: string,
+  analysisNote: string,
+  paperNote: string,
+): Promise<{ notes: Record<string, { analysis_note: string; paper_note: string; updated_at?: string }> }> {
+  return request(`/reports/project/${encodeURIComponent(reportId)}/notes`, {
+    method: 'PUT',
+    body: JSON.stringify({ key, analysis_note: analysisNote, paper_note: paperNote }),
+  });
+}
+
+export interface ReportEdits {
+  hidden_sections: string[];
+  hidden_elements: string[];
+}
+
+/** 报告的隐藏状态（章节 / 元素） */
+export async function fetchReportEdits(reportId: string): Promise<ReportEdits> {
+  return request(`/reports/project/${encodeURIComponent(reportId)}/edits`);
+}
+
+/** 保存报告的隐藏状态（覆盖写） */
+export async function saveReportEdits(
+  reportId: string,
+  hiddenSections: string[],
+  hiddenElements: string[],
+): Promise<ReportEdits> {
+  return request(`/reports/project/${encodeURIComponent(reportId)}/edits`, {
+    method: 'PUT',
+    body: JSON.stringify({ hidden_sections: hiddenSections, hidden_elements: hiddenElements }),
+  });
 }
 
 /** 报告 schema 清单（版本 / 枚举 / 单位 / 章节） */

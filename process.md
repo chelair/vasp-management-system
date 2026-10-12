@@ -244,6 +244,30 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-12（用户："报告系统扩展"三块任务）：**先审查后动手**，审查结论与实现要点：
+  **任务 1 项目元数据**：`delivery_date` **复用已有 `deadline`**（用户确认，不新增重复字段）；
+  新增 `calc_description` / `expected_results`（projects.json 可选字段）→ `POST /api/projects` 接受、
+  **新增 `PUT /api/projects/{id}`**（只改传入字段，改 deadline 会重算 urgency/priority_quadrant，
+  owner 校验沿用 `ensure_project_owner`）→ `mappers.map_project` 透出（含 urgency / priority_quadrant 只读）；
+  报告「基本信息」章节新增交付日期 + 计算内容描述 + 预期结果（空显示"未填写"）。
+  前端：总览页新增**项目管理面板**（项目 / 交付日期 / 优先级只读 / 归属 + 编辑）+ 原生 `<dialog>`
+  编辑弹窗（≤720px 全屏、按钮 ≥44px）；**名称只读**（目录名 = 项目名，改名会打断本地/远端路径）。
+  **任务 3 结果分析与论文参考**：`data/reports/notes/{report_id}.json`（key = task_id 或 `section_<章节>`）
+  + `GET/PUT /api/reports/project/{id}/notes`；`report_builder` 把注解贴到任务与任务块（`report["notes"]`
+  / `note_blocks`）并预留 `ai_generate_notes()`（当前返回空串，前端"AI 生成"按钮置灰）；
+  页面在每个任务块（portal 挂到块尾）与每个章节末渲染可折叠注解面板，原生 `<dialog>` 编辑、
+  支持 ** 加粗 ** 与 - 列表；**导出 HTML 也会带上注解**（任务块尾 + 章节末，`<details>` 折叠）。
+  **任务 2 报告前端可编辑（隐藏/恢复）**：章节级隐藏**已存在**（勾选即前端过滤、导出带 `sections`，
+  未改动）；新增**元素级隐藏**（任务块 / 结构图 / 注解面板三类，悬浮显示「隐藏」按钮、手机常显 ≥44px）
+  + 右上角「已隐藏 N 项」下拉可单条恢复或一键恢复；`data/reports/edits/{report_id}.json`
+  + `GET/PUT /api/reports/project/{id}/edits` 持久化（刷新后仍在）；导出 URL 追加 `hide=…`，
+  后端 `render_html(hidden=…)` 按 `section:x` / `task:章节:标题` / `figure:章节:序号` 过滤。
+  **跳过项**：章节级显示/隐藏、导出按章节过滤、报告 `<dialog>` 三视图弹窗（均已实现，未改动）。
+  **未做**：富文本、元素排序、多人协作、AI 实时生成、报告版本对比/回滚、批注评论（本任务范围外）。
+  实测：PUT 项目字段落库 + 报告「基本信息」透传；notes/edits 读写落盘；导出 `hide=section:actions,
+  task:science:Kaolin` 后该章节与任务块消失、其余不受影响；`tsc + npm run build` 通过。
+
+
 - 2026-10-07（用户："智能报告重构 — 单 HTML 内联版"）：**报告改单文件自包含 + 结构三视图进报告**。
   **目标**：报告不再依赖任何外部资源（无 CDN / 无外链 JS·CSS / 图片全部 base64 内联），
   断网、换机器、发微信都能直接打开；手机能看。

@@ -91,7 +91,13 @@ def map_project(
         "name": _str(project.get("name"), ""),
         "description": _str(project.get("description"), "") or "暂无描述",
         "deadline": _str(project.get("deadline"), ""),
+        # 报告辅助字段（2026-10-12）：计算内容描述 / 预期结果
+        "calc_description": _str(project.get("calc_description"), ""),
+        "expected_results": _str(project.get("expected_results"), ""),
         "workload": _str(project.get("workload"), "small"),
+        # 优先级（算出来的，只读展示）：urgent/not_urgent × large/small
+        "urgency": _str(project.get("urgency"), ""),
+        "priority_quadrant": _str(project.get("priority_quadrant"), ""),
         "server": _str(project.get("server"), ""),
         "remote_base": _str(project.get("remote_base"), ""),
         "progress": progress,

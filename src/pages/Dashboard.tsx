@@ -16,6 +16,7 @@ import { closeProject, deleteProject, reopenProject } from '../api/projects';
 import { fetchDashboardOverview } from '../api/dashboard';
 import { runInspection } from '../api/inspections';
 import AddProjectModal from '../components/projects/AddProjectModal';
+import ProjectManagePanel from '../components/projects/ProjectManagePanel';
 import ClusterHealthPanel from '../components/dashboard/ClusterHealthPanel';
 import CoresUsagePanel from '../components/dashboard/CoresUsagePanel';
 import ProjectProgressPanel from '../components/dashboard/ProjectProgressPanel';
@@ -59,6 +60,8 @@ export default function Dashboard() {
   const clusterRefreshingRef = useRef(false);
   const clusterGenRef = useRef(0);
   const [inspecting, setInspecting] = useState(false);
+  /** 递增信号：让「项目管理」面板跟着总览一起刷新（2026-10-12） */
+  const [refreshTick, setRefreshTick] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [highlightRunning, setHighlightRunning] = useState(false);
   const runningRef = useRef<HTMLDivElement | null>(null);
@@ -73,6 +76,7 @@ export default function Dashboard() {
       try {
         const data = await fetchDashboardOverview(refreshCluster, false);
         setOverview(data);
+        setRefreshTick((n) => n + 1);
       } catch (err) {
         if (!silent) {
           message.error(err instanceof Error ? err.message : '总览数据加载失败');
@@ -434,7 +438,10 @@ export default function Dashboard() {
             />
           </div>
 
-          {/* ④ 底部明细区 */}
+          {/* ④ 项目管理（2026-10-12）：基础信息 + 报告辅助字段 */}
+          <ProjectManagePanel refreshToken={refreshTick} />
+
+          {/* ⑤ 底部明细区 */}
           <Card
             className="dashboard-card mt-16"
             title="最近更新的任务"

@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   App,
   Button,
+  Dropdown,
+  message as antdMessage,
   Card,
   Checkbox,
   Empty,
@@ -31,12 +33,17 @@ import {
   reportImageUrl,
   reportHtmlUrl,
   reportMarkdownUrl,
+  saveReportEdits,
 } from '../api/reports';
 import { fetchProjects } from '../api/projects';
+import { createPortal } from 'react-dom';
+
 import { getToken } from '../api/client';
 import PageHeader from '../components/common/PageHeader';
+import ReportNoteDialog from '../components/reports/ReportNoteDialog';
+import ReportNotePanel from '../components/reports/ReportNotePanel';
 import PageTransition from '../components/common/PageTransition';
-import type { Project, ProjectReportDetail, ProjectReportMeta } from '../types';
+import type { Project, ProjectReportDetail, ProjectReportMeta, ReportNote } from '../types';
 import { renderMarkdown } from '../utils/markdown';
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -81,6 +88,15 @@ export default function Report() {
   const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
+  /** 报告注解（结果分析 / 论文参考）：key = task_id 或 section_<章节>（2026-10-12） */
+  const [notes, setNotes] = useState<Record<string, ReportNote>>({});
+  /** 任务块里的注解面板挂载点（<h5> 块尾），用 portal 渲染 */
+  const [noteAnchors, setNoteAnchors] = useState<Record<string, HTMLElement>>({});
+  /** 隐藏的章节 / 元素（持久化到 reports/edits/<id>.json） */
+  const [hidden, setHidden] = useState<string[]>([]);
+  /** 表格里「注」按钮打开的编辑弹窗 */
+  const [tableNote, setTableNote] = useState<{ key: string; title: string } | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const [showClosedReports, setShowClosedReports] = useState(false);
 
   const loadReports = useCallback(async () => {
@@ -157,7 +173,7 @@ export default function Report() {
       message.warning('请至少勾选一个章节');
       return;
     }
-    const url = reportHtmlUrl(detail.meta.report_id, selectedSections, print);
+    const url = reportHtmlUrl(detail.meta.report_id, selectedSections, print, hidden);
     window.open(url, '_blank', 'noopener');
     if (print) message.info('已打开打印视图，选择「另存为 PDF」即可导出');
   };
@@ -217,6 +233,45 @@ export default function Report() {
     [detail, selectedSections],
   );
 
+  useEffect(() => {
+    setNotes(detail?.notes ?? {});
+    setHidden(detail?.edits?.hidden_elements ?? []);
+  }, [detail]);
+
+  /** 隐藏/恢复：本地 state 立即生效并持久化（同一报告刷新后仍在） */
+  const toggleHidden = useCallback(
+    (key: string, hide: boolean) => {
+      setHidden((prev) => {
+        const next = hide ? Array.from(new Set([...prev, key])) : prev.filter((x) => x !== key);
+        const reportId = detail?.meta.report_id;
+        if (reportId) {
+          void saveReportEdits(reportId, [], next).catch(() =>
+            antdMessage.warning('隐藏状态保存失败（仅本次会话有效）'),
+          );
+        }
+        return next;
+      });
+    },
+    [detail?.meta.report_id],
+  );
+
+  /** 任务块标签（= markdown 里 #### 标题）→ 注解 key：opt/neb 任务用 task_id；自由能路径用 path:<组名> */
+  const labelToTaskId = useMemo(() => {
+    const map: Record<string, string> = {};
+    const science = (detail?.structured as { science?: Record<string, any[]> } | undefined)?.science;
+    for (const key of ['opt', 'neb']) {
+      for (const item of (science?.[key] ?? []) as { task_id?: string; task_name?: string }[]) {
+        if (item?.task_name && item?.task_id) map[String(item.task_name)] = String(item.task_id);
+      }
+    }
+    for (const path of (science?.free_energy ?? []) as { group_name?: string }[]) {
+      if (path?.group_name) map[String(path.group_name)] = `path:${path.group_name}`;
+    }
+    return map;
+  }, [detail]);
+
+  const noteBlocks = detail?.note_blocks ?? {};
+
   const renderedSections = useMemo(
     () =>
       visibleSections.map((section) => ({
@@ -233,6 +288,118 @@ export default function Report() {
       })),
     [visibleSections, detail],
   );
+
+  /** 渲染后在每个任务块（<h5> 起 → 下一个 h5/hr/h2 前）末尾放一个面板挂载点 */
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root) return;
+    const anchors: Record<string, HTMLElement> = {};
+    root.querySelectorAll('section[data-report-section]').forEach((section: Element) => {
+      const sectionKey = section.getAttribute('data-report-section') ?? '';
+      const body = section.querySelector('.report-markdown');
+      if (!body) return;
+      const children = Array.from(body.children) as HTMLElement[];
+      children.forEach((el, index) => {
+        if (el.tagName !== 'H5') return;
+        const label = (el.textContent ?? '').trim();
+        if (!label) return;
+        const anchorKey = `${sectionKey}:task:${label}`;
+        let anchor = body.querySelector(
+          `[data-note-anchor="${anchorKey.replace(/"/g, '')}"]`,
+        ) as HTMLElement | null;
+        if (!anchor) {
+          anchor = document.createElement('div');
+          anchor.className = 'report-note-anchor';
+          anchor.setAttribute('data-note-anchor', anchorKey);
+          // 块结束 = 下一个 H5 / HR / H2 之前；到章节末尾就追加在最后
+          let cursor = index + 1;
+          let endEl: Element | null = null;
+          while (cursor < children.length) {
+            const tag = children[cursor].tagName;
+            if (tag === 'H5' || tag === 'HR' || tag === 'H2') {
+              endEl = children[cursor];
+              break;
+            }
+            cursor += 1;
+          }
+          if (endEl) endEl.before(anchor);
+          else body.append(anchor);
+        }
+        anchors[anchorKey] = anchor;
+      });
+    });
+    // 元素级隐藏：章节 / 任务块 / 图（三类），并给可隐藏元素挂「隐藏」按钮
+    root.querySelectorAll('section[data-report-section]').forEach((section: Element) => {
+      const sectionKey = section.getAttribute('data-report-section') ?? '';
+      section.classList.toggle('report-hidden', hidden.includes(`section:${sectionKey}`));
+      const body = section.querySelector('.report-markdown');
+      if (!body) return;
+      const children = Array.from(body.children) as HTMLElement[];
+      let figureIndex = 0;
+      children.forEach((el) => {
+        if (el.tagName === 'H5') {
+          const label = (el.textContent ?? '').trim();
+          const key = `task:${sectionKey}:${label}`;
+          el.classList.toggle('report-hidden', hidden.includes(key));
+          if (!el.querySelector('.report-hide-btn')) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'report-hide-btn';
+            btn.textContent = '隐藏';
+            btn.title = '隐藏这个任务块（可在右上角「已隐藏」里恢复）';
+            btn.addEventListener('click', (event) => {
+              event.stopPropagation();
+              toggleHidden(key, true);
+            });
+            el.append(btn);
+          }
+        }
+        if (el.tagName === 'FIGURE' || el.querySelector(':scope > figure')) {
+          const figures = el.tagName === 'FIGURE' ? [el] : Array.from(el.querySelectorAll('figure'));
+          figures.forEach((fig) => {
+            const key = `figure:${sectionKey}:${figureIndex}`;
+            figureIndex += 1;
+            fig.classList.toggle('report-hidden', hidden.includes(key));
+            if (!fig.querySelector('.report-hide-btn')) {
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'report-hide-btn';
+              btn.textContent = '隐藏';
+              btn.title = '隐藏这张图（可在右上角「已隐藏」里恢复）';
+              btn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                toggleHidden(key, true);
+              });
+              fig.prepend(btn);
+            }
+          });
+        }
+      });
+    });
+
+    // 自由能表格里的「结构 N」行：在可点 chip 旁加一个「注」按钮（编辑该中间体的注解）
+    root.querySelectorAll('section[data-report-section] .report-markdown button.chip[data-dialog]').forEach(
+      (chip: Element) => {
+        const label = (chip.textContent ?? '').trim();
+        if (!label.startsWith('结构 ')) return; // 只处理自由能表格（NEB 用映像块面板）
+        const dialogId = chip.getAttribute('data-dialog') ?? '';
+        if (!dialogId.startsWith('dlg_')) return;
+        const taskId = dialogId.slice(4);
+        if (!taskId || chip.nextElementSibling?.classList.contains('report-note-btn')) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'report-note-btn';
+        btn.textContent = '注';
+        btn.title = '填写结果分析描述 / 论文写作参考';
+        btn.addEventListener('click', () =>
+          setTableNote({ key: taskId, title: `${label} · 结果分析与论文参考` }),
+        );
+        chip.after(btn);
+      },
+    );
+    setNoteAnchors(anchors);
+  }, [renderedSections, notes, hidden, toggleHidden]);
+
 
   /** 点「结构 N / 映像 N」→ 打开对应的原生 <dialog> 三视图弹窗；点遮罩/× 关闭。 */
   const handleReportViewerClick = useCallback((event: { target: EventTarget | null }) => {
@@ -426,6 +593,46 @@ export default function Report() {
           title="报告内容"
           extra={
             detail ? (
+              <span className="report-hidden-control">
+                {hidden.length > 0 ? (
+                  <Dropdown
+                    trigger={['click']}
+                    menu={{
+                      items: [
+                        {
+                          key: 'restore',
+                          label: '恢复全部隐藏项',
+                          onClick: () => {
+                            setHidden([]);
+                            if (detail.meta.report_id) {
+                              void saveReportEdits(detail.meta.report_id, [], []).catch(() =>
+                                antdMessage.warning('保存失败，仅本次会话有效'),
+                              );
+                            }
+                          },
+                        },
+                        ...hidden.map((key) => ({
+                          key,
+                          label: (
+                            <span className="report-hidden-item">
+                              {key}
+                              <a
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleHidden(key, false);
+                                }}
+                              >
+                                恢复
+                              </a>
+                            </span>
+                          ),
+                        })),
+                      ],
+                    }}
+                  >
+                    <Button size="small">已隐藏 {hidden.length} 项 ▾</Button>
+                  </Dropdown>
+                ) : null}
               <Popover
                 trigger="click"
                 placement="bottomRight"
@@ -504,6 +711,7 @@ export default function Report() {
                   导出
                 </Button>
               </Popover>
+              </span>
             ) : null
           }
         >
@@ -566,9 +774,9 @@ export default function Report() {
                       </a>
                     ))}
                   </nav>
-                  <div className="report-content">
+                  <div className="report-content" ref={contentRef}>
                     {renderedSections.map((s) => (
-                      <section key={s.key} id={`report-${s.key}`}>
+                      <section key={s.key} id={`report-${s.key}`} data-report-section={s.key}>
                         <h2 className="report-section-title">{s.title}</h2>
                         <div
                           className="report-markdown"
@@ -576,8 +784,79 @@ export default function Report() {
                           onErrorCapture={handleReportAssetError}
                           dangerouslySetInnerHTML={{ __html: s.html }}
                         />
+                        {/* 模块级注解（结果分析 / 论文参考） */}
+                        <ReportNotePanel
+                          reportId={detail?.meta.report_id ?? ''}
+                          noteKey={`section_${s.key}`}
+                          title={`本章结果分析与论文参考（${s.title}）`}
+                          entries={[notes[`section_${s.key}`] ?? { analysis_note: '', paper_note: '' }]}
+                          onSaved={setNotes}
+                        />
                       </section>
                     ))}
+                    {/* 任务级注解面板：渲染到每个任务块（<h5> 起、到下一个 h5/hr 前）末尾 */}
+                    {Object.entries(noteAnchors).map(([anchorKey, element]) => {
+                      const label = anchorKey.split(':task:')[1] ?? '';
+                      const entries = noteBlocks[label] ?? [];
+                      const noteKey = labelToTaskId[label] ?? '';
+                      if (!noteKey) {
+                        // 自由能路径块：只读汇总各中间体的注解（各结构在表格行里点「注」编辑）
+                        const filled = entries.filter((e) => e.analysis_note || e.paper_note);
+                        if (filled.length === 0) return null;
+                        return createPortal(
+                          <details className="notes-panel">
+                            <summary>
+                              {label} · 结果分析与论文参考
+                              <span className="notes-panel__state">{filled.length} 个结构已填写</span>
+                            </summary>
+                            <div className="notes-body">
+                              {filled.map((entry, index) => (
+                                <div key={`${entry.label ?? ''}-${index}`}>
+                                  {entry.label ? <h4>{entry.label}</h4> : null}
+                                  {entry.analysis_note ? (
+                                    <>
+                                      <p className="notes-label">结果分析描述</p>
+                                      <p>{entry.analysis_note}</p>
+                                    </>
+                                  ) : null}
+                                  {entry.paper_note ? (
+                                    <>
+                                      <p className="notes-label">论文写作参考</p>
+                                      <p>{entry.paper_note}</p>
+                                    </>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </details>,
+                          element,
+                          anchorKey,
+                        );
+                      }
+                      return createPortal(
+                        <ReportNotePanel
+                          reportId={detail?.meta.report_id ?? ''}
+                          noteKey={noteKey}
+                          title={`${label} · 结果分析与论文参考`}
+                          entries={entries}
+                          onSaved={setNotes}
+                        />,
+                        element,
+                        anchorKey,
+                      );
+                    })}
+                    {/* 表格里「注」按钮打开的注解编辑弹窗 */}
+                    <ReportNoteDialog
+                      open={tableNote !== null}
+                      reportId={detail?.meta.report_id ?? ''}
+                      noteKey={tableNote?.key ?? ''}
+                      title={tableNote?.title ?? ''}
+                      initialAnalysis={tableNote ? notes[tableNote.key]?.analysis_note ?? '' : ''}
+                      initialPaper={tableNote ? notes[tableNote.key]?.paper_note ?? '' : ''}
+                      onClose={() => setTableNote(null)}
+                      onSaved={setNotes}
+                    />
+
                     {/* 结构三视图弹窗：与导出的单文件 HTML 同一份数据（detail.dialogs） */}
                     {(detail?.dialogs ?? []).map((dialog) => (
                       <dialog

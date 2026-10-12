@@ -729,6 +729,7 @@ def _sections_markdown(report, charts):
     sections["basic_info"] = "\n".join(
         [
             f"- **项目**：{info['project_name']}",
+            f"- **交付日期**：{info.get('deadline') or '未填写'}",
             f"- **报告生成时间**：{info['generated_at']}",
             f"- **整体状态**：{status_icon} **{info['project_status_label']}** —— {info['status_reason']}",
             f"- **项目进度**：**{info.get('weighted_progress_percent', info['progress_percent'])}%**"
@@ -739,6 +740,10 @@ def _sections_markdown(report, charts):
             f"{workload.get('core_hours_done', 0):,.0f} 核时",
             f"- **预计完成**：{eta_text}",
             f"- **时间窗口**：{info['time_window_label']}",
+            "",
+            f"**计算内容描述**：{info.get('calc_description') or '未填写'}",
+            "",
+            f"**预期结果**：{info.get('expected_results') or '未填写'}",
             "",
             f"![项目进度](charts/progress.svg)",
         ]
@@ -1056,6 +1061,21 @@ def _storage_gb(size: str) -> Optional[float]:
 
 
 # ------------------------------------------------------------------ 主入口
+
+
+def ai_generate_notes(
+    calc_description: str,
+    expected_results: str,
+    task_result: Dict[str, Any],
+    report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """**预留接口**：将来接 LLM 生成"结果分析描述 / 论文写作参考"。
+
+    输入：项目计算内容描述、预期结果、单个任务的计算结果与全局结构化数据；
+    输出：`{"analysis_note": ..., "paper_note": ...}`。
+    现在返回空串（前端"AI 生成"按钮置灰提示"即将支持"），接入时只改这个函数即可。
+    """
+    return {"analysis_note": "", "paper_note": ""}
 
 
 def build_report(
@@ -1494,6 +1514,10 @@ def build_report(
         "basic_info": {
             "project_name": project_name,
             "project_id": project_id,
+            # 项目元数据（2026-10-12）：交付日期沿用 deadline；两个报告辅助字段来自项目管理
+            "deadline": str(project.get("deadline") or ""),
+            "calc_description": str(project.get("calc_description") or ""),
+            "expected_results": str(project.get("expected_results") or ""),
             "generated_at": now,
             "time_window_label": f"最近 {window_days} 天",
             "project_status": project_status,
@@ -1752,6 +1776,48 @@ def build_report(
 
     sections = _sections_markdown(report, charts)
     report["markdown_sections"] = sections
+    # 报告注解（结果分析 / 论文参考，2026-10-12）：从 data/reports/notes/<report_id>.json 读，
+    # 按 task_id / section_<key> 贴到结构化数据上，供前端面板与导出 HTML 用
+    try:
+        from report_store import read_notes
+
+        notes = read_notes(report_id)
+    except Exception:  # noqa: BLE001 - 读注解失败不影响报告本体
+        notes = {}
+    report["notes"] = notes
+    # 供前端/导出按"任务块"取注解：key = 与 markdown 里 `#### 标题` 一致的标签
+    note_blocks: Dict[str, List[Dict[str, str]]] = {}
+    for entry in (report.get("science") or {}).get("opt") or []:
+        note = notes.get(str(entry.get("task_id")) or "", {})
+        entry["analysis_note"] = note.get("analysis_note", "")
+        entry["paper_note"] = note.get("paper_note", "")
+        note_blocks.setdefault(str(entry.get("task_name") or ""), []).append(
+            {"label": "", **{k: entry[k] for k in ("analysis_note", "paper_note")}}
+        )
+    for entry in (report.get("science") or {}).get("neb") or []:
+        note = notes.get(str(entry.get("task_id")) or "", {})
+        entry["analysis_note"] = note.get("analysis_note", "")
+        entry["paper_note"] = note.get("paper_note", "")
+        note_blocks.setdefault(str(entry.get("task_name") or ""), []).append(
+            {"label": "", **{k: entry[k] for k in ("analysis_note", "paper_note")}}
+        )
+    for path in (report.get("science") or {}).get("free_energy") or []:
+        entries: List[Dict[str, str]] = []
+        for structure in path.get("structures") or []:
+            note = notes.get(str(structure.get("opt_task_id")) or "", {})
+            structure["analysis_note"] = note.get("analysis_note", "")
+            structure["paper_note"] = note.get("paper_note", "")
+            if note.get("analysis_note") or note.get("paper_note"):
+                entries.append(
+                    {
+                        "label": f"结构 {structure.get('structure_label')}",
+                        "analysis_note": structure["analysis_note"],
+                        "paper_note": structure["paper_note"],
+                    }
+                )
+        if entries:
+            note_blocks.setdefault(str(path.get("group_name") or ""), []).extend(entries)
+    report["note_blocks"] = note_blocks
     report["markdown_meta"] = {
         "sections": [{"key": s["key"], "title": s["title"]} for s in sections],
         "chart_paths": [f"charts/{name}" for name in charts],

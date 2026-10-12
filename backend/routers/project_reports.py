@@ -19,8 +19,12 @@ from report_store import (
     list_reports,
     load_report,
     read_chart,
+    read_edits,
     read_image_data_uri,
+    read_notes,
     report_dir,
+    save_edits,
+    save_note,
     save_report,
 )
 from storage import load_db
@@ -170,6 +174,11 @@ def project_report_detail(report_id: str, request: Request):
                 "markdown_sections": doc.get("markdown_sections") or [],
                 # 结构三视图弹窗规格（页面里点「结构 N / 映像 N」用同一个 <dialog>）
                 "dialogs": doc.get("dialogs") or [],
+                # 报告注解（结果分析 / 论文参考）：{key: {...}} 与按任务块聚合的 note_blocks
+                "notes": doc.get("notes") or read_notes(report_id),
+                "note_blocks": doc.get("note_blocks") or {},
+                # 前端隐藏状态（章节/元素）：只影响展示与导出，不动报告本体
+                "edits": read_edits(report_id),
                 "sections": [
                     {"key": s["key"], "title": s["title"]}
                     for s in (doc.get("markdown_sections") or [])
@@ -234,6 +243,9 @@ def project_report_html(
     ),
     inline: bool = Query(default=True, description="是否把图表内联进 HTML"),
     print: bool = Query(default=False, description="true 时打开即调起打印（导出 PDF 用）"),
+    hide: str | None = Query(
+        default=None, description="逗号分隔的隐藏元素 key（section:x / task:<章节>:<标题> / figure:<章节>:<序号>）"
+    ),
 ):
     """导出**自包含 HTML**：可按章节范围导出（如取消风险分析），图表内联 SVG。
 
@@ -253,6 +265,7 @@ def project_report_html(
             chart_loader=(lambda name: read_chart(report_id, name)) if inline else None,
             image_loader=(lambda rel: read_image_data_uri(report_id, rel)) if inline else None,
             auto_print=print,
+            hidden=set(x.strip() for x in hide.split(",") if x.strip()) if hide else None,
         )
         filename = f"{report_id}.html"
         return Response(
@@ -287,6 +300,89 @@ def project_report_image(report_id: str, name: str, request: Request):
     if path is None or not path.is_file():
         return JSONResponse(status_code=404, content=fail("图片不存在"))
     return Response(content=path.read_bytes(), media_type="image/png")
+
+
+@router.get("/{report_id}/notes")
+def project_report_notes(report_id: str, request: Request):
+    """报告注解（结果分析描述 / 论文写作参考）：`{key: {analysis_note, paper_note, updated_at}}`。
+
+    key = `task_id`（任务级）或 `section_<章节key>`（模块级）。
+    """
+    try:
+        _ensure_report_access(report_id, request)
+        return ok("查询成功", {"notes": read_notes(report_id)})
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取报告注解失败：{e}"))
+
+
+@router.put("/{report_id}/notes")
+def project_report_save_note(
+    report_id: str,
+    request: Request,
+    payload: dict = Body(default={}),
+):
+    """写一条报告注解：body `{key, analysis_note, paper_note}`（两条都空 = 删除该条）。"""
+    try:
+        _ensure_report_access(report_id, request)
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            return JSONResponse(status_code=400, content=fail("缺少 key（task_id 或 section_xxx）"))
+        notes = save_note(
+            report_id,
+            key,
+            str(payload.get("analysis_note") or ""),
+            str(payload.get("paper_note") or ""),
+        )
+        return ok("已保存", {"notes": notes})
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"保存报告注解失败：{e}"))
+
+
+@router.get("/{report_id}/edits")
+def project_report_edits(report_id: str, request: Request):
+    """报告的隐藏状态（章节 / 元素）：`{hidden_sections, hidden_elements}`。"""
+    try:
+        _ensure_report_access(report_id, request)
+        return ok("查询成功", read_edits(report_id))
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取编辑状态失败：{e}"))
+
+
+@router.put("/{report_id}/edits")
+def project_report_save_edits(
+    report_id: str,
+    request: Request,
+    payload: dict = Body(default={}),
+):
+    """保存隐藏状态：body `{hidden_sections: [...], hidden_elements: [...]}`（覆盖写）。"""
+    try:
+        _ensure_report_access(report_id, request)
+        edits = save_edits(
+            report_id,
+            payload.get("hidden_sections") or [],
+            payload.get("hidden_elements") or [],
+        )
+        return ok("已保存", edits)
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"保存编辑状态失败：{e}"))
 
 
 @router.delete("/{report_id}")

@@ -101,7 +101,14 @@ export interface Project {
   owner?: string | null;
   description: string;
   deadline: string;
+  /** 项目计算内容描述（报告"基本信息"章节用；可空） */
+  calc_description?: string;
+  /** 预期结果（报告"基本信息"章节用；可空） */
+  expected_results?: string;
   workload: Workload;
+  /** 优先级：算出来的（紧急度 × 工作量），只读 */
+  urgency?: string;
+  priority_quadrant?: string;
   server: string;
   remote_base?: string;
   progress: number;
@@ -340,10 +347,27 @@ export interface ProjectReportDetail {
   markdown_sections: ProjectReportSection[];
   /** 结构三视图弹窗（点「结构 N / 映像 N」打开；图片按报告目录解析） */
   dialogs: ProjectReportDialog[];
+  /** 报告注解：key = task_id 或 section_<章节key> */
+  notes: Record<string, ReportNote>;
+  /** 按任务块聚合的注解：label（= markdown 里 #### 标题）→ 若干条目 */
+  note_blocks: Record<string, ReportNoteEntry[]>;
+  /** 前端隐藏状态（章节/元素），持久化在 data/reports/edits/<report_id>.json */
+  edits?: { hidden_sections: string[]; hidden_elements: string[] };
   sections: { key: string; title: string }[];
   charts: { name?: string; path: string }[] | string[];
   /** 结构化数据（字段随 schema 版本演进，前端按需读取） */
   structured: Record<string, unknown>;
+}
+
+export interface ReportNote {
+  analysis_note: string;
+  paper_note: string;
+  updated_at?: string;
+}
+
+export interface ReportNoteEntry extends ReportNote {
+  /** 多条目时的子标签（如「结构 1」）；单任务块为空串 */
+  label: string;
 }
 
 export interface ProjectReportDialogRow {

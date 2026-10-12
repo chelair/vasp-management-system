@@ -4974,3 +4974,315 @@ button.report-chip {
   white-space: nowrap;
   cursor: pointer;
 }
+
+/* ---------------- 项目管理（2026-10-12）：原生 <dialog> 编辑弹窗 + 面板 ---------------- */
+.project-priority {
+  color: #2d5fcc;
+  font-weight: 500;
+}
+
+dialog.project-edit-dialog,
+dialog.note-edit-dialog {
+  width: min(680px, 94vw);
+  max-height: 92vh;
+  padding: 0;
+  border: none;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(20, 40, 80, 0.28);
+  color: var(--color-text);
+}
+
+dialog.project-edit-dialog::backdrop,
+dialog.note-edit-dialog::backdrop {
+  background: rgba(16, 26, 44, 0.55);
+}
+
+dialog.project-edit-dialog header,
+dialog.note-edit-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+dialog.project-edit-dialog h3,
+dialog.note-edit-dialog h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+dialog.project-edit-dialog .close,
+dialog.note-edit-dialog .close {
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+dialog.project-edit-dialog .body,
+dialog.note-edit-dialog .body {
+  padding: 14px 16px 4px;
+  overflow: auto;
+  max-height: calc(92vh - 132px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+dialog.project-edit-dialog .field,
+dialog.note-edit-dialog .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+dialog.project-edit-dialog .field > span,
+dialog.note-edit-dialog .field > span {
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+dialog.project-edit-dialog .field-row,
+dialog.note-edit-dialog .field-row {
+  display: flex;
+  gap: 12px;
+}
+
+dialog.project-edit-dialog .field-row .field,
+dialog.note-edit-dialog .field-row .field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+dialog.project-edit-dialog .hint,
+dialog.note-edit-dialog .hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+dialog.project-edit-dialog footer,
+dialog.note-edit-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+dialog.project-edit-dialog .btn,
+dialog.note-edit-dialog .btn {
+  min-height: 40px;
+  min-width: 84px;
+  padding: 0 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--color-text);
+  font-size: 14px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+dialog.project-edit-dialog .btn--primary,
+dialog.note-edit-dialog .btn--primary {
+  border-color: #3f6fe0;
+  background: #3f6fe0;
+  color: #fff;
+}
+
+dialog.project-edit-dialog .btn--primary:disabled,
+dialog.note-edit-dialog .btn--primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 720px) {
+  dialog.project-edit-dialog,
+  dialog.note-edit-dialog {
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    max-height: none;
+    border-radius: 0;
+    margin: 0;
+  }
+
+  dialog.project-edit-dialog .body,
+  dialog.note-edit-dialog .body {
+    max-height: calc(100vh - 130px);
+  }
+
+  dialog.project-edit-dialog .field-row,
+  dialog.note-edit-dialog .field-row {
+    flex-direction: column;
+  }
+
+  dialog.project-edit-dialog .btn,
+  dialog.note-edit-dialog .btn {
+    min-height: 44px;
+  }
+}
+
+/* ---------------- 报告注解面板（结果分析 / 论文参考，2026-10-12） ---------------- */
+.notes-panel {
+  margin: 12px 0 4px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #fbfcfe;
+  padding: 0 12px;
+}
+
+.notes-panel > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #3f68b8;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notes-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.notes-panel > summary::before {
+  content: '▸';
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.notes-panel[open] > summary::before {
+  content: '▾';
+}
+
+.notes-body {
+  padding: 0 2px 12px;
+}
+
+.notes-body h4 {
+  margin: 10px 0 4px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.notes-label {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.notes-body p {
+  margin: 4px 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.notes-body ul {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+  font-size: 13px;
+}
+
+.notes-empty {
+  color: var(--color-text-muted);
+  font-size: 12.5px;
+  margin: 0;
+}
+
+/* ---------------- 报告注解面板补充 + 表格「注」按钮（2026-10-12） ---------------- */
+.notes-panel__state {
+  margin-left: 8px;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.notes-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.report-note-btn {
+  margin-left: 6px;
+  min-width: 32px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid #cfe0ff;
+  border-radius: 999px;
+  background: #f2f7ff;
+  color: #2d5fcc;
+  font-size: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.report-note-anchor {
+  display: block;
+}
+
+/* 元素级隐藏按钮：桌面悬浮显示，手机常显（触摸目标 ≥44px） */
+.report-hide-btn {
+  margin-left: 8px;
+  min-width: 32px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  touch-action: manipulation;
+}
+
+h5:hover > .report-hide-btn,
+.report-markdown figure:hover > .report-hide-btn,
+.notes-panel:hover > summary .report-hide-btn {
+  opacity: 1;
+}
+
+.report-hidden { display: none !important; }
+
+@media (max-width: 720px) {
+  .report-hide-btn { opacity: 1; min-height: 44px; }
+}
+
+/* 报告页"已隐藏 N 项"控件（2026-10-12） */
+.report-hidden-control {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+}
+
+.report-hidden-item {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 220px;
+  justify-content: space-between;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.report-hidden-item a {
+  color: #2d5fcc;
+  cursor: pointer;
+}

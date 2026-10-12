@@ -44,6 +44,9 @@ class ProjectIn(BaseModel):
     # Web 端扩展字段（原 Schema additionalProperties=false 之外显式放行）
     description: Optional[str] = None
     estimated_hours: Optional[Union[int, float]] = None
+    # 报告辅助字段（2026-10-12）：计算内容描述 / 预期结果，均可选、缺省空串
+    calc_description: Optional[str] = None
+    expected_results: Optional[str] = None
 
     @field_validator("deadline")
     @classmethod
@@ -58,3 +61,29 @@ class AddProjectPayload(BaseModel):
 
     action: Literal["add_project"]
     project: ProjectIn
+
+
+class ProjectPatchIn(BaseModel):
+    """项目编辑（PUT /api/projects/{id}）：**全部可选**，只改传进来的字段。
+
+    - 名称不可改（目录名 = 项目名，改了会把本地/远端路径全打断）→ 前端只读展示；
+    - 优先级是算出来的（urgency × workload），不接受直接写；
+    - 交付日期沿用现有 `deadline`（2026-10-12 用户确认，不新增 delivery_date）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: Optional[str] = None
+    deadline: Optional[str] = None
+    calc_description: Optional[str] = None
+    expected_results: Optional[str] = None
+    estimated_hours: Optional[Union[int, float]] = None
+
+    @field_validator("deadline")
+    @classmethod
+    def _check_deadline(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not is_valid_date(value):
+            raise ValueError(f"不是合法日期 '{value}'")
+        return value

@@ -9,11 +9,12 @@
 写入使用「临时目录 + 原子替换」，索引更新加锁，避免并发生成互相覆盖。
 """
 
-import json
 import base64
+import json
+import os
 import shutil
 import threading
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,7 +33,112 @@ def image_data_uri(path: Path) -> Optional[str]:
 
 REPORTS_DIR = DATA_DIR / "reports"
 INDEX_FILE = REPORTS_DIR / "index.json"
+#: 报告注解（结果分析描述 / 论文写作参考）：data/reports/notes/{report_id}.json
+NOTES_DIR = REPORTS_DIR / "notes"
 _lock = threading.Lock()
+_notes_lock = threading.Lock()
+
+
+def _notes_path(report_id: str) -> Path:
+    return NOTES_DIR / f"{_safe_name(report_id)}.json"
+
+
+#: 报告编辑（隐藏章节 / 元素）：data/reports/edits/{report_id}.json
+EDITS_DIR = REPORTS_DIR / "edits"
+
+
+def _edits_path(report_id: str) -> Path:
+    return EDITS_DIR / f"{_safe_name(report_id)}.json"
+
+
+def read_edits(report_id: str) -> Dict[str, List[str]]:
+    """读报告的隐藏状态：`{"hidden_sections": [...], "hidden_elements": [...]}`。"""
+    path = _edits_path(report_id)
+    if not path.is_file():
+        return {"hidden_sections": [], "hidden_elements": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - 损坏当没有
+        return {"hidden_sections": [], "hidden_elements": []}
+    if not isinstance(data, dict):
+        return {"hidden_sections": [], "hidden_elements": []}
+    return {
+        "hidden_sections": [str(x) for x in (data.get("hidden_sections") or [])][:200],
+        "hidden_elements": [str(x) for x in (data.get("hidden_elements") or [])][:2000],
+    }
+
+
+def save_edits(
+    report_id: str, hidden_sections: List[str], hidden_elements: List[str]
+) -> Dict[str, List[str]]:
+    """覆盖写报告的隐藏状态（只影响前端展示与导出，不动报告本体）。"""
+    payload = {
+        "hidden_sections": [str(x) for x in (hidden_sections or [])][:200],
+        "hidden_elements": [str(x) for x in (hidden_elements or [])][:2000],
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    EDITS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _edits_path(report_id)
+    tmp = path.with_name(path.name + ".tmp")
+    with _notes_lock:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    return {
+        "hidden_sections": payload["hidden_sections"],
+        "hidden_elements": payload["hidden_elements"],
+    }
+
+
+def read_notes(report_id: str) -> Dict[str, Dict[str, str]]:
+    """读一份报告的全部注解：`{key: {analysis_note, paper_note, updated_at}}`（缺文件=空）。
+
+    key 是 `task_id`（任务级）或 `section_<章节key>`（模块级）。读坏当空，不抛错。
+    """
+    path = _notes_path(report_id)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - 文件损坏当空
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        out[str(key)] = {
+            "analysis_note": str(value.get("analysis_note") or ""),
+            "paper_note": str(value.get("paper_note") or ""),
+            "updated_at": str(value.get("updated_at") or ""),
+        }
+    return out
+
+
+def save_note(
+    report_id: str, key: str, analysis_note: str, paper_note: str
+) -> Dict[str, Dict[str, str]]:
+    """写一条注解（按 key 覆盖），返回整份注解。key 为空/超长直接拒绝。"""
+    clean = str(key or "").strip()
+    if not clean or len(clean) > 200:
+        raise ValueError("key 不能为空且长度不超过 200")
+    notes = read_notes(report_id)
+    entry = {
+        "analysis_note": str(analysis_note or ""),
+        "paper_note": str(paper_note or ""),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if not entry["analysis_note"] and not entry["paper_note"]:
+        notes.pop(clean, None)  # 两条都清空 = 删除该条
+    else:
+        notes[clean] = entry
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    path = _notes_path(report_id)
+    tmp = path.with_name(path.name + ".tmp")
+    with _notes_lock:
+        tmp.write_text(json.dumps(notes, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    return notes
 
 
 def _ensure_dirs() -> None:

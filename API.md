@@ -104,6 +104,9 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 | `GET /task-types` | — | 四种任务类型与默认参数、子类型 | 校验动作参数 |
 | `GET /servers` | — | 服务器名/主机/队列系统/节点分组 | 多服务器扩展 |
 | `GET /health` | — | `uptime/startedAt`（判断后端是否已重启） | 健康检查 |
+| `GET /projects/{project_id}` | — | 单项目详情（含 `deadline` / `calc_description` / `expected_results` / `urgency` / `priority_quadrant`） | 项目管理编辑弹窗取数 |
+| `GET /reports/project/{report_id}/notes` | — | 报告注解 `{key: {analysis_note, paper_note, updated_at}}`（key = task_id 或 `section_<章节>`） | 结果分析 / 论文参考 |
+| `GET /reports/project/{report_id}/edits` | — | 隐藏状态 `{hidden_sections[], hidden_elements[]}` | 报告页隐藏项恢复 |
 | `GET /deps` | — | 依赖自检 | 运维 |
 
 ### 3.2 巡检结果
@@ -137,6 +140,16 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 ---
 
 ## 4. 动作接口（执行面）
+
+
+### 4.0 报告扩展写入（2026-10-12）
+
+| 接口 | body | 说明 |
+| --- | --- | --- |
+| `PUT /api/projects/{project_id}` | `{description?, deadline?, calc_description?, expected_results?, estimated_hours?}`（全部可选，只改传入字段） | 编辑项目；**名称不可改**；优先级是算出来的不接受写；改 deadline 会重算 urgency/priority_quadrant；owner 校验 |
+| `PUT /api/reports/project/{report_id}/notes` | `{key, analysis_note, paper_note}`（key = task_id 或 `section_<章节>`；两条都空 = 删除） | 写结果分析描述 / 论文写作参考（落 `data/reports/notes/<report_id>.json`） |
+| `PUT /api/reports/project/{report_id}/edits` | `{hidden_sections: [...], hidden_elements: [...]}` | 保存报告页的隐藏状态（落 `data/reports/edits/<report_id>.json`） |
+| `GET /api/reports/project/{report_id}/export.html` | `?sections=…&hide=section:x,task:<章节>:<标题>,figure:<章节>:<序号>&print=1` | 自包含 HTML：`sections` 选章节、`hide` 排除被隐藏的元素 |
 
 ### 4.1 五个核心动作（智能体闭环会用到）
 

@@ -370,6 +370,108 @@ def render_dialogs(
     return "".join(parts)
 
 
+def _notes_body(text: str) -> str:
+    """注解正文：支持**加粗**、`代码`、- 列表（与报告 Markdown 同一套轻量语法）。"""
+    out: List[str] = []
+    bullets: List[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("- ", "* ")):
+            bullets.append(f"<li>{_inline(line[2:])}</li>")
+            continue
+        if bullets:
+            out.append("<ul>" + "".join(bullets) + "</ul>")
+            bullets = []
+        out.append(f"<p>{_inline(line)}</p>")
+    if bullets:
+        out.append("<ul>" + "".join(bullets) + "</ul>")
+    return "".join(out)
+
+
+def notes_panel(entries: List[Dict[str, Any]], *, title: str = "结果分析与论文参考") -> str:
+    """可折叠的注解面板（原生 `<details>`）：结果分析描述 + 论文写作参考。
+
+    `entries` 每项 `{label, analysis_note, paper_note}`；全空则返回空串（不产生空壳）。
+    """
+    filled = [
+        e for e in (entries or [])
+        if (e.get("analysis_note") or "").strip() or (e.get("paper_note") or "").strip()
+    ]
+    if not filled:
+        return ""
+    blocks: List[str] = []
+    for entry in filled:
+        label = str(entry.get("label") or "")
+        head = f"<h4>{_inline(label)}</h4>" if label else ""
+        analysis = (entry.get("analysis_note") or "").strip()
+        paper = (entry.get("paper_note") or "").strip()
+        blocks.append(
+            head
+            + (
+                f'<p class="notes-label">结果分析描述</p>{_notes_body(analysis)}'
+                if analysis
+                else ""
+            )
+            + (
+                f'<p class="notes-label">论文写作参考</p>{_notes_body(paper)}' if paper else ""
+            )
+        )
+    return (
+        f'<details class="notes-panel"><summary>{html_lib.escape(title)}</summary>'
+        f'<div class="notes-body">{"".join(blocks)}</div></details>'
+    )
+
+
+def _inject_task_notes(body_html: str, note_blocks: Dict[str, Any]) -> str:
+    """把每个任务块（`<h5>任务名</h5>` 开始、到下一个 h5 之前）的注解插到块尾。
+
+    Markdown 里任务标题统一是 `#### 名称` → 导出后是 `<h5>`；按标签取 `note_blocks`。
+    """
+    if not note_blocks or "<h5>" not in body_html:
+        return body_html
+    parts = re.split(r"(?=<h5>)", body_html)
+    out: List[str] = []
+    for part in parts:
+        m = re.match(r"<h5>(.*?)</h5>", part)
+        if m:
+            label = html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+            panel = notes_panel(note_blocks.get(label) or [])
+            out.append(part + panel)
+        else:
+            out.append(part)
+    return "".join(out)
+
+
+def _apply_hidden(section_key: str, body_html: str, hidden: set) -> str:
+    """按隐藏 key 过滤章节内的元素：task:<章节>:<标题>（整块）与 figure:<章节>:<序号>（单图）。"""
+    if not hidden:
+        return body_html
+    # 1) 任务块（<h5> 起 → 下一个 h5/hr/h2 前）
+    parts = re.split(r"(?=<h5>)", body_html)
+    kept: List[str] = []
+    for part in parts:
+        m = re.match(r"<h5>(.*?)</h5>", part)
+        if m:
+            label = html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+            if f"task:{section_key}:{label}" in hidden:
+                continue
+        kept.append(part)
+    body_html = "".join(kept)
+    # 2) 单张图（按章节内 figure 出现顺序编号，与前端一致）
+    index = 0
+    out: List[str] = []
+    for chunk in re.split(r"(<figure>.*?</figure>)", body_html, flags=re.S):
+        if chunk.startswith("<figure>"):
+            if f"figure:{section_key}:{index}" in hidden:
+                index += 1
+                continue
+            index += 1
+        out.append(chunk)
+    return "".join(out)
+
+
 def render_html(
     doc: Dict[str, Any],
     markdown_sections: List[Dict[str, str]],
@@ -378,6 +480,7 @@ def render_html(
     chart_loader: Optional[Callable[[str], Optional[str]]] = None,
     image_loader: Optional[Callable[[str], Optional[str]]] = None,
     auto_print: bool = False,
+    hidden: Optional[set] = None,
 ) -> str:
     """生成自包含 HTML（单文件：CSS/JS 内联、SVG 内联、PNG 走 base64）。
 
@@ -386,19 +489,27 @@ def render_html(
     meta = doc.get("metadata") or {}
     chosen = set(sections) if sections else {s["key"] for s in markdown_sections}
     body_parts: List[str] = []
+    hidden = hidden or set()
     for section in markdown_sections:
         if section["key"] not in chosen:
             continue
+        if f"section:{section['key']}" in hidden:
+            continue  # 章节级隐藏：整章不导出
         title = SECTION_TITLES.get(section["key"], section["title"])
         body_parts.append(f"<h2>{html_lib.escape(title)}</h2>")
-        body_parts.append(
-            markdown_to_html(
-                section.get("markdown", ""),
-                chart_loader=chart_loader,
-                image_loader=image_loader,
-                inline_charts=True,
-            )
+        section_html = markdown_to_html(
+            section.get("markdown", ""),
+            chart_loader=chart_loader,
+            image_loader=image_loader,
+            inline_charts=True,
         )
+        # 任务级注解：插在每个任务块尾（标签 = markdown 里的 #### 标题）
+        section_html = _apply_hidden(section["key"], section_html, hidden)
+        section_html = _inject_task_notes(section_html, doc.get("note_blocks") or {})
+        body_parts.append(section_html)
+        # 模块级注解：插在本章节末尾
+        section_note = (doc.get("notes") or {}).get(f"section_{section['key']}") or {}
+        body_parts.append(notes_panel([section_note], title="本章结果分析与论文参考"))
     dialogs_html = render_dialogs(doc.get("dialogs") or [], image_loader=image_loader)
     risk_summary = (doc.get("risks") or {}).get("summary") or {}
     footer = (

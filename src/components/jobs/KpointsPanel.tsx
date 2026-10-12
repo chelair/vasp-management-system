@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { App, Button, Card, InputNumber, Radio, Tag, Tooltip } from 'antd';
 import {
   CheckOutlined,
@@ -8,7 +8,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons';
 import { buildKpoints, parsePoscar, recommendKgrid } from '../../utils/poscar';
-import { uploadKpoints, type TaskInputState } from '../../api/jobs';
+import { fetchTaskFile, uploadKpoints, type TaskInputState } from '../../api/jobs';
 
 interface Props {
   taskId: string;
@@ -34,6 +34,28 @@ export default function KpointsPanel({
   onStatePushed,
 }: Props) {
   const { message } = App.useApp();
+  /** 自愈：父级没给出结构（刷新/切换页面后缓存丢了）时，自己按本地文件取一次（2026-10-12 问题.md 第 2 条） */
+  const [localPoscar, setLocalPoscar] = useState<string | null>(null);
+  useEffect(() => {
+    if (poscarContent) return;
+    let cancelled = false;
+    (async () => {
+      for (const name of ['POSCAR', 'CONTCAR']) {
+        try {
+          const { content } = await fetchTaskFile(taskId, name);
+          if (content && content.trim()) {
+            if (!cancelled) setLocalPoscar(content);
+            return;
+          }
+        } catch {
+          // 该文件不存在就试下一个
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, poscarContent]);
   const [density, setDensity] = useState(20);
   const [meshType, setMeshType] = useState<'Gamma' | 'Monkhorst-Pack'>('Gamma');
   /** 参数编辑闸门（与 INCAR 页一致：默认只读） */
@@ -45,7 +67,8 @@ export default function KpointsPanel({
     pendingMesh ?? snapshotMesh ?? [1, 1, 1],
   );
 
-  const info = useMemo(() => (poscarContent ? parsePoscar(poscarContent) : null), [poscarContent]);
+  const structureText = poscarContent ?? localPoscar;
+  const info = useMemo(() => (structureText ? parsePoscar(structureText) : null), [structureText]);
   const grid = useMemo(
     () => (info ? recommendKgrid(info.lengths, density) : null),
     [info, density],

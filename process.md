@@ -244,6 +244,15 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-12（用户："修完再修问题.md"）：处理 `问题.md` 三条 ——
+  **② KPOINTS 页"未检测到 POSCAR"** ✅：磁盘加载从"读过一次就跳过"改成"读过**且拿到结构**才跳过"，
+  结构来源补 `CONTCAR` 兜底，KPOINTS 面板加自愈（父级没给结构时自己按 `files/POSCAR → files/CONTCAR` 读一次）；
+  **③ INCAR 页加 `NEDOS`（number，留空不写入）与 `LVHAR`（bool，默认 .FALSE.）** ✅，放在「输出与文件」组；
+  **① 草稿冲突 / 刷新后拿不到最新参数** 🔍：核查结论是**草稿本来就按任务独立存储**
+  （`task.input_state.draft`，读写接口都以 task_id 为键、写库走 db_transaction），实测两个任务各写
+  `NELM=111` / `NELM=222` 互不干扰、读回一致、清理正常；前端 `workspaces[task_id]`/`inputStates[task_id]`
+  与 `key={task.task_id}` 也都是按任务的 —— **未复现，已在 `问题.md` 里写明需要复现步骤**。
+
 - 2026-10-12（用户："准备为这个系统接入 AI，先审查字段/枚举/单位/时间是否统一"）：
   **审查结论**：① `created_at` 与 `createdAt` **并存**（同源同值，另有 `updatedAt`/`remainingHours`/`closedAt` 只有 camel）；
   ② 能量/力**全部 eV**（全仓库无 Ry/Hartree），但同一量在归档面叫 `last_energy`/`force_max`、报告面叫

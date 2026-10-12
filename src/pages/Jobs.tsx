@@ -368,12 +368,20 @@ export default function Jobs() {
       if (!inputStates[taskId]) {
         void loadInputState(task);
       }
-      if (loadedDisk[taskId]) continue;
+      // 已经读过磁盘、并且结构也拿到了才跳过：只读过一次但**没取到 POSCAR** 时
+      // （例如先访问时文件列表还没加载完 / 任务只有 CONTCAR）要允许再取一次，
+      // 否则「KPOINTS 页显示未检测到 POSCAR」会一直卡着（2026-10-12 问题.md 第 2 条）
+      if (loadedDisk[taskId] && workspaces[taskId]?.poscarContent) continue;
       const names = new Set((taskFileList[taskId] ?? []).map((f) => f.name));
       if (!names.has('POSCAR') && !names.has('INCAR') && !names.has('KPOINTS')) continue;
       setLoadedDisk((prev) => ({ ...prev, [taskId]: true }));
       void (async () => {
-        const poscarText = names.has('POSCAR') ? await readLocalFile(taskId, 'POSCAR') : null;
+        // 结构来源：优先 POSCAR，没有就退回 CONTCAR（两者都能解析出晶格做 k 网格推荐）
+        const poscarText = names.has('POSCAR')
+          ? await readLocalFile(taskId, 'POSCAR')
+          : names.has('CONTCAR')
+            ? await readLocalFile(taskId, 'CONTCAR')
+            : null;
         const kpointsText = names.has('KPOINTS') ? await readLocalFile(taskId, 'KPOINTS') : null;
         // INCAR：只在**没有远端快照**时才用本地镜像兜底。有快照时编辑器以
         // 「本次计算值 + 待生效草稿」为准（applyInputState 已回填），本地

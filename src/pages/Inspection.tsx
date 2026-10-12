@@ -50,6 +50,7 @@ import StructurePanel from '../components/inspection/StructurePanel';
 import NebImageMasterDetail from '../components/inspection/NebImageMasterDetail';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
+import OutcarTailDialog from '../components/inspection/OutcarTailDialog';
 import StatusTag from '../components/common/StatusTag';
 import type {
   CheckStatus,
@@ -231,6 +232,7 @@ export default function Inspection() {
   // 关闭项目默认折叠：这里记录"被用户手动展开"的项目名
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [autoSaving, setAutoSaving] = useState(false);
+  const [outcarTail, setOutcarTail] = useState<{ taskId: string; title: string } | null>(null);
   const [detail, setDetail] = useState<InspectionResult | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<InspectionDetail | null>(null);
@@ -761,11 +763,30 @@ export default function Inspection() {
       dataIndex: 'message',
       key: 'message',
       ellipsis: true,
-      render: (v: string) => (
-        <Tooltip title={v}>
-          <span>{v}</span>
-        </Tooltip>
-      ),
+      render: (v: string, row: InspectionResult) => {
+        // 异常结束（错误/警告）时，点错误信息弹出 OUTCAR 最后数行（2026-10-13 用户要求）
+        const clickable = row.status === 'error' || row.status === 'warning';
+        return (
+          <Tooltip title={clickable ? `${v}（点击查看 OUTCAR 末尾）` : v}>
+            <span
+              className={clickable ? 'inspection-msg inspection-msg--clickable' : undefined}
+              onClick={
+                clickable
+                  ? (event) => {
+                      event.stopPropagation();
+                      setOutcarTail({
+                        taskId: row.task_id,
+                        title: `${row.task_name ?? row.task_id} · OUTCAR 最后数行`,
+                      });
+                    }
+                  : undefined
+              }
+            >
+              {v}
+            </span>
+          </Tooltip>
+        );
+      },
     },
     {
       title: '操作',
@@ -1172,7 +1193,17 @@ export default function Inspection() {
               )}
               {detailData.errors.length > 0 && (
                 <Descriptions.Item label="错误信息">
-                  {detailData.errors.join('；')}
+                  <span
+                    className="inspection-msg inspection-msg--clickable"
+                    onClick={() =>
+                      setOutcarTail({
+                        taskId: detailData.task_id,
+                        title: `${detailData.model_name ?? detailData.task_id} · OUTCAR 最后数行`,
+                      })
+                    }
+                  >
+                    {detailData.errors.join('；')}（点开看 OUTCAR 末尾）
+                  </span>
                 </Descriptions.Item>
               )}
             </Descriptions>
@@ -1293,6 +1324,13 @@ export default function Inspection() {
           <Empty description="暂无详情数据" />
         )}
       </Modal>
+
+      <OutcarTailDialog
+        open={outcarTail !== null}
+        taskId={outcarTail?.taskId ?? ''}
+        title={outcarTail?.title}
+        onClose={() => setOutcarTail(null)}
+      />
 
       <PathSummaryModal
         open={pathSummaryOpen}

@@ -5001,7 +5001,8 @@ button.report-chip {
 }
 
 dialog.project-edit-dialog,
-dialog.note-edit-dialog {
+dialog.note-edit-dialog,
+dialog.outcar-tail-dialog {
   width: min(680px, 94vw);
   max-height: 92vh;
   padding: 0;
@@ -5012,12 +5013,14 @@ dialog.note-edit-dialog {
 }
 
 dialog.project-edit-dialog::backdrop,
-dialog.note-edit-dialog::backdrop {
+dialog.note-edit-dialog::backdrop ,
+dialog.outcar-tail-dialog::backdrop {
   background: rgba(16, 26, 44, 0.55);
 }
 
 dialog.project-edit-dialog header,
-dialog.note-edit-dialog header {
+dialog.note-edit-dialog header ,
+dialog.outcar-tail-dialog header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -5027,13 +5030,15 @@ dialog.note-edit-dialog header {
 }
 
 dialog.project-edit-dialog h3,
-dialog.note-edit-dialog h3 {
+dialog.note-edit-dialog h3 ,
+dialog.outcar-tail-dialog h3 {
   margin: 0;
   font-size: 15px;
 }
 
 dialog.project-edit-dialog .close,
-dialog.note-edit-dialog .close {
+dialog.note-edit-dialog .close ,
+dialog.outcar-tail-dialog .close {
   min-width: 44px;
   min-height: 44px;
   border: none;
@@ -5046,7 +5051,8 @@ dialog.note-edit-dialog .close {
 }
 
 dialog.project-edit-dialog .body,
-dialog.note-edit-dialog .body {
+dialog.note-edit-dialog .body ,
+dialog.outcar-tail-dialog .body {
   padding: 14px 16px 4px;
   overflow: auto;
   max-height: calc(92vh - 132px);
@@ -5056,32 +5062,37 @@ dialog.note-edit-dialog .body {
 }
 
 dialog.project-edit-dialog .field,
-dialog.note-edit-dialog .field {
+dialog.note-edit-dialog .field ,
+dialog.outcar-tail-dialog .field {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 dialog.project-edit-dialog .field > span,
-dialog.note-edit-dialog .field > span {
+dialog.note-edit-dialog .field > span ,
+dialog.outcar-tail-dialog .field > span {
   font-size: 12.5px;
   color: var(--color-text-muted);
 }
 
 dialog.project-edit-dialog .field-row,
-dialog.note-edit-dialog .field-row {
+dialog.note-edit-dialog .field-row ,
+dialog.outcar-tail-dialog .field-row {
   display: flex;
   gap: 12px;
 }
 
 dialog.project-edit-dialog .field-row .field,
-dialog.note-edit-dialog .field-row .field {
+dialog.note-edit-dialog .field-row .field ,
+dialog.outcar-tail-dialog .field-row .field {
   flex: 1 1 0;
   min-width: 0;
 }
 
 dialog.project-edit-dialog .hint,
-dialog.note-edit-dialog .hint {
+dialog.note-edit-dialog .hint ,
+dialog.outcar-tail-dialog .hint {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-muted);
@@ -5089,7 +5100,8 @@ dialog.note-edit-dialog .hint {
 }
 
 dialog.project-edit-dialog footer,
-dialog.note-edit-dialog footer {
+dialog.note-edit-dialog footer ,
+dialog.outcar-tail-dialog footer {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
@@ -5098,7 +5110,8 @@ dialog.note-edit-dialog footer {
 }
 
 dialog.project-edit-dialog .btn,
-dialog.note-edit-dialog .btn {
+dialog.note-edit-dialog .btn ,
+dialog.outcar-tail-dialog .btn {
   min-height: 40px;
   min-width: 84px;
   padding: 0 16px;
@@ -5112,21 +5125,24 @@ dialog.note-edit-dialog .btn {
 }
 
 dialog.project-edit-dialog .btn--primary,
-dialog.note-edit-dialog .btn--primary {
+dialog.note-edit-dialog .btn--primary ,
+dialog.outcar-tail-dialog .btn--primary {
   border-color: #3f6fe0;
   background: #3f6fe0;
   color: #fff;
 }
 
 dialog.project-edit-dialog .btn--primary:disabled,
-dialog.note-edit-dialog .btn--primary:disabled {
+dialog.note-edit-dialog .btn--primary:disabled ,
+dialog.outcar-tail-dialog .btn--primary:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
 @media (max-width: 720px) {
   dialog.project-edit-dialog,
-  dialog.note-edit-dialog {
+  dialog.note-edit-dialog,
+  dialog.outcar-tail-dialog {
     width: 100vw;
     height: 100vh;
     max-width: none;
@@ -5304,4 +5320,44 @@ h5:hover > .report-hide-btn,
 .report-hidden-item a {
   color: #2d5fcc;
   cursor: pointer;
+}
+
+/* ---------------- OUTCAR 尾部弹窗（2026-10-13） ---------------- */
+.outcar-tail {
+  margin: 6px 0 0;
+  padding: 12px;
+  max-height: 56vh;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #fbfcfe;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--color-text);
+}
+
+.inspection-detail .outcar-tail {
+  max-height: 40vh;
+}
+
+/* 巡检列表里的错误/警告信息：可点（看 OUTCAR 末尾） */
+.inspection-msg--clickable {
+  color: #d9535b;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  touch-action: manipulation;
+}
+
+.inspection-msg--clickable:hover {
+  color: #b6252d;
+}
+
+@media (max-width: 720px) {
+  .outcar-tail {
+    max-height: 60vh;
+    font-size: 11px;
+  }
 }

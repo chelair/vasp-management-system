@@ -1600,6 +1600,35 @@ def _schedule_archive_outputs(
     ).start()
 
 
+@router.get("/tasks/{task_id}/outcar-tail")
+def task_outcar_tail(
+    task_id: str,
+    lines: int = Query(default=40, ge=1, le=500, description="返回末尾多少行"),
+    image: str = Query(default="", description="NEB 映像号（可选）；留空自动取最近修改的映像"),
+):
+    """**OUTCAR 尾部**：异常结束的任务点错误信息时看最后数行。
+
+    三级兜底：归档时切好的 `reports/outcar_tail.txt` → 本地镜像 `files/OUTCAR` → **远端 tail**（只读一次 exec）。
+    NEB 任务自动挑该 conN 下**最近修改**的映像 OUTCAR（异常结束的往往是它）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        from task_files_summary import outcar_tail_for_task
+
+        data = outcar_tail_for_task(
+            project, task, lines=lines, image=(image.strip() or None)
+        )
+        return ok("查询成功", data)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取 OUTCAR 尾部失败：{e}"))
+
+
 @router.get("/tasks/{task_id}/context")
 def task_context(
     task_id: str,

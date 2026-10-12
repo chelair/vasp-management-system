@@ -108,6 +108,7 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 | `GET /projects/{project_id}` | — | 单项目详情（含 `deadline` / `calc_description` / `expected_results` / `urgency` / `priority_quadrant`） | 项目管理编辑弹窗取数 |
 | `GET /reports/project/{report_id}/notes` | — | 报告注解 `{key: {analysis_note, paper_note, updated_at}}`（key = task_id 或 `section_<章节>`） | 结果分析 / 论文参考 |
 | `GET /reports/project/{report_id}/edits` | — | 隐藏状态 `{hidden_sections[], hidden_elements[]}` | 报告页隐藏项恢复 |
+| `GET /jobs/tasks/{task_id}/outcar-tail` | `?lines=40&image=` | OUTCAR 尾部（异常结束的任务点错误信息看最后数行）：三级兜底 归档摘要 `reports/outcar_tail.txt` → 本地镜像 `files/OUTCAR` → **远端 tail**（只读一次 exec）；NEB 自动挑该 conN 下**最近修改**的映像；返回 `{text, source, dir, lines}`（2026-10-13 新增） |
 | `GET /jobs/tasks/{task_id}/context` | `?n_checks=5&n_actions=10&refresh=0` | **任务上下文（AI 决策唯一入口）**：任务元数据（类型/状态/owner/group/created_at/归档痕迹）+ 最近 N 轮巡检（能量/力/收敛/精度/错误标志）+ 最近 N 条动作（`actor`+`actor_kind`=user/automation/system）+ 文件摘要（INCAR 关键参数、OUTCAR 尾部 4KB、result 尾部、NEB 各映像尾部）+ 人工痕迹（参数改动台账/归档/巡检 notes）+ 项目级 `calc_description`/`expected_results`；`hints.missing` 列出缺什么（2026-10-13 新增） | 大模型只读这一份即可决策 |
 | `GET /reports/project/{report_id}/ai` | — | **AI 消费视图**：键名 snake_case、状态字段带族名（`task_status`/`check_status`/`output_state`/`queue_state`）、能量 eV·力 eV/Å、时间本地带 `+08:00`、`low_precision` 归并为 `task_status=completed`+`precision_ok=false`（2026-10-12 新增） | 大模型直读，无需自己猜枚举/单位/时区 |
 | `GET /deps` | — | 依赖自检 | 运维 |

@@ -244,6 +244,17 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-13（用户："若任务异常结束，点击错误信息可弹出一个窗口显示 OUTCAR 最后数行"）：
+  **巡检页错误信息可点开看 OUTCAR 尾部**。新增 `GET /api/jobs/tasks/{id}/outcar-tail?lines&image`
+  与 `backend/task_files_summary.outcar_tail_for_task()`：三级兜底 ——
+  ① 归档时切好的 `reports/outcar_tail.txt`（秒回）→ ② 本地镜像 `files/OUTCAR` →
+  ③ **远端 `tail -n N`**（异常结束的任务通常从没同步过 OUTCAR，实测 1–2s，只读一次 exec）；
+  NEB 任务自动挑该 conN 下**最近修改**的映像 OUTCAR（按名字取第一个会拿到端点 00 的复制品）。
+  前端新增 `OutcarTailDialog.tsx`（原生 `<dialog>`、ESC/遮罩/× 关闭、≤720px 全屏、等宽字体、
+  「重新读取」/「复制」、标出来源与路径），入口两处：**巡检列表「信息」列**（status=error/warning 时
+  整段变红可点）+ **巡检详情弹窗的「错误信息」**。实测：Fe3S4 走本地摘要 6 行秒回；
+  PAYH3_TS2_neb 走远端 1.06s 且命中 `con9/01/OUTCAR`。**回归**：其它接口不变。
+
 - 2026-10-13（用户："每个任务要有一份 task_context，AI 决策时只读这个"）：**新增任务上下文**。
   审查结论（先审查后动手）：全仓库没有 `task_context`；六类素材散在四处 —— 任务元数据在
   `data/projects.json`、巡检多轮历史在 `data/checks/`（单任务实测 104 轮）、动作历史在

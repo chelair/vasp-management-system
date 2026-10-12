@@ -432,6 +432,20 @@ export interface TaskInputState {
 }
 
 /** 读取任务的输入文件状态（快照 + 草稿 + 变更台账） */
+/** OUTCAR 尾部（异常结束的任务点错误信息时看最后数行） */
+export async function fetchOutcarTail(
+  taskId: string,
+  opts: { lines?: number; image?: string } = {},
+): Promise<{ text: string; source: string; dir: string; lines: number }> {
+  const params = new URLSearchParams();
+  if (opts.lines) params.set('lines', String(opts.lines));
+  if (opts.image) params.set('image', opts.image);
+  const query = params.toString();
+  return request(
+    `/jobs/tasks/${encodeURIComponent(taskId)}/outcar-tail${query ? `?${query}` : ''}`,
+  );
+}
+
 export function fetchTaskInput(taskId: string): Promise<TaskInputState> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/input`);
 }

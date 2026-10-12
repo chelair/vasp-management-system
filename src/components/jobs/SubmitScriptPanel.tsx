@@ -142,6 +142,16 @@ export default function SubmitScriptPanel({
     [jobName, task.model_name, queue, hours, minutes, cores, ptile, softKill, warnMinutes],
   );
 
+  /**
+   * 参数一变就按最新参数刷新预览：**写入远端用的是文本框里的内容**，
+   * 以前改了参数但没点「生成预览」就直接写入，写出去的还是旧脚本
+   * （2026-10-12 用户："提交脚本写入远端为什么改不了了" —— 审计里每次写的都是同一份 1052B）。
+   * 手动改过文本框也没关系：只要不动参数，手改内容会原样保留并被写入。
+   */
+  useEffect(() => {
+    setScript(buildVaspLsf(opts));
+  }, [opts]);
+
   /** 截止时间非法（0:00）时阻止写入 */
   const walltimeInvalid = normalizeMinute(minutes) === 0 && Math.trunc(hours) === 0;
   /**

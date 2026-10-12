@@ -244,6 +244,15 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-12（用户："提交脚本写入远端为什么改不了了"）：**提交脚本预览不再是"陈旧快照"**。
+  **现象**：改了参数（如总核数/每节点核数）后点「写入远端 vasp.lsf」，远端 `conN/vasp.lsf` 内容不变；
+  审计里连续 6 次都是 `upload-submit-script OK size=1052`（同一份内容）。
+  **根因**：`SubmitScriptPanel.writeRemote()` 写的是**文本框里的内容**（`script.trim() ? script : buildVaspLsf(opts)`），
+  而文本框只在点「生成预览」时刷新 → 改了参数没再点生成，写出去的是旧脚本。
+  **修法**：`opts`（队列/截止时间/核数/软结束/预警）一变就用 `buildVaspLsf(opts)` 自动刷新预览；
+  手动编辑文本框仍然有效（只要不动参数，手改内容原样保留并写入）。
+  **影响面**：只动前端一个 effect；后端接口、备份逻辑（`old_vasp.lsf`）不变；前端需重新构建 + 硬刷新。
+
 - 2026-10-12（用户："报告系统扩展"三块任务）：**先审查后动手**，审查结论与实现要点：
   **任务 1 项目元数据**：`delivery_date` **复用已有 `deadline`**（用户确认，不新增重复字段）；
   新增 `calc_description` / `expected_results`（projects.json 可选字段）→ `POST /api/projects` 接受、

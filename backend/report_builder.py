@@ -1818,6 +1818,13 @@ def build_report(
         if entries:
             note_blocks.setdefault(str(path.get("group_name") or ""), []).extend(entries)
     report["note_blocks"] = note_blocks
+    # 规范化 AI 视图（2026-10-12）：只加字段，既有结构不动；规则见 report_schema
+    try:
+        from ai_view import build_ai_view
+
+        report["ai_view"] = build_ai_view(report)
+    except Exception as e:  # noqa: BLE001 - AI 视图失败不影响报告本体
+        report["ai_view"] = {"error": f"生成 AI 视图失败：{e}"}
     report["markdown_meta"] = {
         "sections": [{"key": s["key"], "title": s["title"]} for s in sections],
         "chart_paths": [f"charts/{name}" for name in charts],

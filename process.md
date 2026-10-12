@@ -244,6 +244,22 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-12（用户："准备为这个系统接入 AI，先审查字段/枚举/单位/时间是否统一"）：
+  **审查结论**：① `created_at` 与 `createdAt` **并存**（同源同值，另有 `updatedAt`/`remainingHours`/`closedAt` 只有 camel）；
+  ② 能量/力**全部 eV**（全仓库无 Ry/Hartree），但同一量在归档面叫 `last_energy`/`force_max`、报告面叫
+  `last_energy_ev`/`force_max_ev_per_a`；③ 状态枚举**不统一**：`status` 这个键有四种含义
+  （任务状态 / 巡检行 normal-warning-error / 归档含 `low_precision` / `current_output.status`=waiting-running-finished-failed），
+  另有独立的 `queue_status`（LSF）与队列对象的 `Open:Active`；无 `done`；④ 时间主线 ISO8601 **无时区**，
+  另有纯日期（`deadline`/`eta_at`）与**带微秒**的 `modified`（文件清单）。
+  **实现（用户选 A+B，只加不改）**：A —— `report_schema` 新增 `STATUS_FAMILIES` / `TIME_FORMAT`（本地 `+08:00`）/
+  `FIELD_ALIASES` / `LOW_PRECISION_POLICY`，并挂进 `GET /api/reports/project/schema`；
+  B —— 新增 `backend/ai_view.py::build_ai_view()`：键名统一 snake_case、状态带族名、`*_ev`/`*_ev_per_a`、
+  时间补 `+08:00`、`low_precision → task_status=completed + precision_ok=false`，纯函数不改入参；
+  报告结构化数据新增 `report["ai_view"]`，并新增只读接口 `GET /api/reports/project/{id}/ai`
+  （老报告没有该字段时即时计算）。**回归实测**：详情接口原有键全在（markdown/markdown_sections/dialogs/notes/
+  note_blocks/edits）、导出 HTML 结构不变（4 章 / 9 弹窗 / 0 外部引用）、report.json 仅由 0 → 192KB，
+  前端零改动。未做（用户明确范围外）：C 档破坏性重命名。
+
 - 2026-10-12（用户："报告-左侧项目栏中不用显示报告代码，挤得删除按钮没地方了"）：左栏报告项底部不再显示
   `rpt_…` 报告代码（改为提示文案「点开查看 / 导出」），删除按钮 `flex: 0 0 auto` + 手机 ≥44px，
   代码太长挤掉删除按钮的问题解决；搜索仍按报告代码匹配（`filteredReports` 未改）。

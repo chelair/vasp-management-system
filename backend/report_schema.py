@@ -53,6 +53,75 @@ TASK_STATUSES: Tuple[str, ...] = (
     "archived",
 )
 PROJECT_STATUSES: Tuple[str, ...] = ("normal", "warning", "critical")
+
+#: **状态族**（2026-10-12 审查结论）：`status` 这个键在不同 payload 里含义不同，
+#: AI 必须先看这张表，别把"任务的 completed"和"巡检行的 normal/警告"混为一谈。
+STATUS_FAMILIES: Dict[str, Dict[str, Any]] = {
+    "task_status": {
+        "values": list(TASK_STATUSES),
+        "where": "任务记录（DB）/ 报告任务表 / 自由能结构状态",
+        "meaning": "数据库任务状态，唯一真相；unconverged=算完但力未收敛",
+    },
+    "check_status": {
+        "values": ["normal", "warning", "error", "pending", "archived"],
+        "where": "巡检列表 `GET /inspections` 的 `status`（前端行口径）",
+        "meaning": "巡检结论：正常 / 需关注（未收敛、低精度、挂起）/ 异常 / 未检 / 已关闭",
+    },
+    "archive_status": {
+        "values": [
+            "completed",
+            "unconverged",
+            "zombied",
+            "running",
+            "pending",
+            "archived",
+            "low_precision",
+        ],
+        "where": "巡检归档原始文件 `data/checks/check_results_*.json` 的 `status`",
+        "meaning": "回填时的任务状态；**low_precision 是归档特有**：低精度收敛，数据库里记 completed",
+    },
+    "output_state": {
+        "values": ["waiting", "running", "finished", "failed"],
+        "where": "`task.current_output.status`（最新输出目录的判读）",
+        "meaning": "只看 OUTCAR 尾部：无输出 / 未结束 / 正常结束 / 命中错误关键字",
+    },
+    "queue_state": {
+        "values": ["PEND", "RUN", "SSUSP", "USUSP", "PSUSP", "UNKNOWN", "Open:Active"],
+        "where": "`queue_status` / `resources.queues[].status`（LSF 原样值）",
+        "meaning": "集群队列状态，原样透传 bjobs；`Open:Active` 是队列（queue）状态",
+    },
+    "project_status": {
+        "values": list(PROJECT_STATUSES),
+        "where": "报告 `basic_info.project_status` / 总览统计",
+        "meaning": "项目整体健康度：正常 / 警告 / 异常",
+    },
+}
+
+#: 时间格式约定（2026-10-12 审查）：主线 `YYYY-MM-DDTHH:mm:ss+08:00`（本地时间带偏移）；
+#: 纯日期字段保持 `YYYY-MM-DD`；带 `_label` 的字段是人类可读文案，不要当时间解析。
+TIME_FORMAT: Dict[str, str] = {
+    "datetime": "YYYY-MM-DDTHH:mm:ss+08:00",
+    "date": "YYYY-MM-DD",
+    "timezone": "Asia/Shanghai",
+    "note": "历史数据里的时间无偏移（本地时间），规范化视图会补上 +08:00；`*_label` 是文案不是时间",
+}
+
+#: 字段别名（同一含义在不同面的两套写法）：AI 用左边（规范名），右边是历史/前端别名
+FIELD_ALIASES: Dict[str, List[str]] = {
+    "created_at": ["createdAt"],
+    "closed_at": ["closedAt"],
+    "updated_at": ["updatedAt"],
+    "last_energy_ev": ["last_energy"],
+    "force_max_ev_per_a": ["force_max"],
+    "force_rms_ev_per_a": ["force_rms"],
+    "remaining_hours": ["remainingHours"],
+    "queue_state": ["queue_status"],
+    "task_status": ["status（任务记录里）"],
+}
+
+#: 低精度收敛的规范化政策（2026-10-12 用户确认）：归档的 `low_precision` 在 AI 视图里
+#: 归并成 `task_status=completed` + `precision_ok=false` + `precision_issues=[...]`。
+LOW_PRECISION_POLICY = "low_precision → task_status=completed 且 precision_ok=false（问题写进 precision_issues）"
 SEVERITIES: Tuple[str, ...] = ("high", "medium", "low")
 PRIORITIES: Tuple[str, ...] = ("P0", "P1", "P2")
 RISK_TYPES: Tuple[str, ...] = (
@@ -104,6 +173,21 @@ def schema_manifest() -> Dict[str, Any]:
             "severities": list(SEVERITIES),
             "priorities": list(PRIORITIES),
             "risk_types": list(RISK_TYPES),
+        },
+        # 2026-10-12 新增（只加不改）：状态族 / 时间格式 / 字段别名 / 低精度政策
+        "status_families": STATUS_FAMILIES,
+        "time_format": TIME_FORMAT,
+        "field_aliases": FIELD_ALIASES,
+        "low_precision_policy": LOW_PRECISION_POLICY,
+        "normalized_view": {
+            "where": "报告结构化数据 `ai_view`（GET /api/reports/project/{id}/structured 或 /ai）",
+            "rules": [
+                "键名一律 snake_case（camelCase 只保留在旧字段里，AI 用 snake）",
+                "状态字段带族名：task_status / check_status / output_state / queue_state / project_status",
+                "能量/力一律带单位后缀：*_ev、*_ev_per_a、*_a、*_hour",
+                f"时间：{TIME_FORMAT['datetime']}（本地时间带偏移）；纯日期 YYYY-MM-DD",
+                LOW_PRECISION_POLICY,
+            ],
         },
         "sections": [{"key": key, "title": title} for key, title in REPORT_SECTIONS],
     }

@@ -200,6 +200,32 @@ def project_report_detail(report_id: str, request: Request):
         return JSONResponse(status_code=500, content=fail(f"读取报告失败：{e}"))
 
 
+@router.get("/{report_id}/ai")
+def project_report_ai_view(report_id: str, request: Request):
+    """**AI 消费视图**：键名/枚举/单位/时间统一后的报告数据（2026-10-12 新增）。
+
+    - 键名一律 snake_case；状态字段带族名（task_status / check_status / output_state / queue_state）；
+    - 能量 eV、力 eV/Å、时间本地带 `+08:00`；
+    - `low_precision` 归并成 `task_status=completed` + `precision_ok=false`；
+    - 老报告没有该字段时**即时计算**（纯函数，不改磁盘）。
+    """
+    try:
+        _ensure_report_access(report_id, request)
+        doc, _, _ = load_report(report_id)
+        view = doc.get("ai_view")
+        if not isinstance(view, dict) or not view:
+            from ai_view import build_ai_view
+
+            view = build_ai_view(doc)
+        return ok("查询成功", view)
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取 AI 视图失败：{e}"))
+
+
 @router.get("/{report_id}/structured")
 def project_report_structured(report_id: str, request: Request):
     """仅结构化数据（作为大模型输入的标准格式）。"""

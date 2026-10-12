@@ -102,11 +102,13 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 | --- | --- | --- | --- |
 | `GET /projects` | — | `projects[]`：`id/name/**owner**/**created_at**/closed/closedAt/progress/tasks[]`；每个任务含 `task_id/model_name/task_type/status/dir_path/remote_dir/job_id/last_energy/last_check_time` 与 **`check{status,message,checked_at,energy,has_inspection}`**（v0.8.8 起，与巡检中心同口径） | 全量盘点、判断"哪些任务该续算/该收尾" |
 | `GET /task-types` | — | 四种任务类型与默认参数、子类型 | 校验动作参数 |
+| `GET /reports/project/schema` | — | **数据契约**：`units`、`enums`、`status_families`（同一个 `status` 的四种含义）、`time_format`、`field_aliases`、`low_precision_policy`（2026-10-12 扩） | AI 先读契约再读数据 |
 | `GET /servers` | — | 服务器名/主机/队列系统/节点分组 | 多服务器扩展 |
 | `GET /health` | — | `uptime/startedAt`（判断后端是否已重启） | 健康检查 |
 | `GET /projects/{project_id}` | — | 单项目详情（含 `deadline` / `calc_description` / `expected_results` / `urgency` / `priority_quadrant`） | 项目管理编辑弹窗取数 |
 | `GET /reports/project/{report_id}/notes` | — | 报告注解 `{key: {analysis_note, paper_note, updated_at}}`（key = task_id 或 `section_<章节>`） | 结果分析 / 论文参考 |
 | `GET /reports/project/{report_id}/edits` | — | 隐藏状态 `{hidden_sections[], hidden_elements[]}` | 报告页隐藏项恢复 |
+| `GET /reports/project/{report_id}/ai` | — | **AI 消费视图**：键名 snake_case、状态字段带族名（`task_status`/`check_status`/`output_state`/`queue_state`）、能量 eV·力 eV/Å、时间本地带 `+08:00`、`low_precision` 归并为 `task_status=completed`+`precision_ok=false`（2026-10-12 新增） | 大模型直读，无需自己猜枚举/单位/时区 |
 | `GET /deps` | — | 依赖自检 | 运维 |
 
 ### 3.2 巡检结果

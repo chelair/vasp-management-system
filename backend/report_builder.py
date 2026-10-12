@@ -805,6 +805,12 @@ def _sections_markdown(report, charts):
                 f"{path['structure_count']} 个中间体 · {corrected} 个已矫正"
                 + (f" · 最高相对能 {max(rels):+.3f} eV" if rels else ""),
             ]
+            if not with_energy:
+                # 频率矫正（G(T)）还没算 → 自由能列为空、台阶图不画；但结构三视图照样能点开
+                lines.append(
+                    "_还没有频率矫正项（G(T)）：自由能与相对 ΔE 列为空、不画台阶图；"
+                    "各中间体的结构三视图仍可点「结构 N」查看。_"
+                )
             if path.get("chart"):
                 lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
             lines.append(
@@ -1188,9 +1194,9 @@ def build_report(
 
     free_paths = _free_energy_paths(project, facts)
     for path in free_paths:
-        if not any(s.get("free_energy_ev") is not None for s in path["structures"]):
-            continue
-        # 每个中间体的三视图弹窗（点「结构 N」打开）
+        # 每个中间体的三视图弹窗（点「结构 N」打开）——**与"有没有频率矫正"无关**：
+        # 自由能表格本身总会打印，结构三视图也不该因为矫正项还没算就整块消失
+        # （2026-10-12 用户：FS_Kaolin 的自由能没有结构图，就是被下面那个 continue 跳过了）
         for s in path["structures"]:
             opt_obj = next(
                 (
@@ -1210,6 +1216,9 @@ def build_report(
                 dialogs.append(dialog)
                 dialog_images.update(pngs)
                 s["dialog"] = dialog["id"]
+        # 台阶图要自由能数值（没有频率矫正就没有）→ 仍然只在有值时画
+        if not any(s.get("free_energy_ev") is not None for s in path["structures"]):
+            continue
         name = f"{path['group_id']}_step.svg"
         # 与巡检详情页的自由能路径看板同版式：统计卡 + 台阶图
         charts[name] = free_energy_panel(path, title=f"{path['group_name']} 自由能路径看板")

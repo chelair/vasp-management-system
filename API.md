@@ -148,7 +148,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 | `GET /servers` | — | 服务器名/主机/队列系统/节点分组 | 多服务器扩展 |
 | `GET /health` | — | `uptime/startedAt`（判断后端是否已重启） | 健康检查 |
 | `GET /projects/{project_id}` | — | 单项目详情（含 `deadline` / `calc_description` / `expected_results` / `urgency` / `priority_quadrant`） | 项目管理编辑弹窗取数 |
-| `GET /reports/project/{report_id}/notes` | — | 报告注解 `{key: {analysis_note, paper_note, updated_at}}`（key = task_id 或 `section_<章节>`） | 结果分析 / 论文参考 |
+| `GET /reports/project/{report_id}/notes` | — | 报告注解 `{key: {analysis_note, paper_note, updated_at}}`；key 见 §4（`type_*` / `task_id` / `path:<group_id>`） | 结果分析 / 论文参考 |
 | `GET /reports/project/{report_id}/edits` | — | 隐藏状态 `{hidden_sections[], hidden_elements[]}` | 报告页隐藏项恢复 |
 | `GET /jobs/tasks/{task_id}/outcar-tail` | `?lines=40&image=` | OUTCAR 尾部（异常结束的任务点错误信息看最后数行）：三级兜底 归档摘要 `reports/outcar_tail.txt` → 本地镜像 `files/OUTCAR` → **远端 tail**（只读一次 exec）；NEB 自动挑该 conN 下**最近修改**的映像；返回 `{text, source, dir, lines}`（2026-10-13 新增） |
 | `GET /jobs/tasks/{task_id}/context` | `?n_checks=5&n_actions=10&refresh=0` | **任务上下文（AI 决策唯一入口）**：任务元数据（类型/状态/owner/group/created_at/归档痕迹）+ 最近 N 轮巡检（能量/力/收敛/精度/错误标志）+ 最近 N 条动作（`actor`+`actor_kind`=user/automation/system）+ 文件摘要（INCAR 关键参数、OUTCAR 尾部 4KB、result 尾部、NEB 各映像尾部）+ 人工痕迹（参数改动台账/归档/巡检 notes）+ 项目级 `calc_description`/`expected_results`；`hints.missing` 列出缺什么（2026-10-13 新增） | 大模型只读这一份即可决策 |
@@ -194,7 +194,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 | --- | --- | --- |
 | `PUT /api/projects/{project_id}` | `{description?, deadline?, calc_description?, expected_results?, estimated_hours?}`（全部可选，只改传入字段） | 编辑项目；**名称不可改**；优先级是算出来的不接受写；改 deadline 会重算 urgency/priority_quadrant；owner 校验 |
 | `GET /api/jobs/tasks/{task_id}/context` | `?n_checks=&n_actions=&refresh=1` | 任务上下文（AI 决策唯一入口，见 §3.1；只读、按需、指纹缓存 `<任务>/reports/task_context.json`） |
-| `PUT /api/reports/project/{report_id}/notes` | `{key, analysis_note, paper_note}`（key = task_id 或 `section_<章节>`；两条都空 = 删除） | 写结果分析描述 / 论文写作参考（落 `data/reports/notes/<report_id>.json`） |
+| `PUT /api/reports/project/{report_id}/notes` | `{key, analysis_note, paper_note}`（两条都空 = **删除**该条） | 写「结果分析描述 / 论文写作参考」（落 `data/reports/notes/<report_id>.json`）。**只在报告的「重点科学结果分析」章节里呈现**，key 有四种（2026-10-13 用户口径）：`type_opt` / `type_free_energy` / `type_neb`（该类型一条总的）、`task_id`（结构优化每个子项、NEB 每个组）、`path:<group_id>`（自由能路径每个组）。电子结构子任务未完成，暂不提供 |
 | `PUT /api/reports/project/{report_id}/edits` | `{hidden_sections: [...], hidden_elements: [...]}` | 保存报告页的隐藏状态（落 `data/reports/edits/<report_id>.json`） |
 | `GET /api/reports/project/{report_id}/export.html` | `?sections=…&hide=section:x,task:<章节>:<标题>,figure:<章节>:<序号>&print=1` | 自包含 HTML：`sections` 选章节、`hide` 排除被隐藏的元素 |
 

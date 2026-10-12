@@ -1,15 +1,20 @@
 /**
- * 报告注解面板（2026-10-12）：结果分析描述 + 论文写作参考。
+ * 报告注解（结果分析与论文参考）面板（2026-10-13 按用户口径重做）。
  *
- * - 原生 `<details>` 折叠，标题旁显示"未填写"或内容摘要；
- * - 点「填写 / 编辑」→ 原生 `<dialog>`（≤720px 全屏，见 ReportNoteDialog）；
- * - 「AI 生成」按钮已预留，当前置灰提示"即将支持"；
- * - 内容为空时显示"待填写"占位。
+ * 用户口径：**只在「重点科学结果分析」章节里出现** ——
+ * - 每个类型一条总的（结构优化 / 自由能路径 / NEB 过渡态）；
+ * - 结构优化：每个子项一条；自由能路径 / NEB：每个组一条；
+ * - 电子结构子任务未完成，暂不提供。
+ *
+ * 交互：「＋ 添加分析」按钮 → 原生 `<dialog>` 编辑（ReportNoteDialog）；
+ * 已填写时直接显示内容，并提供「编辑」「删除」（删除 = 两条都清空，后端会删掉该条）。
  */
 
 import { useState } from 'react';
-import { Button } from 'antd';
+import { Button, Popconfirm, message } from 'antd';
 
+import { saveReportNote } from '../../api/reports';
+import { renderMarkdown } from '../../utils/markdown';
 import ReportNoteDialog from './ReportNoteDialog';
 
 export interface NoteEntry {
@@ -20,75 +25,114 @@ export interface NoteEntry {
 
 interface Props {
   reportId: string;
+  /** 注解 key：`type_opt` / `task_id` / `path:<group_id>` */
   noteKey: string;
   title: string;
-  entries: NoteEntry[];
+  analysis?: string;
+  paper?: string;
+  /** 按钮旁的小字说明（例如"这一条只跟本任务绑定"） */
+  hint?: string;
+  /** 只读补充：自由能路径块里汇总组内各结构已填写的注解 */
+  readOnly?: NoteEntry[];
   onSaved?: (notes: Record<string, { analysis_note: string; paper_note: string }>) => void;
 }
 
-function summarize(entries: NoteEntry[]): string {
-  const text = entries
-    .flatMap((e) => [e.analysis_note, e.paper_note])
-    .map((v) => (v || '').trim())
-    .filter(Boolean)
-    .join(' / ');
-  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+function NoteText({ text }: { text: string }) {
+  return (
+    <div
+      className="notes-text"
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+    />
+  );
 }
 
-export default function ReportNotePanel({ reportId, noteKey, title, entries, onSaved }: Props) {
+export default function ReportNotePanel({
+  reportId,
+  noteKey,
+  title,
+  analysis = '',
+  paper = '',
+  hint,
+  readOnly = [],
+  onSaved,
+}: Props) {
   const [open, setOpen] = useState(false);
-  const single = entries.length <= 1;
-  const current = entries[0] ?? {};
-  const summary = summarize(entries);
+  const [deleting, setDeleting] = useState(false);
+  const filled = Boolean(analysis.trim() || paper.trim());
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      const res = await saveReportNote(reportId, noteKey, '', '');
+      message.success('已删除这条分析');
+      onSaved?.(res.notes);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '删除失败');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <>
-      <details className="notes-panel">
-        <summary>
-          {title}
-          <span className="notes-panel__state">{summary || '未填写'}</span>
-        </summary>
-        <div className="notes-body">
-          {entries.filter((e) => e.analysis_note || e.paper_note).length > 0 ? (
-            entries
-              .filter((e) => e.analysis_note || e.paper_note)
-              .map((entry, index) => (
-                <div key={`${entry.label ?? ''}-${index}`}>
-                  {entry.label ? <h4>{entry.label}</h4> : null}
-                  {entry.analysis_note ? (
-                    <>
-                      <p className="notes-label">结果分析描述</p>
-                      <p>{entry.analysis_note}</p>
-                    </>
-                  ) : null}
-                  {entry.paper_note ? (
-                    <>
-                      <p className="notes-label">论文写作参考</p>
-                      <p>{entry.paper_note}</p>
-                    </>
-                  ) : null}
-                </div>
-              ))
-          ) : (
-            <p className="notes-empty">待填写：点下方「填写」补充结果分析描述与论文写作参考。</p>
-          )}
-          <div className="notes-actions">
-            <Button size="small" onClick={() => setOpen(true)}>
-              {summary ? '编辑' : '填写'}
-            </Button>
-            <Button size="small" disabled title="即将支持：接入大模型后自动生成">
-              AI 生成（即将支持）
-            </Button>
+      {!filled ? (
+        <div className="note-add-row">
+          <button type="button" className="note-add-btn" onClick={() => setOpen(true)}>
+            ＋ 添加分析
+          </button>
+          {hint ? <span className="note-hint">{hint}</span> : null}
+        </div>
+      ) : (
+        <div className="notes-panel notes-panel--filled">
+          <div className="notes-head">
+            <span className="notes-head__title">{title}</span>
+            <span className="notes-head__actions">
+              <Button size="small" onClick={() => setOpen(true)}>
+                编辑
+              </Button>
+              <Popconfirm
+                title="删除这条分析？"
+                description="删除后可以重新添加。"
+                okText="删除"
+                cancelText="取消"
+                onConfirm={handleDelete}
+              >
+                <Button size="small" danger loading={deleting}>
+                  删除
+                </Button>
+              </Popconfirm>
+            </span>
+          </div>
+          <div className="notes-body">
+            {analysis.trim() ? (
+              <>
+                <p className="notes-label">结果分析描述</p>
+                <NoteText text={analysis} />
+              </>
+            ) : null}
+            {paper.trim() ? (
+              <>
+                <p className="notes-label">论文写作参考</p>
+                <NoteText text={paper} />
+              </>
+            ) : null}
+            {readOnly.map((entry, index) => (
+              <div className="notes-extra" key={`${entry.label ?? ''}-${index}`}>
+                {entry.label ? <p className="notes-extra__title">{entry.label}</p> : null}
+                {entry.analysis_note ? <NoteText text={entry.analysis_note} /> : null}
+                {entry.paper_note ? <NoteText text={entry.paper_note} /> : null}
+              </div>
+            ))}
           </div>
         </div>
-      </details>
+      )}
       <ReportNoteDialog
         open={open}
         reportId={reportId}
         noteKey={noteKey}
         title={title}
-        initialAnalysis={single ? current.analysis_note ?? '' : ''}
-        initialPaper={single ? current.paper_note ?? '' : ''}
+        initialAnalysis={analysis}
+        initialPaper={paper}
         onClose={() => setOpen(false)}
         onSaved={onSaved}
       />

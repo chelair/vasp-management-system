@@ -444,6 +444,39 @@ def _inject_task_notes(body_html: str, note_blocks: Dict[str, Any]) -> str:
     return "".join(out)
 
 
+#: 类型级注解（用户 2026-10-13 口径）：markdown `### 标题` → 导出后 `<h4>`；只在科学结果分析章节内
+_TYPE_NOTE_KEYS = {
+    "结构优化": "type_opt",
+    "自由能路径": "type_free_energy",
+    "NEB 过渡态": "type_neb",
+}
+
+
+def _inject_type_notes(body_html: str, notes: Dict[str, Any]) -> str:
+    """把「类型级」（该类型一条总的）注解插到类型标题正下方（`<h4>` 之后）。
+
+    只有 §7 的三类落点，电子结构不提供；空注解不产生空壳（`notes_panel` 会返回空串）。
+    """
+    if not notes or "<h4>" not in body_html:
+        return body_html
+    out: List[str] = []
+    for part in re.split(r"(?=<h4>)", body_html):
+        m = re.match(r"<h4>(.*?)</h4>", part)
+        if not m:
+            out.append(part)
+            continue
+        label = html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+        key = _TYPE_NOTE_KEYS.get(label)
+        if not key:
+            out.append(part)
+            continue
+        panel = notes_panel(
+            [notes.get(key) or {}], title=f"{label} · 结果分析与论文参考"
+        )
+        out.append(part[: m.end()] + panel + part[m.end() :])
+    return "".join(out)
+
+
 def _apply_hidden(section_key: str, body_html: str, hidden: set) -> str:
     """按隐藏 key 过滤章节内的元素：task:<章节>:<标题>（整块）与 figure:<章节>:<序号>（单图）。"""
     if not hidden:
@@ -506,10 +539,10 @@ def render_html(
         # 任务级注解：插在每个任务块尾（标签 = markdown 里的 #### 标题）
         section_html = _apply_hidden(section["key"], section_html, hidden)
         section_html = _inject_task_notes(section_html, doc.get("note_blocks") or {})
+        # 类型级注解（只在本章节 = 重点科学结果分析）：插在每个类型标题正下方
+        if section["key"] == "science":
+            section_html = _inject_type_notes(section_html, doc.get("notes") or {})
         body_parts.append(section_html)
-        # 模块级注解：插在本章节末尾
-        section_note = (doc.get("notes") or {}).get(f"section_{section['key']}") or {}
-        body_parts.append(notes_panel([section_note], title="本章结果分析与论文参考"))
     dialogs_html = render_dialogs(doc.get("dialogs") or [], image_loader=image_loader)
     risk_summary = (doc.get("risks") or {}).get("summary") or {}
     footer = (

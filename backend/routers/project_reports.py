@@ -162,6 +162,13 @@ def project_report_detail(report_id: str, request: Request):
     try:
         _ensure_report_access(report_id, request)
         doc, markdown, _ = load_report(report_id)
+        # 注解（结果分析 / 论文参考）取**当前**文件内容：生成后新填/改的注解刷新即可见
+        try:
+            from report_builder import attach_report_notes
+
+            attach_report_notes(doc, report_id)
+        except Exception:  # noqa: BLE001 - 注解失败不影响报告详情
+            pass
         entry = next(
             (i for i in list_reports() if i.get("report_id") == report_id), {}
         )
@@ -281,6 +288,13 @@ def project_report_html(
     try:
         _ensure_report_access(report_id, request)
         doc, _, _ = load_report(report_id)
+        # 导出前刷新注解：生成报告后新填写的「结果分析与论文参考」也要进 HTML
+        try:
+            from report_builder import attach_report_notes
+
+            attach_report_notes(doc, report_id)
+        except Exception:  # noqa: BLE001 - 注解失败不影响导出
+            pass
         chosen = (
             [s.strip() for s in sections.split(",") if s.strip()] if sections else None
         )

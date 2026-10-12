@@ -1078,6 +1078,82 @@ def ai_generate_notes(
     return {"analysis_note": "", "paper_note": ""}
 
 
+#: 注解的「类型级」落点（用户 2026-10-13 口径）：markdown 标题 → 注解 key。
+#: **只在「重点科学结果分析」章节内有注解**；电子结构子任务未完成，暂不提供。
+NOTE_TYPE_KEYS: Dict[str, str] = {
+    "结构优化": "type_opt",
+    "自由能路径": "type_free_energy",
+    "NEB 过渡态": "type_neb",
+}
+
+#: 自由能路径的「组级」注解 key 前缀（每个路径一条）：`path:<group_id>`
+NOTE_PATH_PREFIX = "path:"
+
+
+def attach_report_notes(report: Dict[str, Any], report_id: str) -> Dict[str, Any]:
+    """把 `data/reports/notes/<report_id>.json` 的注解贴到报告上（生成时 / 详情 / 导出前各调一次）。
+
+    落点（用户 2026-10-13 口径，**只在「重点科学结果分析」章节内**）：
+
+    | 落点 | key | 说明 |
+    | --- | --- | --- |
+    | 类型级（总的） | `type_opt` / `type_free_energy` / `type_neb` | 每个类型一条 |
+    | 结构优化子项 | `task_id` | 每个任务一条 |
+    | NEB 组 | `task_id` | 每个 NEB 任务（= 一组）一条 |
+    | 自由能路径组 | `path:<group_id>` | 每条路径一条；路径内各结构仍按各自 `task_id` |
+
+    电子结构暂不提供（子任务未完成）。函数幂等：只写 `notes` / `note_blocks`
+    与各条目的 `analysis_note` / `paper_note`，不改其它字段。
+
+    `note_blocks`（导出 HTML 用）：key = markdown 里 `#### 标题`（任务名 / 路径名），
+    value = 该块要显示的注解条目（自由能路径块另外汇总组内已填写的结构级注解）。
+    """
+    try:
+        from report_store import read_notes
+
+        notes = read_notes(report_id)
+    except Exception:  # noqa: BLE001 - 读注解失败不影响报告本体
+        notes = {}
+    report["notes"] = notes or {}
+    science = report.get("science") or {}
+    blocks: Dict[str, List[Dict[str, Any]]] = {}
+
+    def _entry(note: Dict[str, Any], label: str = "") -> Dict[str, Any]:
+        return {
+            "label": label,
+            "analysis_note": str((note or {}).get("analysis_note") or ""),
+            "paper_note": str((note or {}).get("paper_note") or ""),
+        }
+
+    def _apply(target: Dict[str, Any], key: str) -> Dict[str, Any]:
+        note = report["notes"].get(str(key or ""), {})
+        target["analysis_note"] = str(note.get("analysis_note") or "")
+        target["paper_note"] = str(note.get("paper_note") or "")
+        return note
+
+    # 结构优化 / NEB：每个子项（任务）一条
+    for entry in (science.get("opt") or []) + (science.get("neb") or []):
+        label = str(entry.get("task_name") or "")
+        blocks.setdefault(label, []).append(
+            _entry(_apply(entry, str(entry.get("task_id") or "")), "")
+        )
+
+    # 自由能路径：每个组一条（+ 组内各结构已填写的注解作为只读汇总）
+    for path in science.get("free_energy") or []:
+        entries: List[Dict[str, Any]] = []
+        path_note = _apply(path, f"{NOTE_PATH_PREFIX}{path.get('group_id') or path.get('group_name')}")
+        if path_note.get("analysis_note") or path_note.get("paper_note"):
+            entries.append(_entry(path_note, ""))
+        for structure in path.get("structures") or []:
+            note = _apply(structure, str(structure.get("opt_task_id") or ""))
+            if note.get("analysis_note") or note.get("paper_note"):
+                entries.append(_entry(note, f"结构 {structure.get('structure_label')}"))
+        if entries:
+            blocks.setdefault(str(path.get("group_name") or ""), []).extend(entries)
+    report["note_blocks"] = blocks
+    return report
+
+
 def build_report(
     project_ref: str,
     *,
@@ -1776,48 +1852,8 @@ def build_report(
 
     sections = _sections_markdown(report, charts)
     report["markdown_sections"] = sections
-    # 报告注解（结果分析 / 论文参考，2026-10-12）：从 data/reports/notes/<report_id>.json 读，
-    # 按 task_id / section_<key> 贴到结构化数据上，供前端面板与导出 HTML 用
-    try:
-        from report_store import read_notes
-
-        notes = read_notes(report_id)
-    except Exception:  # noqa: BLE001 - 读注解失败不影响报告本体
-        notes = {}
-    report["notes"] = notes
-    # 供前端/导出按"任务块"取注解：key = 与 markdown 里 `#### 标题` 一致的标签
-    note_blocks: Dict[str, List[Dict[str, str]]] = {}
-    for entry in (report.get("science") or {}).get("opt") or []:
-        note = notes.get(str(entry.get("task_id")) or "", {})
-        entry["analysis_note"] = note.get("analysis_note", "")
-        entry["paper_note"] = note.get("paper_note", "")
-        note_blocks.setdefault(str(entry.get("task_name") or ""), []).append(
-            {"label": "", **{k: entry[k] for k in ("analysis_note", "paper_note")}}
-        )
-    for entry in (report.get("science") or {}).get("neb") or []:
-        note = notes.get(str(entry.get("task_id")) or "", {})
-        entry["analysis_note"] = note.get("analysis_note", "")
-        entry["paper_note"] = note.get("paper_note", "")
-        note_blocks.setdefault(str(entry.get("task_name") or ""), []).append(
-            {"label": "", **{k: entry[k] for k in ("analysis_note", "paper_note")}}
-        )
-    for path in (report.get("science") or {}).get("free_energy") or []:
-        entries: List[Dict[str, str]] = []
-        for structure in path.get("structures") or []:
-            note = notes.get(str(structure.get("opt_task_id")) or "", {})
-            structure["analysis_note"] = note.get("analysis_note", "")
-            structure["paper_note"] = note.get("paper_note", "")
-            if note.get("analysis_note") or note.get("paper_note"):
-                entries.append(
-                    {
-                        "label": f"结构 {structure.get('structure_label')}",
-                        "analysis_note": structure["analysis_note"],
-                        "paper_note": structure["paper_note"],
-                    }
-                )
-        if entries:
-            note_blocks.setdefault(str(path.get("group_name") or ""), []).extend(entries)
-    report["note_blocks"] = note_blocks
+    # 报告注解（结果分析 / 论文参考）：统一入口见 attach_report_notes（生成时 / 详情 / 导出前都调）
+    attach_report_notes(report, report_id)
     # 规范化 AI 视图（2026-10-12）：只加字段，既有结构不动；规则见 report_schema
     try:
         from ai_view import build_ai_view

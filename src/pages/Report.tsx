@@ -68,6 +68,37 @@ interface ReportWorkload {
   eta_at: string | null;
 }
 
+/** 报告注解面板的挂载点（2026-10-13）：**只在「重点科学结果分析」章节内**用 portal 渲染 */
+interface NoteTarget {
+  element: HTMLElement;
+  /** 注解 key：`type_opt` / `task_id` / `path:<group_id>` */
+  noteKey: string;
+  title: string;
+  hint?: string;
+  /** 只读汇总用的 note_blocks 标签（自由能路径 = 组名） */
+  summaryLabel?: string;
+}
+
+/**
+ * 注解的「类型级」落点（用户 2026-10-13 口径）：科学结果分析章节里 markdown `### 标题` → 注解 key。
+ * 电子结构子任务未完成，暂不提供；与后端 `report_builder.NOTE_TYPE_KEYS` 保持一致。
+ */
+const NOTE_TYPE_KEYS: Record<string, string> = {
+  结构优化: 'type_opt',
+  自由能路径: 'type_free_energy',
+  'NEB 过渡态': 'type_neb',
+};
+
+/**
+ * 标题纯文本：**排除运行时追加的「隐藏」按钮**（按钮挂在标题元素内部，
+ * 直接读 textContent 会带上"隐藏"两个字，导致第二轮起认不出标题、注解面板丢失）。
+ */
+function headingLabel(el: HTMLElement): string {
+  const clone = el.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('.report-hide-btn').forEach((btn) => btn.remove());
+  return (clone.textContent ?? '').trim();
+}
+
 /**
  * 智能报告（v0.7.0 重构）：以**单个项目**为报告单位。
  *
@@ -88,10 +119,10 @@ export default function Report() {
   const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
-  /** 报告注解（结果分析 / 论文参考）：key = task_id 或 section_<章节>（2026-10-12） */
+  /** 报告注解（结果分析 / 论文参考）：key = type_* / task_id / path:<组>（2026-10-13） */
   const [notes, setNotes] = useState<Record<string, ReportNote>>({});
-  /** 任务块里的注解面板挂载点（<h5> 块尾），用 portal 渲染 */
-  const [noteAnchors, setNoteAnchors] = useState<Record<string, HTMLElement>>({});
+  /** 注解面板挂载点（只在「重点科学结果分析」章节内），用 portal 渲染 */
+  const [noteTargets, setNoteTargets] = useState<Record<string, NoteTarget>>({});
   /** 隐藏的章节 / 元素（持久化到 reports/edits/<id>.json） */
   const [hidden, setHidden] = useState<string[]>([]);
   /** 表格里「注」按钮打开的编辑弹窗 */
@@ -255,19 +286,36 @@ export default function Report() {
     [detail?.meta.report_id],
   );
 
-  /** 任务块标签（= markdown 里 #### 标题）→ 注解 key：opt/neb 任务用 task_id；自由能路径用 path:<组名> */
-  const labelToTaskId = useMemo(() => {
-    const map: Record<string, string> = {};
-    const science = (detail?.structured as { science?: Record<string, any[]> } | undefined)?.science;
-    for (const key of ['opt', 'neb']) {
-      for (const item of (science?.[key] ?? []) as { task_id?: string; task_name?: string }[]) {
-        if (item?.task_name && item?.task_id) map[String(item.task_name)] = String(item.task_id);
-      }
+  /** 注解落点（用户 2026-10-13 口径，只在「重点科学结果分析」章节内）：
+   *  - 类型级一条总的：结构优化 / 自由能路径 / NEB 过渡态（电子结构暂不提供）；
+   *  - 子项级：结构优化的每个任务、NEB 的每个组 = `task_id`；自由能路径的每个组 = `path:<group_id>`。
+   *  值里的 `label` 是 markdown 里 `#### 标题`（页面上是 <h6>），用来找挂载点。
+   */
+  const notePlan = useMemo(() => {
+    const science =
+      (detail?.structured as { science?: Record<string, any> } | undefined)?.science ?? {};
+    const items: Record<string, { key: string; title: string; hint: string; summaryLabel?: string }> = {};
+    const opt = (science.opt ?? []) as { task_id?: string; task_name?: string }[];
+    const neb = (science.neb ?? []) as { task_id?: string; task_name?: string }[];
+    const paths = (science.free_energy ?? []) as { group_id?: string; group_name?: string }[];
+    for (const item of [...opt, ...neb]) {
+      if (!item?.task_name || !item?.task_id) continue;
+      items[String(item.task_name)] = {
+        key: String(item.task_id),
+        title: `${item.task_name} · 结果分析与论文参考`,
+        hint: '这一条只跟本任务绑定',
+      };
     }
-    for (const path of (science?.free_energy ?? []) as { group_name?: string }[]) {
-      if (path?.group_name) map[String(path.group_name)] = `path:${path.group_name}`;
+    for (const path of paths) {
+      if (!path?.group_name) continue;
+      items[String(path.group_name)] = {
+        key: `path:${path.group_id ?? path.group_name}`,
+        title: `${path.group_name} · 结果分析与论文参考`,
+        hint: '自由能路径按组一条（组内各结构可在下表里单独点「注」）',
+        summaryLabel: String(path.group_name),
+      };
     }
-    return map;
+    return items;
   }, [detail]);
 
   const noteBlocks = detail?.note_blocks ?? {};
@@ -289,45 +337,78 @@ export default function Report() {
     [visibleSections, detail],
   );
 
-  /** 渲染后在每个任务块（<h5> 起 → 下一个 h5/hr/h2 前）末尾放一个面板挂载点 */
+  /** 渲染后给注解找挂载点：**只在「重点科学结果分析」章节内**
+   *  - 类型标题（### → <h5>）：挂载点插在标题正下方（该类型"总的"一条）；
+   *  - 子项标题（#### → <h6>）：挂载点插在该子块末尾（每个任务/组一条）。
+   */
   useEffect(() => {
     const root = contentRef.current;
     if (!root) return;
-    const anchors: Record<string, HTMLElement> = {};
-    root.querySelectorAll('section[data-report-section]').forEach((section: Element) => {
-      const sectionKey = section.getAttribute('data-report-section') ?? '';
-      const body = section.querySelector('.report-markdown');
-      if (!body) return;
+    const targets: Record<string, NoteTarget> = {};
+    const section = root.querySelector('section[data-report-section="science"]');
+    const body = section?.querySelector('.report-markdown') as HTMLElement | null;
+    if (body) {
       const children = Array.from(body.children) as HTMLElement[];
-      children.forEach((el, index) => {
-        if (el.tagName !== 'H5') return;
-        const label = (el.textContent ?? '').trim();
-        if (!label) return;
-        const anchorKey = `${sectionKey}:task:${label}`;
+      /** 找/建挂载点：按 data-note-anchor 幂等（effect 每次渲染都会跑一遍） */
+      const ensureAnchor = (anchorKey: string, index: number, mode: 'after' | 'end') => {
         let anchor = body.querySelector(
           `[data-note-anchor="${anchorKey.replace(/"/g, '')}"]`,
         ) as HTMLElement | null;
-        if (!anchor) {
-          anchor = document.createElement('div');
-          anchor.className = 'report-note-anchor';
-          anchor.setAttribute('data-note-anchor', anchorKey);
-          // 块结束 = 下一个 H5 / HR / H2 之前；到章节末尾就追加在最后
-          let cursor = index + 1;
-          let endEl: Element | null = null;
-          while (cursor < children.length) {
-            const tag = children[cursor].tagName;
-            if (tag === 'H5' || tag === 'HR' || tag === 'H2') {
-              endEl = children[cursor];
-              break;
-            }
-            cursor += 1;
-          }
-          if (endEl) endEl.before(anchor);
-          else body.append(anchor);
+        if (anchor) return anchor;
+        anchor = document.createElement('div');
+        anchor.className = 'report-note-anchor';
+        anchor.setAttribute('data-note-anchor', anchorKey);
+        if (mode === 'after') {
+          children[index].after(anchor);
+          return anchor;
         }
-        anchors[anchorKey] = anchor;
+        // 块结束 = 下一个同级标题 / HR 之前；到章节末尾就追加在最后
+        let cursor = index + 1;
+        let endEl: Element | null = null;
+        while (cursor < children.length) {
+          const tag = children[cursor].tagName;
+          if (tag === 'H5' || tag === 'H6' || tag === 'HR' || tag === 'H2') {
+            endEl = children[cursor];
+            break;
+          }
+          cursor += 1;
+        }
+        if (endEl) endEl.before(anchor);
+        else body.append(anchor);
+        return anchor;
+      };
+
+      // 类型级（总的）：结构优化 / 自由能路径 / NEB 过渡态；电子结构不提供
+      children.forEach((el, index) => {
+        if (el.tagName !== 'H5') return;
+        const label = headingLabel(el);
+        const key = NOTE_TYPE_KEYS[label];
+        if (!key) return;
+        const anchorKey = `science:type:${key}`;
+        targets[anchorKey] = {
+          element: ensureAnchor(anchorKey, index, 'after'),
+          noteKey: key,
+          title: `${label} · 结果分析与论文参考`,
+          hint: '这一条是该类型"总的"分析',
+        };
       });
-    });
+
+      // 子项级：结构优化每个任务 / NEB 每个组 / 自由能路径每个组
+      children.forEach((el, index) => {
+        if (el.tagName !== 'H6') return;
+        const label = headingLabel(el);
+        const plan = notePlan[label];
+        if (!plan) return;
+        const anchorKey = `science:item:${plan.key}`;
+        targets[anchorKey] = {
+          element: ensureAnchor(anchorKey, index, 'end'),
+          noteKey: plan.key,
+          title: plan.title,
+          hint: plan.hint,
+          summaryLabel: plan.summaryLabel,
+        };
+      });
+    }
     // 元素级隐藏：章节 / 任务块 / 图（三类），并给可隐藏元素挂「隐藏」按钮
     root.querySelectorAll('section[data-report-section]').forEach((section: Element) => {
       const sectionKey = section.getAttribute('data-report-section') ?? '';
@@ -338,7 +419,7 @@ export default function Report() {
       let figureIndex = 0;
       children.forEach((el) => {
         if (el.tagName === 'H5') {
-          const label = (el.textContent ?? '').trim();
+          const label = headingLabel(el);
           const key = `task:${sectionKey}:${label}`;
           el.classList.toggle('report-hidden', hidden.includes(key));
           if (!el.querySelector('.report-hide-btn')) {
@@ -397,8 +478,8 @@ export default function Report() {
         chip.after(btn);
       },
     );
-    setNoteAnchors(anchors);
-  }, [renderedSections, notes, hidden, toggleHidden]);
+    setNoteTargets(targets);
+  }, [renderedSections, notes, hidden, toggleHidden, notePlan]);
 
 
   /** 点「结构 N / 映像 N」→ 打开对应的原生 <dialog> 三视图弹窗；点遮罩/× 关闭。 */
@@ -786,64 +867,28 @@ export default function Report() {
                           onErrorCapture={handleReportAssetError}
                           dangerouslySetInnerHTML={{ __html: s.html }}
                         />
-                        {/* 模块级注解（结果分析 / 论文参考） */}
-                        <ReportNotePanel
-                          reportId={detail?.meta.report_id ?? ''}
-                          noteKey={`section_${s.key}`}
-                          title={`本章结果分析与论文参考（${s.title}）`}
-                          entries={[notes[`section_${s.key}`] ?? { analysis_note: '', paper_note: '' }]}
-                          onSaved={setNotes}
-                        />
                       </section>
                     ))}
-                    {/* 任务级注解面板：渲染到每个任务块（<h5> 起、到下一个 h5/hr 前）末尾 */}
-                    {Object.entries(noteAnchors).map(([anchorKey, element]) => {
-                      const label = anchorKey.split(':task:')[1] ?? '';
-                      const entries = noteBlocks[label] ?? [];
-                      const noteKey = labelToTaskId[label] ?? '';
-                      if (!noteKey) {
-                        // 自由能路径块：只读汇总各中间体的注解（各结构在表格行里点「注」编辑）
-                        const filled = entries.filter((e) => e.analysis_note || e.paper_note);
-                        if (filled.length === 0) return null;
-                        return createPortal(
-                          <details className="notes-panel">
-                            <summary>
-                              {label} · 结果分析与论文参考
-                              <span className="notes-panel__state">{filled.length} 个结构已填写</span>
-                            </summary>
-                            <div className="notes-body">
-                              {filled.map((entry, index) => (
-                                <div key={`${entry.label ?? ''}-${index}`}>
-                                  {entry.label ? <h4>{entry.label}</h4> : null}
-                                  {entry.analysis_note ? (
-                                    <>
-                                      <p className="notes-label">结果分析描述</p>
-                                      <p>{entry.analysis_note}</p>
-                                    </>
-                                  ) : null}
-                                  {entry.paper_note ? (
-                                    <>
-                                      <p className="notes-label">论文写作参考</p>
-                                      <p>{entry.paper_note}</p>
-                                    </>
-                                  ) : null}
-                                </div>
-                              ))}
-                            </div>
-                          </details>,
-                          element,
-                          anchorKey,
-                        );
-                      }
+                    {/* 注解面板（结果分析 / 论文参考）：只在「重点科学结果分析」章节内的挂载点上 */}
+                    {Object.entries(noteTargets).map(([anchorKey, target]) => {
+                      const note = notes[target.noteKey] ?? { analysis_note: '', paper_note: '' };
+                      const readOnly = target.summaryLabel
+                        ? (noteBlocks[target.summaryLabel] ?? []).filter(
+                            (e) => e.label && (e.analysis_note || e.paper_note),
+                          )
+                        : [];
                       return createPortal(
                         <ReportNotePanel
                           reportId={detail?.meta.report_id ?? ''}
-                          noteKey={noteKey}
-                          title={`${label} · 结果分析与论文参考`}
-                          entries={entries}
+                          noteKey={target.noteKey}
+                          title={target.title}
+                          hint={target.hint}
+                          analysis={note.analysis_note}
+                          paper={note.paper_note}
+                          readOnly={readOnly}
                           onSaved={setNotes}
                         />,
-                        element,
+                        target.element,
                         anchorKey,
                       );
                     })}

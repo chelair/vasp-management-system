@@ -202,6 +202,13 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
       { key: 'LWAVE', label: 'LWAVE', ...BOOL, hint: '是否写 WAVECAR', defaultValue: '.FALSE.' },
       { key: 'LCHARG', label: 'LCHARG', ...BOOL, hint: '是否写 CHGCAR', defaultValue: '.FALSE.' },
       { key: 'LAECHG', label: 'LAECHG', ...BOOL, hint: '是否写 AECCAR（Bader 分析）', defaultValue: '.FALSE.' },
+      {
+        key: 'LVHAR',
+        label: 'LVHAR',
+        ...BOOL,
+        hint: '是否写 LOCPOT 的静电势（功函数/真空能级分析用）',
+        defaultValue: '.FALSE.',
+      },
       { key: 'LVTOT', label: 'LVTOT', ...BOOL, hint: '是否写 LOCPOT（静电势）', defaultValue: '.FALSE.' },
       {
         key: 'LORBIT',
@@ -216,20 +223,13 @@ export const INCAR_CATEGORIES: IncarCategory[] = [
           { value: '12', label: '12', hint: '更多轨道分解' },
         ],
       },
-      // 2026-10-12 用户要求补：NEDOS（DOS 网格）与 LVHAR（写 LOCPOT，功函数用）
+      // 2026-10-12 用户要求补：NEDOS（DOS 网格）
       {
         key: 'NEDOS',
         label: 'NEDOS',
         type: 'number',
         hint: 'DOS 能量网格点数（PDOS/DOSCAR 用，3000 已足够细）；留空即不写入 INCAR',
         defaultValue: '',
-      },
-      {
-        key: 'LVHAR',
-        label: 'LVHAR',
-        ...BOOL,
-        hint: '是否写 LOCPOT 的静电势（功函数/真空能级分析用）',
-        defaultValue: '.FALSE.',
       },
     ],
   },

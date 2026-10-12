@@ -244,6 +244,27 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ## 7. 近期重要改动记录（v0.4.1 → v0.9.41）
 
+- 2026-10-13（用户："每个任务要有一份 task_context，AI 决策时只读这个"）：**新增任务上下文**。
+  审查结论（先审查后动手）：全仓库没有 `task_context`；六类素材散在四处 —— 任务元数据在
+  `data/projects.json`、巡检多轮历史在 `data/checks/`（单任务实测 104 轮）、动作历史在
+  `data/audit/actions.jsonl`（单任务 97 条）、文件摘要在 `<任务>/files/`（141 个目录里 INCAR 84 /
+  CONTCAR 90 / OUTCAR 61 / **result 仅 1**）、人工痕迹在 `input_state.changes` 等；最接近的
+  `GET /inspections/{task_id}` 只覆盖一半（只有最新一轮、没有动作/文件尾部）。
+  **实现**：① 归档下载集合追加 `result`（普通任务与 NEB 共享文件都加）；
+  ② 新增 `backend/task_files_summary.py`：归档同步完成后把 `files/OUTCAR`、`files/result` 各切
+  **尾部 4KB** 落到 `<任务>/reports/{outcar_tail,result_tail}.txt`（NEB 另按映像 `outcar_tail_<NN>.txt`），
+  **不额外走 SSH**；③ 审计 `username` → `actor` + `actor_kind`（user/automation/system）；
+  ④ `checks_store.collect_task_history(task_id, limit, scan_files=1200)`：最近 N 轮巡检
+  （归档已 1541 份，停跑两周的任务要往前扫约 700 份才命中，实测 0.01–0.24s）；
+  ⑤ 新任务补 `created_at`（`storage.add_project`；老任务为 null）；
+  ⑥ 新增 `backend/task_context.py::build_task_context/load_task_context`（纯本地、不发 SSH、
+  指纹缓存 `<任务>/reports/task_context.json`）+ 只读接口 **`GET /api/jobs/tasks/{id}/context`**
+  （`n_checks` / `n_actions` / `refresh`），结构含 contract/project/task/input/checks/actions/files/manual/hints，
+  命名/单位/时间沿用 2026-10-12 契约（snake_case、状态带族名、eV、`+08:00`），
+  `hints.missing` 明确写出缺什么（如"本地没有 OUTCAR（先同步/归档）"）。
+  实测：Fe3S4（停跑任务）5 轮巡检 + 10 条动作 + 4KB OUTCAR 尾部 + 参数改动台账，缓存命中 0.007s；
+  PAYH3_TS2_neb（运行中）`created_at`/actor_kind/hints 正常。**回归**：其它接口不变，前端零改动。
+
 - 2026-10-12（用户："修完再修问题.md"）：处理 `问题.md` 三条 ——
   **② KPOINTS 页"未检测到 POSCAR"** ✅：磁盘加载从"读过一次就跳过"改成"读过**且拿到结构**才跳过"，
   结构来源补 `CONTCAR` 兜底，KPOINTS 面板加自愈（父级没给结构时自己按 `files/POSCAR → files/CONTCAR` 读一次）；

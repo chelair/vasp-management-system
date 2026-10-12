@@ -60,6 +60,37 @@ def collect_results() -> Dict[str, Dict[str, Any]]:
     return merged
 
 
+def collect_task_history(task_id: str, limit: int = 5, scan_files: int = 1200) -> List[Dict[str, Any]]:
+    """取某个任务最近 `limit` 轮**巡检原始条目**（新 → 旧），供 AI 任务上下文用。
+
+    与 `collect_results()`（合并成"最新一条"）不同：这里要的是**历史序列**
+    （能量/力/收敛/错误标志随轮次的变化）。只扫最近 `scan_files` 份归档，避免全量读；
+    停跑较久的任务其记录可能在更早的归档里（2026-10-13 实测：归档已 1541 份，停跑两周的任务要往前扫约 700 份才命中）。
+    """
+    if not CHECKS_DIR.is_dir() or not task_id or limit <= 0:
+        return []
+    files = sorted(
+        CHECKS_DIR.glob("check_results_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[: max(1, scan_files)]
+    history: List[Dict[str, Any]] = []
+    for path in files:
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - 单个归档损坏跳过
+            continue
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if entry.get("task_id") != task_id:
+                continue
+            history.append(entry)
+            if len(history) >= limit:
+                return history
+    return history
+
+
 #: `collect_results()` 的短缓存：data/checks 有 20+MB，作业管理/总览每次请求都全量读代价太高。
 #: 巡检结束后调用 `invalidate_cache()` 立即失效。
 _MERGED_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}

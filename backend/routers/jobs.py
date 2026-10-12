@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -1574,6 +1574,22 @@ def _schedule_archive_outputs(
                     structure_images.schedule(project_name, task2)
             except Exception as e:  # noqa: BLE001 - 渲染调度失败不影响归档
                 _audit_log(project_name, task_id, "", "structure-images", f"FAILED: {e}")
+            # 文件摘要（OUTCAR / result 尾部）：归档刚把文件拉回本地，这时切一份小片段给 AI 上下文用
+            try:
+                from task_files_summary import refresh_task_file_summaries
+
+                db3 = load_db()
+                project3 = next(
+                    (p for p in db3.get("projects", []) if p.get("name") == project_name), None
+                )
+                task3 = next(
+                    (t for t in (project3 or {}).get("tasks", []) if t.get("task_id") == task_id),
+                    None,
+                )
+                if project3 is not None and task3 is not None:
+                    refresh_task_file_summaries(project3, task3)
+            except Exception as e:  # noqa: BLE001 - 摘要失败不影响归档
+                _audit_log(project_name, task_id, "", "file-summaries", f"FAILED: {e}")
         except permissions.PermissionDenied:
             raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception as e:  # noqa: BLE001 - 后台下载失败只记审计
@@ -1582,6 +1598,33 @@ def _schedule_archive_outputs(
     threading.Thread(
         target=worker, daemon=True, name=f"archive-outputs-{task_id}"
     ).start()
+
+
+@router.get("/tasks/{task_id}/context")
+def task_context(
+    task_id: str,
+    n_checks: int = Query(default=5, ge=0, le=50, description="最近 N 轮巡检"),
+    n_actions: int = Query(default=10, ge=0, le=200, description="最近 N 条动作"),
+    refresh: bool = Query(default=False, description="true 时忽略缓存重算"),
+):
+    """**任务上下文（AI 决策唯一入口）**：元数据 + 最近 N 轮巡检 + 最近 N 条动作 +
+    文件摘要（INCAR 关键参数 / OUTCAR 尾部 / result 尾部）+ 人工痕迹 +
+    项目级 calc_description / expected_results（2026-10-13 新增，只读、按需计算、带指纹缓存）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        from task_context import load_task_context
+
+        context = load_task_context(
+            project, task, n_checks=n_checks, n_actions=n_actions, refresh=refresh
+        )
+        return ok("查询成功", context)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"构建任务上下文失败：{e}"))
 
 
 @router.get("/tasks/{task_id}/input")

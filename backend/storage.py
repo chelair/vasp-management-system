@@ -152,8 +152,10 @@ def add_project(db: Dict[str, Any], project_data: Dict[str, Any]) -> Dict[str, A
     ts = _allocate_unique_ts(db, len(tasks))
     project = dict(project_data)
     project["project_id"] = f"proj_{ts}"
+    # 2026-10-13：新任务补 created_at（AI 任务上下文要用；老任务没有该字段，读的时候按 null 处理）
+    created_at = project_data.get("created_at") or datetime.now().isoformat(timespec="seconds")
     project["tasks"] = [
-        {**task, "task_id": f"task_{ts}_{index}"}
+        {**task, "task_id": f"task_{ts}_{index}", "created_at": created_at}
         for index, task in enumerate(tasks, start=1)
     ]
     db["projects"].append(project)

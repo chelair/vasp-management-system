@@ -33,9 +33,10 @@ CIF_FILES = ("POSCAR", "CONTCAR")
 #: 归档（关闭任务）时静默拉回本地的文件：普通任务取"最新计算目录"下的这些文件
 #: （2026-09-22 用户口径：CONTCAR、INCAR、KPOINTS、POSCAR、OUTCAR、OSZICAR；
 #:  2026-09-23 追加 POTCAR）
-ARCHIVE_OUTPUT_FILES = ("CONTCAR", "INCAR", "KPOINTS", "POSCAR", "POTCAR", "OUTCAR", "OSZICAR")
+#: 2026-10-13：追加 `result`（vaspkit/后处理结果摘要，AI 任务上下文要用；文件很小）
+ARCHIVE_OUTPUT_FILES = ("CONTCAR", "INCAR", "KPOINTS", "POSCAR", "POTCAR", "OUTCAR", "OSZICAR", "result")
 #: NEB 任务归档：共享文件放 `files/`，各映像 `00..NN` 的这四个文件放 `files/<映像号>/`
-ARCHIVE_NEB_SHARED = ("INCAR", "KPOINTS", "POTCAR")
+ARCHIVE_NEB_SHARED = ("INCAR", "KPOINTS", "POTCAR", "result")  # 2026-10-13 追加 result
 ARCHIVE_NEB_IMAGE_FILES = ("POSCAR", "CONTCAR", "OUTCAR", "OSZICAR")
 
 

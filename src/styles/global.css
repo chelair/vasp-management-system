@@ -4261,7 +4261,15 @@ body.is-atom-selecting * {
 .report-list-card .ant-card-body {
   max-height: calc(100vh - 240px);
   overflow-y: auto;
+  /* 左侧列表**单独滑动**：滚到列表底/顶不带动整页（2026-10-13） */
+  overscroll-behavior: contain;
   padding-top: 8px;
+}
+
+/* 左侧列表吸顶：右侧报告很长时，列表仍留在视野里，两栏各自滚动 */
+.report-list-card {
+  position: sticky;
+  top: 12px;
 }
 
 .report-list {
@@ -4835,6 +4843,11 @@ button.report-chip {
 @media (max-width: 1100px) {
   .report-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* 单栏时取消吸顶（否则列表会盖住下面的报告正文） */
+  .report-list-card {
+    position: static;
   }
 
   .report-toc {

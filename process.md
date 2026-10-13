@@ -331,6 +331,21 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   打印不受影响（默认 `display:none`）。验证：`tsc`+`npm run build` 通过；导出 43.7MB 的 Ag 报告里
   `.img-lightbox` / `XMLSerializer` / `cursor: zoom-in` / 252 张 base64 PNG 均可点；导出脚本
   `node --check` 语法通过。
+  ⑩ **`待办.md` 的 DOS 提取脚本（2026-10-13，独立任务，不在 web 系统内）**：写了
+  `scripts/dos_extract.py`（+ `dos_extract_test.py` 测试、`dos_json_summary.py` 本地读取示例、
+  `dos_extract_readme.md`），在集群上实测 4 个算例后**部署到
+  `/data/gpfs03/mdye/tools/vasp_skill/dos_extract/`**（与 batch_check.py 同级的工具目录，
+  `chmod +x` + requirements.txt + README，冒烟测试通过）。要点：
+  ① 自动判断自旋/投影/细轨道（以 DOSCAR 数据列 + INCAR ISPIN/LORBIT + PROCAR 为准）；
+  ② 调 VASPKIT 1.3.5 的 `-task 111`（总）与 `-task 113`（按**元素符号**投影，列含
+  s/py/pz/px/dxy/dyz/dz2/dxz/dx2/tot），在**临时目录 + 软链接**里跑，不污染计算目录；
+  ③ **踩到的坑**：VASPKIT 1.3.5 的 111 也要求 PROCAR（没 PROCAR 直接报错）→ 总 DOS 改为直接读
+  DOSCAR 总块兜底；VASPKIT 的能量轴是 `E−Efermi`、DOWN 是负值 → 脚本统一转成**绝对能量 + 正值**
+  （metadata 里写明约定）；部分 DOS 的 EMIN 首行按用户要求**丢弃**（总 DOS 默认不丢，保持点数=NEDOS）；
+  ④ 输出 JSON：`metadata`（含 `energy_grid/partial_energy_grid/efermi/has_*/notes/交叉校验`）+
+  `total_dos` + `element_dos` + `orbital_dos`（含合成 p、d），本地 `json.load()` 即可用；
+  ⑤ 测试：4 个算例（非自旋仅总/自旋+投影/自旋+细轨道/非自旋+投影）逐项校验全绿，
+  随机抽点与 DOSCAR/`.dat` 比对最大差 1e-15~5e-06，并做了"下载到本地再解析"验证。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

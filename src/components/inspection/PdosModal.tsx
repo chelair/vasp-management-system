@@ -289,6 +289,26 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
 
   const option = useMemo(() => {
     const efermi = meta?.efermi ?? 0;
+    /** 每条曲线的 x 序列（相对 E_F），tooltip 自己找最近点要用 */
+    const xsOf = (curve: CurveEntry) => {
+      const n = curve.values.length;
+      const xs = new Array<number>(n);
+      for (let i = 0; i < n; i += 1) xs[i] = xAt(curve, i) - efermi;
+      return xs;
+    };
+    /** 指针 x 上该曲线最近的点（曲线 x 单调，二分即可） */
+    const nearestIndex = (xs: number[], x: number) => {
+      if (!xs.length) return -1;
+      let lo = 0;
+      let hi = xs.length - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (xs[mid] < x) lo = mid;
+        else hi = mid;
+      }
+      return Math.abs(xs[lo] - x) <= Math.abs(xs[hi] - x) ? lo : hi;
+    };
+    const tooltipRows = curves.map((curve) => ({ curve, xs: xsOf(curve) }));
     const series = curves.map((curve) => {
       const n = curve.values.length;
       const data: [number, number][] = [];
@@ -336,26 +356,26 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
         order: 'valueDesc' as const,
         transitionDuration: 0,
         extraCssText: 'max-height: 260px; overflow: auto; max-width: 340px;',
-        // 自定义卡片：① 顶部显示当前能量；② **把该点的每条可见曲线都列出来**
-        // （所有曲线已对齐到同一 x 网格，不会再有"只有部分曲线"）；
-        // ③ 镜像布局下自旋向下已取负，这里显示回绝对值。
+        // 自定义卡片：**不依赖 ECharts 的"按 x 精确匹配取点"**（实测同一轨道 ↑/↓ 两条
+        // 也会因为浮点/网格差异只列出一条）—— 这里拿指针的 x，自己对**每条可见曲线**
+        // 找最近点再列出来，所以一定列全；镜像布局下自旋向下显示回绝对值。
         formatter: (params: unknown) => {
-          const list = (Array.isArray(params) ? params : [params]) as {
-            axisValue?: number;
-            value?: [number, number];
-            seriesName?: string;
-            marker?: string;
-          }[];
-          if (!list.length) return '';
-          const x = list[0]?.axisValue ?? list[0]?.value?.[0];
+          const list = (Array.isArray(params) ? params : [params]) as { axisValue?: number }[];
+          const x = list[0]?.axisValue;
+          if (x == null) return '';
           const head =
-            x == null ? '' : `<div style="font-weight:600;margin-bottom:4px">E − E_F = ${Number(x).toFixed(3)} eV</div>`;
-          const rows = list.map((item) => {
-            const raw = Array.isArray(item.value) ? Number(item.value[1]) : Number(item.value);
-            const shown = mirror && String(item.seriesName ?? '').includes('↓') ? Math.abs(raw) : raw;
-            return `${item.marker ?? ''} ${item.seriesName ?? ''}: ${
-              Number.isFinite(shown) ? shown.toFixed(4) : '—'
-            }`;
+            `<div style="font-weight:600;margin-bottom:4px">E − E_F = ${Number(x).toFixed(3)} eV</div>`;
+          const rows = tooltipRows.map(({ curve, xs }) => {
+            const index = nearestIndex(xs, Number(x));
+            // 指针落在该曲线能量范围之外（例如投影少了 EMIN 首行）就显示 ——，别硬取端点值
+            const inRange =
+              index >= 0 && Math.abs((xs[index] ?? 0) - Number(x)) <= 0.05;
+            const raw = inRange ? curve.values[index] : NaN;
+            const shown = mirror && curve.spin === 'down' ? Math.abs(raw) : raw;
+            const dot =
+              `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;` +
+              `background:${curve.color};margin-right:6px"></span>`;
+            return `${dot}${curve.name}: ${Number.isFinite(shown) ? shown.toFixed(4) : '—'}`;
           });
           return head + rows.join('<br/>');
         },

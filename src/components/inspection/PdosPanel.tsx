@@ -231,12 +231,6 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     return out;
   }, [view, checkedKeys, spin]);
 
-  /** 实际画出来的曲线：点了图例芯片"只看一条"时只留那一条 */
-  const visibleCurves = useMemo(
-    () => (isolated ? curves.filter((curve) => curve.id === isolated) : curves),
-    [curves, isolated],
-  );
-
   /**
    * 统一的 x 轴：**所有曲线都用「总态密度」那条能量网格**。
    *
@@ -268,10 +262,10 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   );
 
   const range = useMemo(() => {
-    if (!autoRange || visibleCurves.length === 0) return { min: xMin, max: xMax };
+    if (!autoRange || curves.length === 0) return { min: xMin, max: xMax };
     let min = Infinity;
     let max = -Infinity;
-    visibleCurves.forEach((curve) => {
+    curves.forEach((curve) => {
       const n = curve.values.length;
       for (let i = 0; i < n; i += 1) {
         const x = xAt(curve, i) - (meta?.efermi ?? 0);
@@ -284,7 +278,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     }
     const pad = (max - min) * 0.02;
     return { min: min - pad, max: max + pad };
-  }, [autoRange, visibleCurves, view, meta, xMin, xMax, xAt]);
+  }, [autoRange, curves, view, meta, xMin, xMax, xAt]);
 
   const option = useMemo(() => {
     const efermi = meta?.efermi ?? 0;
@@ -307,8 +301,13 @@ export default function PdosPanel({ taskId, taskName }: Props) {
       }
       return Math.abs(xs[lo] - x) <= Math.abs(xs[hi] - x) ? lo : hi;
     };
-    const tooltipRows = visibleCurves.map((curve) => ({ curve, xs: xsOf(curve) }));
-    const series = visibleCurves.map((curve) => {
+    // tooltip 仍然列**全部**曲线（隔离只是压暗，不隐藏数据），聚焦的那条排最前
+    const tooltipRows = [...curves]
+      .sort((a, b) => (a.id === isolated ? -1 : b.id === isolated ? 1 : 0))
+      .map((curve) => ({ curve, xs: xsOf(curve) }));
+    /** 参考线该挂哪条曲线（挂聚焦的那条，或第一条） */
+    const focusIndex = Math.max(0, curves.findIndex((curve) => curve.id === isolated));
+    const series = curves.map((curve) => {
       const n = curve.values.length;
       const data: [number, number][] = [];
       let maxAbs = 0;
@@ -317,16 +316,20 @@ export default function PdosPanel({ taskId, taskName }: Props) {
         maxAbs = Math.max(maxAbs, Math.abs(value));
         data.push([xAt(curve, i) - efermi, mirror && curve.spin === 'down' ? -value : value]);
       }
+      const dimmed = isolated !== null && curve.id !== isolated;
       return {
         name: curve.name,
         type: 'line' as const,
         showSymbol: false,
         sampling: 'lttb' as const,
+        // 点图例"只看这条"时，其它曲线**压暗**（保留颜色、降低不透明度）而不是隐藏
         lineStyle: {
           width: LEVEL_WIDTH[curve.level] ?? 1.5,
           type: curve.dashed ? ('dashed' as const) : ('solid' as const),
+          opacity: dimmed ? 0.18 : 1,
         },
-        itemStyle: { color: curve.color },
+        itemStyle: { color: curve.color, opacity: dimmed ? 0.18 : 1 },
+        z: dimmed ? 1 : 3,
         // 不再用 ECharts 的 focus:'series'（hover 会把其它曲线压暗/隐藏，用户明确不要）；
         // "只看一条"改由点击图例芯片实现（见 isolated）
         data,
@@ -415,7 +418,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
       //   · 费米能级：x=0 的竖直虚线（可按底部开关关掉）
       //   · 纵轴 0：一条水平基线（镜像布局的正负分界，固定画）
       series: series.map(({ __maxAbs, ...rest }, index) =>
-        index === 0
+        index === focusIndex
           ? {
               ...rest,
               markLine: {
@@ -441,7 +444,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
           : rest,
       ),
     };
-  }, [visibleCurves, view, meta, mirror, spin, range, showZero, xAt]);
+  }, [curves, isolated, view, meta, mirror, spin, range, showZero, xAt]);
 
   const containerRef = useEcharts(option, [option], (instance) => {
     // 只保留实例（导出 PNG 用）；卸载时的 null 不回写 state，避免卸载后 setState

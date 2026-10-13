@@ -196,15 +196,21 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     if (!view) return [];
     const picked = new Set(checkedKeys);
     const out: CurveEntry[] = [];
-    const walk = (node: PdosTreeNode) => {
+    /** 菜单节点是不是"元素"那一行（`el:Fe`；`el:Fe:d` 是轨道，不算） */
+    const isElementNode = (node: PdosTreeNode) =>
+      node.key.startsWith('el:') && !node.key.slice(3).includes(':');
+    const walk = (node: PdosTreeNode, elementLabel = '') => {
+      const element = isElementNode(node) ? node.label : elementLabel;
       if (picked.has(node.key)) {
         for (const curve of node.curves ?? []) {
           const seriesRef = view.series[curve.id];
           if (!seriesRef) continue;
+          // 图例/提示里带上元素，例如 `Al p`（方向投影用方向名：`Fe dxy`）
+          const head = element && !isElementNode(node) ? `${element} ${node.label}` : node.label;
           out.push({
             id: curve.id,
             nodeKey: node.key,
-            name: `${node.label}${spin ? ` ${SPIN_LABEL[curve.spin] ?? ''}` : ''}`,
+            name: `${head}${spin ? ` ${SPIN_LABEL[curve.spin] ?? ''}` : ''}`,
             spin: curve.spin,
             color: curve.color || '#5B8DEF',
             level: node.level,
@@ -214,9 +220,9 @@ export default function PdosPanel({ taskId, taskName }: Props) {
           });
         }
       }
-      (node.children ?? []).forEach(walk);
+      (node.children ?? []).forEach((child) => walk(child, element));
     };
-    (view.tree ?? []).forEach(walk);
+    (view.tree ?? []).forEach((node) => walk(node));
     return out;
   }, [view, checkedKeys, spin]);
 
@@ -380,6 +386,12 @@ export default function PdosPanel({ taskId, taskName }: Props) {
         nameLocation: 'middle' as const,
         nameRotate: 90,
         nameGap: 42,
+        position: 'left' as const,
+        // ⚠️ 镜像布局下 y 轴跨正负，默认 `onZero` 会把**轴线画到 x=0 处**（图表正中间，
+        // 看起来像"0 eV 处多了一条坐标轴"）—— 关掉 onZero，轴线固定在最左端
+        axisLine: { show: true, onZero: false },
+        axisTick: { show: true, onZero: false },
+        axisLabel: { onZero: false },
         ...yAxis,
       },
       series: series.map(({ __maxAbs, ...rest }) => ({

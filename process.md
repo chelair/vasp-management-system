@@ -296,6 +296,12 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   把 LWAVE/LORBIT/NEDOS 带回来了）。已建的 `FS_Kaolin/ele/model2` 分块A/B 都以**远端最新内容**为基准
   清理并同步（分块B 的 `MAGMOM = 68*0` 是用户自己改的，保留），复核两边 `LCHARG=.TRUE. /
   ISTART=0 / ICHARG=2 / IBRION=-1`，输出参数计数 0。
+  ④ 总览「正在运行的作业」里分块作业显示成"未登记任务"：上一条把 `dashboard._task_index`
+  （**job_id → 项目/任务** 的映射）也一起按 `is_auxiliary_task` 过滤了，而分块在 LSF 里是真实作业
+  （`model2_diff1/2` 有 job_id），索引里没有就把项目标成未登记 → `_task_index` 恢复为只排除续算子任务
+  （续算子任务本来就不带 job_id，253 条实测全为空），分块保留；统计/风险/进度那几处仍按附属任务排除。
+  ⑤ 作业管理标签页空白：受控 Tabs 的 activeKey 残留在新任务不存在的标签页上（分块标签 / NEB 没有 POSCAR 页）
+  → `renderTaskDetail`、`EleDetail`、`NebGroupDetail` 都加了 key 集合校验回落。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

@@ -28,7 +28,7 @@ import checks_store
 from checks_store import CHECKS_DIR, list_runs, merged_results, to_frontend_rows
 from config import DATA_DIR, load_servers, load_settings
 from storage import load_db
-from task_paths import is_auxiliary_task
+from task_paths import is_auxiliary_task, is_continuation_task
 
 DASHBOARD_DIR = DATA_DIR / "dashboard"
 HISTORY_FILE = DASHBOARD_DIR / "core_history.json"
@@ -461,7 +461,10 @@ def _task_index(db: Dict[str, Any]) -> Tuple[Dict[str, Tuple[Dict, Dict]], Dict[
     by_name: Dict[str, Tuple[Dict, Dict]] = {}
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
-            if is_auxiliary_task(task):
+            # 这里只排除续算子任务（它们不单独登记作业号），差分电荷分块**要保留** ——
+            # 分块作业在 LSF 里是真实作业，缺了这条索引，总览「正在运行的作业」的
+            # 所属项目就会显示成"未登记任务"（2026-10-13 用户反馈 model2_diff1）。
+            if is_continuation_task(task):
                 continue
             job_id = str(task.get("job_id") or "").strip()
             if job_id:

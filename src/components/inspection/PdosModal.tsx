@@ -330,6 +330,12 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
       tooltip: {
         trigger: 'axis' as const,
         axisPointer: { type: 'cross' as const },
+        // 卡片**不能被画布裁掉**（勾选多条曲线时卡片很长，指针在底部时原来会露出画面外，
+        // 看起来像"只有部分曲线"）：限制在画布内 + 卡片自己滚动 + 数值多的排前面
+        confine: true,
+        order: 'valueDesc' as const,
+        transitionDuration: 0,
+        extraCssText: 'max-height: 260px; overflow: auto; max-width: 340px;',
         // 自定义卡片：① 顶部显示当前能量；② **把该点的每条可见曲线都列出来**
         // （所有曲线已对齐到同一 x 网格，不会再有"只有部分曲线"）；
         // ③ 镜像布局下自旋向下已取负，这里显示回绝对值。

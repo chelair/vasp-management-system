@@ -133,7 +133,11 @@ def _report_due() -> bool:
 
 
 def _run_auto_reports() -> None:
-    """为每个项目生成一份日报（单个项目失败不影响其他项目）。"""
+    """为每个**未关闭**项目生成一份日报（单个项目失败不影响其他项目）。
+
+    已关闭项目不再生成（2026-10-13 用户口径：关闭后没有新数据，重算只是白跑）；
+    需要的话仍可在报告页对单个已关闭项目手动点「生成报告」。
+    """
     from report_builder import build_report
     from report_store import save_report
     from storage import load_db
@@ -142,6 +146,8 @@ def _run_auto_reports() -> None:
         db = load_db()
         created, failed = 0, []
         for project in db.get("projects", []):
+            if project.get("closed"):
+                continue
             ref = str(project.get("project_id") or project.get("name") or "")
             if not ref:
                 continue

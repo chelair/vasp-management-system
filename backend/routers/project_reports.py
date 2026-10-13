@@ -33,12 +33,20 @@ router = APIRouter(prefix="/reports/project", tags=["project-reports"])
 
 
 def _project_refs(db, payload: dict) -> list:
-    """解析生成范围：project_ids / all。"""
+    """解析生成范围：project_ids / all。
+
+    `all=true`（「生成所有项目」/ 每日自动报告）**排除已关闭项目**（2026-10-13 用户要求）——
+    项目关闭后不再有新数据，重算只是白跑；单个项目仍可显式生成（`project_id`）。
+    """
     ids = payload.get("project_ids")
     if isinstance(ids, list) and ids:
         return [str(x) for x in ids]
     if payload.get("all"):
-        return [str(p.get("project_id")) for p in db.get("projects", [])]
+        return [
+            str(p.get("project_id"))
+            for p in db.get("projects", [])
+            if not p.get("closed")
+        ]
     if payload.get("project_id"):
         return [str(payload["project_id"])]
     return []
@@ -110,6 +118,12 @@ def generate_project_report(
                 permissions.ensure_project_owner(target, user)
             refs = [r for r in refs if str(r) in allowed_ids]
         if not refs:
+            if payload.get("all"):
+                # 请求了 all，但可见项目要么都已关闭、要么被权限过滤光了 —— 不算参数错误
+                return ok(
+                    "没有需要生成报告的项目（已关闭项目不计入「全部」）",
+                    {"reports": [], "failed": []},
+                )
             return JSONResponse(
                 status_code=400,
                 content=fail("请提供 project_id / project_ids，或设置 all=true 批量生成"),

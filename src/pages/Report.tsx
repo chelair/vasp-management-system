@@ -132,6 +132,8 @@ export default function Report() {
   const [tableNote, setTableNote] = useState<{ key: string; title: string } | null>(null);
   /** 图片查看器：点报告里任意一张结构图/图表 → 看原图（可缩放，桌面+手机） */
   const [imageViewer, setImageViewer] = useState<{ src: string; caption: string } | null>(null);
+  /** 「选择项目」下拉里的"已关闭项目"是否展开（默认折叠，2026-10-13） */
+  const [closedInSelectOpen, setClosedInSelectOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [showClosedReports, setShowClosedReports] = useState(false);
 
@@ -253,6 +255,23 @@ export default function Report() {
     });
     return { activeGroups: active, closedGroups: closed };
   }, [filteredGroups, closedProjectNames]);
+
+  /**
+   * 「选择项目」下拉的选项：未关闭项目正常列出，**已关闭项目折成一块**（默认收起，
+   * 与左侧报告列表 / 总览 / 巡检中心同一个口径，2026-10-13 用户要求）。
+   * 当前选中的项目即使已关闭也要留在 options 里 —— 否则 Select 会拿 value（项目 ID）当标签显示。
+   */
+  const selectOptions = useMemo(
+    () =>
+      projects
+        .filter((p) => !p.closed || p.id === selectedProject)
+        .map((p) => ({ value: p.id, label: p.name })),
+    [projects, selectedProject],
+  );
+  const selectClosedProjects = useMemo(
+    () => projects.filter((p) => p.closed),
+    [projects],
+  );
 
   // 选中的报告属于已关闭项目时，自动展开折叠区，避免"选中了却看不见"
   const selectedIsClosed = useMemo(() => {
@@ -626,8 +645,51 @@ export default function Report() {
               value={selectedProject}
               onChange={setSelectedProject}
               style={{ width: 190 }}
-              options={projects.map((p) => ({ value: p.id, label: p.name }))}
+              options={selectOptions}
               placeholder="选择项目"
+              onOpenChange={(open) => {
+                if (!open) setClosedInSelectOpen(false); // 收起下拉时把"已关闭项目"也折回去
+              }}
+              popupRender={(menu) => (
+                <>
+                  {menu}
+                  {selectClosedProjects.length > 0 && (
+                    <div
+                      className="report-select-closed"
+                      // 别让点击落到 Select 上（否则下拉会立刻关闭/抢焦点）
+                      onMouseDown={(e) => e.preventDefault()}
+                    >
+                      <button
+                        type="button"
+                        className="report-select-closed__toggle"
+                        onClick={() => setClosedInSelectOpen((v) => !v)}
+                      >
+                        {closedInSelectOpen ? <DownOutlined /> : <RightOutlined />}
+                        已关闭项目（{selectClosedProjects.length}）
+                      </button>
+                      {closedInSelectOpen && (
+                        <div className="report-select-closed__list">
+                          {selectClosedProjects.map((p) => (
+                            <button
+                              type="button"
+                              key={p.id}
+                              className={`report-select-closed__item${
+                                p.id === selectedProject ? ' is-selected' : ''
+                              }`}
+                              onClick={() => {
+                                setSelectedProject(p.id);
+                                setClosedInSelectOpen(false);
+                              }}
+                            >
+                              {p.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             />
             <Button
               type="primary"

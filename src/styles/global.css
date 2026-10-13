@@ -3371,6 +3371,70 @@ body.is-atom-selecting * {
   margin-top: 12px;
 }
 
+/* 「选择项目」下拉里的已关闭项目折叠块（2026-10-13） */
+.report-select-closed {
+  border-top: 1px solid var(--color-border-soft);
+  margin-top: 4px;
+  padding: 6px 4px 4px;
+}
+
+.report-select-closed__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+  touch-action: manipulation;
+}
+
+.report-select-closed__toggle:hover {
+  background: #f4f7fc;
+  color: var(--color-text);
+}
+
+.report-select-closed__toggle .anticon {
+  font-size: 10px;
+}
+
+.report-select-closed__list {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 2px 0 2px 6px;
+}
+
+.report-select-closed__item {
+  border: none;
+  background: transparent;
+  color: #8a98ac;
+  font-size: 13px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  min-height: 32px;
+  touch-action: manipulation;
+}
+
+.report-select-closed__item:hover {
+  background: #f4f7fc;
+  color: var(--color-text);
+}
+
+.report-select-closed__item.is-selected {
+  background: rgba(91, 141, 239, 0.12);
+  color: var(--color-primary-strong);
+  font-weight: 600;
+}
+
 .project-row--closed .project-row__name {
   color: #8a98ac;
   font-weight: 500;

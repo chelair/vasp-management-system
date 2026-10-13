@@ -238,16 +238,31 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
     return out;
   }, [view, checkedKeys, spin]);
 
+  /**
+   * 统一的 x 轴：**所有曲线都用「总态密度」那条能量网格**。
+   *
+   * 为什么：总态密度的能量来自 DOSCAR，投影态密度来自 VASPKIT 的 PDOS_*.dat（脚本已把
+   * `E−Efermi` 加回来），两边四舍五入后能差 ~1e-3 eV —— ECharts 的 axis tooltip 是按 x
+   * **精确匹配**取点的，差这一点就会导致"某些点只有部分曲线显示"（2026-10-13 用户反馈）。
+   * 投影网格 = 总网格去掉 EMIN 首行，所以这里按"起点偏移"对齐（容差 2e-3 自动探测，默认 1）。
+   */
+  const partialOffset = useMemo(() => {
+    const total = view?.energy.total ?? [];
+    const partial = view?.energy.partial ?? [];
+    if (!total.length || !partial.length) return 0;
+    const target = partial[0];
+    const index = total.findIndex((x) => Math.abs(x - target) < 0.002);
+    return index >= 0 ? index : 1;
+  }, [view]);
+
   const range = useMemo(() => {
     if (!autoRange || curves.length === 0) return { min: xMin, max: xMax };
     let min = Infinity;
     let max = -Infinity;
-    const energy = view?.energy;
     curves.forEach((curve) => {
-      const grid = energy?.[curve.grid] ?? [];
-      const n = Math.min(grid.length, curve.values.length);
+      const n = curve.values.length;
       for (let i = 0; i < n; i += 1) {
-        const x = grid[i] - (meta?.efermi ?? 0);
+        const x = xAt(curve, i) - (meta?.efermi ?? 0);
         if (x < min) min = x;
         if (x > max) max = x;
       }
@@ -259,18 +274,29 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
     return { min: min - pad, max: max + pad };
   }, [autoRange, curves, view, meta, xMin, xMax]);
 
+  /** 第 i 个点该落在哪个 x（绝对能量）：统一用总态密度的网格，投影按偏移对齐 */
+  const xAt = useCallback(
+    (curve: CurveEntry, index: number) => {
+      const total = view?.energy.total ?? [];
+      const own = view?.energy[curve.grid] ?? [];
+      if (curve.grid === 'partial') {
+        return total[index + partialOffset] ?? own[index] ?? index;
+      }
+      return total[index] ?? own[index] ?? index;
+    },
+    [view, partialOffset],
+  );
+
   const option = useMemo(() => {
     const efermi = meta?.efermi ?? 0;
-    const energy = view?.energy;
     const series = curves.map((curve) => {
-      const grid = energy?.[curve.grid] ?? [];
-      const n = Math.min(grid.length, curve.values.length);
+      const n = curve.values.length;
       const data: [number, number][] = [];
       let maxAbs = 0;
       for (let i = 0; i < n; i += 1) {
         const value = curve.values[i];
         maxAbs = Math.max(maxAbs, Math.abs(value));
-        data.push([grid[i] - efermi, mirror && curve.spin === 'down' ? -value : value]);
+        data.push([xAt(curve, i) - efermi, mirror && curve.spin === 'down' ? -value : value]);
       }
       return {
         name: curve.name,
@@ -299,11 +325,34 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
     return {
       animation: false,
       // 顶部不留图例空间（图例改成工具条上的芯片，避免与轴名重叠）
-      grid: { left: 56, right: 20, top: 18, bottom: 46 },
+      // 左边留出竖排 "Intensity" 轴名的位置
+      grid: { left: 66, right: 20, top: 18, bottom: 46 },
       tooltip: {
         trigger: 'axis' as const,
         axisPointer: { type: 'cross' as const },
-        valueFormatter: (v: number) => (v == null ? '—' : v.toFixed(4)),
+        // 自定义卡片：① 顶部显示当前能量；② **把该点的每条可见曲线都列出来**
+        // （所有曲线已对齐到同一 x 网格，不会再有"只有部分曲线"）；
+        // ③ 镜像布局下自旋向下已取负，这里显示回绝对值。
+        formatter: (params: unknown) => {
+          const list = (Array.isArray(params) ? params : [params]) as {
+            axisValue?: number;
+            value?: [number, number];
+            seriesName?: string;
+            marker?: string;
+          }[];
+          if (!list.length) return '';
+          const x = list[0]?.axisValue ?? list[0]?.value?.[0];
+          const head =
+            x == null ? '' : `<div style="font-weight:600;margin-bottom:4px">E − E_F = ${Number(x).toFixed(3)} eV</div>`;
+          const rows = list.map((item) => {
+            const raw = Array.isArray(item.value) ? Number(item.value[1]) : Number(item.value);
+            const shown = mirror && String(item.seriesName ?? '').includes('↓') ? Math.abs(raw) : raw;
+            return `${item.marker ?? ''} ${item.seriesName ?? ''}: ${
+              Number.isFinite(shown) ? shown.toFixed(4) : '—'
+            }`;
+          });
+          return head + rows.join('<br/>');
+        },
       },
       // 不用 ECharts 自带图例：曲线多时它会和轴名/彼此重叠（用户截图反馈），
       // 改用工具条上的芯片做图例（点一下取消该条曲线）。
@@ -316,7 +365,15 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
         min: range.min,
         max: range.max,
       },
-      yAxis: { type: 'value' as const, name: 'Intensity', ...yAxis },
+      yAxis: {
+        type: 'value' as const,
+        name: 'Intensity',
+        // 轴名竖排在**最左端**（默认 nameLocation='end' 会跑到轴顶端，用户要求放左边）
+        nameLocation: 'middle' as const,
+        nameRotate: 90,
+        nameGap: 42,
+        ...yAxis,
+      },
       series: series.map(({ __maxAbs, ...rest }) => ({
         ...rest,
         ...(showZero
@@ -332,7 +389,7 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
           : {}),
       })),
     };
-  }, [curves, view, meta, mirror, spin, range, showZero]);
+  }, [curves, view, meta, mirror, spin, range, showZero, xAt]);
 
   const containerRef = useEcharts(option, [option], (instance) => {
     // 只保留实例（导出 PNG 用）；卸载时的 null 不回写 state，避免卸载后 setState

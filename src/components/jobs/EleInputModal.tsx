@@ -17,7 +17,6 @@ const ELEC_TYPES: { value: string; label: string; hint: string; disabled?: boole
   { value: 'bader', label: 'Bader', hint: '需要 LCHARG 与 LAECHG（全电子电荷密度）' },
   { value: 'cohp', label: 'COHP', hint: '需要 ISYM=-1、LWAVE、LORBIT 与较高 NBANDS' },
   { value: 'work_function', label: '功函数', hint: '需要 LVHAR（局域势输出）与偶极校正 LDIPOL + DIPOL 矫正中心' },
-  { value: 'diff_charge', label: '差分电荷', hint: '差分电荷计算后续实现', disabled: true },
 ];
 
 /** 电子结构任务：构建输入文件（从 opt 导入或外部结构 + 类型参数调整） */

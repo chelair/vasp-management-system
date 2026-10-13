@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from config import DATA_DIR
-from task_paths import is_continuation_task
+from task_paths import is_auxiliary_task
 
 CHECKS_DIR = DATA_DIR / "checks"
 RUNS_FILE = DATA_DIR / "checks" / "runs.json"
@@ -194,6 +194,11 @@ def _is_group_frac(task: Dict[str, Any]) -> bool:
     )
 
 
+def _is_hidden_task(task: Dict[str, Any]) -> bool:
+    """不出现在巡检清单里的任务：续算子任务 + 差分电荷分块（挂在 ele 主任务详情里）。"""
+    return is_auxiliary_task(task) or _is_group_frac(task)
+
+
 def to_frontend_rows(db: Dict[str, Any], merged: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     """把合并后的检查结果映射为前端巡检列表行；未巡检的任务也一并展示。"""
     lookup = _task_lookup(db)
@@ -205,18 +210,14 @@ def to_frontend_rows(db: Dict[str, Any], merged: Dict[str, Dict[str, Any]]) -> L
             # 任务已从数据库删除（删除任务/项目后），归档中的历史记录不再展示
             continue
         project, task = pair
-        if is_continuation_task(task):
-            continue
-        if task and _is_group_frac(task):
+        if _is_hidden_task(task):
             continue
         rows.append(_to_row(project, task, entry))
         seen.add(task_id)
     # 全部项目/任务都展示：没有巡检记录的任务标记为“未巡检”
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
-            if is_continuation_task(task):
-                continue
-            if _is_group_frac(task):
+            if _is_hidden_task(task):
                 continue
             if task.get("task_id") in seen:
                 continue

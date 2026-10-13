@@ -12,6 +12,7 @@ from cif_convert import read_neb_image_cifs, read_or_convert_cif
 from config import load_settings, load_servers
 from continuation import _remote_latest_con
 from atomic_forces import AtomicForceError, build_atomic_forces
+from ele_diff import diff_charge_blocks
 from envelope import fail, ok
 import permissions
 from inspection_scheduler import scheduler_status, update_schedule
@@ -340,6 +341,54 @@ def inspection_detail(task_id: str, request: Request):
                     "correction": frac_task.get("correction"),
                 }
 
+        # 电子结构任务：附带其差分电荷分块子任务的巡检数据（列表里不单独展示分块）
+        diff_charge = None
+        if str(task.get("task_type") or "") == "ele":
+            blocks = diff_charge_blocks(project, task)
+            if blocks:
+                block_items = []
+                for block in blocks:
+                    block_entry = merged.get(block.get("task_id"))
+                    block_co = block.get("current_output") or (
+                        block_entry.get("current_output") if block_entry else None
+                    )
+                    block_items.append(
+                        {
+                            "task_id": block.get("task_id"),
+                            "task_name": block.get("model_name"),
+                            "block": int(block.get("ele_block") or 0),
+                            "block_label": block.get("ele_block_label"),
+                            "atoms_count": len(block.get("ele_block_atoms") or []),
+                            "status": block.get("status"),
+                            "has_inspection": block_entry is not None,
+                            "check_time": block_entry.get("checked_at")
+                            if block_entry
+                            else None,
+                            "last_energy": block_entry.get("last_energy")
+                            if block_entry
+                            else None,
+                            "force_max": block_entry.get("force_max")
+                            if block_entry
+                            else None,
+                            "queue_status": block_entry.get("queue_status")
+                            if block_entry
+                            else None,
+                            "errors": (block_entry.get("error_messages") or [])
+                            if block_entry
+                            else [],
+                            "notes": (block.get("notes") or "")
+                            or ((block_entry.get("notes") or "") if block_entry else ""),
+                            "current_output": _display_current_output(project, block_co),
+                        }
+                    )
+                diff_charge = {
+                    "group_id": blocks[0].get("diff_charge_group"),
+                    "block_count": len(blocks),
+                    # CHGCAR 本地编号：1..块数 = 各分块，块数+1 = 完整结构
+                    "full_chg_index": len(blocks) + 1,
+                    "blocks": block_items,
+                }
+
         history = entry.get("force_history") or []
         analysis = _build_analysis(project, task, entry, history)
 
@@ -406,6 +455,7 @@ def inspection_detail(task_id: str, request: Request):
                     )
                 ),
                 "frac": frac,
+                "diff_charge": diff_charge,
                 "analysis": analysis,
                 "available_analyses": available_analyses,
                 "neb_barrier": neb_barrier,

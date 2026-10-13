@@ -9,20 +9,46 @@
       "ISIF": 2,
       "IVDW": 11
     },
-    "check_items": ["force_convergence", "structure_reasonable"],
+    "check_items": [
+      "force_convergence",
+      "structure_reasonable"
+    ],
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
     "continuation_rules": {
       "walltime_killed": {
         "file_operations": [
-          {"action": "cp", "src": "CONTCAR", "dst": "POSCAR"},
-          {"action": "keep", "files": ["INCAR", "KPOINTS", "POTCAR", "submit.sh"]}
+          {
+            "action": "cp",
+            "src": "CONTCAR",
+            "dst": "POSCAR"
+          },
+          {
+            "action": "keep",
+            "files": [
+              "INCAR",
+              "KPOINTS",
+              "POTCAR",
+              "submit.sh"
+            ]
+          }
         ],
         "incar_changes": {}
       },
       "completed": {
         "file_operations": [
-          {"action": "keep", "files": ["POSCAR", "POTCAR", "KPOINTS"]},
-          {"action": "copy_from_previous", "src": "CONTCAR", "dst": "POSCAR"}
+          {
+            "action": "keep",
+            "files": [
+              "POSCAR",
+              "POTCAR",
+              "KPOINTS"
+            ]
+          },
+          {
+            "action": "copy_from_previous",
+            "src": "CONTCAR",
+            "dst": "POSCAR"
+          }
         ],
         "incar_changes": {
           "ICHARG": 0,
@@ -52,7 +78,7 @@
     "default_incar": {
       "IBRION": 1,
       "NSW": 100,
-      "EDIFF": 1e-5,
+      "EDIFF": 1e-05,
       "ISIF": 0,
       "SPRING": -5,
       "IMAGES": 0,
@@ -65,7 +91,12 @@
   "ele": {
     "description": "电子结构/后处理",
     "workload_weight": 0.4,
-    "subtypes": ["pdos", "bader", "diff_charge", "work_function"],
+    "subtypes": [
+      "pdos",
+      "bader",
+      "diff_charge",
+      "work_function"
+    ],
     "subtype_labels": {
       "pdos": "PDOS",
       "bader": "Bader 分析",
@@ -80,6 +111,14 @@
       "ISIF": 2,
       "IVDW": 11
     },
+    "check_items": [],
+    "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
+    "continuation_rules": {}
+  },
+  "ele_diff": {
+    "description": "差分电荷分块计算（电子结构附属）",
+    "workload_weight": 0,
+    "default_incar": {},
     "check_items": [],
     "energy_regex": "free  energy   TOTEN  =\\s+([-\\d.]+) eV",
     "continuation_rules": {}

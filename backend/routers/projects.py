@@ -20,7 +20,7 @@ from paths import resolve_remote_path, to_local_rel, to_remote_rel
 from priority import compute_priority
 from ssh import mkdir_remote
 from storage import add_project, db_transaction, load_db, save_db
-from task_paths import CATEGORY_DIRS, is_continuation_task
+from task_paths import CATEGORY_DIRS, is_auxiliary_task
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -254,7 +254,8 @@ def update_project(project_id: str, payload: ProjectPatchIn, request: Request):
                 project["deadline"] = str(patch["deadline"])
                 priority = compute_priority(
                     project["deadline"],
-                    [t for t in project.get("tasks", []) if not is_continuation_task(t)],
+                    # 附属任务（conN / 差分电荷分块）不计入当量与优先级
+                    [t for t in project.get("tasks", []) if not is_auxiliary_task(t)],
                     load_task_registry(),
                     load_settings(),
                 )
@@ -287,7 +288,7 @@ def close_project(project_id: str, request: Request):
         remaining = [
             str(t.get("model_name") or "")
             for t in project.get("tasks", [])
-            if not is_continuation_task(t) and t.get("status") != "archived"
+            if not is_auxiliary_task(t) and t.get("status") != "archived"
         ]
         if remaining:
             head = "、".join(remaining[:5])

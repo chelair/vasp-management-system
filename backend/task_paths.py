@@ -106,3 +106,36 @@ def task_files_dir(project_name: str, task: Dict[str, Any]) -> Path:
     root = task_dir(project_name, task)
     files_dir = root / "files"
     return files_dir if files_dir.is_dir() else root
+
+
+#: 差分电荷分块计算（电子结构附属任务）：跟随主任务、不单独展示、不计当量（2026-10-13）
+ELE_DIFF_TYPE = "ele_diff"
+#: 分块计算文件在本地的根目录名：<ele 任务目录>/diffcharge_files/
+DIFF_CHARGE_DIR = "diffcharge_files"
+
+
+def is_ele_diff(task: Dict[str, Any]) -> bool:
+    """差分电荷分块计算任务（附属任务，不单独出现，归档跟随主任务）。"""
+    return str(task.get("task_type") or "") == ELE_DIFF_TYPE
+
+
+def is_auxiliary_task(task: Dict[str, Any]) -> bool:
+    """**附属任务**：续算子任务（conN）与差分电荷分块计算。
+
+    它们都要登记、也要巡检，但**不出现在清单/统计/当量里**（差分电荷像频率矫正一样
+    挂在主任务下面展示）。
+    """
+    return is_continuation_task(task) or is_ele_diff(task)
+
+
+def local_files_dir(project_name: str, task: Dict[str, Any]) -> Path:
+    """本地 VASP 文件目录（**不看文件是否存在**，按任务约定算）。
+
+    - 普通任务：`<任务目录>/files/`；
+    - `local_layout == "flat"` 的任务（差分电荷分块）：文件直接放 `<任务目录>/` 下，
+      对应远端 `<ele 任务>/<N>/` 的平铺结构（用户 2026-10-13 口径）。
+    """
+    root = task_dir(project_name, task)
+    if str(task.get("local_layout") or "") == "flat":
+        return root
+    return root / "files"

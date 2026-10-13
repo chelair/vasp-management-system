@@ -249,6 +249,46 @@ POST /api/jobs/tasks/{task_id}/create-frac    # body: {"ibration": 5}（可省�
 - **返回**：`{frac_dir, source_dir, latest_dir, incar_changes, copied_files}`
 - **耗时**：远端 bash **timeout 180s**。**审计**：`create-frac`。
 
+#### ④b 差分电荷分块计算生成（ele 附属，v0.9.44）
+
+```
+POST /api/jobs/tasks/{task_id}/create-diff-charge
+body: {
+  "blocks": [                       # 必填：≥2 块，原子序号 1 起，互不重叠且合起来 = 全部原子
+    {"label": "分块A", "atoms": [1,2,…]},
+    {"label": "分块B", "atoms": [17,18,…]},
+    {"label": "分块C", "atoms": […]}  # 可选：第三、第四块（远端目录 3、4 …）
+  ],
+  "incar_params": {}                # 可选：额外写进分块 INCAR 的参数
+}
+```
+
+- **行为**：把完整结构按原子拆成若干分块，各自单独做静态计算（**LSF 上各自独立提交**）：
+  ① 每个分块只保留自己那部分原子的 POSCAR（晶胞不变、元素顺序沿用父结构、重新统计数量）；
+  ② INCAR 复制主任务并**校验关键参数** `LCHARG = .TRUE.`、`IBRION = -1`（不一致就地改并在
+  `incar_fixes` 里回报；MAGMOM 暂不改）；③ KPOINTS / vasp.lsf 直接复制主任务；
+  ④ 在主任务目录跑一次远端 `pos2pot`（脚本递归）→ 主结构与各分块一起生成 POTCAR。
+- **前置**：任务必须是 `ele`（否则 `400`）；主任务本地/远端要有 `POSCAR`；同一任务已有分块时 `409`
+  （要重做先删旧分块）；分块必须覆盖全部原子（漏原子/重叠/空块 → `400`）。
+- **返回**：`{group_id, block_count, full_chg_index, tasks[{task_id, model_name, ele_block, atoms_count,
+  remote_dir}], local_root, remote_root, incar_fixes, incar_warnings, potcar, potcar_generated}`。
+- **子任务形态**：`task_type=ele_diff` + `subtype=diff_charge` + `parent_task_id`=ele 主任务 +
+  `ele_block`/`ele_block_label`/`ele_block_atoms`；`local_layout=flat`（本地文件直接放任务目录）。
+  分块是**附属任务**：巡检列表不单独成行（挂在 ele 主任务详情里）、不计当量、归档/重开跟随主任务。
+- **目录口径**：
+
+```
+远端 <ele 任务目录>/            本地 <ele 任务本地目录>/
+├── POSCAR/INCAR/…             ├── files/                      （主任务）
+├── 1/   ← 分块A               ├── diffcharge_files/1/          （分块文件，flat）
+├── 2/   ← 分块B               ├── diffcharge_files/2/
+└── …（3、4 …）                ├── diffcharge_files/chgfiles/   （CHGCAR：1..N.vasp = 分块，
+                               │                                  N+1.vasp = 完整结构）
+                               └── diffcharge_files/images/     （VESTA 差分图，处理逻辑待接入）
+```
+
+- **耗时**：远端 bash + pos2pot **timeout 180s**。**审计**：`create-diff-charge`。
+
 #### ⑤ NEB 创建计算文件
 
 ```
@@ -282,6 +322,7 @@ body: {
 | 作业 | `POST /jobs/tasks/{id}/stop` | `bkill`；"already finished" 按成功处理；**高风险** |
 | 作业 | `POST /jobs/tasks/{id}/archive` · `/unarchive` | 归档/重开（自由能主任务连带 frac） |
 | 作业 | `POST /jobs/tasks/{id}/build-ele-inputs` | ele 输入（`{source_type:"opt"/"external", source_task_id?, ...}`） |
+| 作业 | `POST /jobs/tasks/{id}/create-diff-charge` | **差分电荷分块计算**（ele 附属，v0.9.44）：`{blocks:[{label,atoms}], incar_params?}` → 见 §4.2 ④b |
 | 作业 | `POST /jobs/tasks/{id}/selective-dynamics` | 固定原子生成新 POSCAR（`{manual/indices/elements/z_range/..., sync_remote?}`） |
 | 作业 | `POST /jobs/tasks/{id}/upload-poscar` · `/upload-kpoints` · `/upload-submit-script` · `/generate-potcar` | 写远端最新目录，同名先备份 `old_*` |
 | 作业 | `POST /jobs/tasks/{id}/input/sync` | 从远端重新取回四件套（1 exec + 4 SFTP；会覆盖本地镜像，有草稿的文件跳过） |

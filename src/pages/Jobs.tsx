@@ -49,6 +49,8 @@ import GroupWizardModal from '../components/jobs/GroupWizardModal';
 import InputSourceBanner from '../components/jobs/InputSourceBanner';
 import StructureDetail from '../components/jobs/StructureDetail';
 import NebGroupDetail from '../components/jobs/NebGroupDetail';
+import EleDetail from '../components/jobs/EleDetail';
+import DiffChargeModal from '../components/jobs/DiffChargeModal';
 import AddProjectModal from '../components/projects/AddProjectModal';
 import {
   applyIncarGates,
@@ -135,6 +137,11 @@ export default function Jobs() {
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const [fracCreatingId, setFracCreatingId] = useState<string | null>(null);
   const [eleBuildTask, setEleBuildTask] = useState<Task | null>(null);
+  /** 差分电荷分块选择弹窗（电子结构任务，2026-10-13） */
+  const [diffChargeTask, setDiffChargeTask] = useState<Task | null>(null);
+  const [diffChargeCreating, setDiffChargeCreating] = useState(false);
+  /** 电子结构任务页的标签页（主任务 / 各分块） */
+  const [eleActiveTab, setEleActiveTab] = useState('main');
   const [nebBuildTask, setNebBuildTask] = useState<Task | null>(null);
   const [presets, setPresets] = useState<IncarPreset[]>(() => loadIncarPresets());
   const [loading, setLoading] = useState(true);
@@ -334,10 +341,24 @@ export default function Jobs() {
     };
   }, [selectedNebGroupKey, projects]);
 
+  /** 电子结构任务的差分电荷分块（附属子任务，按块序号排序） */
+  const selectedEleBlocks = useMemo(() => {
+    if (!selectedTask || selectedTask.task_type !== 'ele') return [];
+    return (selectedProject?.tasks ?? [])
+      .filter(
+        (t) => t.parent_task_id === selectedTask.task_id && t.subtype === 'diff_charge',
+      )
+      .sort((a, b) => Number(a.ele_block ?? 0) - Number(b.ele_block ?? 0));
+  }, [selectedTask, selectedProject]);
+
   /** 需要自动读取文件内容的聚焦任务（选中任务 + 结构/组内任务） */
   const focusTasks = useMemo(() => {
     const list: Task[] = [];
     if (selectedTask) list.push(selectedTask);
+    // 电子结构任务：连带读它的差分电荷分块（页面上是标签页，切过去就有文件）
+    if (selectedTask?.task_type === 'ele') {
+      for (const block of selectedEleBlocks) list.push(block);
+    }
     if (selectedStructure) {
       if (selectedStructure.opt) list.push(selectedStructure.opt);
       if (selectedStructure.frac) list.push(selectedStructure.frac);
@@ -348,7 +369,7 @@ export default function Jobs() {
       }
     }
     return list;
-  }, [selectedTask, selectedStructure, selectedNebGroup]);
+  }, [selectedTask, selectedStructure, selectedNebGroup, selectedEleBlocks]);
 
   /** 选中任务/结构/组时，自动读取本地目录中已有的 POSCAR / INCAR / KPOINTS */
   /** 读本地镜像文件；不存在或读取失败返回 null（不打扰用户） */
@@ -1406,7 +1427,28 @@ export default function Jobs() {
                 }
               />
               <Card className="job-detail-card">
-                {renderTaskDetail(selectedTask)}
+                {selectedTask.task_type === 'ele' ? (
+                  <EleDetail
+                    task={selectedTask}
+                    blocks={selectedEleBlocks}
+                    renderTask={renderTaskDetail}
+                    onCreateDiffCharge={(t) => {
+                      setEleActiveTab('main');
+                      setDiffChargeCreating(true);
+                      setDiffChargeTask(t);
+                    }}
+                    creating={diffChargeCreating}
+                    canCreate={Boolean(
+                      workspaces[selectedTask.task_id]?.poscarContent ||
+                        inputStates[selectedTask.task_id]?.files?.POSCAR,
+                    )}
+                    disconnectHint="主任务还没有 POSCAR（先构建输入文件 / 同步结构）"
+                    activeKey={eleActiveTab}
+                    onActiveKeyChange={setEleActiveTab}
+                  />
+                ) : (
+                  renderTaskDetail(selectedTask)
+                )}
               </Card>
             </>
           ) : (
@@ -1512,6 +1554,28 @@ export default function Jobs() {
         task={eleBuildTask}
         onCancel={() => setEleBuildTask(null)}
         onCreated={() => void refreshProjects()}
+      />
+
+      <DiffChargeModal
+        open={!!diffChargeTask}
+        taskId={diffChargeTask?.task_id ?? ''}
+        taskLabel={diffChargeTask?.model_name}
+        poscarContent={
+          diffChargeTask ? workspaces[diffChargeTask.task_id]?.poscarContent ?? null : null
+        }
+        cif={
+          diffChargeTask
+            ? inputStates[diffChargeTask.task_id]?.poscar_cif ?? null
+            : null
+        }
+        onClose={() => {
+          setDiffChargeTask(null);
+          setDiffChargeCreating(false);
+        }}
+        onCreated={() => {
+          setDiffChargeCreating(false);
+          void refreshProjects();
+        }}
       />
 
       <NebFilesModal

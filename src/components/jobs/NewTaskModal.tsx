@@ -21,6 +21,8 @@ const CATEGORY_DIR: Record<TaskType, string> = {
   frac: 'free_energy',
   neb: 'neb',
   ele: 'ele',
+  // 差分电荷分块是 ele 的附属任务（由「差分电荷计算」按钮创建），不在这里新建
+  ele_diff: 'ele',
 };
 
 export default function NewTaskModal({

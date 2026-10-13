@@ -43,13 +43,29 @@ from continuation import (
     local_continuation_dir,
 )
 from dates import now_iso
+from ele_diff import (
+    DiffChargeError,
+    build_block_task,
+    create_block_files,
+    diff_charge_blocks,
+    diff_charge_group_id,
+    download_charge_files,
+    plan_blocks,
+    read_main_poscar,
+)
 from envelope import fail, ok
 from incar import modify_incar
 import permissions
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
 import ssh
 from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
-from task_paths import free_energy_frac_task, is_continuation_task, task_dir
+from task_paths import (
+    ELE_DIFF_TYPE,
+    free_energy_frac_task,
+    is_continuation_task,
+    local_files_dir,
+    task_dir,
+)
 from input_state import (
     _hash as text_hash,
     build_snapshot,
@@ -614,6 +630,106 @@ def core_create_frac(
     return dict(result)
 
 
+def _new_task_id(project: Dict[str, Any]) -> str:
+    """生成不重复的 task_id（与 `routers/groups._task_id` 同一口径）。"""
+    ts = int(time.time() * 1000)
+    used = {t.get("task_id") for t in project.get("tasks", [])}
+    seq = 1
+    while f"task_{ts}_{seq}" in used:
+        seq += 1
+    return f"task_{ts}_{seq}"
+
+
+def core_create_diff_charge(
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    payload: Dict[str, Any] | None = None,
+    *,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """创建差分电荷分块计算（电子结构附属任务，2026-10-13）。
+
+    - 分块由前端框选原子给出：`blocks=[{label, atoms:[1,2,…]}, …]`（1 起，覆盖全部原子）；
+    - POSCAR 来自主任务（静态计算，不用 CONTCAR），各分块只保留自己那部分原子；
+    - INCAR 复制主任务并校验 `LCHARG=.TRUE.` / `IBRION=-1`；KPOINTS / vasp.lsf 直接复制；
+    - POTCAR 用远端 `pos2pot`（递归）在主任务目录生成；
+    - 每个分块登记一个 `ele_diff` 子任务（`parent_task_id` = 主任务，归档/重开跟随主任务，
+      不单独出现在清单/统计里）。
+    """
+    payload = payload or {}
+    task_id = str(task.get("task_id") or "")
+    if str(task.get("task_type") or "") != "ele":
+        raise ActionError(400, "仅电子结构任务可创建差分电荷计算")
+    if is_continuation_task(task):
+        raise ActionError(400, "续算子任务不支持差分电荷计算")
+    server = str(project.get("server") or "")
+    blocks = payload.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        raise ActionError(400, "请先在结构图上划分分块（blocks 不能为空）")
+    try:
+        poscar_text = read_main_poscar(server, project, task)
+        plan = plan_blocks(poscar_text, blocks)
+    except DiffChargeError as e:
+        raise ActionError(400, str(e))
+    existing = diff_charge_blocks(project, task)
+    if existing:
+        names = "、".join(str(t.get("model_name") or "") for t in existing)
+        raise ActionError(409, f"该任务已有差分电荷分块（{names}）；要重做请先删除旧分块")
+    if dry_run:
+        return {
+            "dry_run": True,
+            "will_do": "在 ele 任务下创建各分块目录（只保留对应分块原子的 POSCAR）+ 复制输入 + pos2pot 生成 POTCAR",
+            "task_id": task_id,
+            "blocks": [
+                {"index": i["index"], "label": i["label"], "atoms_count": len(i["atoms"])}
+                for i in plan
+            ],
+        }
+    result = create_block_files(
+        server, project, task, plan, incar_params=payload.get("incar_params")
+    )
+    group_id = diff_charge_group_id(task)
+    created: List[Dict[str, Any]] = []
+    with db_transaction() as db:
+        proj = next((p for p in db.get("projects", []) if p.get("name") == project.get("name")), None)
+        fresh = (
+            next((t for t in proj.get("tasks", []) if t.get("task_id") == task_id), None)
+            if proj
+            else None
+        )
+        if proj is None or fresh is None:
+            raise ActionError(404, "任务不存在（可能已被删除）")
+        by_index = {int(b["index"]): b for b in result["blocks"]}
+        for item in plan:
+            record = build_block_task(
+                proj, fresh, item, group_id=group_id, task_id=_new_task_id(proj)
+            )
+            info = by_index.get(int(item["index"])) or {}
+            record["remote_dir"] = to_remote_rel(
+                server, str(info.get("remote_dir") or "")
+            ) or str(info.get("remote_dir") or "")
+            proj.setdefault("tasks", []).append(record)
+            created.append(
+                {
+                    "task_id": record["task_id"],
+                    "model_name": record["model_name"],
+                    "ele_block": record["ele_block"],
+                    "ele_block_label": record["ele_block_label"],
+                    "atoms_count": len(record["ele_block_atoms"]),
+                    "dir_path": record["dir_path"],
+                    "remote_dir": record["remote_dir"],
+                }
+            )
+    _audit_log(
+        project["name"],
+        task_id,
+        result["remote_root"],
+        "create-diff-charge",
+        f"OK blocks={len(plan)} tasks={len(created)} potcar={'ok' if result.get('potcar_generated') else 'missing'}",
+    )
+    return {**result, "group_id": group_id, "tasks": created}
+
+
 def core_create_neb(
     project: Dict[str, Any],
     task: Dict[str, Any],
@@ -747,8 +863,7 @@ def write_task_file(task_id: str, filename: str, payload: FileWritePayload):
     try:
         name = _validate_name(filename)
         project, task = _resolve_task(task_id)
-        task_dir = _resolve_task_dir(task_id)
-        files_dir = task_dir / "files"
+        files_dir = local_files_dir(str(project.get("name") or ""), task)
         files_dir.mkdir(parents=True, exist_ok=True)
         path = files_dir / name
         path.write_text(payload.content, encoding="utf-8")
@@ -774,8 +889,9 @@ def write_task_file(task_id: str, filename: str, payload: FileWritePayload):
 def open_task_folder(task_id: str):
     """在服务器本机打开任务本地目录（定位到 files/），便于直接查看/编辑文件。"""
     try:
+        project, task = _resolve_task(task_id)
         task_dir = _resolve_task_dir(task_id)
-        files_dir = task_dir / "files"
+        files_dir = local_files_dir(str(project.get("name") or ""), task)
         files_dir.mkdir(parents=True, exist_ok=True)
         target = files_dir if files_dir.is_dir() else task_dir
         _open_in_explorer(str(target))
@@ -851,6 +967,30 @@ def create_frac(task_id: str, payload: dict = Body(default={})):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"创建频率矫正失败：{e}"))
+@router.post("/tasks/{task_id}/create-diff-charge")
+def create_diff_charge(task_id: str, payload: dict = Body(default={})):
+    """为电子结构任务创建**差分电荷分块计算**（2026-10-13）。
+
+    body: `{"blocks": [{"label": "分块A", "atoms": [1,2,…]}, …], "incar_params": {…}}`
+    （原子序号 1 起；各块互不重叠且合起来 = 全部原子；默认两块，可加第三、第四块）。
+    """
+    try:
+        with _task_action_lock(task_id):
+            project, task = _resolve_task(task_id)  # 锁内二次校验：取最新状态
+            result = core_create_diff_charge(project, task, payload)
+        return ok("差分电荷分块计算已创建", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except ActionError as e:
+        return JSONResponse(status_code=e.status_code, content=fail(e.message, e.data or None))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"创建差分电荷计算失败：{e}"))
+
+
 @router.post("/tasks/{task_id}/build-ele-inputs")
 def build_ele(task_id: str, payload: dict = Body(default={})):
     """为电子结构任务构建输入文件（从 opt 导入或外部结构）。"""
@@ -1167,6 +1307,27 @@ def archive_task(task_id: str):
                             "was_completed": sibling_prev == "completed",
                         }
                     )
+                # 电子结构主任务归档 → 其差分电荷分块子任务一并归档（附属任务跟随主任务）
+                for block in diff_charge_blocks(fresh_project, fresh_task):
+                    if str(block.get("status")) == "archived":
+                        continue
+                    block_prev = str(block.get("status") or "")
+                    update_task_status(
+                        db,
+                        project["name"],
+                        str(block["task_id"]),
+                        "archived",
+                        {"archived_at": now_iso(), "archived_from": block_prev},
+                    )
+                    siblings.append(
+                        {
+                            "task_id": str(block["task_id"]),
+                            "model_name": str(block.get("model_name") or ""),
+                            "kind": "diff_charge",
+                            "previous_status": block_prev,
+                            "was_completed": block_prev == "completed",
+                        }
+                    )
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
@@ -1246,6 +1407,28 @@ def unarchive_task(task_id: str):
                             "task_id": str(sibling["task_id"]),
                             "model_name": str(sibling.get("model_name") or ""),
                             "new_status": sibling_restore,
+                        }
+                    )
+                # 差分电荷分块子任务跟随主任务一起恢复
+                for block in diff_charge_blocks(fresh_project, fresh_task):
+                    if str(block.get("status")) != "archived":
+                        continue
+                    block_restore = str(block.get("archived_from") or "")
+                    if block_restore not in STATUS_ENUM or block_restore == "archived":
+                        block_restore = "pending"
+                    update_task_status(
+                        db,
+                        project["name"],
+                        str(block["task_id"]),
+                        block_restore,
+                        {"reopened_at": now_iso()},
+                    )
+                    siblings.append(
+                        {
+                            "task_id": str(block["task_id"]),
+                            "model_name": str(block.get("model_name") or ""),
+                            "kind": "diff_charge",
+                            "new_status": block_restore,
                         }
                     )
     except permissions.PermissionDenied:
@@ -1552,6 +1735,37 @@ def _schedule_archive_outputs(
                 f"OK saved={','.join(result.get('saved') or []) or '-'} "
                 f"missing={','.join(result.get('missing') or []) or '-'}{extra}",
             )
+            # 电子结构主任务归档 → 各差分电荷分块也拉回本地镜像，并把 CHGCAR 收进 chgfiles/
+            # （CHGCAR 体积大，只在归档这一下拿，不进巡检循环）
+            blocks = diff_charge_blocks(project, task)
+            if blocks:
+                server = str(project.get("server") or "")
+                block_saved: List[str] = []
+                block_missing: List[str] = []
+                for block in blocks:
+                    try:
+                        br = download_archive_outputs(server, block)
+                    except Exception as e:  # noqa: BLE001 - 分块归档失败不影响主任务
+                        block_missing.append(f"{block.get('model_name')}（{e}）")
+                        continue
+                    block_saved.append(str(block.get("model_name") or ""))
+                    block_missing.extend(br.get("missing") or [])
+                try:
+                    chg = download_charge_files(server, project, task)
+                    chg_note = (
+                        f"chg_saved={','.join(chg.get('saved') or []) or '-'} "
+                        f"chg_missing={','.join(chg.get('missing') or []) or '-'}"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    chg_note = f"chg_failed={e}"
+                _audit_log(
+                    project_name,
+                    task_id,
+                    str(task.get("remote_dir") or ""),
+                    "archive-diff-charge",
+                    f"OK blocks={len(blocks)} synced={','.join(block_saved) or '-'} "
+                    f"missing={','.join(block_missing) or '-'} {chg_note}",
+                )
             # 文件同步完成后**再触发一次**结构三视图渲染：归档刚拉回/更新了 CONTCAR / 各映像结构，
             # 这时画的图才是最新的（用刚 reload 出来的 task，状态已是 archived）
             try:
@@ -1843,7 +2057,7 @@ def apply_selective_dynamics(task_id: str, payload: dict = Body(default={})):
 
         content = str(payload.get("content") or "")
         if not content.strip():
-            mirror = _resolve_task_dir(task_id) / "files" / "POSCAR"
+            mirror = local_files_dir(str(project.get("name") or ""), task) / "POSCAR"
             if mirror.is_file():
                 content = mirror.read_text(encoding="utf-8", errors="replace")
         if not content.strip():
@@ -1922,7 +2136,7 @@ def apply_selective_dynamics(task_id: str, payload: dict = Body(default={})):
             new_text = (tmp_path / "POSCAR").read_text(encoding="utf-8", errors="replace")
 
         # ---- 写本地镜像（旧文件备份为 files/old_POSCAR）----
-        files_dir = _resolve_task_dir(task_id) / "files"
+        files_dir = local_files_dir(str(project.get("name") or ""), task)
         files_dir.mkdir(parents=True, exist_ok=True)
         local_backup = ""
         target = files_dir / "POSCAR"
@@ -2000,7 +2214,7 @@ def upload_poscar(task_id: str, payload: dict = Body(default={})):
 
         # 本地镜像 + 元数据同步刷新（POSCAR 没有草稿，applied 为空）
         payload_state, applied = _push_input_file(project, task_id, "POSCAR", content, work_dir)
-        local_path = str(_resolve_task_dir(task_id) / "files" / "POSCAR")
+        local_path = str(local_files_dir(str(project.get("name") or ""), task) / "POSCAR")
 
         _audit_log(
             project["name"], task_id, work_dir, "upload-poscar",
@@ -2190,7 +2404,7 @@ def upload_submit_script(task_id: str, payload: dict = Body(default={})):
         try:
             # 本地镜像固定写 <任务目录>/files/（与输入四件套同一份镜像；
             # vasp.lsf 不参与同步覆盖，不会被远端四件套冲掉）
-            target = _resolve_task_dir(task_id) / "files" / "vasp.lsf"
+            target = local_files_dir(str(project.get("name") or ""), task) / "vasp.lsf"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             local_path = str(target)

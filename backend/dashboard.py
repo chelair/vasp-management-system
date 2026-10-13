@@ -28,7 +28,7 @@ import checks_store
 from checks_store import CHECKS_DIR, list_runs, merged_results, to_frontend_rows
 from config import DATA_DIR, load_servers, load_settings
 from storage import load_db
-from task_paths import is_continuation_task
+from task_paths import is_auxiliary_task
 
 DASHBOARD_DIR = DATA_DIR / "dashboard"
 HISTORY_FILE = DASHBOARD_DIR / "core_history.json"
@@ -461,7 +461,7 @@ def _task_index(db: Dict[str, Any]) -> Tuple[Dict[str, Tuple[Dict, Dict]], Dict[
     by_name: Dict[str, Tuple[Dict, Dict]] = {}
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
-            if is_continuation_task(task):
+            if is_auxiliary_task(task):
                 continue
             job_id = str(task.get("job_id") or "").strip()
             if job_id:
@@ -596,7 +596,7 @@ def build_risk_alerts(db: Dict[str, Any]) -> Dict[str, Any]:
 
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
-            if is_continuation_task(task):
+            if is_auxiliary_task(task):
                 continue
             status = str(task.get("status") or "")
             base = {
@@ -671,7 +671,7 @@ def build_project_progress(db: Dict[str, Any]) -> List[Dict[str, Any]]:
     today = date.today()
     result: List[Dict[str, Any]] = []
     for project in db.get("projects", []):
-        tasks = [t for t in project.get("tasks", []) if not is_continuation_task(t)]
+        tasks = [t for t in project.get("tasks", []) if not is_auxiliary_task(t)]
         total = len(tasks)
         completed = sum(1 for t in tasks if t.get("status") in ("completed", "archived"))
         archived = sum(1 for t in tasks if t.get("status") == "archived")
@@ -733,7 +733,7 @@ def _build_local_bundle(db: Dict[str, Any], month: str, at: float) -> Dict[str, 
         t
         for p in db.get("projects", [])
         for t in p.get("tasks", [])
-        if not is_continuation_task(t)
+        if not is_auxiliary_task(t)
     ]
     return {
         "riskAlerts": build_risk_alerts(db),
@@ -852,7 +852,7 @@ def recent_tasks(db: Dict[str, Any], limit: int = 8) -> List[Dict[str, Any]]:
     for project in db.get("projects", []):
         name = str(project.get("name") or "")
         for task in project.get("tasks", []):
-            if is_continuation_task(task):
+            if is_auxiliary_task(task):
                 continue
             by_project.setdefault(name, []).append(
                 {

@@ -572,6 +572,45 @@ export async function buildEleInputs(
   });
 }
 
+/**
+ * 创建差分电荷分块计算（电子结构附属任务，2026-10-13）。
+ *
+ * `blocks` = 各分块的原子（POSCAR 序号 1 起），要求互不重叠且合起来 = 全部原子；
+ * 后端会生成各分块的 POSCAR（只保留对应原子）、复制 KPOINTS/vasp.lsf、
+ * 校验 INCAR（LCHARG=.TRUE. / IBRION=-1）并用远端 pos2pot 生成 POTCAR。
+ */
+export async function createDiffCharge(
+  taskId: string,
+  payload: {
+    blocks: { label: string; atoms: number[] }[];
+    incar_params?: Record<string, string | number | boolean>;
+  },
+): Promise<{
+  group_id: string;
+  block_count: number;
+  full_chg_index: number;
+  local_root: string;
+  remote_root: string;
+  incar_fixes: Record<string, string>;
+  incar_warnings: string[];
+  potcar_generated: boolean;
+  potcar: { elements?: string[]; size?: number };
+  tasks: {
+    task_id: string;
+    model_name: string;
+    ele_block: number;
+    ele_block_label: string;
+    atoms_count: number;
+    remote_dir: string;
+  }[];
+}> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/create-diff-charge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 /** 根据初末态 opt 任务创建 NEB 计算文件（nebmake.pl 插值） */
 export async function createNebFiles(
   taskId: string,

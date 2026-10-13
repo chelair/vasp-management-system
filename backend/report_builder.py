@@ -43,7 +43,8 @@ from report_schema import (
 from storage import load_db
 from structure_analysis import analyze as analyze_structure
 import structure_images
-from task_paths import is_continuation_task, task_dir
+from ele_diff import diff_charge_blocks
+from task_paths import is_auxiliary_task, is_continuation_task, task_dir
 
 AUDIT_FILE = DATA_DIR / "audit_submit.log"
 
@@ -628,12 +629,45 @@ def _neb_details(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return items
 
 
-def _ele_details(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """电子结构任务：子类型 / 分析状态 / 结果文件（§3.5）。"""
+def _ele_details(
+    project: Dict[str, Any],
+    facts: List[Dict[str, Any]],
+    merged: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """电子结构任务：子类型 / 分析状态 / 结果文件（§3.5）+ **差分电荷分块**（2026-10-13）。
+
+    分块子任务（`ele_diff`）不进入 facts（不参与统计/当量），这里从任务库取它们的
+    状态与能量（有巡检结果就以巡检为准）。
+    """
     items = []
+    merged = merged or {}
+    by_id = {str(t.get("task_id")): t for t in project.get("tasks", [])}
     for fact in facts:
         if fact["task_type"] != "ele":
             continue
+        task = by_id.get(str(fact["task_id"])) or {}
+        blocks = []
+        for block in diff_charge_blocks(project, task):
+            entry = merged.get(str(block.get("task_id"))) or {}
+            status = str(block.get("status") or "")
+            blocks.append(
+                {
+                    "task_id": block.get("task_id"),
+                    "task_name": block.get("model_name"),
+                    "block": int(block.get("ele_block") or 0),
+                    "block_label": block.get("ele_block_label"),
+                    "atoms_count": len(block.get("ele_block_atoms") or []),
+                    "status": status,
+                    "status_label": _label(STATUS_LABELS, status),
+                    "last_energy_ev": entry.get("last_energy")
+                    if entry.get("last_energy") is not None
+                    else block.get("last_energy"),
+                    "force_max_ev_per_a": entry.get("force_max"),
+                    "converged": bool(entry.get("force_converged")),
+                    "check_time": entry.get("checked_at"),
+                    "errors": entry.get("error_messages") or [],
+                }
+            )
         items.append(
             {
                 "task_id": fact["task_id"],
@@ -646,6 +680,9 @@ def _ele_details(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "result_files": [],
                 "chart_paths": [],
                 "notes": fact["notes"],
+                # 差分电荷：块数 + 各分块状态；CHGCAR 本地编号 = 1..块数，块数+1 = 完整结构
+                "diff_charge": blocks,
+                "diff_charge_chg_index": (len(blocks) + 1) if blocks else None,
             }
         )
     return items
@@ -904,16 +941,52 @@ def _sections_markdown(report, charts):
                 )
             entries.append("\n\n".join(lines))
         blocks.append("\n\n---\n\n".join(entries) + "\n")
-    if not blocks:
+    empty_project = not blocks
+    if empty_project:
         blocks.append("_本项目暂无可展示的科学结果（需任务产出 OUTCAR/CONTCAR 后自动生成）_\n")
-    else:
-        ele_note = science.get("ele") or {}
-        blocks.append(
-            "### 电子结构\n\n"
-            + (
-                f"待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"
-            )
+    ele_note = science.get("ele") or {}
+    ele_tasks = ele_note.get("tasks") or []
+    with_diff = [item for item in ele_tasks if item.get("diff_charge")]
+    # 「电子结构」章节：有差分电荷分块时**一定**出（哪怕项目里还没有别的科学结果），
+    # 否则跟其它类型一样只留一句占位说明。
+    if with_diff or not empty_project:
+        ele_blocks: List[str] = ["### 电子结构\n"]
+        if with_diff:
+            for item in with_diff:
+                ele_blocks.append(f"\n#### {item['task_name']} · 差分电荷\n")
+                ele_blocks.append(
+                    "把完整结构按原子拆成若干分块单独做静态计算（各自独立提交），"
+                    "再用三个 CHGCAR 做电荷密度差分（\u0394\u03c1 = \u03c1(完整) \u2212 \u03a3\u03c1(分块)）。\n\n"
+                )
+                ele_blocks.append(
+                    _md_table(
+                        ["分块", "原子数", "状态", "最后能量 (eV)", "最大受力 (eV/Å)", "检查时间"],
+                        [
+                            [
+                                str(
+                                    block.get("block_label")
+                                    or f"分块{block.get('block')}"
+                                ),
+                                block.get("atoms_count"),
+                                block.get("status_label") or "—",
+                                _fmt(block.get("last_energy_ev"), 6),
+                                _fmt(block.get("force_max_ev_per_a"), 4),
+                                block.get("check_time") or "—",
+                            ]
+                            for block in item["diff_charge"]
+                        ],
+                    )
+                )
+                full_index = item.get("diff_charge_chg_index")
+                ele_blocks.append(
+                    f"CHGCAR 本地文件：`diffcharge_files/chgfiles/` 下 1.."
+                    f"{len(item['diff_charge'])}.vasp = 各分块，**{full_index}.vasp = 完整结构**；"
+                    "差分图（VESTA）放在 `diffcharge_files/images/`（处理逻辑待接入）。\n"
+                )
+        ele_blocks.append(
+            f"\n待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"
         )
+        blocks.append("".join(ele_blocks))
     sections["science"] = "".join(blocks).strip() + "\n"
 
     issues = report["issues"]["items"]
@@ -1177,7 +1250,8 @@ def build_report(
     server = str(project.get("server") or "")
     collection_errors: List[str] = []
 
-    tasks = [t for t in project.get("tasks", []) if not is_continuation_task(t)]
+    # 附属任务（续算子 conN / 差分电荷分块）不进 facts：不单独成行、不计当量、不进统计
+    tasks = [t for t in project.get("tasks", []) if not is_auxiliary_task(t)]
     archived_count = len([t for t in project.get("tasks", []) if t.get("status") == "archived"])
     merged = collect_results()
     submit_times = _submit_times()
@@ -1738,7 +1812,7 @@ def build_report(
             "neb": neb_science,
             "ele": {
                 "note": "电子结构分析（PDOS / Bader / 功函数 / 差分电荷）待接入报告",
-                "tasks": _ele_details(facts),
+                "tasks": _ele_details(project, facts, merged),
             },
             "frac": _frac_details(project, facts),
             "parsing_notes": [

@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import ssh
 from dates import now_iso
 from paths import resolve_remote_path
-from task_paths import task_dir
+from task_paths import local_files_dir, task_dir
 
 SNAPSHOT_FILES = ("INCAR", "KPOINTS", "POSCAR", "CONTCAR")
 CIF_FILES = ("POSCAR", "CONTCAR")
@@ -147,11 +147,14 @@ def snapshot_dir(task: Dict[str, Any]) -> Path:
 
     v0.8.7 前是独立的 `<任务目录>/inputs/` 快照目录；现在合并成一份 —— 与编辑器的
     "生成到本地"、巡检结构同步写的是同一个目录，同步时按最新远端目录覆盖。
+
+    差分电荷分块任务（`local_layout=flat`）直接用任务目录本身（`diffcharge_files/<N>/`）。
     """
     task_with_project = dict(task)
     task_with_project.setdefault("project_name", task.get("project_name", ""))
-    root = task_dir(str(task.get("project_name") or ""), task_with_project)
-    return root / "files"
+    return local_files_dir(
+        str(task_with_project.get("project_name") or ""), task_with_project
+    )
 
 
 def _write_snapshot_file(task: Dict[str, Any], name: str, text: str) -> Path:

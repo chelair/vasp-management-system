@@ -15,7 +15,7 @@ export type TaskStatus =
   | 'archived';
 
 /** 任务类型：固定四种（v0.3.0），流程通过 group 元数据组织 */
-export type TaskType = 'opt' | 'frac' | 'neb' | 'ele';
+export type TaskType = 'opt' | 'frac' | 'neb' | 'ele' | 'ele_diff';
 
 /** ele 类型的后处理子类型 */
 export type EleSubtype = 'pdos' | 'bader' | 'diff_charge' | 'work_function';
@@ -90,6 +90,13 @@ export interface Task {
   group?: GroupMeta | null;
   parent_task_id?: string | null;
   input_source?: InputSource | null;
+  /** 差分电荷分块计算（`task_type=ele_diff`）：块序号 / 块名 / 该块原子（POSCAR 序号 1 起） */
+  ele_block?: number | null;
+  ele_block_label?: string | null;
+  ele_block_atoms?: number[];
+  diff_charge_group?: string | null;
+  /** 本地文件布局：`flat` = 文件直接放任务目录（差分电荷分块），缺省 `<任务>/files/` */
+  local_layout?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -195,6 +202,33 @@ export interface InspectionFracDetail {
   correction?: number | null;
 }
 
+/** 差分电荷分块：巡检详情里挂在 ele 主任务后面的表格（2026-10-13） */
+export interface InspectionDiffChargeBlock {
+  task_id: string;
+  task_name: string;
+  /** 分块序号（1 起，对应远端目录 / 本地 diffcharge_files/<N>/） */
+  block: number;
+  block_label: string | null;
+  atoms_count: number;
+  status: string;
+  has_inspection: boolean;
+  check_time: string | null;
+  last_energy: number | null;
+  force_max: number | null;
+  queue_status: string | null;
+  errors: string[];
+  notes: string;
+  current_output: CurrentOutput | null;
+}
+
+export interface InspectionDiffChargeDetail {
+  group_id: string | null;
+  block_count: number;
+  /** 完整结构 CHGCAR 的本地编号 = 块数 + 1（两块 → 3.vasp） */
+  full_chg_index: number;
+  blocks: InspectionDiffChargeBlock[];
+}
+
 export interface LatticeParams {
   a: number;
   b: number;
@@ -291,6 +325,8 @@ export interface InspectionDetail {
   current_output: CurrentOutput | null;
   /** 自由能组 opt 任务关联的频率矫正子任务数据（无则为 null） */
   frac?: InspectionFracDetail | null;
+  /** 电子结构任务：差分电荷分块（列表不单独展示，详情里用表格呈现） */
+  diff_charge?: InspectionDiffChargeDetail | null;
   /** 电子结构任务可分析内容识别（对应输出文件存在且非空） */
   available_analyses?: {
     pdos: boolean;
@@ -908,6 +944,7 @@ export const TASK_TYPE_LABELS: Record<TaskType, string> = {
   frac: '频率矫正',
   neb: 'NEB 过渡态',
   ele: '电子结构',
+  ele_diff: '差分电荷分块',
 };
 
 export const ELE_SUBTYPE_LABELS: Record<EleSubtype, string> = {

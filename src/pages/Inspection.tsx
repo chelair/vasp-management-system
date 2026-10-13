@@ -1271,6 +1271,90 @@ export default function Inspection() {
               )}
             </div>
 
+            {detailData.diff_charge && (
+              <div className="inspection-detail__section">
+                <h3>差分电荷分块 · {detailData.diff_charge.block_count} 个分块</h3>
+                <p className="preview-note">
+                  各分块在主任务目录下独立提交（<code>/1</code>、<code>/2</code> …）；CHGCAR 拉回本地后
+                  重命名为 <code>diffcharge_files/chgfiles/1..{detailData.diff_charge.block_count}.vasp</code>
+                  （各分块），<code>
+                    {detailData.diff_charge.full_chg_index}.vasp
+                  </code> = 完整结构。
+                </p>
+                <Table
+                  size="small"
+                  rowKey="task_id"
+                  pagination={false}
+                  dataSource={detailData.diff_charge.blocks}
+                  columns={[
+                    {
+                      title: '分块',
+                      dataIndex: 'block_label',
+                      width: 110,
+                      render: (value: string, row) =>
+                        value || `分块${row.block}`,
+                    },
+                    {
+                      title: '原子数',
+                      dataIndex: 'atoms_count',
+                      width: 80,
+                    },
+                    {
+                      title: '状态',
+                      dataIndex: 'status',
+                      width: 110,
+                      render: (value: string, row) =>
+                        row.has_inspection ? (
+                          <StatusTag status={value as TaskStatus} />
+                        ) : (
+                          <Tag>待提交</Tag>
+                        ),
+                    },
+                    {
+                      title: '最近能量 (eV)',
+                      dataIndex: 'last_energy',
+                      width: 140,
+                      render: (value: number | null) =>
+                        value != null ? value.toFixed(6) : '—',
+                    },
+                    {
+                      title: '最大受力 (eV/Å)',
+                      dataIndex: 'force_max',
+                      width: 130,
+                      render: (value: number | null) =>
+                        value != null ? value.toFixed(4) : '—',
+                    },
+                    {
+                      title: '队列',
+                      dataIndex: 'queue_status',
+                      width: 110,
+                      render: (value: string | null) =>
+                        value
+                          ? QUEUE_STATUS_LABELS[value] ?? value
+                          : '—',
+                    },
+                    {
+                      title: '检查时间',
+                      dataIndex: 'check_time',
+                      render: (value: string | null) => value ?? '—',
+                    },
+                    {
+                      title: '错误信息',
+                      dataIndex: 'errors',
+                      render: (value: string[]) =>
+                        value && value.length > 0 ? (
+                          <span className="inspection-msg--clickable">
+                            {value.join('；')}
+                          </span>
+                        ) : (
+                          '—'
+                        ),
+                    },
+                  ]}
+                />
+              </div>
+            )}
+
             {detailData.frac && (
               <div className="inspection-detail__section">
                 <h3>频率矫正 · {detailData.frac.task_name}</h3>

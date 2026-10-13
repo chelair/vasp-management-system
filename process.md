@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-10-13 · 当前版本：v0.9.43（报告注解按口径重做：只在「重点科学结果分析」内，类型一条总的 + 结构优化每子项/NEB 每组/自由能每路径一条，添加/编辑/删除按钮化）
+> 生成时间：2026-08-29 · 最近更新：2026-10-13 · 当前版本：v0.9.44（差分电荷分块计算：作业管理划分子块 → 独立提交 → 巡检详情表 → 归档连带同步 CHGCAR → 报告「电子结构」章节；v0.9.43 报告注解按口径重做）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -49,6 +49,10 @@ data/
 ├── dashboard/
 │   └── core_history.json      # 总览集群采样历史（核数/运行中任务，v0.6.0 起累积）
 ├── projects/                  # 本地项目镜像目录（每个任务一份 files/，见 §3）
+│                              # v0.9.44 起：电子结构任务的差分电荷分块放在
+│                              #   <ele 任务>/diffcharge_files/<N>/（flat，文件直接放这里）
+│                              #   + diffcharge_files/chgfiles/（CHGCAR：1..N.vasp = 分块，N+1.vasp = 完整结构）
+│                              #   + diffcharge_files/images/（VESTA 差分图，处理逻辑待接入）
 ├── reports/                   # 分项目报告（v0.7.0 起）：<项目>/<报告ID>/{report.json,report.md,charts/*.svg} + index.json
 │                              # v0.9.42 起另落 structured/<报告ID>.json（规范化 AI 视图，供后续向量化/RAG）
 ├── knowledge/                 # 知识层（v0.9.42 起人工积累，暂不接推理）：
@@ -145,6 +149,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天；**v0.9.42** 加 `_needed_scope()`（GET→read / `POST /pending-actions`→propose / 其余写→write），**只对带 `scope` 的 token 生效**（人类会话不受影响） |
 | `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期/吊销）；**v0.9.42** 加 `POST /api/auth/users`（建号，支持 `role=agent` + `delegate_to`）与 `scope` 参数 |
 | `pending_actions.py` + `routers/pending_actions.py` | **待确认队列（v0.9.42）**：AI 触发的 confirm 级动作先入队等人批准。`data/pending_actions.json`（原子写 + 锁），状态机 `pending → approved / failed / rejected`；入队时做归属校验；**agent 角色不能 approve/reject**；批准时复用 `automation/actions.py` 的 preflight+execute；提案/批准/驳回各写 `auth.pending-*` 审计 |
+| `ele_diff.py` | **差分电荷分块计算（v0.9.44）**：POSCAR 解析与"按原子取子集"、`plan_blocks`（≥2 块且覆盖全部原子）、`check_incar`（校验 `LCHARG=.TRUE.` / `IBRION=-1`）、`create_block_files`（建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf + pos2pot）、`build_block_task`（`task_type=ele_diff` 子任务记录）、`download_charge_files`（CHGCAR → `chgfiles/<N>.vasp`）、`diff_charge_blocks` |
+| `potcar.py` | **pos2pot 运行器（v0.9.44 抽出）**：把原 `/generate-potcar` 里的单次 exec 脚本（定位最新 conN → 跑 pos2pot → 解析 POTCAR 摘要）抽成 `run_pos2pot()`，支持 `use_latest_con=False`（差分电荷在主目录递归生成）；`PotcarError(kind=no_dir/not_found)` |
 | `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
 | `task_paths.py` | 任务目录推导、`is_continuation_task`、类型→顶层分类目录 |
@@ -248,7 +254,37 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.43）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.44）
+
+- 2026-10-13（用户："完善电子结构部分的结果分析，同时接入巡检和报告生成；首先是差分电荷"）：
+  **差分电荷分块计算打通"创建 → 巡检 → 归档 → 报告"**（v0.9.44）。口径按用户三条确认：
+  ① 分块复用 POSCAR 页那套原子选择（点选 / Ctrl 多选 / Shift 框选），默认两块、可加到 C/D（目录 3/4）；
+  ② INCAR 来自完整结构任务，复制时**校验** `LCHARG=.TRUE.` / `IBRION=-1`（不一致就地改并回报），
+  MAGMOM 暂不动（留后续自动化）；③ 分块在 LSF 上**各自独立提交**，但数据/前端都是**附属任务**
+  （归档跟随主任务、不计当量）。
+  **实现**：新增 `backend/ele_diff.py`（POSCAR 解析/按原子取子集/`plan_blocks` 校验"≥2 块且覆盖全部原子"/
+  建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS·vasp.lsf + 跑 pos2pot + CHGCAR 下载重命名）与
+  `backend/potcar.py`（把原 `/generate-potcar` 的 pos2pot 单次 exec 逻辑抽出，支持
+  `use_latest_con=False` 让差分电荷在主目录递归生成）；`task_paths` 新增 `ELE_DIFF_TYPE/is_ele_diff/
+  is_auxiliary_task/local_files_dir`（`local_layout=flat` = 文件直接放任务目录，对应
+  `diffcharge_files/<N>/`）；新增 `POST /api/jobs/tasks/{id}/create-diff-charge`
+  （`core_create_diff_charge`：登记 `task_type=ele_diff` / `subtype=diff_charge` /
+  `parent_task_id` / `ele_block` / `ele_block_atoms` 子任务）；归档/重开**连带**分块（`archived_siblings`
+  带 `kind=diff_charge`）；归档后台同步里追加"各分块归档文件 + CHGCAR → `chgfiles/<N>.vasp`
+  （1..块数 = 分块，块数+1 = 完整结构）"；`data/config/task_registry.json` + 仓库默认值加 `ele_diff`
+  （`workload_weight=0`，不计当量）。**巡检**：`checks_store` 把附属任务（conN + 分块）统一从清单里排除，
+  `GET /api/inspections/{ele_task_id}` 新增 `diff_charge{group_id, block_count, full_chg_index, blocks[]}`
+  （状态/能量/受力/队列/错误），单任务巡检会自动带上分块。**报告**：facts 排除附属任务，
+  「电子结构」章节新增 `#### <任务名> · 差分电荷` 表（分块/原子数/状态/能量/受力/检查时间 + CHGCAR 编号说明），
+  且只有差分电荷时也会出这一章。**前端**：新增 `EleDetail.tsx`（ele 主任务 + 各分块标签页，头部
+  「差分电荷计算」按钮，与自由能「频率计算」同构）与 `DiffChargeModal.tsx`（复用 `Structure3DFrame`
+  的点选/框选，分块按颜色预览、支持"选中其余原子"快速把剩下的归入下一块、可加/移除分块）；
+  `EleInputModal` 去掉原来灰着的"差分电荷"选项；巡检详情在频率矫正表后面同样加一张"差分电荷分块"表。
+  **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
+  元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
+  MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；
+  报告出"电子结构 · 差分电荷"表；`tsc` + `npm run build` 通过。**未做**（用户："数据处理逻辑稍后写"）：
+  差分图的 VESTA 渲染（`diffcharge_files/images/`）与报告里的图。
 
 - 2026-10-13（用户："结果分析与论文参考只在科学结果分析中，每个类型任务可添加一个总的；结构优化每个子项都可添加，
   自由能路径/neb 每个组可添加一个，电子结构暂时不动；添加分析弄成按钮，可编辑/删除"）：

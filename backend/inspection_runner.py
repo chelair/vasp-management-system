@@ -22,7 +22,7 @@ from continuation import compute_g_correction
 from dates import now_iso
 from paths import to_remote_rel
 from storage import db_transaction, get_project, load_db, update_task_status
-from task_paths import task_dir, task_remote_dir
+from task_paths import local_files_dir, task_dir, task_remote_dir
 
 SKIPPED_STATUSES = ("pending", "archived")
 STRUCTURE_OPT_TYPE = "opt"
@@ -111,6 +111,12 @@ def _plan_batches(
             )
             if frac_task is not None:
                 targets.append(frac_task)
+        # 电子结构单任务巡检：顺带检查其差分电荷分块子任务（分块是附属任务，
+        # 列表里不单独成行，但状态要在 ele 详情里显示）
+        if str(task.get("task_type") or "") == "ele":
+            from ele_diff import diff_charge_blocks
+
+            targets.extend(diff_charge_blocks(project, task))
         return (
             [
                 {
@@ -243,7 +249,7 @@ def _sync_and_convert_structure(
     界面/本地镜像每次都按主目录刷新，看起来"没同步 con1 的 POSCAR"）。
     """
     markers: List[str] = []
-    local_files = task_dir(project["name"], task) / "files"
+    local_files = local_files_dir(project["name"], task)
     local_files.mkdir(parents=True, exist_ok=True)
     remote_dir = task_remote_dir(project["server"], task).rstrip("/")
 

@@ -572,7 +572,8 @@ export default function PdosPanel({ taskId, taskName }: Props) {
             )}
           </div>
         )}
-        {status === 'idle' && !view && (
+        {/* 没有数据时才给「开始分析」—— 注意要排除"已有结果但还没点查看图表"那种情况（上面那块） */}
+        {status === 'idle' && !view && !hasData && (
           <div className="pdos-empty">
             <p>该任务还没有 PDOS 分析结果。</p>
             <Button type="primary" onClick={() => void runAnalysis(false)}>

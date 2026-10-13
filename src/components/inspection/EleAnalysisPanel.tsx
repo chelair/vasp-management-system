@@ -10,6 +10,8 @@ interface Props {
 /** 电子结构任务分析面板：基础信息 + 可分析内容识别 + 分析入口 */
 export default function EleAnalysisPanel({ detail }: Props) {
   const [pdosOpen, setPdosOpen] = useState(false);
+  /** 点「PDOS · 开始分析」进来的 → 没有结果时自动开跑；其它入口只展示 */
+  const [pdosAutoStart, setPdosAutoStart] = useState(false);
   const aa = detail.available_analyses;
 
   const items = [
@@ -44,7 +46,10 @@ export default function EleAnalysisPanel({ detail }: Props) {
               <Button
                 disabled={disabled}
                 onClick={() => {
-                  if (it.key === 'pdos') setPdosOpen(true);
+                  if (it.key !== 'pdos') return;
+                  // 点「PDOS · 开始分析」= 明确要分析：有结果直接看，没有就开跑
+                  setPdosAutoStart(true);
+                  setPdosOpen(true);
                 }}
               >
                 {it.label}
@@ -58,7 +63,11 @@ export default function EleAnalysisPanel({ detail }: Props) {
         open={pdosOpen}
         taskId={detail.task_id}
         taskName={detail.model_name}
-        onClose={() => setPdosOpen(false)}
+        autoStart={pdosAutoStart}
+        onClose={() => {
+          setPdosOpen(false);
+          setPdosAutoStart(false);
+        }}
       />
     </div>
   );

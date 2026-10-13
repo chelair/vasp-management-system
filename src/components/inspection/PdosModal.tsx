@@ -11,9 +11,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Checkbox, InputNumber, Segmented, Spin, Tree, Tooltip } from 'antd';
+import { App, Button, Checkbox, InputNumber, Popover, Segmented, Spin, Tree, Tooltip } from 'antd';
 import type { DataNode } from 'antd/es/tree';
-import { ReloadOutlined, SaveOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { DownOutlined, ReloadOutlined, SaveOutlined, UnorderedListOutlined } from '@ant-design/icons';
 
 import { clearPdos, fetchPdosData, fetchPdosStatus, triggerPdos } from '../../api/jobs';
 import type { PdosTreeNode, PdosView } from '../../types';
@@ -23,6 +23,8 @@ interface Props {
   open: boolean;
   taskId: string;
   taskName?: string;
+  /** 点「PDOS · 开始分析」进来的：没有结果就直接开始跑；从别处打开只展示 */
+  autoStart?: boolean;
   onClose: () => void;
 }
 
@@ -41,7 +43,7 @@ interface CurveEntry {
 const LEVEL_WIDTH: Record<number, number> = { 1: 3, 2: 1.8, 3: 1.2 };
 const SPIN_LABEL: Record<string, string> = { up: '↑', down: '↓', total: '' };
 
-export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
+export default function PdosModal({ open, taskId, taskName, autoStart = false, onClose }: Props) {
   const { message } = App.useApp();
   const ref = useRef<HTMLDialogElement | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -112,7 +114,7 @@ export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
     [taskId, stopPolling, loadData],
   );
 
-  // 打开：已有结果直接画；没有就跑一次
+  // 打开：已有结果直接画；没有的话——点按钮进来的才自动开跑，否则等用户点「开始分析」
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -127,7 +129,26 @@ export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
           setCheckedKeys(['total']);
         }
       } catch {
-        if (!cancelled) await runAnalysis(false);
+        if (cancelled) return;
+        // 没有结果：先看上一次是不是失败了 —— 失败就把原因摆出来等用户点重试，别反复占远端算力
+        let lastFailed = false;
+        let lastError = '';
+        try {
+          const st = await fetchPdosStatus(taskId);
+          lastFailed = st.status === 'failed' && st.has_data !== true;
+          lastError = st.error || '';
+        } catch {
+          lastFailed = false;
+        }
+        if (cancelled) return;
+        if (lastFailed) {
+          setStatus('failed');
+          setError(lastError || '上次分析失败');
+        } else if (autoStart) {
+          await runAnalysis(false);
+        } else {
+          setStatus('idle');
+        }
       }
     })();
     return () => {
@@ -135,7 +156,7 @@ export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
       stopPolling();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, taskId]);
+  }, [open, taskId, autoStart]);
 
   useEffect(() => {
     const dialog = ref.current;
@@ -375,42 +396,67 @@ export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
           </div>
         )}
         {status === 'done' && view && (
-          <div className="pdos-layout">
-            <div className="pdos-menu">
-              <div className="pdos-menu__head">
-                <UnorderedListOutlined /> 轨道选择
-              </div>
-              <Tree
-                checkable
-                blockNode
-                treeData={treeData}
-                defaultExpandedKeys={defaultExpandedKeys}
-                checkedKeys={checkedKeys}
-                onCheck={(keys) =>
-                  setCheckedKeys(
-                    (Array.isArray(keys) ? keys : keys.checked).map(String),
-                  )
+          <div className="pdos-main">
+            <div className="pdos-toolbar">
+              <Popover
+                trigger="click"
+                placement="bottomLeft"
+                title="轨道选择"
+                content={
+                  <div className="pdos-menu-pop">
+                    <Tree
+                      checkable
+                      checkStrictly
+                      blockNode
+                      treeData={treeData}
+                      defaultExpandedKeys={defaultExpandedKeys}
+                      checkedKeys={checkedKeys}
+                      onCheck={(keys) =>
+                        setCheckedKeys((Array.isArray(keys) ? keys : keys.checked).map(String))
+                      }
+                    />
+                    <p className="pdos-menu__hint">
+                      勾哪条画哪条：点 p 只画 p，px/py/pz 要单独勾
+                    </p>
+                  </div>
                 }
-              />
-              {meta?.has_projection === false && (
-                <p className="pdos-menu__hint">该算例没有投影态密度（只算了总态密度）</p>
-              )}
-              {meta?.has_projection && meta?.has_fine_orbitals === false && (
-                <p className="pdos-menu__hint">该算例没有方向投影（dxy/dx²−y² 等），只到元素轨道这一级</p>
-              )}
+              >
+                <Button size="small" icon={<UnorderedListOutlined />}>
+                  轨道选择（已选 {checkedKeys.length}）<DownOutlined style={{ fontSize: 10 }} />
+                </Button>
+              </Popover>
+              <span className="pdos-legend">
+                {curves
+                  .slice(0, 8)
+                  .map((curve) => (
+                    <span key={curve.id} className="pdos-legend__item">
+                      <span className="pdos-legend__dot" style={{ background: curve.color }} />
+                      {curve.name}
+                    </span>
+                  ))}
+                {curves.length > 8 ? (
+                  <span className="pdos-legend__more">等 {curves.length} 条</span>
+                ) : null}
+              </span>
             </div>
             <div className="pdos-chart">
               <div className="pdos-chart__canvas" ref={containerRef} />
-              {curves.length === 0 && (
-                <p className="pdos-chart__empty">左侧至少勾选一条曲线</p>
-              )}
+              {curves.length === 0 && <p className="pdos-chart__empty">至少勾选一条曲线</p>}
             </div>
+            {meta?.has_projection === false && (
+              <p className="pdos-menu__hint">该算例没有投影态密度（只算了总态密度）</p>
+            )}
           </div>
         )}
         {status === 'idle' && !view && (
-          <div className="pdos-progress">
-            <Spin size="small" />
-            <span>准备中…</span>
+          <div className="pdos-empty">
+            <p>该任务还没有 PDOS 分析结果。</p>
+            <Button type="primary" onClick={() => void runAnalysis(false)}>
+              开始分析
+            </Button>
+            <p className="pdos-menu__hint">
+              会在远端任务目录用 vaspkit 提取态密度，只回传整合后的数据（约 10–60 秒）
+            </p>
           </div>
         )}
       </div>

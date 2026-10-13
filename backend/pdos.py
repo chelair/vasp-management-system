@@ -159,6 +159,20 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
 
     # 二级 / 三级：元素 → 轨道 →（p/d）方向
     partial_grid = "partial" if energy.get("partial_energy_grid") else "total"
+    def has_signal(buckets: Optional[Dict[str, List[float]]]) -> bool:
+        """这个轨道/方向有没有真实数据：**全零就不建节点**。
+
+        VASPKIT 的投影 DOS 对每个元素都给满 s/py/pz/px/dxy… 全部列，
+        没有 d 电子的元素（例如 S）d 列全 0 —— 用户口径：这种不要出现在菜单里
+        （2026-10-13 反馈："S 没有 d 轨道还是导出了 d 轨道"）。
+        """
+        if not buckets:
+            return False
+        for values in buckets.values():
+            if any(abs(float(v)) > 1e-6 for v in values or []):
+                return True
+        return False
+
     for element in sorted(orbital_dos.keys()):
         buckets_by_orbital = orbital_dos[element]
         element_node: Dict[str, Any] = {
@@ -170,7 +184,7 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
         }
         for orbital in ORBITALS:
             orbital_buckets = buckets_by_orbital.get(orbital)
-            if not orbital_buckets:
+            if not has_signal(orbital_buckets):
                 continue
             orbital_node: Dict[str, Any] = {
                 "key": f"el:{element}:{orbital}",
@@ -188,7 +202,7 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
             # 三级：只有 p / d 分方向
             for direction, label in DIRECTIONS.get(orbital, []):
                 direction_buckets = buckets_by_orbital.get(direction)
-                if not direction_buckets:
+                if not has_signal(direction_buckets):
                     continue
                 direction_node: Dict[str, Any] = {
                     "key": f"el:{element}:{orbital}:{direction}",
@@ -210,10 +224,12 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
         if element_node["children"]:
             tree.append(element_node)
 
-    has_projection = bool(orbital_dos)
+    # 元素列表与"有没有投影"都按**过滤后**的菜单树算（全零的轨道/元素不进树）
+    tree_elements = [node["label"] for node in tree if str(node.get("key", "")).startswith("el:")]
+    has_projection = bool(tree_elements)
     has_fine = bool(
         any(
-            buckets_by_orbital.get(direction)
+            has_signal(buckets_by_orbital.get(direction))
             for buckets_by_orbital in orbital_dos.values()
             for orbital in DIRECTIONS
             for direction, _ in DIRECTIONS[orbital]
@@ -226,7 +242,7 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
             "generated_at": meta.get("generated_at") or now_iso(),
             "efermi": energy.get("efermi"),
             "spin_polarized": spin,
-            "elements": sorted(orbital_dos.keys()) or sorted(element_dos.keys()),
+            "elements": tree_elements or sorted(element_dos.keys()),
             "nedos": energy.get("nedos"),
             "points": len(energy.get("energy_grid") or []),
             "partial_points": len(energy.get("partial_energy_grid") or []),

@@ -150,6 +150,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期/吊销）；**v0.9.42** 加 `POST /api/auth/users`（建号，支持 `role=agent` + `delegate_to`）与 `scope` 参数 |
 | `pending_actions.py` + `routers/pending_actions.py` | **待确认队列（v0.9.42）**：AI 触发的 confirm 级动作先入队等人批准。`data/pending_actions.json`（原子写 + 锁），状态机 `pending → approved / failed / rejected`；入队时做归属校验；**agent 角色不能 approve/reject**；批准时复用 `automation/actions.py` 的 preflight+execute；提案/批准/驳回各写 `auth.pending-*` 审计 |
 | `ele_diff.py` | **差分电荷分块计算（v0.9.44）**：POSCAR 解析与"按原子取子集"、`plan_blocks`（≥2 块且覆盖全部原子）、`check_incar`（校验 `LCHARG=.TRUE.` / `IBRION=-1` / `ISTART=0` / `ICHARG=2`）、`create_block_files`（建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf + pos2pot）、`build_block_task`（`task_type=ele_diff` 子任务记录）、`download_charge_files`（CHGCAR → `chgfiles/<N>.vasp`）、`diff_charge_blocks` |
+| `pdos.py` | **PDOS 分析链路（v0.9.45）**：`start()` 起后台线程（上传 `scripts/dos_extract.py` → 远端 `--quiet` 跑 → 回传 `dos.json`）返回 run_id、`status()` 轮询、`load_view()` 解析成三级菜单树 + 曲线（文件指纹内存缓存）、`clear()` 清除；产物 `<任务>/pdos/{dos.json,meta.json}`；`build_view()` 只对 **p、d** 生成方向投影子级 |
 | `potcar.py` | **pos2pot 运行器（v0.9.44 抽出）**：把原 `/generate-potcar` 里的单次 exec 脚本（定位最新 conN → 跑 pos2pot → 解析 POTCAR 摘要）抽成 `run_pos2pot()`，支持 `use_latest_con=False`（差分电荷在主目录递归生成）；`PotcarError(kind=no_dir/not_found)` |
 | `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
@@ -361,6 +362,26 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   因此「生成所有项目」与**每日自动报告**都不再为已关闭项目重算（关闭后没有新数据）；
   单个项目仍可显式指定生成；all 请求下若一个可生成的都没有，返回"没有需要生成报告的项目"
   而不是 400 参数错误。实测：6 个项目（3 开 3 关）→ all 只解析出 3 个未关闭项目。
+  ⑬ **PDOS 分析链路重建（2026-10-13，用户提示词；先审查后动手）**：**删除**旧的同步接口
+  `POST /jobs/tasks/{id}/analysis/pdos`（把 vaspkit 输入管道喂远端、把 `*.dat` 拉到
+  `files/analysis/`、前端只显示文件名，**没有任何解析与画图**；审查确认该目录与 `analyzePdos`
+  没有其它消费方）。**新链路**：`backend/pdos.py` + 四个接口
+  （`POST .../pdos/analyze` 返回 run_id / `GET .../pdos/status` 轮询 / `GET .../pdos` 取数据 /
+  `DELETE .../pdos` 清除重跑）。① **远端**：把 `scripts/dos_extract.py`（今天的提取脚本，核心逻辑未改）
+  上传到 ele 任务远端目录执行 `--quiet`，只回传**整合数据** `dos.json`（vaspkit 原始 `.dat` 不回传，
+  实测远端任务目录里 `.dat` 数量 0）；② **本地**：`<任务>/pdos/{dos.json,meta.json}`，
+  解析成"三级菜单树 + 曲线"并按文件指纹做内存缓存，失败时把原因写进 meta；
+  ③ **前端**：重写 `PdosModal.tsx`（原生 `<dialog>`，≤720px 全屏）= 左三级可勾选树（一级总态密度 /
+  二级元素×s,p,d / 三级只对 **p、d** 分方向：px/py/pz 与 dxy/dyz/dz2/dxz/dx²−y²）+ 右 ECharts 折线
+  （横轴相对 E_F、零点竖直虚线、Intensity、自旋默认**镜像**布局可切叠加、up 实线/down 虚线、
+  线宽按层级、悬停 axis 提示、图例可点、底部 E_F 数值 + 范围 −10~10/自适应 + 重置 + 导出 PNG +
+  重新分析）；`EleAnalysisPanel` 按钮改名为「PDOS · 开始分析」并顺手去掉已落地的"差分电荷（开发中）"占位。
+  **依赖**：仅在同一 `echarts` 包里多注册 `AxisPointerComponent`（十字准线），无新增第三方依赖
+  （见 DEPENDENCIES.md §5）。**实测**：真实 ele 任务 `FS_Kaolin/ele/model1`（ISPIN=2/LORBIT=11）
+  触发 → 轮询 25~30s → done，树为 总态密度 + Fe/S（含 s/p/d 与 5 个 d 方向），46 条曲线，
+  E_F −0.9138；清除后取数据 404 ✓；重复触发 `reused=true` ✓；非自旋样本（ISPIN=1）解析出单条曲线 ✓；
+  仅总态密度的样本树里只有"总态密度" ✓；远端失败（目录里没有 DOSCAR）→ status=failed +
+  完整错误信息 `找不到 DOSCAR：<路径>` 写进 meta ✓；普通账号访问他人任务四个接口全 403 ✓。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

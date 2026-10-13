@@ -13,11 +13,10 @@ export default function EleAnalysisPanel({ detail }: Props) {
   const aa = detail.available_analyses;
 
   const items = [
-    { key: 'pdos', label: 'PDOS', available: aa?.pdos ?? false, reason: '需要 DOSCAR' },
+    { key: 'pdos', label: 'PDOS · 开始分析', available: aa?.pdos ?? false, reason: '需要 DOSCAR' },
     { key: 'bader', label: 'Bader', available: aa?.bader ?? false, reason: '需要 AECCAR0/1/2' },
     { key: 'cohp', label: 'COHP', available: aa?.cohp ?? false, reason: '开发中' },
     { key: 'work_function', label: '功函数', available: aa?.work_function ?? false, reason: '开发中' },
-    { key: 'diff_charge', label: '差分电荷', available: false, reason: '开发中' },
   ];
 
   return (
@@ -55,7 +54,12 @@ export default function EleAnalysisPanel({ detail }: Props) {
           );
         })}
       </div>
-      <PdosModal open={pdosOpen} taskId={detail.task_id} onCancel={() => setPdosOpen(false)} />
+      <PdosModal
+        open={pdosOpen}
+        taskId={detail.task_id}
+        taskName={detail.model_name}
+        onClose={() => setPdosOpen(false)}
+      />
     </div>
   );
 }

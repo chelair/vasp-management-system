@@ -3174,6 +3174,204 @@ body.is-atom-selecting * {
   }
 }
 
+/* ---------- PDOS 分析弹窗（2026-10-13 链路重建）：左菜单 + 右折线，小屏全屏 ---------- */
+
+dialog.pdos-dialog {
+  width: min(1180px, 95vw);
+  height: min(86vh, 900px);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+
+dialog.pdos-dialog[open] {
+  display: flex;
+}
+
+dialog.pdos-dialog .body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px 14px 6px;
+}
+
+.pdos-layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.pdos-menu {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  padding: 6px 4px 8px;
+  overflow: auto;
+  background: #fbfcfe;
+}
+
+.pdos-menu__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.pdos-menu__hint {
+  margin: 8px 10px 2px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+.pdos-menu .ant-tree {
+  background: transparent;
+  font-size: 13px;
+}
+
+.pdos-menu .ant-tree .ant-tree-node-content-wrapper {
+  min-height: 32px;
+  line-height: 32px;
+}
+
+.pdos-tree__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pdos-tree__title--l1 {
+  font-weight: 600;
+}
+
+.pdos-tree__title--l3 {
+  color: var(--color-text-secondary);
+}
+
+.pdos-tree__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.pdos-chart {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.pdos-chart__canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+}
+
+.pdos-chart__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.pdos-progress,
+.pdos-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 20px;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.pdos-error {
+  flex-direction: column;
+  color: #c0392b;
+}
+
+.pdos-error__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.pdos-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-border-soft);
+  background: #fafbfd;
+}
+
+.pdos-footer__meta {
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.pdos-footer__range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.pdos-footer__actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .pdos-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(120px, 34%) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  dialog.pdos-dialog {
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+    margin: 0;
+  }
+
+  .pdos-footer {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .pdos-footer__actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .pdos-footer__actions .ant-btn {
+    flex: 1;
+    min-height: 40px;
+  }
+
+  .pdos-menu .ant-tree .ant-tree-node-content-wrapper {
+    min-height: 40px;
+    line-height: 40px;
+  }
+}
+
 @media (max-width: 640px) {
   .app-content {
     padding: 16px;
@@ -5081,7 +5279,8 @@ button.report-chip {
 
 dialog.project-edit-dialog,
 dialog.note-edit-dialog,
-dialog.outcar-tail-dialog {
+dialog.outcar-tail-dialog,
+dialog.pdos-dialog {
   width: min(680px, 94vw);
   max-height: 92vh;
   padding: 0;
@@ -5093,13 +5292,15 @@ dialog.outcar-tail-dialog {
 
 dialog.project-edit-dialog::backdrop,
 dialog.note-edit-dialog::backdrop ,
-dialog.outcar-tail-dialog::backdrop {
+dialog.outcar-tail-dialog::backdrop,
+dialog.pdos-dialog::backdrop {
   background: rgba(16, 26, 44, 0.55);
 }
 
 dialog.project-edit-dialog header,
 dialog.note-edit-dialog header ,
-dialog.outcar-tail-dialog header {
+dialog.outcar-tail-dialog header,
+dialog.pdos-dialog header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -5110,14 +5311,16 @@ dialog.outcar-tail-dialog header {
 
 dialog.project-edit-dialog h3,
 dialog.note-edit-dialog h3 ,
-dialog.outcar-tail-dialog h3 {
+dialog.outcar-tail-dialog h3,
+dialog.pdos-dialog h3 {
   margin: 0;
   font-size: 15px;
 }
 
 dialog.project-edit-dialog .close,
 dialog.note-edit-dialog .close ,
-dialog.outcar-tail-dialog .close {
+dialog.outcar-tail-dialog .close,
+dialog.pdos-dialog .close {
   min-width: 44px;
   min-height: 44px;
   border: none;
@@ -5131,7 +5334,8 @@ dialog.outcar-tail-dialog .close {
 
 dialog.project-edit-dialog .body,
 dialog.note-edit-dialog .body ,
-dialog.outcar-tail-dialog .body {
+dialog.outcar-tail-dialog .body,
+dialog.pdos-dialog .body {
   padding: 14px 16px 4px;
   overflow: auto;
   max-height: calc(92vh - 132px);

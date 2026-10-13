@@ -336,7 +336,8 @@ body: {
 | 组 | `POST /groups` · `POST /groups/{id}/structures` · `POST /groups/tasks` | 建自由能/NEB 组、加结构、建独立任务 |
 | 报告 | `POST /reports/project/generate` (`{project_id?, all?}`) · `GET /reports/project/list` · `/{id}` · `/{id}/structured` · `/{id}/markdown` · `/{id}/export.html` · `DELETE /{id}` | 分项目报告（同项目重生成覆盖） |
 | 配置 | `PUT /settings/root-paths` · `PUT /path-mapping` · `POST /path-mapping/rebase` · `PUT /ssh/config` · `POST /ssh/test` | 运维类，**权限敏感** |
-| 分析 | `POST /jobs/tasks/{id}/analysis/pdos` · `/calculate-correction` | PDOS / 自由能矫正项 |
+| 分析 | `POST /jobs/tasks/{id}/pdos/analyze` · `GET /jobs/tasks/{id}/pdos/status` · `GET /jobs/tasks/{id}/pdos` · `DELETE /jobs/tasks/{id}/pdos` | **PDOS 分析（v0.9.45 重建）**：异步触发（返回 `run_id`）→ 轮询 → 取解析数据 → 清除重跑；见 §4.5 |
+| 分析 | `POST /jobs/tasks/{id}/calculate-correction` | 自由能矫正项（vaspkit 501） |
 | 结构转换 | `POST /tools/cif-to-poscar` | CIF → POSCAR（`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；纯文本不落盘，页面「导入 POSCAR」选 .cif 走的就是它；解析失败 400 带中文原因） |
 
 > 未列全的请求体字段以 `/docs`（Swagger）为准；本文档只覆盖接入常用面。
@@ -475,6 +476,40 @@ body: {
   「重新计时」（等价于重新保存该规则），或对同一规则 `PUT` 一次。
 - 两种模式都支持「立即触发」：`POST /api/automation/rules/{id}/run`。全局开关在 `data/config/automation.json`：
 `{enabled, dry_run, schedules_enabled, disabled_rules, failure_threshold}`。
+
+## 4.4b PDOS 分析链路（v0.9.45 重建，仅电子结构任务）
+
+> 入口：**巡检详情 → 电子结构任务的「PDOS · 开始分析」**。链路 = 远端 vaspkit 提取 → 整合数据回传
+> → 本地解析成"菜单树 + 曲线" → 前端画图。**vaspkit 的原始 `.dat` 不回传**（远端临时目录跑完即清），
+> 本地只存一个整合数据文件 + 一个轻量元数据。
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /api/jobs/tasks/{id}/pdos/analyze` | **异步触发**：上传 `scripts/dos_extract.py` 到任务远端目录并执行（`vaspkit -task 111/113`），整合 JSON 回传本地。返回 `{run_id, status, reused}`；同一任务已有分析在跑时 `reused=true`（不会并发跑两遍） |
+| `GET /api/jobs/tasks/{id}/pdos/status?run_id=` | 轮询：`{run_id, status: idle/running/done/failed, error, has_data, meta}`；`run_id` 可省（取该任务当前/最近一次） |
+| `GET /api/jobs/tasks/{id}/pdos` | 解析结果 `{meta, energy:{total,partial}, tree, series}`；**没分析过返回 404**（前端据此显示"开始分析"）。`meta` 含 `efermi / spin_polarized / elements / has_projection / has_fine_orbitals / notes` |
+| `DELETE /api/jobs/tasks/{id}/pdos` | 清除本地结果（`pdos/dos.json` + `meta.json` + 内存缓存/运行状态），便于重新分析 |
+
+**存与解析**：`<任务本地目录>/pdos/dos.json`（远端回传的整合数据，唯一大文件）+
+`pdos/meta.json`（分析时间、run_id、费米能级、自旋、元素、文件字节数、失败原因）；
+解析结果按文件指纹缓存在内存（同一文件不重复解析），首次分析时同步写元数据。
+**权限**：四个接口都走 `_resolve_task`，越权一律 403。
+
+**菜单树三级**（用户口径：一级总态密度 / 二级元素×轨道 / 三级只对 p、d 分方向）：
+
+```
+total                          总态密度（自旋时 up/down 两条）
+el:Fe                          （元素节点，仅分组）
+  el:Fe:s  el:Fe:p  el:Fe:d    （轨道；p/d 还有下一级）
+  el:Fe:d:dxy / dyz / dz2 / dxz / dx2      （方向投影，界面显示 dx²−y²）
+```
+
+曲线数值放在顶层 `series`（`id → {grid, values}`），`grid` 指向 `energy.total`（总态密度，点数 = NEDOS）
+或 `energy.partial`（元素/轨道投影，已按用户要求**丢弃 EMIN 首行**，比总态密度少 1 点）。
+能量为**绝对能量**（提取脚本已把 vaspkit 的 `E−Efermi` 校正回来）；前端画图时减 `meta.efermi`
+得到相对费米能级的横轴。
+
+---
 
 ## 4.5 待确认队列：AI 提案 → 人工批准（v0.9.42）
 

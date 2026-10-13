@@ -56,6 +56,7 @@ from ele_diff import (
 from envelope import fail, ok
 from incar import modify_incar
 import permissions
+import pdos
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
 import ssh
 from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
@@ -2496,87 +2497,80 @@ def upload_kpoints(task_id: str, payload: dict = Body(default={})):
         return JSONResponse(status_code=500, content=fail(f"上传 KPOINTS 失败：{e}"))
 
 
-@router.post("/tasks/{task_id}/analysis/pdos")
-def analyze_pdos(task_id: str, payload: dict = Body(default={})):
-    """PDOS 分析：远端执行 vaspkit 111/113/115，生成文件下载回本地 files/analysis/。"""
+@router.post("/tasks/{task_id}/pdos/analyze")
+def pdos_analyze(task_id: str):
+    """触发 **PDOS 分析**（异步）：远端跑 vaspkit 提取脚本 → 整合数据回传本地。
+
+    返回 `{run_id, status, reused}`；前端拿 run_id 轮询 `GET .../pdos/status`。
+    同一任务已有分析在跑时直接复用那个 run（不会并发跑两遍）。
+    """
     try:
         project, task = _resolve_task(task_id)
         if task.get("task_type") != "ele":
             return JSONResponse(status_code=400, content=fail("仅电子结构任务支持 PDOS 分析"))
-        server = project.get("server")
-        remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
-        if not remote_dir:
+        if not resolve_remote_path(project.get("server"), task.get("remote_dir", "")):
             return JSONResponse(status_code=404, content=fail("任务缺少远程目录"))
-        mode = int(payload.get("mode", 111))
-        if mode not in (111, 113, 115):
-            return JSONResponse(status_code=400, content=fail("mode 仅支持 111 / 113 / 115"))
-        groups = payload.get("groups") or []
-        if mode == 115 and not groups:
-            return JSONResponse(status_code=400, content=fail("自定义分析需提供至少一组元素与轨道"))
-
-        lines = [str(mode)]
-        if mode == 115:
-            for g in groups:
-                elem = str(g.get("elements", "")).strip()
-                orb = str(g.get("orbitals", "")).strip()
-                if elem:
-                    lines.append(f"{elem} {orb}".strip())
-            lines.append("")
-        else:
-            lines.append("")
-        input_text = "\n".join(lines) + "\n"
-        escaped = input_text.replace("\\", "\\\\").replace('"', '\\"')
-        result = ssh.run_remote(
-            server,
-            f'bash -c \'cd "{remote_dir}" && printf "{escaped}" | vaspkit\'',
-            timeout=180,
-        )
-        raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
-        if result.get("exit_code") != 0:
-            return JSONResponse(
-                status_code=500,
-                content=fail(f"vaspkit 执行失败：{raw or '未知错误'}"),
-            )
-
-        # 收集远端 *.dat 文件下载到本地 files/analysis/
-        from task_paths import task_dir
-
-        local_analysis = task_dir(project.get("name", ""), task) / "files" / "analysis"
-        local_analysis.mkdir(parents=True, exist_ok=True)
-        ls = ssh.run_remote(
-            server,
-            f'bash -c \'ls -1 "{remote_dir}"/*.dat 2>/dev/null\'',
-            timeout=30,
-        )
-        downloaded = []
-        for name in (ls.get("stdout") or "").splitlines():
-            name = name.strip()
-            if not name:
-                continue
-            local = local_analysis / Path(name).split("/")[-1]
-            if ssh.download_file(server, f"{remote_dir}/{name}", str(local)):
-                downloaded.append(str(local))
-        _audit_log(
-            project["name"],
-            task_id,
-            remote_dir,
-            f"pdos mode={mode}",
-            f"OK files={len(downloaded)}",
-        )
-        return ok(
-            "PDOS 分析完成",
-            {
-                "mode": mode,
-                "files": downloaded,
-                "raw": raw[:800],
-            },
-        )
+        started = pdos.start(project, task)
+        _audit_log(project["name"], task_id, str(task.get("remote_dir") or ""), "pdos-analyze",
+                   f"OK run={started['run_id']} reused={started.get('reused')}")
+        return ok("已开始 PDOS 分析", started)
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
     except permissions.PermissionDenied:
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
-    except Exception as e:
-        return JSONResponse(status_code=500, content=fail(f"PDOS 分析失败：{e}"))
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"触发 PDOS 分析失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/pdos/status")
+def pdos_status(task_id: str, run_id: str = Query(default="")):
+    """轮询 PDOS 分析状态：`{run_id, status: running|done|failed|idle, error, has_data, meta}`。"""
+    try:
+        project, task = _resolve_task(task_id)
+        return ok("查询成功", pdos.status(str(project.get("name") or ""), task, run_id))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"查询 PDOS 状态失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/pdos")
+def pdos_data(task_id: str, refresh: bool = Query(default=False)):
+    """PDOS 解析结果（菜单树 + 曲线）：`{meta, energy, tree, series}`。
+
+    没分析过返回 404（前端据此显示「开始分析」按钮）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        view = pdos.load_view(str(project.get("name") or ""), task, refresh=refresh)
+        return ok("查询成功", view)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except pdos.PdosError as e:
+        return JSONResponse(status_code=e.status, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取 PDOS 数据失败：{e}"))
+
+
+@router.delete("/tasks/{task_id}/pdos")
+def pdos_clear(task_id: str):
+    """清除本地 PDOS 分析结果（数据 + 元数据 + 内存缓存），便于重新分析。"""
+    try:
+        project, task = _resolve_task(task_id)
+        result = pdos.clear(str(project.get("name") or ""), task)
+        _audit_log(project["name"], task_id, str(task.get("remote_dir") or ""), "pdos-clear",
+                   f"OK removed={','.join(result.get('removed') or []) or '-'}")
+        return ok("已清除 PDOS 分析结果", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"清除 PDOS 结果失败：{e}"))
 
 
 @router.post("/tasks/{task_id}/calculate-correction")

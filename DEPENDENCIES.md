@@ -182,6 +182,10 @@ ruamel.yaml`（以及 matplotlib/pandas/requests 各自的子依赖）。
 - `npm audit` 保持 0 漏洞（历史记录）。
 - 3Dmol 测试页（`vasp-3dmol-test/`）：纯静态页面，`3Dmol-min.js` 已本地化
   （512 KB），双击 `index.html` 即可，无需安装任何包；仅要求浏览器支持 WebGL。
+- **ECharts 按需注册组件**（2026-10-13，PDOS 折线用到十字准线）：`src/components/dashboard/useEcharts.ts`
+  里 `echarts.use([...])` 新增 `AxisPointerComponent`（`tooltip.axisPointer.type='cross'` 需要它）。
+  **没有新增第三方依赖**，只是同一个 `echarts` 包内多注册一个组件；能量范围改用两个
+  `InputNumber`（默认 −10~10 + 自适应），所以没有引 `DataZoomComponent`。
 
 ## 6. 安装命令汇总
 

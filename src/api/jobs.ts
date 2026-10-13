@@ -8,6 +8,8 @@ import {
 import type {
   ClusterSnapshot,
   IncarPreset,
+  PdosStatus,
+  PdosView,
   QueueOption,
   ScriptFormat,
   SubmitScriptOptions,
@@ -502,19 +504,35 @@ export async function copyIncarParamsToTasks(
   );
 }
 
-/** PDOS 分析：远端 vaspkit 111/113/115 生成文件并回传本地 */
-export async function analyzePdos(
+/* ---------------- PDOS 分析链路（2026-10-13 重建：触发 → 轮询 → 数据 → 清除） ---------------- */
+
+/** 触发 PDOS 分析（异步）：远端跑 vaspkit 提取脚本，整合数据回传本地 */
+export async function triggerPdos(
   taskId: string,
-  payload: {
-    mode: number;
-    groups?: { elements: string; orbitals: string }[];
-  },
-): Promise<{ mode: number; files: string[]; raw: string }> {
-  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/analysis/pdos`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+): Promise<{ run_id: string; status: string; reused: boolean }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/pdos/analyze`, { method: 'POST' });
+}
+
+/** 轮询 PDOS 分析状态（run_id 可省：取该任务当前/最近一次） */
+export async function fetchPdosStatus(
+  taskId: string,
+  runId?: string,
+): Promise<PdosStatus> {
+  const suffix = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/pdos/status${suffix}`);
+}
+
+/** PDOS 解析结果（菜单树 + 曲线）；没分析过时后端返回 404 */
+export async function fetchPdosData(taskId: string, refresh = false): Promise<PdosView> {
+  const suffix = refresh ? '?refresh=1' : '';
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/pdos${suffix}`);
+}
+
+/** 清除本地 PDOS 分析结果（便于重新分析） */
+export async function clearPdos(
+  taskId: string,
+): Promise<{ removed: string[]; dir: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/pdos`, { method: 'DELETE' });
 }
 
 /** 自由能矫正项：远端 vaspkit 501 计算 Thermal correction to G(T) */

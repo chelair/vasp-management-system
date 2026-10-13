@@ -983,3 +983,65 @@ export const REPORT_STATUS_LABELS: Record<ReportStatus, string> = {
   generating: '生成中',
   failed: '失败',
 };
+
+/* ---------------- PDOS 分析（2026-10-13 重建链路） ---------------- */
+
+/** 曲线：id → 数值（`grid` 指向 energy.total / energy.partial 两条能量轴） */
+export interface PdosSeries {
+  grid: 'total' | 'partial';
+  values: number[];
+}
+
+/** 菜单树里的曲线描述（自旋极化时 up/down 各一条） */
+export interface PdosCurve {
+  id: string;
+  spin: 'up' | 'down' | 'total';
+  label: string;
+  color: string;
+}
+
+/** 轨道选择菜单节点：一级总态密度 / 二级元素×轨道 / 三级 p、d 方向 */
+export interface PdosTreeNode {
+  key: string;
+  label: string;
+  level: 1 | 2 | 3;
+  color?: string;
+  curves?: PdosCurve[];
+  children?: PdosTreeNode[];
+}
+
+export interface PdosMeta {
+  task_id?: string | null;
+  run_id?: string | null;
+  generated_at?: string;
+  efermi?: number | null;
+  spin_polarized?: boolean;
+  elements?: string[];
+  points?: number;
+  partial_points?: number;
+  has_projection?: boolean;
+  has_fine_orbitals?: boolean;
+  notes?: string[];
+  source?: string;
+  status?: string;
+  error?: string | null;
+  finished_at?: string | null;
+}
+
+/** `GET /api/jobs/tasks/{id}/pdos` 的返回 */
+export interface PdosView {
+  meta: PdosMeta;
+  energy: { total: number[]; partial: number[] };
+  tree: PdosTreeNode[];
+  series: Record<string, PdosSeries>;
+}
+
+/** `GET .../pdos/status` 的返回 */
+export interface PdosStatus {
+  run_id?: string;
+  status: 'idle' | 'running' | 'done' | 'failed';
+  error?: string | null;
+  finished_at?: string | null;
+  has_data?: boolean;
+  meta?: PdosMeta;
+}

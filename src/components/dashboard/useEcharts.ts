@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import * as echarts from 'echarts/core';
 import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
 import {
+  AxisPointerComponent,
   GridComponent,
   LegendComponent,
   MarkLineComponent,
@@ -19,6 +20,8 @@ echarts.use([
   ScatterChart,
   GridComponent,
   TooltipComponent,
+  // 十字准线（tooltip.axisPointer.type='cross'，PDOS 折线要用）
+  AxisPointerComponent,
   LegendComponent,
   TitleComponent,
   MarkLineComponent,
@@ -37,10 +40,14 @@ echarts.use([
 export default function useEcharts(
   option: EChartsCoreOption,
   deps: unknown[] = [],
+  /** 图表实例就绪/销毁回调（导出图片时要用实例，如 PDOS 弹窗的 getDataURL） */
+  onReady?: (chart: echarts.ECharts | null) => void,
 ) {
   const chartRef = useRef<echarts.ECharts | null>(null);
   const optionRef = useRef<EChartsCoreOption>(option);
   optionRef.current = option;
+  const readyRef = useRef(onReady);
+  readyRef.current = onReady;
   const teardownRef = useRef<(() => void) | null>(null);
 
   const containerRef = useCallback((el: HTMLDivElement | null) => {
@@ -49,10 +56,12 @@ export default function useEcharts(
     teardownRef.current = null;
     if (!el) {
       chartRef.current = null;
+      readyRef.current?.(null);
       return;
     }
     const chart = echarts.init(el);
     chartRef.current = chart;
+    readyRef.current?.(chart);
     // 初始化时立刻用"当前最新"的 option 渲染一次（之后交给 deps 更新）
     chart.setOption(optionRef.current, true);
     const resize = () => chart.resize();

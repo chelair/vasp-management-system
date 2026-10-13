@@ -5777,6 +5777,19 @@ dialog.pdos-dialog .body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.pdos-legend__item:hover {
+  border-color: var(--color-border-soft);
+  background: #f4f7fc;
 }
 
 .pdos-legend__dot {
@@ -5789,22 +5802,20 @@ dialog.pdos-dialog .body {
   color: var(--color-text-muted);
 }
 
-/* 轨道选择：内联小面板（原生 <dialog> 里 portal 浮层会被遮住，所以不弹层） */
-.pdos-menu-panel {
-  border: 1px solid var(--color-border-soft);
-  border-radius: 10px;
-  background: #fbfcfe;
-  padding: 6px 10px 8px;
-  max-height: 30vh;
+/* 轨道选择：**悬浮卡片**（挂在弹窗内部，原生 <dialog> 的 top layer 里才点得到） */
+.pdos-menu-card {
+  width: 268px;
+  max-height: 46vh;
   overflow: auto;
+  padding: 2px 2px 0;
 }
 
-.pdos-menu-panel .ant-tree {
+.pdos-menu-card .ant-tree {
   background: transparent;
   font-size: 13px;
 }
 
-.pdos-menu-panel .ant-tree .ant-tree-node-content-wrapper {
+.pdos-menu-card .ant-tree .ant-tree-node-content-wrapper {
   min-height: 28px;
   line-height: 28px;
 }
@@ -5835,6 +5846,12 @@ dialog.pdos-dialog .body {
   height: 8px;
   border-radius: 50%;
   flex: 0 0 auto;
+}
+
+/* 分组节点（元素那一行）**不显示勾选框**，只留标题（用户口径：元素前面的勾去掉） */
+.pdos-tree-node--group .ant-tree-checkbox {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .pdos-chart {
@@ -5934,11 +5951,12 @@ dialog.pdos-dialog .body {
     margin: 0;
   }
 
-  .pdos-menu-panel {
-    max-height: 34vh;
+  .pdos-menu-card {
+    width: min(86vw, 300px);
+    max-height: 52vh;
   }
 
-  .pdos-menu-panel .ant-tree .ant-tree-node-content-wrapper {
+  .pdos-menu-card .ant-tree .ant-tree-node-content-wrapper {
     min-height: 40px;
     line-height: 40px;
   }

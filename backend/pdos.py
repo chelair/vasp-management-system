@@ -180,6 +180,9 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
             "label": element,
             "level": 2,
             "color": _element_color(element),
+            # 元素节点只是分组（元素总量没有单独曲线）：**不给勾选框**
+            # —— 2026-10-13 用户口径："元素前面的勾可以去掉了"、"勾 Fe 无作用"
+            "checkable": False,
             "children": [],
         }
         for orbital in ORBITALS:

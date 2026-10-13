@@ -1005,6 +1005,8 @@ export interface PdosTreeNode {
   key: string;
   label: string;
   level: 1 | 2 | 3;
+  /** false = 只做分组，不给勾选框（元素节点） */
+  checkable?: boolean;
   color?: string;
   curves?: PdosCurve[];
   children?: PdosTreeNode[];

@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Checkbox, InputNumber, Segmented, Spin, Tree, Tooltip } from 'antd';
+import { App, Button, Checkbox, InputNumber, Popover, Segmented, Spin, Tree, Tooltip } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import {
   DownOutlined,
@@ -37,6 +37,8 @@ interface Props {
 /** 每条可见曲线的绘图信息（由菜单选中项展开而来） */
 interface CurveEntry {
   id: string;
+  /** 曲线所属的菜单节点 key（点图例芯片 = 取消勾选它） */
+  nodeKey: string;
   name: string;
   spin: 'up' | 'down' | 'total';
   color: string;
@@ -180,6 +182,9 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
   const treeData = useMemo<DataNode[]>(() => {
     const mapNode = (node: PdosTreeNode): DataNode => ({
       key: node.key,
+      // 元素节点只做分组：没有勾选框（见 build_view 的 checkable=false）
+      disableCheckbox: node.checkable === false,
+      className: node.checkable === false ? 'pdos-tree-node--group' : undefined,
       title: (
         <span className={`pdos-tree__title pdos-tree__title--l${node.level}`}>
           {node.color ? (
@@ -216,6 +221,7 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
           if (!seriesRef) continue;
           out.push({
             id: curve.id,
+            nodeKey: node.key,
             name: `${node.label}${spin ? ` ${SPIN_LABEL[curve.spin] ?? ''}` : ''}`,
             spin: curve.spin,
             color: curve.color || '#5B8DEF',
@@ -292,18 +298,16 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
       : { min: undefined, max: undefined };
     return {
       animation: false,
-      grid: { left: 52, right: 18, top: 34, bottom: 44 },
+      // 顶部不留图例空间（图例改成工具条上的芯片，避免与轴名重叠）
+      grid: { left: 56, right: 20, top: 18, bottom: 46 },
       tooltip: {
         trigger: 'axis' as const,
         axisPointer: { type: 'cross' as const },
         valueFormatter: (v: number) => (v == null ? '—' : v.toFixed(4)),
       },
-      legend: {
-        type: 'scroll' as const,
-        top: 0,
-        itemHeight: 8,
-        textStyle: { fontSize: 11 },
-      },
+      // 不用 ECharts 自带图例：曲线多时它会和轴名/彼此重叠（用户截图反馈），
+      // 改用工具条上的芯片做图例（点一下取消该条曲线）。
+      legend: { show: false },
       xAxis: {
         type: 'value' as const,
         name: 'E − E_F (eV)',
@@ -406,46 +410,65 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
         {status === 'done' && view && (
           <div className="pdos-main">
             <div className="pdos-toolbar">
-              <Button
-                size="small"
-                icon={<UnorderedListOutlined />}
-                onClick={() => setMenuOpen((v) => !v)}
+              {/* 悬浮卡片式菜单：**必须挂在弹窗内部**（原生 <dialog> 在 top layer，
+                  挂到 body 的浮层会被压在下面点不到，2026-10-13 踩过） */}
+              <Popover
+                trigger="click"
+                placement="bottomLeft"
+                open={menuOpen}
+                onOpenChange={setMenuOpen}
+                getPopupContainer={() => ref.current ?? document.body}
+                content={
+                  <div className="pdos-menu-card">
+                    <Tree
+                      checkable
+                      checkStrictly
+                      selectable={false}
+                      blockNode
+                      treeData={treeData}
+                      defaultExpandedKeys={defaultExpandedKeys}
+                      checkedKeys={checkedKeys}
+                      onCheck={(keys) =>
+                        setCheckedKeys((Array.isArray(keys) ? keys : keys.checked).map(String))
+                      }
+                    />
+                    <p className="pdos-menu__hint">
+                      勾哪条画哪条：点 p 只画 p，px/py/pz、dxy… 要单独勾（元素那行只是分组，不可勾）
+                    </p>
+                  </div>
+                }
               >
-                轨道选择（已选 {checkedKeys.length}）
-                {menuOpen ? <UpOutlined style={{ fontSize: 10 }} /> : <DownOutlined style={{ fontSize: 10 }} />}
-              </Button>
+                <Button size="small" icon={<UnorderedListOutlined />}>
+                  轨道选择（已选 {checkedKeys.length}）
+                  {menuOpen ? (
+                    <UpOutlined style={{ fontSize: 10 }} />
+                  ) : (
+                    <DownOutlined style={{ fontSize: 10 }} />
+                  )}
+                </Button>
+              </Popover>
               <span className="pdos-legend">
                 {curves
-                  .slice(0, 8)
+                  .slice(0, 10)
                   .map((curve) => (
-                    <span key={curve.id} className="pdos-legend__item">
+                    <button
+                      type="button"
+                      key={curve.id}
+                      className="pdos-legend__item"
+                      title="点一下取消这条曲线"
+                      onClick={() =>
+                        setCheckedKeys((prev) => prev.filter((key) => key !== curve.nodeKey))
+                      }
+                    >
                       <span className="pdos-legend__dot" style={{ background: curve.color }} />
                       {curve.name}
-                    </span>
+                    </button>
                   ))}
-                {curves.length > 8 ? (
+                {curves.length > 10 ? (
                   <span className="pdos-legend__more">等 {curves.length} 条</span>
                 ) : null}
               </span>
             </div>
-            {menuOpen && (
-              <div className="pdos-menu-panel">
-                <Tree
-                  checkable
-                  checkStrictly
-                  blockNode
-                  treeData={treeData}
-                  defaultExpandedKeys={defaultExpandedKeys}
-                  checkedKeys={checkedKeys}
-                  onCheck={(keys) =>
-                    setCheckedKeys((Array.isArray(keys) ? keys : keys.checked).map(String))
-                  }
-                />
-                <p className="pdos-menu__hint">
-                  勾哪条画哪条：点 p 只画 p，px/py/pz / dxy… 要单独勾
-                </p>
-              </div>
-            )}
             <div className="pdos-chart">
               <div className="pdos-chart__canvas" ref={containerRef} />
               {curves.length === 0 && <p className="pdos-chart__empty">至少勾选一条曲线</p>}

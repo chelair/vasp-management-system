@@ -181,56 +181,91 @@ def outcar_tail_for_task(
     lines: int = 40,
     image: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """给前端"看 OUTCAR 尾部"用：本地摘要 → 本地镜像 → 远端，三级兜底。
+    """给前端"看 OUTCAR 尾部"用。返回 `{text, source, dir, lines}`，
+    `source` ∈ `reports-tail` / `local-mirror` / `remote`。
 
-    返回 `{text, source, dir, lines}`；`source` ∈ `reports-tail` / `local-mirror` / `remote`。
+    优先级（2026-10-13 按用户口径调整 —— "这里应该是取远端最新目录的 OUTCAR 吧"）：
+
+    - **未归档（还在跑 / 刚跑完没过归档）**：**直接读远端**。远端脚本自己按版本号挑最新 `conN`
+      （NEB 再挑该 `conN` 里最近修改的映像 OUTCAR）。原因：本地镜像和归档摘要都是**上一次同步**
+      留下的，可能来自更早的 conN、甚至是已经结束的那一轮（实测 4_opt 的镜像是 31MB 的完整跑完
+      版本，末行是 "General timing"，而远端已经跑到 con11）——那样"最后数行"就是假的。
+      远端失败（断网/没权限）才退回摘要 → 本地镜像。
+    - **已归档**：归档摘要（秒回、冻结的就是那一刻）→ 本地镜像 → 远端。
     """
     from paths import resolve_remote_path
 
     project_name = str(project.get("name") or "")
     root = task_dir(project_name, task)
     files_dir = task_files_dir(project_name, task)
+    archived = str(task.get("status") or "") == "archived"
+
+    def _from_summary() -> Optional[Dict[str, Any]]:
+        if image:
+            tail_file = root / "reports" / f"outcar_tail_{image}.txt"
+        else:
+            tail_file = root / "reports" / "outcar_tail.txt"
+        if not tail_file.is_file():
+            return None
+        text = tail_file.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            return None
+        return {
+            "text": _last_lines(text, lines),
+            "source": "reports-tail",
+            "dir": str(tail_file),
+            "lines": lines,
+        }
+
+    def _from_mirror() -> Optional[Dict[str, Any]]:
+        local_outcar = files_dir / (f"{image}/OUTCAR" if image else "OUTCAR")
+        if not (local_outcar.is_file() and local_outcar.stat().st_size > 0):
+            return None
+        text = _tail(local_outcar, 200_000) or ""
+        if not text.strip():
+            return None
+        return {
+            "text": _last_lines(text, lines),
+            "source": "local-mirror",
+            "dir": str(local_outcar),
+            "lines": lines,
+        }
+
+    def _from_remote() -> Dict[str, Any]:
+        remote_dir = resolve_remote_path(
+            str(project.get("server") or ""), str(task.get("remote_dir") or "")
+        ).rstrip("/")
+        if not remote_dir:
+            raise FileNotFoundError("任务缺少远程目录")
+        got = fetch_remote_outcar_tail(
+            str(project.get("server") or ""), remote_dir, image=image, lines=lines
+        )
+        return {
+            "text": got["text"],
+            "source": "remote",
+            "dir": got.get("remote_path") or remote_dir,
+            "lines": lines,
+        }
+
+    # 未归档：远端最新目录优先（本地那两份可能停在更早的 conN）
+    if not archived:
+        try:
+            return _from_remote()
+        except Exception:  # noqa: BLE001 - 远端不可用就退回本地两份
+            pass
 
     # ① 归档/同步时切好的 4KB 摘要（NEB 指定映像就用映像那份）
-    if image:
-        tail_file = root / "reports" / f"outcar_tail_{image}.txt"
-    else:
-        tail_file = root / "reports" / "outcar_tail.txt"
-    if tail_file.is_file():
-        text = tail_file.read_text(encoding="utf-8", errors="replace")
-        if text.strip():
-            return {
-                "text": _last_lines(text, lines),
-                "source": "reports-tail",
-                "dir": str(tail_file),
-                "lines": lines,
-            }
+    summary = _from_summary()
+    if summary:
+        return summary
 
     # ② 本地镜像里的 OUTCAR（NEB 在 files/<映像号>/）
-    local_outcar = files_dir / (f"{image}/OUTCAR" if image else "OUTCAR")
-    if local_outcar.is_file() and local_outcar.stat().st_size > 0:
-        text = _tail(local_outcar, 200_000) or ""
-        if text.strip():
-            return {
-                "text": _last_lines(text, lines),
-                "source": "local-mirror",
-                "dir": str(local_outcar),
-                "lines": lines,
-            }
+    mirror = _from_mirror()
+    if mirror:
+        return mirror
 
-    # ③ 远端取一次（异常结束的任务通常从没同步过 OUTCAR）
-    remote_dir = resolve_remote_path(str(project.get("server") or ""), str(task.get("remote_dir") or "")).rstrip("/")
-    if not remote_dir:
-        raise FileNotFoundError("任务缺少远程目录")
-    got = fetch_remote_outcar_tail(
-        str(project.get("server") or ""), remote_dir, image=image, lines=lines
-    )
-    return {
-        "text": got["text"],
-        "source": "remote",
-        "dir": got.get("remote_path") or remote_dir,
-        "lines": lines,
-    }
+    # ③ 远端兜底（归档任务，或未归档但本地两份都没有）
+    return _from_remote()
 
 
 def _last_lines(text: str, lines: int) -> str:

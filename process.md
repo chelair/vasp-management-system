@@ -315,6 +315,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   NEB 逐映像与 opt/frac 单任务两条路径都接了这个兜底，`warnings` 里会标"受力来自深度兜底"，
   404 文案也带上该映像的具体原因。真机验证（`/atomic-forces?image=&refresh=1`）：00/01/02/03/04
   全部 200，映像 01 163 个原子、force_max 0.370378（02/03 走兜底也行）。
+  ⑧ OUTCAR 最后数行取的不是最新目录（用户："4_opt · OUTCAR 最后数行，这里应该是取远端最新目录的
+  OUTCAR 吧"）：`outcar_tail_for_task` 原来是 摘要 → **本地镜像** → 远端，而**未归档**任务的
+  本地镜像是上一次同步留下的（实测 `4_opt` 镜像 31MB、末行是 "General timing"＝上一轮跑完的版本，
+  远端其实已经跑到 `con11`），于是"最后数行"是假的。改成：**未归档任务直接读远端**（脚本自己按
+  版本号挑最新 conN，NEB 再挑该 conN 里最近修改的映像；失败才退回本地两份），**已归档任务**保持
+  摘要（秒回）→ 镜像 → 远端。实测：`4_opt` → `.../4/con11/OUTCAR`（运行中的实时尾部）、
+  `Ag24@Al2O3_neb` → `con1/02/OUTCAR`（最新映像）、归档的 `Fe3S4` 仍是 `reports-tail` 秒回。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

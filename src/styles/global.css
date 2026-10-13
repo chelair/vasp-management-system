@@ -5810,23 +5810,89 @@ h5:hover > .report-hide-btn,
   color: var(--color-text-secondary);
 }
 
+/* 图例芯片：稍大一些，一行放不下自动换行（flex-wrap 在上面的 .pdos-legend） */
 .pdos-legend__item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border: 1px solid transparent;
+  gap: 2px;
+  padding: 1px 2px 1px 6px;
+  border: 1px solid var(--color-border-soft);
   border-radius: 999px;
+  background: #fff;
+}
+
+.pdos-legend__item:hover {
+  border-color: #cfe0ff;
+  background: #f7fbff;
+}
+
+.pdos-legend__item.is-isolated {
+  border-color: #7ea9f7;
+  background: #eef5ff;
+  box-shadow: 0 0 0 2px rgba(91, 141, 239, 0.14);
+}
+
+.pdos-legend__pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 4px;
+  border: none;
   background: transparent;
-  color: inherit;
-  font: inherit;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  font-family: inherit;
   cursor: pointer;
   touch-action: manipulation;
 }
 
-.pdos-legend__item:hover {
-  border-color: var(--color-border-soft);
-  background: #f4f7fc;
+.pdos-legend__pick:hover {
+  color: var(--color-text);
+}
+
+.pdos-legend__remove {
+  min-width: 22px;
+  min-height: 22px;
+  margin-right: 1px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.pdos-legend__remove:hover {
+  background: #fdeced;
+  color: #d9535b;
+}
+
+.pdos-legend__reset {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px dashed #a9c8ff;
+  border-radius: 999px;
+  background: #f7fbff;
+  color: #2d5fcc;
+  font-size: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+@media (max-width: 720px) {
+  .pdos-legend__pick {
+    min-height: 34px;
+    font-size: 13px;
+  }
+
+  .pdos-legend__remove {
+    min-width: 30px;
+    min-height: 30px;
+    font-size: 16px;
+  }
 }
 
 .pdos-legend__dot {

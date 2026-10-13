@@ -66,6 +66,11 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   const [chart, setChart] = useState<{ getDataURL: (opts?: unknown) => string } | null>(null);
   /** 轨道选择面板是否展开（**内联面板**，不弹浮层 —— 原生 <dialog> 里 portal 会被遮住） */
   const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * "只看这一条曲线"（2026-10-13 用户口径：hover 不再隔离其它曲线，改成**点图例芯片**切换）。
+   * 值为曲线 id；null = 全部显示。
+   */
+  const [isolated, setIsolated] = useState<string | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -226,6 +231,12 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     return out;
   }, [view, checkedKeys, spin]);
 
+  /** 实际画出来的曲线：点了图例芯片"只看一条"时只留那一条 */
+  const visibleCurves = useMemo(
+    () => (isolated ? curves.filter((curve) => curve.id === isolated) : curves),
+    [curves, isolated],
+  );
+
   /**
    * 统一的 x 轴：**所有曲线都用「总态密度」那条能量网格**。
    *
@@ -257,10 +268,10 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   );
 
   const range = useMemo(() => {
-    if (!autoRange || curves.length === 0) return { min: xMin, max: xMax };
+    if (!autoRange || visibleCurves.length === 0) return { min: xMin, max: xMax };
     let min = Infinity;
     let max = -Infinity;
-    curves.forEach((curve) => {
+    visibleCurves.forEach((curve) => {
       const n = curve.values.length;
       for (let i = 0; i < n; i += 1) {
         const x = xAt(curve, i) - (meta?.efermi ?? 0);
@@ -273,7 +284,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     }
     const pad = (max - min) * 0.02;
     return { min: min - pad, max: max + pad };
-  }, [autoRange, curves, view, meta, xMin, xMax, xAt]);
+  }, [autoRange, visibleCurves, view, meta, xMin, xMax, xAt]);
 
   const option = useMemo(() => {
     const efermi = meta?.efermi ?? 0;
@@ -296,8 +307,8 @@ export default function PdosPanel({ taskId, taskName }: Props) {
       }
       return Math.abs(xs[lo] - x) <= Math.abs(xs[hi] - x) ? lo : hi;
     };
-    const tooltipRows = curves.map((curve) => ({ curve, xs: xsOf(curve) }));
-    const series = curves.map((curve) => {
+    const tooltipRows = visibleCurves.map((curve) => ({ curve, xs: xsOf(curve) }));
+    const series = visibleCurves.map((curve) => {
       const n = curve.values.length;
       const data: [number, number][] = [];
       let maxAbs = 0;
@@ -316,7 +327,8 @@ export default function PdosPanel({ taskId, taskName }: Props) {
           type: curve.dashed ? ('dashed' as const) : ('solid' as const),
         },
         itemStyle: { color: curve.color },
-        emphasis: { focus: 'series' as const },
+        // 不再用 ECharts 的 focus:'series'（hover 会把其它曲线压暗/隐藏，用户明确不要）；
+        // "只看一条"改由点击图例芯片实现（见 isolated）
         data,
         // 镜像布局时纵轴上下对称，这里把最大值带出来给 yAxis 用
         __maxAbs: maxAbs,
@@ -429,7 +441,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
           : rest,
       ),
     };
-  }, [curves, view, meta, mirror, spin, range, showZero, xAt]);
+  }, [visibleCurves, view, meta, mirror, spin, range, showZero, xAt]);
 
   const containerRef = useEcharts(option, [option], (instance) => {
     // 只保留实例（导出 PNG 用）；卸载时的 null 不回写 state，避免卸载后 setState
@@ -561,25 +573,49 @@ export default function PdosPanel({ taskId, taskName }: Props) {
                   )}
                 </Button>
               </Popover>
+              {/* 图例 = 曲线开关：点名称"只看这条"（再点恢复全部），点 × 取消这条曲线；
+                  一行放不下自动换行（CSS flex-wrap） */}
               <span className="pdos-legend">
-                {curves
-                  .slice(0, 10)
-                  .map((curve) => (
+                {curves.map((curve) => (
+                  <span
+                    key={curve.id}
+                    className={`pdos-legend__item${isolated === curve.id ? ' is-isolated' : ''}`}
+                  >
                     <button
                       type="button"
-                      key={curve.id}
-                      className="pdos-legend__item"
-                      title="点一下取消这条曲线"
-                      onClick={() =>
-                        setCheckedKeys((prev) => prev.filter((key) => key !== curve.nodeKey))
+                      className="pdos-legend__pick"
+                      title={
+                        isolated === curve.id
+                          ? '再点一下恢复显示全部曲线'
+                          : '点一下只看这条曲线'
                       }
+                      onClick={() => setIsolated((prev) => (prev === curve.id ? null : curve.id))}
                     >
                       <span className="pdos-legend__dot" style={{ background: curve.color }} />
                       {curve.name}
                     </button>
-                  ))}
-                {curves.length > 10 ? (
-                  <span className="pdos-legend__more">等 {curves.length} 条</span>
+                    <button
+                      type="button"
+                      className="pdos-legend__remove"
+                      title="取消这条曲线"
+                      aria-label={`取消 ${curve.name}`}
+                      onClick={() => {
+                        setCheckedKeys((prev) => prev.filter((key) => key !== curve.nodeKey));
+                        setIsolated((prev) => (prev === curve.id ? null : prev));
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {isolated ? (
+                  <button
+                    type="button"
+                    className="pdos-legend__reset"
+                    onClick={() => setIsolated(null)}
+                  >
+                    显示全部（{curves.length}）
+                  </button>
                 ) : null}
               </span>
             </div>

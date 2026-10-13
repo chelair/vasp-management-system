@@ -12,7 +12,10 @@
   每个映像各自落盘，前端切换映像即时可见、不再重复连远端。
 
 远端读取一次 exec（遵守项目"合并远端调用"约定）：进入结构来源目录 → stat 指纹 + base64 POSCAR
-+ base64 OUTCAR 尾部 128KB。OUTCAR 实测 30–57MB，只读尾部（**不做全文件扫描**，否则每张要读几十 MB）。
+  + base64 OUTCAR 尾部 128KB。OUTCAR 实测 30–57MB，只读尾部（**不做全文件扫描**，否则每张要读几十 MB）。
+尾部窗口里没有完整的 `TOTAL-FORCE` 块时（有的映像在最后一个离子步之后又写了大块内容，把力块挤出窗口），
+再发一次**定点**调用：远端 grep 出最后一个 `TOTAL-FORCE` 行号、算出字节偏移，只把那一段取回来
+（`_deep_block_script`，上限 512KB；2026-10-13 Ag24@Al2O3_neb 映像 01 就是这么取到的）。
 
 首/末映像也照常着色：端点的 OUTCAR 是建 NEB 时从初/末态 opt 复制来的，与它显示的初/末态结构
 来自同一目录，属于有效结果；中间映像要等 NEB 真跑出离子步才会有 OUTCAR（没有就不显示受力）。
@@ -165,6 +168,38 @@ def _image_probe_lines(prefix: str) -> List[str]:
         # 否则会被当成 base64 内容拼进去（曾导致首个映像解析失败）
         'echo "@@@IMGDONE"',
     ]
+
+
+#: 深度兜底：尾部窗口里没有 TOTAL-FORCE 时，远端定位最后一个块起点后最多取这么多字节
+DEEP_BLOCK_BYTES = 512 * 1024
+
+
+def _deep_block_script(image_dir: str) -> str:
+    """远端定位 `OUTCAR` 里**最后一个** `TOTAL-FORCE` 行，从该行起取回文本。
+
+    为什么需要它：只读尾部 128KB 是为了省流量，但某些映像的 OUTCAR 在最后一个离子步之后
+    又写了大块内容（实测 Ag24@Al2O3_neb 的映像 01：546KB 文件、TOTAL-FORCE 只有 1 次、
+    被挤出了尾部窗口），于是"看起来还没有离子步"。这里回远端 grep 出行号、算出字节偏移，
+    只把那一块（到 EOF 或上限）取回来，代价是远端一次全文件顺序读，网络传输仍然很小。
+    """
+    return "\n".join(
+        [
+            f'D="{image_dir}"',
+            'LINE=$(grep -n "TOTAL-FORCE" "$D/OUTCAR" 2>/dev/null | tail -1 | cut -d: -f1)',
+            '[ -n "$LINE" ] || { echo "@@@NOBLOCK"; exit 0; }',
+            'OFF=$(head -n "$((LINE - 1))" "$D/OUTCAR" | wc -c)',
+            f'tail -c +"$((OFF + 1))" "$D/OUTCAR" | head -c {DEEP_BLOCK_BYTES} | base64 | tr -d "\\n"',
+        ]
+    )
+
+
+def _deep_block(server: str, image_dir: str) -> str:
+    """取回最后一个 TOTAL-FORCE 块（没有则返回空串）。"""
+    script = base64.b64encode(_deep_block_script(image_dir).encode("utf-8")).decode("ascii")
+    out = _run(server, script)
+    if "@@@NOBLOCK" in out:
+        return ""
+    return _decode(out.strip())
 
 
 def _single_script(remote_dir: str, analysis_dirs: List[str]) -> str:
@@ -421,15 +456,19 @@ def build_atomic_forces(
     if task_type == "neb":
         if not image:
             raise AtomicForceError(400, "NEB 请指定映像编号（image），或直接切换映像后重试")
-        payloads = _fetch_all_images(
+        payloads, fetch_warnings = _fetch_all_images(
             server, remote_dir, structure_dirs, task_id, reports_dir
         )
         if image not in payloads:
             got = "、".join(sorted(payloads)) or "无"
+            detail = next(
+                (w.split("：", 1)[1] for w in fetch_warnings if w.startswith(f"映像 {image}：")),
+                "该映像还没开始或还没算完",
+            )
             raise AtomicForceError(
                 404,
-                f"映像 {image} 还没有 OUTCAR（该映像还没开始或还没算完），暂时没有受力；"
-                f"本次已取到映像 {got}",
+                f"映像 {image} 暂时没有受力（{detail}）；本次已取到映像 {got}",
+                extra={"warnings": fetch_warnings},
             )
         payload = payloads[image]
         others = sorted(k for k in payloads if k != image)
@@ -445,14 +484,32 @@ def build_atomic_forces(
     _raise_for_flags(out, remote_dir)
     work_dir = _after(out, "@@@WORK\n").split("\n", 1)[0].strip()
     probe = _probe_of(out)
-    payload, warnings = _build_payload(
-        task_id=task_id,
-        task_type=task_type,
-        image=None,
-        work_dir=work_dir,
-        probe=probe,
-        thresholds=thresholds,
-    )
+    try:
+        payload, warnings = _build_payload(
+            task_id=task_id,
+            task_type=task_type,
+            image=None,
+            work_dir=work_dir,
+            probe=probe,
+            thresholds=thresholds,
+        )
+    except AtomicForceError:
+        # 同上：尾部窗口里没有力块时回远端定位最后一个 TOTAL-FORCE
+        try:
+            deep = _deep_block(server, work_dir)
+        except Exception:  # noqa: BLE001 - 深度兜底失败就按原始错误报告
+            raise
+        if not (deep and "TOTAL-FORCE" in deep):
+            raise
+        payload, warnings = _build_payload(
+            task_id=task_id,
+            task_type=task_type,
+            image=None,
+            work_dir=work_dir,
+            probe={**probe, "tail": deep},
+            thresholds=thresholds,
+        )
+        warnings = [*warnings, "受力来自深度兜底（尾部窗口里没有力块）"]
     payload["source_dir"] = _relative_dir(remote_dir, work_dir)
     payload["source_dirs"] = structure_key
     payload["cache_path"] = _write_cache(reports_dir, task_id, None, payload)
@@ -494,8 +551,8 @@ def _fetch_all_images(
     structure_dirs: List[str],
     task_id: str,
     reports_dir: Path,
-) -> Dict[str, Dict[str, Any]]:
-    """NEB：一次 exec 取回所有映像的受力，逐个落盘，返回 `{映像: payload}`。"""
+) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+    """NEB：一次 exec 取回所有映像的受力，逐个落盘；返回 `({映像: payload}, 警告)`。"""
     script = base64.b64encode(
         _all_images_script(remote_dir, structure_dirs).encode("utf-8")
     ).decode("ascii")
@@ -513,18 +570,40 @@ def _fetch_all_images(
         label = label.strip()
         if not label:
             continue
+        image_dir = f"{work_base}/{label}"
+        probe = _probe_of(rest)
         try:
             payload, block_warnings = _build_payload(
                 task_id=task_id,
                 task_type="neb",
                 image=label,
-                work_dir=f"{work_base}/{label}",
-                probe=_probe_of(rest),
+                work_dir=image_dir,
+                probe=probe,
                 thresholds=thresholds,
             )
         except AtomicForceError as e:
-            warnings.append(f"映像 {label}：{e.message}")
-            continue
+            # 尾部窗口里没有力块 → 回远端定位最后一个 TOTAL-FORCE 再取一次（见 _deep_block_script）
+            deep = ""
+            try:
+                deep = _deep_block(server, image_dir)
+            except Exception as exc:  # noqa: BLE001 - 深度兜底失败就按原错误报告
+                warnings.append(f"映像 {label}：深度取受力失败：{exc}")
+            if not (deep and "TOTAL-FORCE" in deep):
+                warnings.append(f"映像 {label}：{e.message}")
+                continue
+            try:
+                payload, block_warnings = _build_payload(
+                    task_id=task_id,
+                    task_type="neb",
+                    image=label,
+                    work_dir=image_dir,
+                    probe={**probe, "tail": deep},
+                    thresholds=thresholds,
+                )
+                block_warnings = [*block_warnings, "受力来自深度兜底（尾部窗口里没有力块）"]
+            except AtomicForceError as e2:
+                warnings.append(f"映像 {label}：{e2.message}")
+                continue
         payload["warnings"] = block_warnings
         payload["source_dir"] = _relative_dir(remote_dir, work_base)
         payload["source_dirs"] = ",".join(structure_dirs)
@@ -535,4 +614,4 @@ def _fetch_all_images(
             409, "没有取到任何映像的逐原子受力（" + ("；".join(warnings) or "映像还没有跑出离子步") + "）",
             extra={"warnings": warnings},
         )
-    return payloads
+    return payloads, warnings

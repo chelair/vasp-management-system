@@ -307,6 +307,14 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   改成**先 mkdir（含主任务目录）再上传**；顺手把 POTCAR 判定改成按**各分块**核（`potcar_blocks`）
   —— pos2pot 的摘要只反映主任务目录，主目录没 POSCAR 时会误报 MISSING（实测探针两块 POTCAR
   344330 / 271020 字节，`potcar_generated=true`）。真机验证在 `test/` 临时目录做，跑完已删除。
+  ⑦ NEB 中间映像取不到受力（用户：`Ag24@Al2O3_neb`，只有映像 01 不行）：`atomic_forces` 只读
+  OUTCAR **尾部 128KB**，而映像 01 的 OUTCAR 在最后一个离子步之后又写了一大段内容（实测文件
+  546KB、`TOTAL-FORCE` 全文件只有 1 次、被挤出窗口），于是被判成"还没有完整离子步" →
+  新增**深度兜底**：尾部窗口里没有力块时，远端 `grep -n` 定位最后一个 `TOTAL-FORCE`、
+  `head -n | wc -c` 算偏移，只把该块（≤512KB）取回来再解析（`_deep_block_script`）；
+  NEB 逐映像与 opt/frac 单任务两条路径都接了这个兜底，`warnings` 里会标"受力来自深度兜底"，
+  404 文案也带上该映像的具体原因。真机验证（`/atomic-forces?image=&refresh=1`）：00/01/02/03/04
+  全部 200，映像 01 163 个原子、force_max 0.370378（02/03 走兜底也行）。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

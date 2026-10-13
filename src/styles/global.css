@@ -5876,10 +5876,14 @@ dialog.pdos-dialog .body {
   flex: 0 0 auto;
 }
 
-/* 分组节点（元素那一行）**不显示勾选框**，只留标题（用户口径：元素前面的勾去掉） */
+/* 分组节点（元素那一行）**不显示勾选框**，并把那块**空位也去掉**（只留标题 + 色点）
+   —— 用 display:none 而不是 visibility:hidden，后者仍占位，看起来就是标题前面一段空 */
 .pdos-tree-node--group .ant-tree-checkbox {
-  visibility: hidden;
-  pointer-events: none;
+  display: none;
+}
+
+.pdos-tree-node--group .ant-tree-node-content-wrapper {
+  padding-left: 0;
 }
 
 .pdos-chart {

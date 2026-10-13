@@ -5522,6 +5522,30 @@ h5:hover > .report-hide-btn,
   max-height: 40vh;
 }
 
+/* 局部错误边界提示（2026-10-13）：子组件抛错时只替换这一块，不整页白屏 */
+.app-error-box {
+  border: 1px solid #f0c8c8;
+  background: #fff7f7;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 8px 0;
+}
+
+.app-error-box__title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c0392b;
+}
+
+.app-error-box__msg {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  word-break: break-word;
+  font-family: var(--font-mono);
+}
+
 /* 巡检详情「按需加载」分区按钮（2026-10-13）：标题右侧一个小按钮 */
 .inspection-lazy-btn {
   margin-left: 10px;

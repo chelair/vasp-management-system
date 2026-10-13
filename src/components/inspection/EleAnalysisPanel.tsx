@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { App, Button, Descriptions, Dropdown, Tooltip } from 'antd';
 import PdosModal from './PdosModal';
+import ErrorBoundary from '../common/ErrorBoundary';
 import { clearPdos, fetchPdosStatus } from '../../api/jobs';
 import { fetchAvailableAnalyses } from '../../api/inspections';
 import type { InspectionDetail } from '../../types';
@@ -69,6 +70,7 @@ export default function EleAnalysisPanel({ detail }: Props) {
 
   return (
     <div>
+      <ErrorBoundary title="电子结构分析面板出错了">
       <Descriptions column={1} size="small" bordered>
         <Descriptions.Item label="子类型">{detail.model_name || '—'}</Descriptions.Item>
         <Descriptions.Item label="远程目录">
@@ -167,6 +169,7 @@ export default function EleAnalysisPanel({ detail }: Props) {
           setPdosAutoStart(false);
         }}
       />
+      </ErrorBoundary>
     </div>
   );
 }

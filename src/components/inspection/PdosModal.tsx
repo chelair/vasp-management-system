@@ -255,6 +255,19 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
     return index >= 0 ? index : 1;
   }, [view]);
 
+  /** 第 i 个点该落在哪个 x（绝对能量）：统一用总态密度的网格，投影按偏移对齐 */
+  const xAt = useCallback(
+    (curve: CurveEntry, index: number) => {
+      const total = view?.energy.total ?? [];
+      const own = view?.energy[curve.grid] ?? [];
+      if (curve.grid === 'partial') {
+        return total[index + partialOffset] ?? own[index] ?? index;
+      }
+      return total[index] ?? own[index] ?? index;
+    },
+    [view, partialOffset],
+  );
+
   const range = useMemo(() => {
     if (!autoRange || curves.length === 0) return { min: xMin, max: xMax };
     let min = Infinity;
@@ -272,20 +285,7 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
     }
     const pad = (max - min) * 0.02;
     return { min: min - pad, max: max + pad };
-  }, [autoRange, curves, view, meta, xMin, xMax]);
-
-  /** 第 i 个点该落在哪个 x（绝对能量）：统一用总态密度的网格，投影按偏移对齐 */
-  const xAt = useCallback(
-    (curve: CurveEntry, index: number) => {
-      const total = view?.energy.total ?? [];
-      const own = view?.energy[curve.grid] ?? [];
-      if (curve.grid === 'partial') {
-        return total[index + partialOffset] ?? own[index] ?? index;
-      }
-      return total[index] ?? own[index] ?? index;
-    },
-    [view, partialOffset],
-  );
+  }, [autoRange, curves, view, meta, xMin, xMax, xAt]);
 
   const option = useMemo(() => {
     const efermi = meta?.efermi ?? 0;

@@ -507,7 +507,9 @@ def inspection_available_analyses(task_id: str, request: Request):
                 ),
                 "cohp": bool(files.get("COHPCAR")),
                 "work_function": bool(files.get("LOCPOT")),
-                "diff_charge": False,
+                # 差分电荷：口径 = 该 ele 任务下已经划了分块（计算入口在巡检详情，
+                # 由后端 charge_diff 链路按需连远端校验/计算，见 backend/charge_diff.py）
+                "diff_charge": bool(diff_charge_blocks(project, task)),
                 "remote_dir": ele_dir,
             },
         )

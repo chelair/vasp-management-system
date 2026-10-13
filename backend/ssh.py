@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 from config import DATA_DIR, load_servers
 
@@ -451,15 +451,28 @@ def upload_file(
 
 
 def download_file(
-    server_name: str, remote_path: str, local_path: str, timeout: int = 60
+    server_name: str,
+    remote_path: str,
+    local_path: str,
+    timeout: int = 60,
+    progress_cb: "Optional[Callable[[int, int], None]]" = None,
 ) -> bool:
-    """下载远程文件到本地；远程不存在/为空或失败时返回 False。"""
+    """下载远程文件到本地；远程不存在/为空或失败时返回 False。
+
+    `progress_cb(transferred, total)` 可选：大文件（CHGCAR 200MB+）回传时上报进度，
+    供前端轮询展示（2026-10-14 差分电荷链路）。回调里的异常一律吞掉，不影响下载。
+    """
     local = Path(local_path)
     local.parent.mkdir(parents=True, exist_ok=True)
     if _mock_enabled():
         src = _local_path(remote_path)
         if src.is_file() and src.stat().st_size > 0:
             shutil.copy2(src, local)
+            if progress_cb is not None:
+                try:
+                    progress_cb(local.stat().st_size, local.stat().st_size)
+                except Exception:  # noqa: BLE001 - 进度回调不影响下载
+                    pass
             return True
         return False
 
@@ -472,7 +485,18 @@ def download_file(
             stat = sftp.stat(remote_path)
             if stat.st_size <= 0:
                 return False
-            sftp.get(remote_path, str(local))
+            if progress_cb is None:
+                sftp.get(remote_path, str(local))
+            else:
+                total = int(stat.st_size)
+
+                def _cb(transferred: int, _total: int) -> None:
+                    try:
+                        progress_cb(int(transferred), total)
+                    except Exception:  # noqa: BLE001 - 进度回调不影响下载
+                        pass
+
+                sftp.get(remote_path, str(local), callback=_cb)
             return True
         except FileNotFoundError:
             return False

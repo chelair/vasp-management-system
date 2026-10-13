@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from config import DATA_DIR, load_servers
@@ -49,12 +49,12 @@ from ele_diff import (
     create_block_files,
     diff_charge_blocks,
     diff_charge_group_id,
-    compute_charge_difference,
     plan_blocks,
     read_main_poscar,
 )
 from envelope import fail, ok
 from incar import modify_incar
+import charge_diff
 import permissions
 import pdos
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
@@ -1736,15 +1736,15 @@ def _schedule_archive_outputs(
                 f"OK saved={','.join(result.get('saved') or []) or '-'} "
                 f"missing={','.join(result.get('missing') or []) or '-'}{extra}",
             )
-            # 电子结构主任务归档 → 各差分电荷分块拉回本地镜像；
-            # 差分电荷在**远端**用 VTST chgsum.pl + chgdiff.pl 算好，只回传 CHGCAR_diff
-            # （CHGCAR 各 200MB+，只在归档这一下动，不进巡检循环；2026-10-14 用户口径）
+            # 电子结构主任务归档 → 各差分电荷分块拉回本地镜像（OUTCAR / OSZICAR 等，量小）。
+            # **差分电荷不在归档里算**：2026-10-14 起入口搬到巡检详情的
+            # 「电子结构分析 → 差分电荷」标签（见 backend/charge_diff.py）—— 三个 CHGCAR
+            # 各 200MB+，挂在归档上会让"关闭任务"卡很久、失败也没法单独重试。
             blocks = diff_charge_blocks(project, task)
             if blocks:
                 server = str(project.get("server") or "")
                 block_saved: List[str] = []
                 block_missing: List[str] = []
-                charge_diff: Dict[str, Any] = {}
                 for block in blocks:
                     try:
                         br = download_archive_outputs(server, block)
@@ -1753,43 +1753,15 @@ def _schedule_archive_outputs(
                         continue
                     block_saved.append(str(block.get("model_name") or ""))
                     block_missing.extend(br.get("missing") or [])
-                try:
-                    charge_diff = compute_charge_difference(server, project, task)
-                    chg_note = (
-                        f"chg_diff={charge_diff.get('remote_path')} "
-                        f"bytes={charge_diff.get('bytes')} elapsed={charge_diff.get('elapsed_seconds')}s"
-                    )
-                except Exception as e:  # noqa: BLE001
-                    chg_note = f"chg_failed={e}"
-                    charge_diff = {"ok": False, "error": str(e)}
                 _audit_log(
                     project_name,
                     task_id,
                     str(task.get("remote_dir") or ""),
                     "archive-diff-charge",
                     f"OK blocks={len(blocks)} synced={','.join(block_saved) or '-'} "
-                    f"missing={','.join(block_missing) or '-'} {chg_note}",
+                    f"missing={','.join(block_missing) or '-'} "
+                    f"note=差分计算改由巡检详情触发",
                 )
-                # 记在 ele 主任务上，前端/报告可直接展示"差分是否算好、在哪"
-                try:
-                    with db_transaction() as db3:
-                        proj3 = next(
-                            (p for p in db3.get("projects", []) if p.get("name") == project_name),
-                            None,
-                        )
-                        task3 = (
-                            next(
-                                (t for t in proj3.get("tasks", []) if t.get("task_id") == task_id),
-                                None,
-                            )
-                            if proj3
-                            else None
-                        )
-                        if task3 is not None:
-                            task3["charge_diff"] = {**charge_diff, "synced_at": now_iso()}
-                except Exception as e:  # noqa: BLE001 - 记台账失败不影响归档
-                    _audit_log(project_name, task_id, "", "archive-diff-charge",
-                               f"FAILED to record charge_diff: {e}")
             # 文件同步完成后**再触发一次**结构三视图渲染：归档刚拉回/更新了 CONTCAR / 各映像结构，
             # 这时画的图才是最新的（用刚 reload 出来的 task，状态已是 archived）
             try:
@@ -2594,6 +2566,131 @@ def pdos_clear(task_id: str):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"清除 PDOS 结果失败：{e}"))
+
+
+# ---------------------------------------------------------------------------
+# 差分电荷链路（2026-10-14）：入口在**巡检详情的「电子结构分析 → 差分电荷」**，
+# 不再挂在归档上。前端：POST 触发（异步）→ 轮询状态 → 取三视图 PNG。
+
+
+@router.post("/tasks/{task_id}/charge-diff/analyze")
+def charge_diff_analyze(task_id: str, payload: dict = Body(default={})):
+    """触发**差分电荷链路**（异步）：远端校验完整性 → VTST 计算 → 回传 → VESTA 三视图。
+
+    body: `{"force": false}` —— `force=true` 时忽略本地缓存，重算 + 重出图。
+    返回 `{run_id, status, reused}`；前端用 `GET .../charge-diff/status` 轮询进度。
+    中断补偿：远端已有 `CHGCAR_diff` 就只回传、本地已有差分文件就只出图。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        if str(task.get("task_type") or "") != "ele":
+            return JSONResponse(
+                status_code=400, content=fail("仅电子结构任务支持差分电荷计算")
+            )
+        started = charge_diff.start(
+            project, task, force=bool((payload or {}).get("force"))
+        )
+        _audit_log(
+            project["name"],
+            task_id,
+            str(task.get("remote_dir") or ""),
+            "charge-diff-analyze",
+            f"OK run={started['run_id']} reused={started.get('reused')}",
+        )
+        return ok("已开始差分电荷计算", started)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except charge_diff.ChargeDiffError as e:
+        return JSONResponse(status_code=e.status, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"触发差分电荷计算失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/charge-diff/status")
+def charge_diff_status(
+    task_id: str,
+    run_id: str = Query(default=""),
+    remote: bool = Query(default=False),
+):
+    """差分电荷链路状态（本地阶梯 + run 进度；`remote=1` 时附带远端探测）。
+
+    返回值关键字段：
+    - `status`: `running` / `done` / `failed` / `idle`；
+    - `stage` + `stage_label`：`checking` / `computing` / `downloading` / `rendering`；
+    - `bytes_done` / `bytes_total`：回传进度（下载阶段）；
+    - `local`: `{state, has_images, has_diff, diff_bytes, image_axes, ...}` 本地阶梯；
+    - `remote`（仅 `remote=1`）: 远端差分类文件/分块完整性/VTST 状态。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        data = charge_diff.status(
+            str(project.get("name") or ""),
+            task,
+            run_id,
+            remote=bool(remote),
+            project=project,
+        )
+        return ok("查询成功", data)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"查询差分电荷状态失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/charge-diff/images/{axis}")
+def charge_diff_image(task_id: str, axis: str):
+    """取差分电荷三视图 PNG（`a` / `b` / `c`）。
+
+    前端不能用 `<img src>` 直接取（要带 Authorization 头），所以由前端 fetch
+    转 blob URL 显示（见 `src/api/jobs.ts::fetchChargeDiffImage`）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        key = str(axis or "").strip().lower()
+        if key not in charge_diff.IMAGE_AXES:
+            return JSONResponse(status_code=400, content=fail("轴只能是 a / b / c"))
+        path = charge_diff.image_paths(str(project.get("name") or ""), task)[key]
+        if not path.is_file():
+            return JSONResponse(status_code=404, content=fail(f"{key} 轴图还没生成"))
+        return FileResponse(
+            str(path),
+            media_type="image/png",
+            headers={"Cache-Control": "no-store"},
+        )
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取差分电荷图失败：{e}"))
+
+
+@router.delete("/tasks/{task_id}/charge-diff")
+def charge_diff_clear(task_id: str, images_only: bool = Query(default=False)):
+    """清除本地差分电荷结果（默认连 `CHGCAR_diff.vasp` 一起删），便于整条链路重跑。"""
+    try:
+        project, task = _resolve_task(task_id)
+        result = charge_diff.clear(
+            str(project.get("name") or ""), task, images_only=bool(images_only)
+        )
+        _audit_log(
+            project["name"],
+            task_id,
+            str(task.get("remote_dir") or ""),
+            "charge-diff-clear",
+            f"OK removed={','.join(result.get('removed') or []) or '-'}",
+        )
+        return ok("已清除差分电荷结果", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"清除差分电荷结果失败：{e}"))
 
 
 @router.post("/tasks/{task_id}/calculate-correction")

@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react';
 import { Descriptions, Empty, Tabs, Tag } from 'antd';
 
 import ErrorBoundary from '../common/ErrorBoundary';
+import DiffChargePanel from './DiffChargePanel';
 import PdosPanel from './PdosPanel';
 import { fetchAvailableAnalyses } from '../../api/inspections';
 import type { InspectionDetail } from '../../types';
@@ -65,6 +66,7 @@ export default function EleAnalysisPanel({ detail }: Props) {
     if (!aa) return aaLoading ? '正在识别远端输出文件…' : '切换标签后识别';
     const names = [
       aa.pdos ? 'PDOS' : '',
+      aa.diff_charge ? '差分电荷' : '',
       aa.bader ? 'Bader' : '',
       aa.cohp ? 'COHP' : '',
       aa.work_function ? '功函数' : '',
@@ -99,6 +101,26 @@ export default function EleAnalysisPanel({ detail }: Props) {
                 </span>
               ),
               children: <PdosPanel taskId={detail.task_id} taskName={detail.model_name} />,
+            },
+            {
+              key: 'diff_charge',
+              label: (
+                <span>
+                  差分电荷
+                  {aa && !aa.diff_charge ? (
+                    <span className="preview-note">（未划块）</span>
+                  ) : null}
+                </span>
+              ),
+              // 入口（2026-10-14）：本标签就是差分电荷的**触发 + 看图**入口 ——
+              // 首次点击远端校验 → VTST 算差分 → 回传 → VESTA 出 a/b/c 三视图。
+              children: (
+                <DiffChargePanel
+                  taskId={detail.task_id}
+                  taskName={detail.model_name}
+                  hasBlocks={Boolean(detail.diff_charge?.blocks?.length)}
+                />
+              ),
             },
             ...PLACEHOLDER_TABS.map((tab) => ({
               key: tab.key,

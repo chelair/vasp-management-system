@@ -142,7 +142,7 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
 
 | 脚本 | 用途 | 本项目调用点 |
 | --- | --- | --- |
-| `chgsum.pl` | 把各分块 `CHGCAR` 相加 → `CHGCAR_sum` | `backend/ele_diff.py::compute_charge_difference`（差分电荷，2026-10-14 口径） |
+| `chgsum.pl` | 把各分块 `CHGCAR` 相加 → `CHGCAR_sum` | `backend/charge_diff.py` 链路 → `backend/ele_diff.py::run_vtst_chgdiff`（差分电荷，v0.9.46 入口在巡检详情） |
 | `chgdiff.pl` | `完整 CHGCAR − CHGCAR_sum` → `CHGCAR_diff` | 同上 |
 | `nebef.pl` | NEB 各映像能量 / 能垒 | `backend/batch_check.py`、`routers/inspections.py`（NEB 能垒分析） |
 | `nebmake.pl` | 生成 NEB 映像 | `backend/continuation.py`（NEB 续算） |
@@ -155,6 +155,10 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
   改为在远端主目录一条命令算完（`chgsum.pl 1/CHGCAR 2/CHGCAR …` → `chgdiff.pl CHGCAR CHGCAR_sum`），
   只回传一个 `CHGCAR_diff`（本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`）。
   **本地因此不需要装 VTST**；远端缺脚本会明确报"远端找不到 VTST 脚本"并提示用 `vtst_dir` 覆盖。
+- **调用时机（v0.9.46 变更）**：计算入口在**巡检详情的「电子结构分析 → 差分电荷」标签**
+  （不再挂在归档上）。点之前会先做一次远端完整性校验：完整结构 + 各分块 `CHGCAR` 都要在、
+  且**大小差别 < 1%**（分块只改原子、晶胞不变 → FFT 网格一致，体积应当几乎相同；差得多说明
+  某块没算完 / 被截断），不通过就带具体原因拒绝，不会白跑 VTST。
 - 体积/风险：脚本本身极小；风险是远端机器路径 / 权限不同导致找不到脚本，已做显式报错而非静默失败。
 
 ## 4. pymatgen 专项说明

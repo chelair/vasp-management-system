@@ -997,10 +997,12 @@ def _sections_markdown(report, charts):
                         f"\u26a0 差分电荷计算失败：{charge_diff.get('error') or '未知原因'}。"
                     )
                 else:
-                    diff_state = "差分电荷尚未生成（主任务归档时会自动在远端计算并回传）。"
+                    diff_state = (
+                        "差分电荷尚未生成（在巡检详情的「电子结构分析 → 差分电荷」里点击计算："
+                        "远端校验 → VTST 算差分 → 回传 → VESTA 出三视图）。"
+                    )
                 ele_blocks.append(
-                    f"{diff_state} 差分图（VESTA）放在 `diffcharge_files/images/`"
-                    "（处理逻辑待接入）。\n"
+                    f"{diff_state} 差分图（VESTA 三视图）放在 `diffcharge_files/images/`。\n"
                 )
         ele_blocks.append(
             f"\n待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"

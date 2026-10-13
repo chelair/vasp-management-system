@@ -138,7 +138,11 @@ def run_render_job(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     payload 可以带一个任务（`task`）或一批（`tasks`）——批处理只起一次 Vesta/Xvfb，
     巡检一轮要刷几十个任务时差别很大。
+    `kind="volume"` 是**体积数据出图**（差分电荷的 CHGCAR_diff，2026-10-14）：走同一条
+    xvfb 通道与同一套 VESTA 串行锁，但源文件不是 POSCAR，而是 VASP 体积文件。
     """
+    if str(payload.get("kind") or "") == "volume":
+        return _render_volume_job(payload)
     project_name = str(payload.get("project") or "")
     jobs = payload.get("tasks")
     if jobs is None:
@@ -167,6 +171,23 @@ def render_now(project_name: str, task: Dict[str, Any], steps: Optional[int] = N
     return _render_one(project_name, task, steps)
 
 
+def _render_volume_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """体积文件（CHGCAR_diff 等）出 a/b/c 三视图 —— 在 xvfb 子进程里执行。"""
+    import vesta_render
+
+    source = str(payload.get("source") or "")
+    out_dir = str(payload.get("out_dir") or "")
+    if not source or not out_dir:
+        return {"error": "volume 任务缺少 source / out_dir"}
+    return vesta_render.render_volume_axes(
+        Path(source),
+        Path(out_dir),
+        label=str(payload.get("label") or "chgdiff"),
+        force=bool(payload.get("force")),
+        axes=tuple(payload.get("axes") or ("a", "b", "c")),
+    )
+
+
 def _xvfb_command(payload: Dict[str, Any]) -> List[str]:
     backend = str(Path(__file__).resolve().parent)
     return [
@@ -181,22 +202,77 @@ def _xvfb_command(payload: Dict[str, Any]) -> List[str]:
     ]
 
 
+def _xvfb_env() -> Dict[str, str]:
+    """Xvfb 里的软件 GL（VESTA 需要，见 DEPENDENCIES.md §3b）。"""
+    return dict(os.environ, LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe")
+
+
+def run_xvfb_payload(payload: Dict[str, Any], timeout: int = 900) -> Dict[str, Any]:
+    """在 xvfb 子进程里跑一次渲染载荷，返回 `{ok, rc, result, raw}`（**不抛异常**）。
+
+    调用方负责放进后台线程 —— 一次渲染 10s ~ 几分钟。差分电荷链路用它同步等结果，
+    好把"渲染中"作为一个阶段上报给前端（结构图那条路径仍是队列 + 不等结果）。
+    """
+    try:
+        done = subprocess.run(
+            _xvfb_command(payload),
+            env=_xvfb_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "rc": -1, "result": None, "raw": f"渲染超时（{timeout}s）"}
+    except Exception as e:  # noqa: BLE001 - VESTA / xvfb 不可用
+        return {"ok": False, "rc": -1, "result": None, "raw": f"{type(e).__name__}: {e}"}
+    lines = [line for line in (done.stdout or "").strip().splitlines() if line.strip()]
+    result: Optional[Dict[str, Any]] = None
+    if lines:
+        try:
+            result = json.loads(lines[-1])
+        except ValueError:
+            result = None
+    raw = "\n".join(
+        (done.stdout or "").strip().splitlines()[-5:]
+        + (done.stderr or "").strip().splitlines()[-5:]
+    )
+    return {
+        "ok": done.returncode == 0 and result is not None,
+        "rc": done.returncode,
+        "result": result,
+        "raw": raw[:2000],
+    }
+
+
+def render_volume_now(
+    source: str,
+    out_dir: str,
+    label: str = "chgdiff",
+    force: bool = False,
+    timeout: int = 900,
+) -> Dict[str, Any]:
+    """同步（xvfb 子进程里）渲染一个体积文件的三视图；差分电荷链路专用。"""
+    return run_xvfb_payload(
+        {
+            "kind": "volume",
+            "source": str(source),
+            "out_dir": str(out_dir),
+            "label": label,
+            "force": bool(force),
+        },
+        timeout=timeout,
+    )
+
+
 def _worker_loop() -> None:
     while True:
         job = _QUEUE.get()
         try:
             label = str(job.get("key") or job.get("project") or "")
-            env = dict(os.environ, LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe")
-            done = subprocess.run(
-                _xvfb_command(job),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=900,
-            )
-            tail = (done.stdout or done.stderr or "").strip().splitlines()
+            outcome = run_xvfb_payload(job)
+            tail = (outcome.get("raw") or "").strip().splitlines()
             summary = tail[-1] if tail else ""
-            _log(f"[ok] {label} rc={done.returncode} {summary[:400]}")
+            _log(f"[{'ok' if outcome.get('ok') else 'fail'}] {label} rc={outcome.get('rc')} {summary[:400]}")
         except Exception as e:  # noqa: BLE001 - 渲染失败不影响主流程
             _log(f"[fail] {job.get('key') or job.get('project')} {e}")
         finally:

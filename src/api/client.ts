@@ -106,3 +106,36 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return body.data as T;
 }
+
+/**
+ * 取**二进制资源**（差分电荷三视图 PNG 之类）并转成 blob URL。
+ *
+ * 为什么不能直接 `<img src="/api/...">`：所有 `/api/**` 都要鉴权，而 `<img>` 带不了
+ * `Authorization` 头（token 只在 header / Cookie 里）。所以统一走带鉴权头的 fetch，
+ * 转成 blob URL 再交给 `<img>`。**调用方负责 `URL.revokeObjectURL`**。
+ */
+export async function requestBlobUrl(path: string): Promise<string> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, { headers });
+  } catch {
+    throw new Error('无法连接后端服务：请先在项目目录运行 npm run server（端口 3001）');
+  }
+  if (res.status === 401) {
+    clearToken();
+    redirectToLogin();
+    throw new Error('未登录或登录已过期，请重新登录');
+  }
+  if (res.status === 403) {
+    throw new Error('无权访问该资源');
+  }
+  if (!res.ok) {
+    throw new Error(`资源加载失败（HTTP ${res.status}）`);
+  }
+  return URL.createObjectURL(await res.blob());
+}

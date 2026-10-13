@@ -17,11 +17,13 @@ import signal
 import math
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from config import load_settings
+from config import DATA_DIR, load_settings
 from task_paths import task_dir, task_files_dir
 
 #: 三视图口径：**想调朝向只改这张表**。
@@ -44,6 +46,9 @@ AXIS_VIEW: Dict[str, Dict[str, Any]] = {
 VIEW_VERSION = 3
 
 RENDER_WAIT = 12  # 秒：等待 VESTA 输出文件的最长时间
+#: 体积数据（CHGCAR_diff / LOCPOT 之类，百 MB 级）加载慢得多，等待时间单独放宽
+#: （2026-10-14 实测：130MB 的 CHGCAR_diff 打开 3.6s、单轴导出 2.4s，留足余量）
+VOLUME_RENDER_WAIT = 300
 MIN_IONIC_STEPS = 5
 DEFAULT_STEPS_FALLBACK = 99
 
@@ -79,6 +84,62 @@ def _vesta_image_scale() -> int:
         return max(1, int(float(settings.get("vesta_image_scale", 2))))
     except (TypeError, ValueError):
         return 2
+
+
+# ---------------------------------------------------------------------------
+# 跨进程 VESTA 串行锁
+#
+# VESTA 渲染有两条独立路径：巡检/归档的结构图（`structure_images` 的后台 xvfb 子进程）
+# 与差分电荷的体积图（`charge_diff` 的后台 xvfb 子进程）。两者跑在**不同进程**里，
+# Python 线程锁串不起来；而 CHGCAR_diff 这类百 MB 体积数据一次渲染要吃几百 MB 内存，
+# 两个 VESTA 同时开着最容易把生产机拖卡（2026-10-14 用户要求"尽量避免系统卡死"）。
+# 这里用 `data/locks/vesta_render.lock` 的 fcntl 文件锁把两边串起来（退出即释放）。
+# ---------------------------------------------------------------------------
+_VESTA_THREAD_LOCK = threading.Lock()
+
+
+def _vesta_lock_path() -> Path:
+    return DATA_DIR / "locks" / "vesta_render.lock"
+
+
+@contextmanager
+def vesta_render_lock(timeout: float = 1800.0):
+    """独占"本机 VESTA 渲染"：同一时刻只允许一个 VESTA 在跑（**跨进程**）。
+
+    等不到锁也不阻断渲染（超时后照常继续）—— 宁可多开一个 VESTA，也不要让整条
+    链路卡死在等锁上。非 POSIX 平台退化成进程内线程锁。
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - 非 POSIX
+        with _VESTA_THREAD_LOCK:
+            yield
+        return
+    handle = None
+    try:
+        path = _vesta_lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+")
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.5)
+        yield
+    finally:
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001 - 解锁失败无伤
+                pass
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _unit(v) -> Optional[tuple]:
@@ -587,18 +648,31 @@ def vesta_window_titles(vesta_paths) -> set:
     return {f"{Path(p).name} - VESTA" for p in vesta_paths}
 
 
-def _build_vesta_template(structure_path: Path, work_dir: Path) -> Optional[Path]:
-    """调用 VESTA 由结构文件生成基础 .vesta 模板；失败返回 None。"""
+def _build_vesta_template(
+    structure_path: Path, work_dir: Path, wait_seconds: int = RENDER_WAIT
+) -> Optional[Path]:
+    """调用 VESTA 由结构文件生成基础 .vesta 模板；失败返回 None。
+
+    `wait_seconds` 可放宽：体积文件（CHGCAR_diff）比 POSCAR 大几个数量级，加载更慢。
+    """
     template_path = work_dir / f"_temp_{structure_path.stem}.vesta"
     ok = _run_vesta_cli(
         [_vesta_exe(), "-open", str(structure_path), "-save", str(template_path), "-close", ""],
         template_path,
+        wait_seconds=wait_seconds,
         marker=str(template_path),
     )
     return template_path if ok else None
 
 
-def _render_axis(work_dir: Path, template_text: str, axis: str, zoom: float, png_path: Path) -> bool:
+def _render_axis(
+    work_dir: Path,
+    template_text: str,
+    axis: str,
+    zoom: float,
+    png_path: Path,
+    wait_seconds: int = RENDER_WAIT,
+) -> bool:
     """修改 SCENE/PROJT 后用 VESTA 导出单轴 PNG（默认 2 倍分辨率，见 `_vesta_image_scale`）。"""
     custom_vesta = work_dir / f"_temp_{axis}.vesta"
     custom_vesta.write_text(
@@ -616,6 +690,7 @@ def _render_axis(work_dir: Path, template_text: str, axis: str, zoom: float, png
             str(custom_vesta),
         ],
         png_path,
+        wait_seconds=wait_seconds,
         marker=str(custom_vesta),
     )
     if not ok:
@@ -665,7 +740,90 @@ def neb_image_paths(image_dir: Path, label: str) -> Dict[str, Path]:
     return {axis: neb_image_dir(image_dir, label) / f"{axis}.png" for axis in ("a", "b", "c")}
 
 
+def volume_image_paths(
+    image_dir: Path, label: str, axes: Sequence[str] = ("a", "b", "c")
+) -> Dict[str, Path]:
+    """体积图（差分电荷等）路径：`<image_dir>/<label>_{a,b,c}.png`。"""
+    return {axis: image_dir / f"{label}_{axis}.png" for axis in axes}
+
+
+def render_volume_axes(
+    structure_path: Path,
+    image_dir: Path,
+    label: str = "chgdiff",
+    force: bool = False,
+    zoom: Optional[float] = None,
+    axes: Sequence[str] = ("a", "b", "c"),
+    wait_seconds: int = VOLUME_RENDER_WAIT,
+) -> Dict[str, Any]:
+    """用 VESTA 把**体积文件**（CHGCAR_diff 等）导出 a / b / c 三轴 PNG。
+
+    与 `render_task`（POSCAR/CONTCAR）共用同一套视角定义与模板流程
+    （`AXIS_VIEW` + `_apply_axis_settings`）：先 `-open <体积文件> -save 模板`
+    （VESTA 按内容识别 VASP CHGCAR，默认带等值面），再逐轴导出（口径与报告里的结构图一致）。
+
+    - 输出：`<image_dir>/<label>_{a,b,c}.png`，**同名覆盖**；
+    - 缓存：`force=False` 时"图比源文件新且 PNG 完整（有 IEND）"就复用，连 VESTA 都不启动；
+    - 串行：整个渲染持有 `vesta_render_lock()`（**跨进程**）—— 百 MB 体积数据一次渲染
+      要几百 MB 内存，禁止和结构图渲染同时开 VESTA（2026-10-14 用户要求避免卡死）。
+
+    返回 `{"images": {axis: 路径}, "warnings": [...], "skipped": str|None}`。
+    """
+    warnings: List[str] = []
+    if not structure_path.is_file() or structure_path.stat().st_size == 0:
+        return {"images": {}, "warnings": warnings, "skipped": f"源文件不存在：{structure_path}"}
+    if zoom is None:
+        zoom = _vesta_zoom()
+    image_dir.mkdir(parents=True, exist_ok=True)
+    paths = volume_image_paths(image_dir, label, axes)
+    images: Dict[str, str] = {}
+    with vesta_render_lock():
+        if (not force) and all(
+            _image_is_fresh(paths[axis], structure_path) for axis in axes
+        ):
+            return {
+                "images": {axis: str(paths[axis]) for axis in axes},
+                "warnings": warnings,
+                "skipped": None,
+            }
+        with tempfile.TemporaryDirectory() as tmp:
+            work_dir = Path(tmp)
+            template = _build_vesta_template(
+                structure_path, work_dir, wait_seconds=wait_seconds
+            )
+            if template is None:
+                warnings.append("VESTA 模板生成失败（检查 vesta_path 配置 / Xvfb 环境）")
+                return {"images": {}, "warnings": warnings, "skipped": "模板生成失败"}
+            template_text = template.read_text(encoding="utf-8", errors="replace")
+            for axis in axes:
+                png_path = paths[axis]
+                if (not force) and _image_is_fresh(png_path, structure_path):
+                    images[axis] = str(png_path)
+                    continue
+                if _render_axis(
+                    work_dir, template_text, axis, zoom, png_path, wait_seconds=wait_seconds
+                ):
+                    images[axis] = str(png_path)
+                else:
+                    warnings.append(f"{axis} 轴导出失败")
+    return {
+        "images": images,
+        "warnings": warnings,
+        "skipped": None if images else "全部导出失败",
+    }
+
+
 def render_neb_images(
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    force: bool = False,
+) -> Dict[str, Any]:
+    """渲染 NEB 各映像三视图；实现见 `_render_neb_images_locked`（串行化，同上）。"""
+    with vesta_render_lock():
+        return _render_neb_images_locked(project, task, force=force)
+
+
+def _render_neb_images_locked(
     project: Dict[str, Any],
     task: Dict[str, Any],
     force: bool = False,
@@ -767,6 +925,21 @@ def _image_is_fresh(png: Path, structure: Path) -> bool:
 
 
 def render_task(
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    steps: Optional[int] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """渲染任务结构三视图（POSCAR/CONTCAR）；实现见 `_render_task_locked`。
+
+    这里只多做一件事：**串行化**（`vesta_render_lock()`，跨进程）—— 与差分电荷体积图
+    渲染互斥，避免两个 VESTA 同时吃内存把生产机拖卡。
+    """
+    with vesta_render_lock():
+        return _render_task_locked(project, task, steps=steps, force=force)
+
+
+def _render_task_locked(
     project: Dict[str, Any],
     task: Dict[str, Any],
     steps: Optional[int] = None,

@@ -289,17 +289,51 @@ body: {
 ├── 2/   ← 分块B               ├── diffcharge_files/2/
 └── …（3、4 …）                ├── diffcharge_files/chgfiles/   （CHGCAR_diff.vasp = 差分电荷，
                                │                                  远端 chgsum.pl + chgdiff.pl 生成）
-                               └── diffcharge_files/images/     （VESTA 差分图，处理逻辑待接入）
+                               └── diffcharge_files/images/     （VESTA 导出的 chgdiff_{a,b,c}.png）
 ```
 
-- **差分电荷口径（2026-10-14 变更）**：归档时在**远端主目录**用 VTST 脚本算好差分，只回传一个文件：
+- **差分电荷口径（2026-10-14 变更）**：在**远端主目录**用 VTST 脚本算好差分，只回传一个文件：
   `chgsum.pl 1/CHGCAR 2/CHGCAR …` → `CHGCAR_sum`，再 `chgdiff.pl CHGCAR CHGCAR_sum` → `CHGCAR_diff`；
   回传后本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`。不再把各分块/完整结构的 CHGCAR（各 200MB+）
   都拉到本地。脚本路径默认 `/data/gpfs03/mdye/VTST/vtstscripts`，可用 `data/servers.json: vtst_dir` 覆盖；
   远端缺脚本/缺 CHGCAR 会明确报错（见 DEPENDENCIES.md §3c）。结果记在 ele 主任务
   `charge_diff`（`{ok, remote_path, local_path, bytes, elapsed_seconds, vtst_dir, synced_at}` 或
   `{ok:false, error}`），巡检详情 `diff_charge.charge_diff` 直接透出。
+  **触发入口自 v0.9.46 起在巡检详情**（不再挂在归档上），见 §4.2 ④c。
 - **耗时**：远端 bash + pos2pot **timeout 180s**。**审计**：`create-diff-charge`。
+
+#### ④c 差分电荷计算与三视图（巡检详情入口，v0.9.46）
+
+入口在**巡检详情 →「电子结构分析 → 差分电荷」标签**（前端 `DiffChargePanel`）。第一次点击依次做四件事：
+① 远端校验文件完整性（完整结构 + 各分块 `CHGCAR`，**大小差别应 < 1%**，否则拒绝并给出具体原因）；
+② 远端 VTST 算差分；③ 回传 `CHGCAR_diff`；④ 导入 VESTA 导出 a/b/c 三轴 PNG（与报告结构图同一套
+视角与模板流程，`vesta_render.render_volume_axes`）。之后每次加载按阶梯取值：
+**本地图 → 本地差分文件 → 远端差分文件 → 远端可算**（前两级零 SSH）。
+
+```
+POST   /api/jobs/tasks/{task_id}/charge-diff/analyze        # 触发（异步），body {"force": false}
+GET    /api/jobs/tasks/{task_id}/charge-diff/status         # 状态；?remote=1 时附带远端探测（120s 缓存）
+GET    /api/jobs/tasks/{task_id}/charge-diff/images/{axis}  # 取三视图 PNG（axis = a|b|c，image/png）
+DELETE /api/jobs/tasks/{task_id}/charge-diff                # 清除本地结果；?images_only=1 只删图
+```
+
+- **触发返回**：`{run_id, status, reused}`。同一任务已有 run 在跑时复用（不会并发跑两遍）；
+  全局同时只跑一条链路（`_JOB_LOCK`），VESTA 渲染另有**跨进程文件锁**
+  （`data/locks/vesta_render.lock`）与结构图渲染互斥 —— 百 MB 体积数据 + VESTA 最容易拖卡机器。
+- **状态返回**：`status`（`running|done|failed|idle`）、`stage` + `stage_label`
+  （`checking` 远端校验 / `computing` VTST / `downloading` 回传 / `rendering` VESTA 出图）、
+  `bytes_done` / `bytes_total`（回传进度）、`elapsed_seconds`、`error`、
+  `local`（`{state, has_images, has_diff, diff_bytes, diff_mtime, image_mtime, blocks}`）、
+  `remote`（仅 `remote=1`：`{state, reason, has_diff, integrity, vtst, remote_dir, checked_at}`）、
+  `charge_diff`（写回任务台账的同一条记录）。
+- **中断补偿**：远端已有 `CHGCAR_diff` → 只回传不重算；本地已有差分文件 → 只补出图；
+  `?force=true` 才强制重算重画。失败原因写 `diffcharge_files/meta.json`（跨重启保留）。
+- **图片取用**：`/api/**` 全部要鉴权，`<img src>` 带不了 `Authorization` 头 —— 前端用
+  `requestBlobUrl()`（`src/api/client.ts`）带鉴权头 fetch 后转 blob URL 显示；未登录返回 401。
+- **耗时**：校验 1 次 exec（约 0.5–1.5s）；VTST 计算数分钟（timeout 1800s）；回传 200MB 级视带宽；
+  VESTA 出图约 11s（实测 130MB `CHGCAR_diff`：打开 3.6s + 每轴 2.4s，timeout 1800s）。
+  回传期间该服务器的 SSH 命令会排队（连接池共用一条连接），属已知取舍。
+- **审计**：`charge-diff-analyze` / `charge-diff-clear`；链路日志 `data/charge_diff.log`。
 
 #### ⑤ NEB 创建计算文件
 
@@ -344,6 +378,7 @@ body: {
 | 报告 | `POST /reports/project/generate` (`{project_id?, all?}`) · `GET /reports/project/list` · `/{id}` · `/{id}/structured` · `/{id}/markdown` · `/{id}/export.html` · `DELETE /{id}` | 分项目报告（同项目重生成覆盖） |
 | 配置 | `PUT /settings/root-paths` · `PUT /path-mapping` · `POST /path-mapping/rebase` · `PUT /ssh/config` · `POST /ssh/test` | 运维类，**权限敏感** |
 | 分析 | `POST /jobs/tasks/{id}/pdos/analyze` · `GET /jobs/tasks/{id}/pdos/status` · `GET /jobs/tasks/{id}/pdos` · `DELETE /jobs/tasks/{id}/pdos` | **PDOS 分析（v0.9.45 重建）**：异步触发（返回 `run_id`）→ 轮询 → 取解析数据 → 清除重跑；见 §4.5 |
+| 分析 | `POST /jobs/tasks/{id}/charge-diff/analyze` · `GET .../charge-diff/status` · `GET .../charge-diff/images/{axis}` · `DELETE .../charge-diff` | **差分电荷（v0.9.46）**：巡检详情入口；远端校验（三份 CHGCAR 大小差 < 1%）→ VTST 算差分 → 回传 → VESTA 三视图；异步 + 阶梯缓存；见 §4.2 ④c |
 | 分析 | `POST /jobs/tasks/{id}/calculate-correction` | 自由能矫正项（vaspkit 501） |
 | 结构转换 | `POST /tools/cif-to-poscar` | CIF → POSCAR（`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；纯文本不落盘，页面「导入 POSCAR」选 .cif 走的就是它；解析失败 400 带中文原因） |
 

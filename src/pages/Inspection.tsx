@@ -1318,11 +1318,12 @@ export default function Inspection() {
               <LazySection
                 key={`${detailData.task_id}-diffcharge`}
                 title={`差分电荷分块 · ${detailData.diff_charge.block_count} 个分块`}
-                hint="按需加载：展开后看各分块状态表"
+                hint="按需加载：展开后看各分块状态表（计算/看图在「电子结构分析 → 差分电荷」标签）"
               >
 
                 <p className="preview-note">
-                  各分块在主任务目录下独立提交（<code>/1</code>、<code>/2</code> …）；归档时在远端主目录用
+                  各分块在主任务目录下独立提交（<code>/1</code>、<code>/2</code> …）；
+                  在「电子结构分析 → 差分电荷」标签里点击计算时，远端主目录用
                   VTST 脚本算差分（<code>chgsum.pl 1/CHGCAR 2/CHGCAR …</code> 再
                   <code>chgdiff.pl CHGCAR CHGCAR_sum</code>），只把 <code>CHGCAR_diff</code> 回传本地，
                   落 <code>diffcharge_files/chgfiles/CHGCAR_diff.vasp</code>。

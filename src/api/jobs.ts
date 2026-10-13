@@ -1,4 +1,4 @@
-import { request, wait } from './client';
+import { request, requestBlobUrl, wait } from './client';
 import {
   QUEUE_OPTIONS,
   buildSubmitScript,
@@ -6,6 +6,7 @@ import {
   simulateFallbackSnapshot,
 } from '../data/mock/cluster';
 import type {
+  ChargeDiffStatus,
   ClusterSnapshot,
   IncarPreset,
   PdosStatus,
@@ -626,6 +627,61 @@ export async function createDiffCharge(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+}
+
+// ---------------------------------------------------------------------------
+// 差分电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → 差分电荷」标签。
+// 触发是异步的（远端校验 → VTST 计算 → 回传 → VESTA 出图），前端轮询 status。
+
+
+/** 触发差分电荷链路：远端校验完整性 → VTST 算差分 → 回传 → VESTA 出三视图 */
+export async function triggerChargeDiff(
+  taskId: string,
+  payload: { force?: boolean } = {},
+): Promise<{ run_id: string; status: string; reused?: boolean }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/charge-diff/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 差分电荷链路状态（`remote=1` 时附带远端探测：差分类文件 / 分块完整性 / VTST） */
+export async function fetchChargeDiffStatus(
+  taskId: string,
+  options: { runId?: string; remote?: boolean } = {},
+): Promise<ChargeDiffStatus> {
+  const params = new URLSearchParams();
+  if (options.runId) params.set('run_id', options.runId);
+  if (options.remote) params.set('remote', '1');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return request(
+    `/jobs/tasks/${encodeURIComponent(taskId)}/charge-diff/status${suffix}`,
+  );
+}
+
+/** 清除本地差分电荷结果（默认连 CHGCAR_diff 一起删；`imagesOnly` 只删图） */
+export async function clearChargeDiff(
+  taskId: string,
+  imagesOnly = false,
+): Promise<{ removed: string[]; dir: string }> {
+  const suffix = imagesOnly ? '?images_only=1' : '';
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/charge-diff${suffix}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * 取差分电荷三视图 PNG（a / b / c）并转 blob URL。
+ * 调用方负责 `URL.revokeObjectURL`（面板卸载 / 重新出图时）。
+ */
+export async function fetchChargeDiffImage(
+  taskId: string,
+  axis: 'a' | 'b' | 'c',
+): Promise<string> {
+  return requestBlobUrl(
+    `/jobs/tasks/${encodeURIComponent(taskId)}/charge-diff/images/${axis}`,
+  );
 }
 
 /** 根据初末态 opt 任务创建 NEB 计算文件（nebmake.pl 插值） */

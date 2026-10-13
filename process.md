@@ -256,7 +256,37 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.45）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.46）
+
+- 2026-10-14（用户："现在把这个入口接入到巡检详情中而不是归档上，第一次点击后执行动作有：远端判断文件完整性
+  （三个 CHGCAR 文件大小差别应该 < 1%）- 使用 VTST 计算 charge_diff - 回传 charge_diff 文件 -
+  导入 vesta 并导出 abc 三轴图片 - 图片呈现在前端详情页；后续加载时先看本地有没有 image，再看有没有
+  charge_diff 文件，最后都没有再回退到远端检查 charge_diff 文件；…chgcar 文件较大，回传，
+  vesta 打开可能需要较长时间，要做好链路稳定性和中断的补偿方案，还要尽量避免系统卡死"）：
+  **差分电荷入口从「归档」搬到巡检详情，并补上 VESTA 三视图**（v0.9.46）。新增链路模块
+  `backend/charge_diff.py`（异步：`start()` / `status()` / `clear()`，与 pdos 同构）：① 远端完整性校验
+  —— 完整结构 `CHGCAR` + 各分块 `N/CHGCAR` 都得在且**大小差别 < 1%**（分块只改原子、晶胞不变 →
+  FFT 网格一致；差得多说明某块没算完/被截断），一次 exec、失败带具体原因；
+  ② 远端 VTST 算差分（`ele_diff.run_vtst_chgdiff`，**远端已有 `CHGCAR_diff` 就跳过重算**）；
+  ③ 回传（`ele_diff.download_charge_diff`，`ssh.download_file` 新增 `progress_cb` 上报进度）；
+  ④ VESTA 出 a/b/c 三轴图（新增 `vesta_render.render_volume_axes`，复用 `AXIS_VIEW` + 模板流程，
+  体积文件等待时间放宽到 `VOLUME_RENDER_WAIT=300s`）。**前端**：新增 `DiffChargePanel`，
+  作为巡检详情「电子结构分析」的并列标签（PDOS / **差分电荷** / Bader / COHP / 功函数）；
+  阶梯取值 **本地图 → 本地差分文件 → 远端差分文件 → 远端可算**（前两级零 SSH，第三级 120s 缓存），
+  图片用带鉴权头的 fetch → blob URL 显示（`requestBlobUrl`，`<img src>` 带不了 token）。
+  **稳定性/防卡死**：链路跑后台线程 + `run_id` 轮询（阶段 `checking/computing/downloading/rendering`
+  + 回传字节进度）、全局同时只跑一条（`_JOB_LOCK`）、新增 VESTA **跨进程**文件锁
+  `data/locks/vesta_render.lock`（`render_task` / `render_neb_images` / `render_volume_axes` 全走它，
+  避免结构图与体积图两个 VESTA 同时吃内存）、失败写 `diffcharge_files/meta.json`（跨重启保留原因）。
+  **中断补偿**：远端算好就只补回传、本地有文件就只补出图，`force=true` 才重算重画。
+  **归档不再算差分**（`routers/jobs.py` 归档后台只保留各分块输出同步），报告文案同步为
+  "在巡检详情里点击计算"。**接口**：`POST /api/jobs/tasks/{id}/charge-diff/analyze`、
+  `GET .../charge-diff/status`（`?remote=1` 附带远端探测）、`GET .../charge-diff/images/{axis}`（PNG）、
+  `DELETE .../charge-diff`（`?images_only=1`）；`inspections.py` 的 `available-analyses.diff_charge`
+  改为"该任务已划块"。**实测**：mock 远端（VTST 打桩）+ 真实 130MB `CHGCAR_diff` + 真机 VESTA，
+  端到端 11s 出三图、缓存复跑瞬回；HTTP 层（独立 uvicorn + 隔离数据目录）登录/状态/触发/取图 200/
+  匿名 401/清除全通过；真实集群只读探测 FS_Kaolin/model2 = 远端已有差分（大小差别 0.06%）、
+  PMS@model1 = 缺 `2/CHGCAR`（精确报错，不白跑 VTST）。
 
 - 2026-10-14（用户："之前定义了差分电荷计算，会下载分块和完整的 CHGCAR 为 1.vasp 等在本地处理，现在改一下……可以在主目录采用 chgsum.pl + chgdiff.pl 直接生成 CHGCAR_diff，下载 CHGCAR_diff 到本地即可"；"同样做好依赖声明(VTST)"）：
   **差分电荷改为"远端算好、只回传一个差分文件"**（v0.9.45）。原口径是把各分块和完整结构的
@@ -1102,7 +1132,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 1. **frac 频率输出解析**（ZPE / 自由能矫正回填组数据 `frac.zpe / correction`）：目前自由能台阶图的矫正值来自 vaspkit 501 单点调用，未解析 OUTCAR/频率结果文件。
 2. **NEB 映像 POSCAR 线性插值**：`create_neb_files` 依赖 nebmake.pl，尚未内置线性插值兜底。
-3. **电子结构链路**：PDOS（vaspkit 111/113/115）有弹窗入口，文件生成与回传待完善；Bader / COHP / 功函数 / 差分电荷为占位。
+3. **电子结构链路**：PDOS（v0.9.45 重建，巡检详情标签页 + 三级轨道菜单）与**差分电荷**
+   （v0.9.46：巡检详情入口 → 完整性校验 → VTST 算差分 → 回传 → VESTA 三视图）**已落地**；
+   Bader / COHP / 功函数仍为占位（`available-analyses` 会探测远端对应文件是否具备）。
 4. **POTCAR 生成**：后端按 POSCAR 元素拼接伪势（pymatgen）仍为占位
 5. ~~后端定时巡检未真正调度~~ → v0.6.2 已用自建后台线程实现（未引入 APScheduler），见 §6.8。
 6. 提交/巡检路径的进一步合并 exec 优化（提交已 3 次调用，可压到 1 次）。
@@ -1125,9 +1157,19 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-09-20 整理）**：代码在 **v0.9.6，已提交并推送**（`c5e028c`）；生产机仍是较早的后端进程，**需要 `sudo systemctl restart vasp-manager`** 才能加载 v0.9.6（自动化系统）。重启后 `data/config/automation.json` 与 `data/config/rules/*.json` 会自动生成，**示例规则默认启用**（想先观察可把 `dry_run` 打开）。前端 dist 已含「自动化」页（v0.9.6 重新构建）。**生产机仍是 22:53 启动的 v0.9.0 进程**，需 `sudo systemctl restart vasp-manager` 部署 v0.9.1~v0.9.3，并建议随后跑一次 `scripts/migrate_owners.py --owner zouyuxi --apply` 给现有 4 个项目补 owner。**生产机仍需 `sudo systemctl restart vasp-manager`**：重启前 run 的是旧后端（没有 /api/auth/*），页面会停在登录页且登录报错；重启后首次启动会创建 `zouyuxi`(admin) 并把随机密码写进 journalctl（建议随后用 `python scripts/set_password.py zouyuxi` 改成自己的密码）。
+> **当前状态速览（2026-10-14 整理）**：代码在 **v0.9.46**（差分电荷入口搬到巡检详情 + VESTA 三视图）。
+> `origin/main` 停在 `e228b53`：`a7c25ea`（v0.9.45 远端算差分）与之之后的提交都**尚未推送**，
+> 补一次 `git push origin main` 即可。生产机 systemd 服务 `vasp-manager` 正在运行（2026-10-14 00:31:56 启动，
+> 已加载 v0.9.46 后端与最新 `dist/`），访问 `http://192.168.1.20:3001`，**无需重启**。
+> **v0.9.45 的 package.json 版本号当时漏改**，v0.9.46 已一并订正为 `0.9.46`。
+> **工作区不干净，交接时需先处理**：`问题.md` 是「已删除未提交」，`待办.md` 是未跟踪文件
+> （内容是 DOS 提取脚本的任务书，脚本已落在 `scripts/dos_extract.py` / `dos_extract_test.py` / `dos_json_summary.py`）；
+> 下个版本提交前先决定这两个文件保留、改名还是删除。`data/` 现有 6 个项目：Ag_20260830 / Co_260902 / TMDZYX /
+> FS_Kaolin / In_LMR_test / LiMR_InO（owner 均为 zouyuxi）。
+> **已知不一致**：`package.json` 仍是 `0.9.44`（v0.9.45 那次提交漏改版本号），下一个版本提交时一并订正到当前版本。
 
-1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 应看到 `v0.8.8: 作业管理显示巡检告警 + 任务树组状态色 + 续算后输入状态即时刷新` / `docs: process.md 补 v0.8.8 commit 号` / `760fb01 docs: process.md 补 v0.8.7 commit 号` / `7df6a91 v0.8.7: …`；`git status` 应干净。
+1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 最新应为 `a7c25ea feat(差分电荷): 改为远端 VTST 算好只回传 CHGCAR_diff`；
+   `git status` 目前有 `问题.md`（删除未提交）与 `待办.md`（未跟踪）两处待处理（见上方速览）。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。
 2. 读 `TODO.md`（§11 巡检异常规则引擎、§12 自动执行/大模型动作接口 —— 两项都已设计但**用户明确要求先搁置**）+ `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时（生产机 Linux）：`sudo systemctl restart vasp-manager` → 打开 `http://192.168.1.20:3001`（前端已构建在 `dist/`）与 `http://192.168.1.20:3001/docs`；改前端记得先 `npm run build`，需要热更新时才另开 `npm run dev`（5173）。部署细节见 §11。

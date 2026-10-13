@@ -42,7 +42,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import ssh
 from config import PROJECTS_DIR
@@ -562,27 +562,43 @@ def create_block_files(
     }
 
 
-def compute_charge_difference(
-    server: str, project: Dict[str, Any], task: Dict[str, Any]
+def run_vtst_chgdiff(
+    server: str,
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    *,
+    remote_diff_exists: bool = False,
+    timeout: int = 1800,
 ) -> Dict[str, Any]:
-    """**远端**用 VTST 脚本算好差分电荷，只把 `CHGCAR_diff` 回传本地（2026-10-14 口径）。
+    """**远端**用 VTST 脚本算差分电荷（只算，不回传）。
 
     在主任务目录里执行：
 
         chgsum.pl 1/CHGCAR 2/CHGCAR …   → CHGCAR_sum（各分块电荷密度相加）
         chgdiff.pl CHGCAR CHGCAR_sum    → CHGCAR_diff（完整 − 分块之和）
 
-    **为什么改成这样**：三个 CHGCAR 各 200MB+，原来要全拉回本地（700MB+）再自己处理，
-    现在远端一条命令算完，只回传一个差分文件（约 200MB），本地也不用装 VTST。
-    本地落 `<任务>/diffcharge_files/chgfiles/CHGCAR_diff.vasp`（保留 .vasp 扩展名，VESTA 直接能开）。
+    `remote_diff_exists=True`（主目录里已经有 `CHGCAR_diff`）时**跳过重算** —— 这是
+    "回传/出图中断后重试"的补偿：远端一旦算出来就只补回传，不再花几分钟重跑 VTST。
+    注意 `chgsum.pl` 会覆盖当前目录里的 `CHGCAR_sum`。
 
-    CHGCAR 体积大，只在**归档时**（或手动触发）调用，不进巡检循环。
+    返回 `{ok, remote_path, remote_sum, skipped, elapsed_seconds, stdout}`；失败抛
+    `DiffChargeError`（消息里带远端输出尾部，便于前端直接显示）。
     """
-    project_name = str(project.get("name") or "")
     ele_remote = task_remote_dir(server, task).rstrip("/")
     blocks = diff_charge_blocks(project, task)
     if not ele_remote or not blocks:
         raise DiffChargeError("该任务还没有差分电荷分块")
+    remote_path = f"{ele_remote}/{CHG_DIFF_NAME}"
+    remote_sum = f"{ele_remote}/{CHG_SUM_NAME}"
+    if remote_diff_exists:
+        return {
+            "ok": True,
+            "remote_path": remote_path,
+            "remote_sum": remote_sum,
+            "skipped": "远端已有 CHGCAR_diff，跳过重算",
+            "elapsed_seconds": 0.0,
+            "stdout": "",
+        }
 
     script_dir = vtst_dir(server)
     inputs = " ".join(f'"{int(b.get("ele_block") or 0)}/CHGCAR"' for b in blocks)
@@ -631,26 +647,81 @@ def compute_charge_difference(
             raise fail(f"{message}{('：' + detail) if detail else ''}")
     if int(result.get("exit_code") or 0) != 0:
         raise fail("远端计算差分电荷失败")
+    return {
+        "ok": True,
+        "remote_path": remote_path,
+        "remote_sum": remote_sum,
+        "skipped": "",
+        "elapsed_seconds": round(time.time() - started, 1),
+        "stdout": raw[-2000:],
+        "vtst_dir": script_dir,
+    }
+
+
+def download_charge_diff(
+    server: str,
+    project: Dict[str, Any],
+    task: Dict[str, Any],
+    *,
+    remote_path: str = "",
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+) -> Dict[str, Any]:
+    """把远端 `CHGCAR_diff` 回传本地 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`。
+
+    `progress_cb(已传字节, 总字节)` 可选 —— 200MB 级的文件回传给前端报进度用。
+    """
+    project_name = str(project.get("name") or "")
+    ele_remote = task_remote_dir(server, task).rstrip("/")
+    if not ele_remote:
+        raise DiffChargeError("该任务没有远程目录")
+    remote_path = remote_path or f"{ele_remote}/{CHG_DIFF_NAME}"
+    started = time.time()
 
     chg_dir = diff_charge_root_local(project_name, task) / CHG_DIR
     chg_dir.mkdir(parents=True, exist_ok=True)
     target = chg_dir / LOCAL_CHG_DIFF_NAME
-    remote_path = f"{ele_remote}/{CHG_DIFF_NAME}"
-    if not ssh.download_file(server, remote_path, str(target)):
-        raise fail("差分文件回传失败（远端 CHGCAR_diff 下载不到）")
+    if not ssh.download_file(server, remote_path, str(target), progress_cb=progress_cb):
+        raise DiffChargeError("差分文件回传失败（远端 CHGCAR_diff 下载不到）")
     if not target.is_file() or target.stat().st_size == 0:
         target.unlink(missing_ok=True)
-        raise fail("差分文件回传后为空")
+        raise DiffChargeError("差分文件回传后为空")
     return {
         "ok": True,
-        "block_count": len(blocks),
         "remote_path": remote_path,
-        "remote_sum": f"{ele_remote}/{CHG_SUM_NAME}",
         "local_path": to_local_rel(str(target)),
         "dir": to_local_rel(str(chg_dir)),
         "bytes": target.stat().st_size,
         "elapsed_seconds": round(time.time() - started, 1),
-        "vtst_dir": script_dir,
+    }
+
+
+def compute_charge_difference(
+    server: str, project: Dict[str, Any], task: Dict[str, Any]
+) -> Dict[str, Any]:
+    """一次性入口：远端算差分（已有就跳过）+ 回传本地。
+
+    **为什么是"远端算、只回传一个文件"**：三个 CHGCAR 各 200MB+，原来要全拉回本地
+    （700MB+）再自己处理；现在远端一条命令算完，只回传 `CHGCAR_diff`（约 200MB），
+    本地也不用装 VTST。本地落 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`
+    （保留 `.vasp` 扩展名，VESTA 直接能开）。
+
+    链路入口（巡检详情「差分电荷」标签）走 `charge_diff.py`，它把"校验 / 计算 / 回传 /
+    出图"分成四个可上报的阶段；这个函数保留给脚本与测试当"一步到位"用。
+    """
+    run = run_vtst_chgdiff(server, project, task)
+    got = download_charge_diff(server, project, task, remote_path=run["remote_path"])
+    return {
+        "ok": True,
+        "block_count": len(diff_charge_blocks(project, task)),
+        "remote_path": got["remote_path"],
+        "remote_sum": run["remote_sum"],
+        "local_path": got["local_path"],
+        "dir": got["dir"],
+        "bytes": got["bytes"],
+        "elapsed_seconds": round(
+            float(run.get("elapsed_seconds") or 0) + float(got.get("elapsed_seconds") or 0), 1
+        ),
+        "vtst_dir": vtst_dir(server),
     }
 
 

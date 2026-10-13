@@ -1054,6 +1054,83 @@ export interface PdosView {
   series: Record<string, PdosSeries>;
 }
 
+/**
+ * 差分电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → 差分电荷」标签。
+ * 状态取值阶梯：本地图 → 本地差分文件 → 远端差分文件 → 远端可算（见 backend/charge_diff.py）。
+ */
+export interface ChargeDiffIntegrity {
+  ok: boolean;
+  missing?: string[];
+  max?: number;
+  min?: number;
+  spread?: number | null;
+  reason?: string;
+}
+
+/** 远端探测结果（`status?remote=1`） */
+export interface ChargeDiffRemote {
+  state?: string;
+  reason?: string;
+  remote_dir?: string;
+  block_count?: number;
+  has_diff?: boolean;
+  has_sum?: boolean;
+  integrity?: ChargeDiffIntegrity | null;
+  vtst?: { dir?: string; ready?: boolean; scripts?: Record<string, boolean> };
+  checked_at?: string;
+}
+
+/** 本地阶梯（零 SSH：图 / 差分文件都在不在） */
+export interface ChargeDiffLocal {
+  state?: string;
+  has_images: boolean;
+  has_partial_images?: boolean;
+  image_axes?: string[];
+  has_diff: boolean;
+  diff_path?: string;
+  diff_bytes?: number;
+  diff_mtime?: number;
+  image_mtime?: number;
+  blocks?: number | null;
+}
+
+/** 写回 `task.charge_diff` 的链路结果（报告 / 巡检详情共用） */
+export interface ChargeDiffRecord {
+  ok: boolean;
+  block_count?: number;
+  bytes?: number;
+  elapsed_seconds?: number;
+  render_seconds?: number;
+  remote_path?: string;
+  remote_sum?: string;
+  local_path?: string;
+  dir?: string;
+  images?: Record<string, string>;
+  reused_remote?: boolean;
+  stage?: string;
+  error?: string;
+  synced_at?: string;
+}
+
+/** `GET /api/jobs/tasks/{id}/charge-diff/status` 的返回 */
+export interface ChargeDiffStatus {
+  run_id?: string;
+  status: 'idle' | 'running' | 'done' | 'failed';
+  stage?: string;
+  stage_label?: string;
+  error?: string | null;
+  elapsed_seconds?: number;
+  bytes_done?: number;
+  bytes_total?: number;
+  finished_at?: string | null;
+  /** 阶梯取值（没传 remote=1 时只按本地；传了就是"本地 → 远端"的结果） */
+  state?: string;
+  local: ChargeDiffLocal;
+  remote?: ChargeDiffRemote;
+  charge_diff?: ChargeDiffRecord | null;
+  meta?: Record<string, unknown>;
+}
+
 /** `GET .../pdos/status` 的返回 */
 export interface PdosStatus {
   run_id?: string;

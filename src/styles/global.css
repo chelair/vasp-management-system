@@ -5729,16 +5729,17 @@ h5:hover > .report-hide-btn,
 
 /* ---------- PDOS 分析弹窗（2026-10-13）：工具条 + 内联轨道菜单 + 全宽折线，小屏全屏 ---------- */
 
-dialog.pdos-dialog {
+/*
+ * ⚠️ 只给 [open] 上写 display —— 千万不要无条件给 dialog 写 display，
+ * 那会覆盖浏览器默认的「未打开 = display:none」，弹窗就会**以内联块的形式挂在页面上**
+ * （2026-10-13 用户看到"PDOS 分析挂在巡检详情下面"就是这个原因）。
+ */
+dialog.pdos-dialog[open] {
+  display: flex;
+  flex-direction: column;
   width: min(1180px, 95vw);
   height: min(84vh, 860px);
   max-height: 92vh;
-  display: flex;
-  flex-direction: column;
-}
-
-dialog.pdos-dialog[open] {
-  display: flex;
 }
 
 dialog.pdos-dialog .body {

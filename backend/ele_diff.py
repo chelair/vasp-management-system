@@ -407,17 +407,24 @@ def _download_text(server: str, remote_path: str) -> str:
     return str(result.get("stdout") or "")
 
 
-def _run_capture(server: str, cmds: List[str], timeout: int = 180) -> Dict[str, Any]:
+def _run_capture(
+    server: str, cmds: List[str], timeout: int = 180, *, dedicated: bool = False
+) -> Dict[str, Any]:
     """跑一段远端 bash，**返回原始结果**（stdout/stderr/exit_code），不抛异常。
 
     与 `_run` 的区别：这里的脚本会主动打 `@@@XXX` 标记说明失败原因（缺文件 / 脚本缺失 / 转换失败…），
     调用方需要读原始输出才能给出准确提示。
+
+    `dedicated=True` 走一次性专用连接（长命令用，不占常驻连接池的串行锁）—— 差分电荷的
+    `chgsum.pl` / `chgdiff.pl` 在 3×200MB 的 CHGCAR 上要跑几分钟（2026-10-14 用户口径"单开"）。
     """
     import base64
 
     script = "\n".join(cmds)
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    return ssh.run_remote(server, f"echo {encoded} | base64 -d | bash", timeout=timeout)
+    return ssh.run_remote(
+        server, f"echo {encoded} | base64 -d | bash", timeout=timeout, dedicated=dedicated
+    )
 
 
 def _run(server: str, cmds: List[str], timeout: int = 180) -> None:
@@ -623,7 +630,9 @@ def run_vtst_chgdiff(
         f'echo "@@@SIZE=$(wc -c < "{CHG_DIFF_NAME}" | tr -d \' \')"',
     ]
     started = time.time()
-    result = _run_capture(server, cmds, timeout=1800)
+    # 长命令走专用连接：3×200MB 的 CHGCAR 上 chgsum/chgdiff 要跑几分钟，
+    # 占着常驻池的串行锁会让同服务器的巡检 / 提交全部排队（2026-10-14 用户口径"单开"）
+    result = _run_capture(server, cmds, timeout=timeout, dedicated=True)
     raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
 
     def fail(message: str) -> DiffChargeError:

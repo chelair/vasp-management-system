@@ -332,7 +332,14 @@ DELETE /api/jobs/tasks/{task_id}/charge-diff                # 清除本地结果
   `requestBlobUrl()`（`src/api/client.ts`）带鉴权头 fetch 后转 blob URL 显示；未登录返回 401。
 - **耗时**：校验 1 次 exec（约 0.5–1.5s）；VTST 计算数分钟（timeout 1800s）；回传 200MB 级视带宽；
   VESTA 出图约 11s（实测 130MB `CHGCAR_diff`：打开 3.6s + 每轴 2.4s，timeout 1800s）。
-  回传期间该服务器的 SSH 命令会排队（连接池共用一条连接），属已知取舍。
+  **不算时间长，是因为长任务与大文件都走专用连接**（见下条）。
+- **专用连接（v0.9.47，用户口径"单开"）**：常驻连接池是"一条连接 + 串行锁"，200MB 回传或
+  几分钟的 `chgsum.pl` 占着锁会让同一服务器的巡检 / bjobs / 提交全部排队。现在：
+  ① `download_file` 先借池连接 `stat` 拿大小，**超过 `dedicated_transfer_mb`（默认 32MB，
+  `data/config/settings.json` 可覆盖，0 = 全部走池）就松开池锁另开一次性连接**搬；
+  ② 长命令用 `run_remote(..., dedicated=True)`（差分电荷的 chgsum/chgdiff 走这条）。
+  专用连接用完即关、不进池、不参与空闲回收，代价是多一次握手（~1s）；传输台账见
+  `data/ssh_transfer.log`（server / bytes / dedicated / elapsed / path）。
 - **审计**：`charge-diff-analyze` / `charge-diff-clear`；链路日志 `data/charge_diff.log`。
 
 #### ⑤ NEB 创建计算文件

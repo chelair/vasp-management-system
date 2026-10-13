@@ -43,6 +43,7 @@ from report_schema import (
 from storage import load_db
 from structure_analysis import analyze as analyze_structure
 import structure_images
+import charge_diff
 from ele_diff import diff_charge_blocks
 from task_paths import is_auxiliary_task, is_continuation_task, task_dir
 
@@ -104,6 +105,26 @@ def _views_dialog(
     if not rows:
         return None, {}
     return {"id": dialog_id, "title": title, "rows": rows}, images
+
+
+def _charge_diff_dialog(
+    dialog_id: str, title: str, views: Dict[str, str]
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, str]]:
+    """差分电荷（`CHGCAR_diff`）三视图弹窗规格（结构与 `_views_dialog` 一致，单行）。
+
+    `views` = `{axis: 磁盘 PNG 路径}`（来自 `charge_diff.local_images`，缺轴就不出弹窗）；
+    图片按 `images/<dialog_id>_<axis>.png` 命名，与结构/映像三视图共用同一条内联通道
+    （导出 HTML 时 base64 内联，网页里走报告图片接口）。
+    """
+    if len(views) < 3:
+        return None, {}
+    row: Dict[str, Any] = {"label": "差分电荷 Δρ（CHGCAR_diff）", "views": {}}
+    images: Dict[str, str] = {}
+    for axis in ("a", "b", "c"):
+        name = f"{dialog_id}_{axis}.png"
+        images[name] = views[axis]
+        row["views"][axis] = f"images/{name}"
+    return {"id": dialog_id, "title": title, "rows": [row]}, images
 
 
 def _neb_image_dialog(
@@ -1001,9 +1022,23 @@ def _sections_markdown(report, charts):
                         "差分电荷尚未生成（在巡检详情的「电子结构分析 → 差分电荷」里点击计算："
                         "远端校验 → VTST 算差分 → 回传 → VESTA 出三视图）。"
                     )
-                ele_blocks.append(
-                    f"{diff_state} 差分图（VESTA 三视图）放在 `diffcharge_files/images/`。\n"
-                )
+                if item.get("charge_diff_dialog"):
+                    ele_blocks.append(
+                        f"{diff_state} 差分图（VESTA 三视图）见 "
+                        f"[差分三视图（a / b / c）](#{item['charge_diff_dialog']})，"
+                        "磁盘上位于 `diffcharge_files/images/`。\n\n"
+                    )
+                elif charge_diff.get("ok"):
+                    # 差分算好了但本地三视图不在（被「清除三视图」删掉 / 只回了数据）
+                    ele_blocks.append(
+                        f"{diff_state} 差分图（VESTA 三视图）当前不在本地："
+                        "在巡检详情「电子结构分析 → 差分电荷」点一次「计算差分电荷」即可补出图"
+                        "（远端差分文件还在，只走回传或直接出图）。\n\n"
+                    )
+                else:
+                    ele_blocks.append(
+                        f"{diff_state} 差分图（VESTA 三视图）放在 `diffcharge_files/images/`。\n\n"
+                    )
         ele_blocks.append(
             f"\n待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"
         )
@@ -1832,7 +1867,10 @@ def build_report(
             "free_energy": free_paths,
             "neb": neb_science,
             "ele": {
-                "note": "电子结构分析（PDOS / Bader / 功函数 / 差分电荷）待接入报告",
+                "note": (
+                    "电子结构分析：差分电荷已接入（结果 + VESTA 三视图弹窗）；"
+                    "PDOS / Bader / COHP / 功函数待接入报告"
+                ),
                 "tasks": _ele_details(project, facts, merged),
             },
             "frac": _frac_details(project, facts),
@@ -1945,6 +1983,34 @@ def build_report(
         },
     }
     # 结构三视图弹窗（<dialog>）与内联 PNG 清单：放在报告根节点，导出 HTML 时用
+    # 差分电荷三视图（v0.9.47）：算好了就在「电子结构」章节给一个 a/b/c 弹窗，
+    # 图片复用同一个 images/ 内联通道（口径与结构/映像三视图完全一致）
+    for item in ((report.get("science") or {}).get("ele") or {}).get("tasks") or []:
+        record = item.get("charge_diff") or {}
+        if not record.get("ok"):
+            continue
+        ele_obj = next(
+            (
+                x
+                for x in project.get("tasks", [])
+                if str(x.get("task_id")) == str(item.get("task_id"))
+            ),
+            {},
+        )
+        views = {
+            axis: str(path)
+            for axis, path in charge_diff.local_images(project_name, ele_obj).items()
+        }
+        dialog, pngs = _charge_diff_dialog(
+            f"dlg_chgdiff_{item.get('task_id')}",
+            f"{item.get('task_name')} 差分电荷三视图",
+            views,
+        )
+        if dialog:
+            dialogs.append(dialog)
+            dialog_images.update(pngs)
+            item["charge_diff_dialog"] = dialog["id"]
+
     report["dialogs"] = dialogs
     report["images"] = dialog_images
 

@@ -256,7 +256,25 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.46）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.47）
+
+- 2026-10-14（用户："单开；加" —— 回答上一轮遗留的两个问题：① 回传 200MB 期间同服务器的其它 SSH
+  命令会排队，要不要单开连接；② 报告「电子结构」章节要不要内联差分三视图）：
+  **① SSH 长命令 / 大文件改走专用连接**（v0.9.47）。常驻连接池是"一条连接 + 串行锁"，200MB 回传
+  或几分钟的 `chgsum.pl` 占着锁会让同一服务器的巡检 / bjobs / 提交全部排队。现在
+  `ssh.download_file` 先借池连接 `stat` 拿大小，**超过 `settings.json: dedicated_transfer_mb`
+  （默认 32MB，0 = 全部走池）就松开池锁、另开一次性连接**搬（`_download_dedicated`）；
+  新增 `ssh.run_remote(..., dedicated=True)`（`_run_remote_dedicated`）给**长命令**用，
+  差分电荷的 chgsum/chgdiff 走它（`ele_diff._run_capture(..., dedicated=True)`）。
+  专用连接用完即关、不进池、不参与空闲回收（多一次握手 ~1s）；传输台账 `data/ssh_transfer.log`。
+  **② 报告内联差分电荷三视图**：新增 `report_builder._charge_diff_dialog`，`build_report` 按
+  `charge_diff.local_images` 生成单行弹窗 `dlg_chgdiff_<task_id>`（a/b/c），「电子结构」章节给
+  `[差分三视图（a / b / c）](#dlg_chgdiff_…)` 链接；图片复用既有 `images/` 内联通道
+  （随报告落盘 → 网页走报告图片接口 → 导出单文件 HTML base64 内联），**前端零改动**
+  （弹窗/图片组件本来通用）。**实测**：真机 server1 —— `dedicated=True` 命令正确；专用连接跑
+  `sleep 8` 时池上 `echo` 1.3s 返回、池忙时专用 `echo` 2.0s 返回（互不阻塞）；阈值 200B →
+  `dedicated=yes`、阈值 100GB → `dedicated=no`；报告链路（mock 远端 + 真 VESTA）章节链接 /
+  弹窗 / 3 张图落报告目录 / data URI 内联导出全通过。
 
 - 2026-10-14（用户："现在把这个入口接入到巡检详情中而不是归档上，第一次点击后执行动作有：远端判断文件完整性
   （三个 CHGCAR 文件大小差别应该 < 1%）- 使用 VTST 计算 charge_diff - 回传 charge_diff 文件 -

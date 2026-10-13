@@ -24,6 +24,12 @@ from typing import Any, Callable, Dict, Optional
 
 from config import DATA_DIR, load_servers
 
+#: 大文件传输阈值（MB）：超过就走**一次性专用连接**（见 `download_file`）。
+#: 200MB 级的 CHGCAR_diff 若占着常驻池的串行锁，同一服务器的巡检 / bjobs / 提交
+#: 都会排队等它 —— 2026-10-14 用户口径"单开"。
+#: 可用 `data/config/settings.json: dedicated_transfer_mb` 覆盖（0 = 全部走池）。
+DEDICATED_TRANSFER_DEFAULT_MB = 32
+
 # ---------- 常驻连接池 ----------
 
 _ssh_lock = threading.RLock()
@@ -393,14 +399,43 @@ def get_pool_status() -> Dict[str, Any]:
     }
 
 
-def run_remote(server_name: str, command: str, timeout: int = 30) -> Dict[str, object]:
+def _run_remote_dedicated(
+    server_name: str, command: str, timeout: int
+) -> Dict[str, object]:
+    """在**一次性专用连接**上跑命令（用完即关）。
+
+    给"长命令"用（差分电荷的 chgsum.pl / chgdiff.pl 要跑几分钟）：常驻池是
+    "一条连接 + 串行锁"，长命令占着锁会让同一服务器上其它功能（巡检 / bjobs /
+    提交）全部排队。专用连接不进池、不参与空闲回收。
+    """
+    client = _get_client(server_name)
+    try:
+        _stdin, stdout, stderr = client.exec_command(command.encode("utf-8"), timeout=timeout)
+        exit_code = stdout.channel.recv_exit_status()
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        return {"stdout": out, "stderr": err, "exit_code": exit_code}
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - 关闭失败无伤
+            pass
+
+
+def run_remote(
+    server_name: str, command: str, timeout: int = 30, dedicated: bool = False
+) -> Dict[str, object]:
     """在指定服务器执行命令，返回 {stdout, stderr, exit_code}。
 
     使用常驻连接池执行：复用连接避免重复握手，连接异常时自动断开并抛出，
-    下次调用会重新建立连接。
+    下次调用会重新建立连接。`dedicated=True` 改用一次性专用连接（长命令用，
+    见 `_run_remote_dedicated`），不占池锁。
     """
     if _mock_enabled():
         return _mock_run(command, timeout)
+
+    if dedicated:
+        return _run_remote_dedicated(server_name, command, timeout)
 
     ensure_pruner()
     lock = _exec_lock(server_name)
@@ -450,6 +485,77 @@ def upload_file(
             sftp.close()
 
 
+def _dedicated_transfer_bytes() -> int:
+    """专用连接阈值（字节）：`settings.json: dedicated_transfer_mb` 可覆盖，0 = 关闭。"""
+    try:
+        from config import load_settings
+
+        value = load_settings().get("dedicated_transfer_mb", DEDICATED_TRANSFER_DEFAULT_MB)
+        return max(0, int(float(value) * 1024 * 1024))
+    except Exception:  # noqa: BLE001 - 配置读不到就用默认
+        return DEDICATED_TRANSFER_DEFAULT_MB * 1024 * 1024
+
+
+def _log_transfer(
+    server_name: str, remote_path: str, size: int, *, dedicated: bool, elapsed: float
+) -> None:
+    """大文件传输台账（`data/ssh_transfer.log`）：排查"谁占着连接 / 走了哪条通道"。"""
+    try:
+        path = DATA_DIR / "ssh_transfer.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"{datetime.now().isoformat(timespec='seconds')} server={server_name} "
+                f"bytes={size} dedicated={'yes' if dedicated else 'no'} "
+                f"elapsed={elapsed:.1f}s path={remote_path}\n"
+            )
+    except OSError:
+        pass
+
+
+def _sftp_get(sftp, remote_path: str, local: Path, size: int, progress_cb=None) -> None:
+    """一次 SFTP 下载（带可选进度回调）。"""
+    if progress_cb is None:
+        sftp.get(remote_path, str(local))
+        return
+
+    def _cb(transferred: int, _total: int) -> None:
+        try:
+            progress_cb(int(transferred), size)
+        except Exception:  # noqa: BLE001 - 进度回调不影响下载
+            pass
+
+    sftp.get(remote_path, str(local), callback=_cb)
+
+
+def _download_dedicated(
+    server_name: str, remote_path: str, local: Path, size: int, progress_cb=None
+) -> bool:
+    """大文件：用**一次性专用连接**回传，常驻池的连接与串行锁都不参与。"""
+    started = time.time()
+    client = None
+    try:
+        client = _get_client(server_name)
+        sftp = client.open_sftp()
+        try:
+            _sftp_get(sftp, remote_path, local, size, progress_cb)
+        finally:
+            try:
+                sftp.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return True
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        _log_transfer(
+            server_name, remote_path, size, dedicated=True, elapsed=time.time() - started
+        )
+
+
 def download_file(
     server_name: str,
     remote_path: str,
@@ -461,6 +567,11 @@ def download_file(
 
     `progress_cb(transferred, total)` 可选：大文件（CHGCAR 200MB+）回传时上报进度，
     供前端轮询展示（2026-10-14 差分电荷链路）。回调里的异常一律吞掉，不影响下载。
+
+    **大文件走专用连接**（2026-10-14 用户口径"单开"）：先借池连接 stat 一次拿大小，
+    超过 `dedicated_transfer_mb`（默认 32MB，见 settings.json）就**松开池锁**，
+    另开一次性连接搬 —— 否则 200MB 回传的几分钟里，同一服务器的巡检 / bjobs /
+    提交全部在池锁上排队。大小阈值内仍走常驻连接（省一次握手）。
     """
     local = Path(local_path)
     local.parent.mkdir(parents=True, exist_ok=True)
@@ -477,31 +588,30 @@ def download_file(
         return False
 
     ensure_pruner()
+    threshold = _dedicated_transfer_bytes()
     lock = _exec_lock(server_name)
     with lock:
         client = _acquire_client(server_name)
         sftp = client.open_sftp()
         try:
             stat = sftp.stat(remote_path)
-            if stat.st_size <= 0:
+            size = int(stat.st_size)
+            if size <= 0:
                 return False
-            if progress_cb is None:
-                sftp.get(remote_path, str(local))
-            else:
-                total = int(stat.st_size)
-
-                def _cb(transferred: int, _total: int) -> None:
-                    try:
-                        progress_cb(int(transferred), total)
-                    except Exception:  # noqa: BLE001 - 进度回调不影响下载
-                        pass
-
-                sftp.get(remote_path, str(local), callback=_cb)
-            return True
+            if not threshold or size < threshold:
+                started = time.time()
+                _sftp_get(sftp, remote_path, local, size, progress_cb)
+                _log_transfer(
+                    server_name, remote_path, size, dedicated=False,
+                    elapsed=time.time() - started,
+                )
+                return True
         except FileNotFoundError:
             return False
         finally:
             sftp.close()
+    # 池锁已释放：大文件在专用连接上慢慢搬，不挡别的功能
+    return _download_dedicated(server_name, remote_path, local, size, progress_cb)
 
 
 def mkdir_remote(server_name: str, remote_path: str, timeout: int = 30) -> None:

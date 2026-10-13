@@ -11,9 +11,15 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Checkbox, InputNumber, Popover, Segmented, Spin, Tree, Tooltip } from 'antd';
+import { App, Button, Checkbox, InputNumber, Segmented, Spin, Tree, Tooltip } from 'antd';
 import type { DataNode } from 'antd/es/tree';
-import { DownOutlined, ReloadOutlined, SaveOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import {
+  DownOutlined,
+  ReloadOutlined,
+  SaveOutlined,
+  UnorderedListOutlined,
+  UpOutlined,
+} from '@ant-design/icons';
 
 import { clearPdos, fetchPdosData, fetchPdosStatus, triggerPdos } from '../../api/jobs';
 import type { PdosTreeNode, PdosView } from '../../types';
@@ -58,6 +64,8 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
   const [xMin, setXMin] = useState(-10);
   const [xMax, setXMax] = useState(10);
   const [chart, setChart] = useState<{ getDataURL: (opts?: unknown) => string } | null>(null);
+  /** 轨道选择面板是否展开（**内联面板**，不弹浮层 —— 原生 <dialog> 里 portal 会被遮住） */
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -398,33 +406,14 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
         {status === 'done' && view && (
           <div className="pdos-main">
             <div className="pdos-toolbar">
-              <Popover
-                trigger="click"
-                placement="bottomLeft"
-                title="轨道选择"
-                content={
-                  <div className="pdos-menu-pop">
-                    <Tree
-                      checkable
-                      checkStrictly
-                      blockNode
-                      treeData={treeData}
-                      defaultExpandedKeys={defaultExpandedKeys}
-                      checkedKeys={checkedKeys}
-                      onCheck={(keys) =>
-                        setCheckedKeys((Array.isArray(keys) ? keys : keys.checked).map(String))
-                      }
-                    />
-                    <p className="pdos-menu__hint">
-                      勾哪条画哪条：点 p 只画 p，px/py/pz 要单独勾
-                    </p>
-                  </div>
-                }
+              <Button
+                size="small"
+                icon={<UnorderedListOutlined />}
+                onClick={() => setMenuOpen((v) => !v)}
               >
-                <Button size="small" icon={<UnorderedListOutlined />}>
-                  轨道选择（已选 {checkedKeys.length}）<DownOutlined style={{ fontSize: 10 }} />
-                </Button>
-              </Popover>
+                轨道选择（已选 {checkedKeys.length}）
+                {menuOpen ? <UpOutlined style={{ fontSize: 10 }} /> : <DownOutlined style={{ fontSize: 10 }} />}
+              </Button>
               <span className="pdos-legend">
                 {curves
                   .slice(0, 8)
@@ -439,6 +428,24 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
                 ) : null}
               </span>
             </div>
+            {menuOpen && (
+              <div className="pdos-menu-panel">
+                <Tree
+                  checkable
+                  checkStrictly
+                  blockNode
+                  treeData={treeData}
+                  defaultExpandedKeys={defaultExpandedKeys}
+                  checkedKeys={checkedKeys}
+                  onCheck={(keys) =>
+                    setCheckedKeys((Array.isArray(keys) ? keys : keys.checked).map(String))
+                  }
+                />
+                <p className="pdos-menu__hint">
+                  勾哪条画哪条：点 p 只画 p，px/py/pz / dxy… 要单独勾
+                </p>
+              </div>
+            )}
             <div className="pdos-chart">
               <div className="pdos-chart__canvas" ref={containerRef} />
               {curves.length === 0 && <p className="pdos-chart__empty">至少勾选一条曲线</p>}

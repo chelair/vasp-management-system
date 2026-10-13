@@ -378,6 +378,11 @@ export default function PdosPanel({ taskId, taskName }: Props) {
         nameGap: 26,
         min: range.min,
         max: range.max,
+        position: 'bottom' as const,
+        // 同上：默认会把 x 轴轴线画在 y=0 处（横穿图表中间）；轴线与刻度统一放到底部
+        axisLine: { show: true, onZero: false },
+        axisTick: { show: true, onZero: false },
+        axisLabel: { onZero: false },
       },
       yAxis: {
         type: 'value' as const,
@@ -394,20 +399,35 @@ export default function PdosPanel({ taskId, taskName }: Props) {
         axisLabel: { onZero: false },
         ...yAxis,
       },
-      series: series.map(({ __maxAbs, ...rest }) => ({
-        ...rest,
-        ...(showZero
+      // 参考线只挂第一条曲线上（挂多条会叠着画一堆同样的线）：
+      //   · 费米能级：x=0 的竖直虚线（可按底部开关关掉）
+      //   · 纵轴 0：一条水平基线（镜像布局的正负分界，固定画）
+      series: series.map(({ __maxAbs, ...rest }, index) =>
+        index === 0
           ? {
+              ...rest,
               markLine: {
                 silent: true,
                 symbol: 'none',
                 label: { show: false },
-                lineStyle: { type: 'dashed' as const, color: '#98a6bd' },
-                data: [{ xAxis: 0 }],
+                data: [
+                  ...(showZero
+                    ? [
+                        {
+                          xAxis: 0,
+                          lineStyle: { type: 'dashed' as const, color: '#98a6bd' },
+                        },
+                      ]
+                    : []),
+                  {
+                    yAxis: 0,
+                    lineStyle: { type: 'solid' as const, color: '#b9c4d4', width: 1 },
+                  },
+                ],
               },
             }
-          : {}),
-      })),
+          : rest,
+      ),
     };
   }, [curves, view, meta, mirror, spin, range, showZero, xAt]);
 

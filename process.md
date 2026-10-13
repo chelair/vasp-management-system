@@ -302,6 +302,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   （续算子任务本来就不带 job_id，253 条实测全为空），分块保留；统计/风险/进度那几处仍按附属任务排除。
   ⑤ 作业管理标签页空白：受控 Tabs 的 activeKey 残留在新任务不存在的标签页上（分块标签 / NEB 没有 POSCAR 页）
   → `renderTaskDetail`、`EleDetail`、`NebGroupDetail` 都加了 key 集合校验回落。
+  ⑥ 创建分块报 `[Errno 2] No such file`（用户 `PMS@model1`）：远端 `1/2 …` 目录是**在上传之后**才
+  `mkdir` 的，而 SFTP `put` 不会自动建父目录（之前 model2 能成是因为那两个目录恰好已存在）→
+  改成**先 mkdir（含主任务目录）再上传**；顺手把 POTCAR 判定改成按**各分块**核（`potcar_blocks`）
+  —— pos2pot 的摘要只反映主任务目录，主目录没 POSCAR 时会误报 MISSING（实测探针两块 POTCAR
+  344330 / 271020 字节，`potcar_generated=true`）。真机验证在 `test/` 临时目录做，跑完已删除。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

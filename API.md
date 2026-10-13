@@ -275,6 +275,8 @@ body: {
   （要重做先删旧分块）；分块必须覆盖全部原子（漏原子/重叠/空块 → `400`）。
 - **返回**：`{group_id, block_count, full_chg_index, tasks[{task_id, model_name, ele_block, atoms_count,
   remote_dir}], local_root, remote_root, incar_fixes, incar_warnings, potcar, potcar_generated}`。
+  `potcar_generated` 以**各分块**是否都有 POTCAR 为准，另有 `potcar_blocks` 给出每块的字节数
+  （`pos2pot` 的 `potcar` 摘要只反映主任务目录，主目录没有 POSCAR 时会是 MISSING，别误判）。
 - **子任务形态**：`task_type=ele_diff` + `subtype=diff_charge` + `parent_task_id`=ele 主任务 +
   `ele_block`/`ele_block_label`/`ele_block_atoms`；`local_layout=flat`（本地文件直接放任务目录）。
   分块是**附属任务**：巡检列表不单独成行（挂在 ele 主任务详情里）、不计当量、归档/重开跟随主任务。

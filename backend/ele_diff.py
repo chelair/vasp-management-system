@@ -416,7 +416,8 @@ def create_block_files(
     """生成各分块的本地文件与远端目录（不含任务登记，登记由调用方写库）。
 
     步骤：①② 写本地 `diffcharge_files/<N>/POSCAR|INCAR`；
-    ③ 远端 `mkdir` + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf；
+    ③ **先**在远端建好主目录与各分块目录，再上传 POSCAR/INCAR、复制 KPOINTS/vasp.lsf
+    （SFTP put 不会自动建父目录 —— 建目录晚一步就会报 `[Errno 2] No such file`）；
     ④ 主任务目录跑一次 `pos2pot`（递归 → 主结构与各分块一起生成 POTCAR）。
     """
     project_name = str(project.get("name") or "")
@@ -444,6 +445,16 @@ def create_block_files(
                     "请手动改成对应的每原子初始磁矩，否则 VASP 会报错）"
                 )
 
+    # ① 远端目录必须**先**建好：ssh.upload_file 走 SFTP put，目标目录不存在会直接抛
+    #    `[Errno 2] No such file`（2026-10-13 用户踩坑：`PMS@model1/1` 不存在，
+    #    而之前的 model2 恰好手工建过 1/2 所以没暴露）。
+    _run(
+        server,
+        [f'mkdir -p "{ele_remote}"']
+        + [f'mkdir -p "{block_remote_dir(ele_remote, int(item["index"]))}"' for item in plan],
+        timeout=120,
+    )
+
     remote_cmds: List[str] = []
     written: List[Dict[str, Any]] = []
     for item in plan:
@@ -453,7 +464,6 @@ def create_block_files(
         (local_dir / "POSCAR").write_text(item["poscar"], encoding="utf-8", newline="\n")
         (local_dir / "INCAR").write_text(incar_text, encoding="utf-8", newline="\n")
         remote_block = block_remote_dir(ele_remote, index)
-        remote_cmds.append(f'mkdir -p "{remote_block}"')
         ssh.upload_file(server, str(local_dir / "POSCAR"), f"{remote_block}/POSCAR")
         ssh.upload_file(server, str(local_dir / "INCAR"), f"{remote_block}/INCAR")
         written.append(
@@ -466,7 +476,7 @@ def create_block_files(
                 "remote_dir": remote_block,
             }
         )
-    remote_cmds += [
+    remote_cmds = [
         f'for i in {" ".join(str(int(i["index"])) for i in plan)}; do',
         f'  [ -f "{ele_remote}/KPOINTS" ] && cp "{ele_remote}/KPOINTS" "{ele_remote}/$i/KPOINTS" || true',
         f'  [ -f "{ele_remote}/vasp.lsf" ] && cp "{ele_remote}/vasp.lsf" "{ele_remote}/$i/vasp.lsf" || true',
@@ -481,6 +491,32 @@ def create_block_files(
         potcar = run_pos2pot(server, ele_remote, timeout=180, use_latest_con=False)
     except Exception as e:  # noqa: BLE001 - POTCAR 失败不影响分块创建，交给前端提示
         warnings.append(f"运行 pos2pot 生成 POTCAR 失败：{e}")
+    # 各分块的 POTCAR 单独核一遍：pos2pot 的摘要只反映**主目录**，而主目录可能没有 POSCAR
+    # （用户口径：主任务目录就是完整体系，一般有；但分块才是这次真正要用的）
+    potcar_blocks: Dict[str, int] = {}
+    try:
+        probe = " ; ".join(
+            f'[ -s "{block_remote_dir(ele_remote, int(item["index"]))}/POTCAR" ] '
+            f'&& echo "POTCAR_OK {int(item["index"])} $(wc -c < "{block_remote_dir(ele_remote, int(item["index"]))}/POTCAR" | tr -d \' \')" '
+            f'|| echo "POTCAR_MISSING {int(item["index"])}"'
+            for item in plan
+        )
+        out = ssh.run_remote(server, probe, timeout=60).get("stdout") or ""
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "POTCAR_OK":
+                potcar_blocks[parts[1]] = int(parts[2]) if len(parts) > 2 else 0
+        missing_blocks = [
+            str(int(item["index"]))
+            for item in plan
+            if str(int(item["index"])) not in potcar_blocks
+        ]
+        if missing_blocks:
+            warnings.append(
+                f"这些分块没有生成 POTCAR（可点分块页的「生成 POTCAR（pos2pot）」重试）：{'、'.join(missing_blocks)}"
+            )
+    except Exception as e:  # noqa: BLE001 - 只是核对，失败不影响创建
+        warnings.append(f"核对分块 POTCAR 失败：{e}")
 
     return {
         "blocks": written,
@@ -489,7 +525,9 @@ def create_block_files(
         "incar_removed": incar_removed,
         "incar_warnings": warnings,
         "potcar": potcar.get("potcar") or {},
-        "potcar_generated": bool(potcar.get("generated")),
+        # 以**各分块**是否都有 POTCAR 为准（主目录没有 POSCAR 时 pos2pot 的摘要会是 MISSING）
+        "potcar_generated": len(potcar_blocks) == len(plan),
+        "potcar_blocks": potcar_blocks,
         "remote_root": ele_remote,
         "local_root": to_local_rel(str(root_local)),
         "full_chg_index": full_chg_index(block_count),

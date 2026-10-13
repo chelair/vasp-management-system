@@ -41,6 +41,7 @@ import { createPortal } from 'react-dom';
 import { getToken } from '../api/client';
 import PageHeader from '../components/common/PageHeader';
 import ReportNoteDialog from '../components/reports/ReportNoteDialog';
+import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
 import PageTransition from '../components/common/PageTransition';
 import type { Project, ProjectReportDetail, ProjectReportMeta, ReportNote } from '../types';
@@ -129,6 +130,8 @@ export default function Report() {
   const [hidden, setHidden] = useState<string[]>([]);
   /** 表格里「注」按钮打开的编辑弹窗 */
   const [tableNote, setTableNote] = useState<{ key: string; title: string } | null>(null);
+  /** 图片查看器：点报告里任意一张结构图/图表 → 看原图（可缩放，桌面+手机） */
+  const [imageViewer, setImageViewer] = useState<{ src: string; caption: string } | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [showClosedReports, setShowClosedReports] = useState(false);
 
@@ -484,9 +487,23 @@ export default function Report() {
   }, [renderedSections, notes, hidden, toggleHidden, notePlan]);
 
 
-  /** 点「结构 N / 映像 N」→ 打开对应的原生 <dialog> 三视图弹窗；点遮罩/× 关闭。 */
-  const handleReportViewerClick = useCallback((event: { target: EventTarget | null }) => {
+  /** 点「结构 N / 映像 N」→ 打开原生 <dialog> 三视图弹窗；点报告里的图片 → 打开原图查看器。 */
+  const handleReportViewerClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
     const target = event.target as HTMLElement;
+    // 图片：正文里的结构图/图表，以及三视图弹窗里的图，都点开「原图」（可缩放）
+    const img = target.closest('img') as HTMLImageElement | null;
+    if (img && target.closest('.report-markdown, dialog.report-viewer')) {
+      event.preventDefault();
+      const figure = img.closest('figure');
+      const caption =
+        figure?.querySelector('figcaption')?.textContent?.trim() || img.alt || '结构图';
+      setImageViewer({
+        // currentSrc 在浏览器按 srcset 选图时更准；一般两者一致
+        src: img.currentSrc || img.src,
+        caption,
+      });
+      return;
+    }
     const trigger = target.closest('[data-dialog]') as HTMLElement | null;
     if (trigger) {
       const dialog = document.getElementById(trigger.dataset.dialog ?? '');
@@ -501,6 +518,11 @@ export default function Report() {
     }
     const dialog = target.closest('dialog.report-viewer');
     if (dialog instanceof HTMLDialogElement && target === dialog) dialog.close();
+    // 遮罩点击：图片查看器也支持点外部关闭
+    const imageDialog = target.closest('dialog.report-image-viewer');
+    if (imageDialog instanceof HTMLDialogElement && target === imageDialog) {
+      setImageViewer(null);
+    }
   }, []);
 
   /**
@@ -848,6 +870,7 @@ export default function Report() {
                     {detail.meta.risk_summary?.medium ?? 0} / 低{' '}
                     {detail.meta.risk_summary?.low ?? 0}
                   </span>
+                  <span className="preview-note">点任意结构图 / 图表可看原图（可缩放）</span>
                 </div>
               </div>
 
@@ -895,6 +918,13 @@ export default function Report() {
                       );
                     })}
                     {/* 表格里「注」按钮打开的注解编辑弹窗 */}
+                    <ImageLightbox
+                      open={imageViewer !== null}
+                      src={imageViewer?.src ?? ''}
+                      caption={imageViewer?.caption}
+                      onClose={() => setImageViewer(null)}
+                    />
+
                     <ReportNoteDialog
                       open={tableNote !== null}
                       reportId={detail?.meta.report_id ?? ''}

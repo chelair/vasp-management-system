@@ -322,6 +322,15 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   版本号挑最新 conN，NEB 再挑该 conN 里最近修改的映像；失败才退回本地两份），**已归档任务**保持
   摘要（秒回）→ 镜像 → 远端。实测：`4_opt` → `.../4/con11/OUTCAR`（运行中的实时尾部）、
   `Ag24@Al2O3_neb` → `con1/02/OUTCAR`（最新映像）、归档的 `Fe3S4` 仍是 `reports-tail` 秒回。
+  ⑨ **报告里每张图都能点开看原图、可缩放（用户："报告中每张结构图都可点击打开原图，可放大，要支持多端"）**：
+  报告页新增 `ImageLightbox.tsx`（原生 `<dialog>`）：点正文/三视图弹窗里的任意 `<img>` → 打开原图，
+  工具栏 −/＋/适应/1:1/×，桌面滚轮缩放 + 拖拽平移 + 双击切换，手机**双指捏合**缩放 + 单指拖动，
+  ≤720px 全屏、按钮 ≥40px；`cursor: zoom-in` 提示可点，报告头部加了一行说明。
+  导出单文件 HTML 里同样加了一套（内联 CSS + 追加进 `VIEWER_SCRIPT`）：`figure img` 直接开原图，
+  报告里**内联的看板 `<svg>`** 现场 `XMLSerializer` 成 data URI 也能点开放大；ESC/遮罩关闭、
+  打印不受影响（默认 `display:none`）。验证：`tsc`+`npm run build` 通过；导出 43.7MB 的 Ag 报告里
+  `.img-lightbox` / `XMLSerializer` / `cursor: zoom-in` / 252 张 base64 PNG 均可点；导出脚本
+  `node --check` 语法通过。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

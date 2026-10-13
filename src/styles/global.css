@@ -4698,6 +4698,8 @@ body.is-atom-selecting * {
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 2px 10px rgba(35, 48, 67, 0.05);
+  /* 每张图都可点开看原图（2026-10-13） */
+  cursor: zoom-in;
 }
 
 .report-figure figcaption {
@@ -5531,5 +5533,126 @@ h5:hover > .report-hide-btn,
 
   .diff-charge__actions .ant-btn {
     min-height: 44px;
+  }
+}
+
+/* ---------- 报告图片查看器：点任意结构图看原图，可缩放（2026-10-13，桌面 + 手机） ---------- */
+
+.report-image-viewer {
+  width: min(1120px, 94vw);
+  max-width: 94vw;
+  height: min(88vh, 920px);
+  padding: 0;
+  border: none;
+  border-radius: 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(10, 18, 32, 0.45);
+}
+
+.report-image-viewer::backdrop {
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.report-image-viewer__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  min-height: 46px;
+}
+
+.report-image-viewer__caption {
+  font-size: 12.5px;
+  color: #cbd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-image-viewer__tools {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.report-image-viewer__tools .ant-btn {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+.report-image-viewer__tools .ant-btn:hover {
+  background: #263449 !important;
+  border-color: #475569 !important;
+  color: #f8fafc !important;
+}
+
+.report-image-viewer__percent {
+  min-width: 48px;
+  text-align: center;
+  font-size: 12px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-image-viewer__stage {
+  position: relative;
+  height: calc(100% - 76px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #0b1220;
+  /* 触摸手势自己处理（捏合/拖动），别让浏览器抢去滚动页面 */
+  touch-action: none;
+  cursor: grab;
+}
+
+.report-image-viewer__stage:active {
+  cursor: grabbing;
+}
+
+.report-image-viewer__stage img {
+  max-width: 100%;
+  max-height: 100%;
+  transform-origin: center center;
+  user-select: none;
+  -webkit-user-drag: none;
+  will-change: transform;
+}
+
+.report-image-viewer__hint {
+  padding: 4px 12px 8px;
+  font-size: 11.5px;
+  color: #64748b;
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  /* 手机：全屏，工具按钮加大到可点 */
+  .report-image-viewer {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+    margin: 0;
+  }
+
+  .report-image-viewer__bar {
+    min-height: 52px;
+  }
+
+  .report-image-viewer__tools .ant-btn {
+    min-width: 40px;
+    min-height: 36px;
+  }
+
+  .report-image-viewer__hint {
+    display: none;
   }
 }

@@ -141,6 +141,41 @@ dialog.viewer .body { padding: 10px 14px 16px; overflow: auto; max-height: calc(
   }
   dialog.viewer .body { max-height: calc(100vh - 60px); }
 }
+/* ---- 图片查看器：点任意结构图/图表看原图，可缩放（2026-10-13，桌面 + 手机） ---- */
+figure img { cursor: zoom-in; }
+.img-lightbox {
+  position: fixed; inset: 0; z-index: 2000; display: none;
+  background: rgba(15, 23, 42, 0.94); color: #e2e8f0;
+}
+.img-lightbox[data-open="1"] { display: flex; flex-direction: column; }
+.img-lightbox__bar {
+  display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+  min-height: 48px; border-bottom: 1px solid #1e293b;
+}
+.img-lightbox__caption {
+  font-size: 13px; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.img-lightbox__tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.img-lightbox__tools button {
+  min-width: 38px; min-height: 34px; border-radius: 8px; border: 1px solid #334155;
+  background: #1e293b; color: #e2e8f0; font-size: 14px; cursor: pointer; touch-action: manipulation;
+}
+.img-lightbox__tools button:active { background: #263449; }
+.img-lightbox__percent { min-width: 48px; text-align: center; font-size: 12px; color: #94a3b8; }
+.img-lightbox__stage {
+  position: relative; flex: 1; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; touch-action: none; cursor: grab;
+}
+.img-lightbox__stage:active { cursor: grabbing; }
+.img-lightbox__stage img {
+  max-width: 100%; max-height: 100%; transform-origin: center center;
+  user-select: none; -webkit-user-drag: none; will-change: transform;
+}
+.img-lightbox__tip { padding: 6px 12px 10px; text-align: center; font-size: 12px; color: #64748b; }
+@media (max-width: 720px) {
+  .img-lightbox__tip { display: none; }
+  .img-lightbox__tools button { min-width: 44px; min-height: 40px; }
+}
 """
 
 
@@ -297,6 +332,142 @@ def markdown_to_html(
 VIEWER_SCRIPT = """
 (function () {
   var lastOpen = 0;
+  /* ---------------- 图片查看器：点报告里任意一张图 → 看原图（可缩放/平移，桌面+手机） ---------------- */
+  var box = null, stage = null, imgEl = null, capEl = null, pctEl = null, tipEl = null;
+  var scale = 1, offX = 0, offY = 0;
+  var pointers = {}, pinch = null, drag = null;
+  var MIN = 0.2, MAX = 10;
+
+  function clamp(v) { return Math.min(MAX, Math.max(MIN, v)); }
+
+  function apply() {
+    if (!imgEl) return;
+    imgEl.style.transform = 'translate(' + offX + 'px,' + offY + 'px) scale(' + scale + ')';
+    if (pctEl) pctEl.textContent = Math.round(scale * 100) + '%';
+  }
+
+  function close() {
+    if (!box) return;
+    box.setAttribute('data-open', '0');
+    imgEl.removeAttribute('src');
+    pointers = {}; pinch = null; drag = null;
+  }
+
+  function open(src, caption) {
+    if (!box) build();
+    scale = 1; offX = 0; offY = 0;
+    imgEl.src = src;
+    capEl.textContent = caption || '结构图';
+    apply();
+    box.setAttribute('data-open', '1');
+  }
+
+  function build() {
+    box = document.createElement('div');
+    box.className = 'img-lightbox';
+    box.setAttribute('data-open', '0');
+    box.innerHTML =
+      '<div class="img-lightbox__bar">' +
+        '<span class="img-lightbox__caption"></span>' +
+        '<span class="img-lightbox__tools">' +
+          '<button type="button" data-zoom="out" title="缩小">−</button>' +
+          '<span class="img-lightbox__percent">100%</span>' +
+          '<button type="button" data-zoom="in" title="放大">＋</button>' +
+          '<button type="button" data-zoom="fit" title="适应窗口">⤢</button>' +
+          '<button type="button" data-zoom="one" title="原始大小 100%">1:1</button>' +
+          '<button type="button" data-zoom="close" title="关闭">×</button>' +
+        '</span>' +
+      '</div>' +
+      '<div class="img-lightbox__stage"><img alt=""/></div>' +
+      '<div class="img-lightbox__tip">滚轮 / 双指捏合缩放 · 拖拽平移 · 双击切换 1:1 · ESC 关闭</div>';
+    document.body.appendChild(box);
+    stage = box.querySelector('.img-lightbox__stage');
+    imgEl = stage.querySelector('img');
+    capEl = box.querySelector('.img-lightbox__caption');
+    pctEl = box.querySelector('.img-lightbox__percent');
+
+    box.addEventListener('click', function (ev) {
+      var btn = ev.target.closest ? ev.target.closest('[data-zoom]') : null;
+      if (btn) {
+        var kind = btn.getAttribute('data-zoom');
+        if (kind === 'in') scale = clamp(scale * 1.25);
+        else if (kind === 'out') scale = clamp(scale / 1.25);
+        else if (kind === 'fit' || kind === 'one') { scale = 1; offX = 0; offY = 0; }
+        else if (kind === 'close') { close(); return; }
+        apply();
+        return;
+      }
+      if (ev.target === box) close();
+    });
+    box.addEventListener('wheel', function (ev) {
+      if (box.getAttribute('data-open') !== '1') return;
+      ev.preventDefault();
+      scale = clamp(scale * (ev.deltaY < 0 ? 1.12 : 1 / 1.12));
+      apply();
+    }, { passive: false });
+    box.addEventListener('dblclick', function (ev) {
+      if (box.getAttribute('data-open') !== '1') return;
+      if (ev.target.closest && ev.target.closest('.img-lightbox__tools')) return;
+      scale = scale > 1.2 ? 1 : 2; offX = 0; offY = 0; apply();
+    });
+    stage.addEventListener('pointerdown', function (ev) {
+      stage.setPointerCapture && stage.setPointerCapture(ev.pointerId);
+      pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+      var ids = Object.keys(pointers);
+      if (ids.length === 2) {
+        var a = pointers[ids[0]], b = pointers[ids[1]];
+        pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: scale };
+        drag = null;
+      } else {
+        drag = { x: ev.clientX, y: ev.clientY };
+      }
+    });
+    stage.addEventListener('pointermove', function (ev) {
+      if (!pointers[ev.pointerId]) return;
+      pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+      var ids = Object.keys(pointers);
+      if (ids.length >= 2 && pinch) {
+        var a = pointers[ids[0]], b = pointers[ids[1]];
+        scale = clamp(pinch.s * ((Math.hypot(a.x - b.x, a.y - b.y) || 1) / pinch.d));
+        apply();
+        return;
+      }
+      if (!drag) return;
+      offX += ev.clientX - drag.x; offY += ev.clientY - drag.y;
+      drag = { x: ev.clientX, y: ev.clientY };
+      apply();
+    });
+    function up(ev) {
+      delete pointers[ev.pointerId];
+      stage.releasePointerCapture && stage.releasePointerCapture(ev.pointerId);
+      if (Object.keys(pointers).length < 2) pinch = null;
+      if (Object.keys(pointers).length === 0) drag = null;
+    }
+    stage.addEventListener('pointerup', up);
+    stage.addEventListener('pointercancel', up);
+  }
+
+  function openImage(target) {
+    if (!target || !target.closest) return false;
+    var img = target.closest('figure img, .img-row img');
+    if (img) {
+      var fig = img.closest('figure');
+      var cap = fig && fig.querySelector('figcaption');
+      open(img.getAttribute('src'), (cap && cap.textContent) || img.getAttribute('alt') || '');
+      return true;
+    }
+    // 报告里内联的看板图（原始 <svg>）：现场序列化成 data URI，一样能缩放看清
+    var svg = target.closest('svg');
+    if (svg && svg.closest('.report-body, body')) {
+      try {
+        var text = new XMLSerializer().serializeToString(svg);
+        open('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text), '看板图');
+        return true;
+      } catch (e) { return false; }
+    }
+    return false;
+  }
+
   function openDialog(target) {
     if (!target || !target.closest) return false;
     var btn = target.closest('[data-dialog]');
@@ -308,10 +479,13 @@ VIEWER_SCRIPT = """
   }
   // 触摸：pointerup 立即响应（手机上不用等 click 的 300ms）
   document.addEventListener('pointerup', function (ev) {
-    if (ev.pointerType === 'touch' && openDialog(ev.target)) lastOpen = Date.now();
+    if (ev.pointerType !== 'touch') return;
+    if (openImage(ev.target) || openDialog(ev.target)) lastOpen = Date.now();
   });
   document.addEventListener('click', function (ev) {
     if (Date.now() - lastOpen < 600) return;
+    if (box && box.getAttribute('data-open') === '1') return;   // 查看器打开时吞掉页面点击
+    if (openImage(ev.target)) return;
     if (openDialog(ev.target)) return;
     var closeBtn = ev.target.closest && ev.target.closest('dialog.viewer [data-close]');
     if (closeBtn) { closeBtn.closest('dialog').close(); return; }
@@ -322,6 +496,7 @@ VIEWER_SCRIPT = """
   // 原生 <dialog> 自带 Esc 关闭与焦点管理；这里只补键盘可达性
   document.addEventListener('keydown', function (ev) {
     if (ev.key === 'Escape') {
+      if (box && box.getAttribute('data-open') === '1') { close(); return; }
       document.querySelectorAll('dialog.viewer[open]').forEach(function (d) { d.close(); });
     }
   });

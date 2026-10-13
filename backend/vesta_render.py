@@ -49,6 +49,11 @@ RENDER_WAIT = 12  # 秒：等待 VESTA 输出文件的最长时间
 #: 体积数据（CHGCAR_diff / LOCPOT 之类，百 MB 级）加载慢得多，等待时间单独放宽
 #: （2026-10-14 实测：130MB 的 CHGCAR_diff 打开 3.6s、单轴导出 2.4s，留足余量）
 VOLUME_RENDER_WAIT = 300
+#: **体积图渲染口径版本**：出图方式改了就 +1 —— 渲染前比对
+#: `<image_dir>/.volume_version`，对不上就把旧图作废重画。
+#: v1（2026-10-14）：从"存模板再重开"（等值面层级不对，分子那侧没瓣）
+#: 改成"直接打开体积文件 + `-rotate_*` 转到目标轴向"。
+VOLUME_RENDER_VERSION = 1
 MIN_IONIC_STEPS = 5
 DEFAULT_STEPS_FALLBACK = 99
 
@@ -728,6 +733,29 @@ def _mark_cache(image_dir: Path) -> None:
         pass
 
 
+def _volume_version_file(image_dir: Path) -> Path:
+    return image_dir / ".volume_version"
+
+
+def _volume_cache_is_current(image_dir: Path) -> bool:
+    """体积图是不是用当前口径画出来的（口径变了就整批重画，避免复用旧格式的图）。"""
+    try:
+        return _volume_version_file(image_dir).read_text(encoding="utf-8").strip() == str(
+            VOLUME_RENDER_VERSION
+        )
+    except OSError:
+        return False
+
+
+def _mark_volume_cache(image_dir: Path) -> None:
+    try:
+        _volume_version_file(image_dir).write_text(
+            f"{VOLUME_RENDER_VERSION}\n", encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 #: NEB 映像图存放：`<任务目录>/images/<映像号>/{a,b,c}.png`
 NEB_IMAGE_SUBDIR = "[0-9]*"
 
@@ -747,23 +775,86 @@ def volume_image_paths(
     return {axis: image_dir / f"{label}_{axis}.png" for axis in axes}
 
 
+def _cell_params_from_volume(
+    path: Path,
+) -> Optional[Tuple[float, float, float, float, float, float]]:
+    """从 VASP 体积文件（CHGCAR / CHG / LOCPOT…）头部读晶胞参数 (a,b,c,α,β,γ)。
+
+    体积文件与 POSCAR 共用头部（标题 / 缩放系数 / 3 条晶格向量 / 元素行…），
+    **只读前 5 行**（文件 200MB+，不能整读）。
+    为什么不先让 VESTA 存一份模板再读 CELLP：模板路径会走 `IMPORT_DENSITY`，
+    密度归一化与直接打开不同、等值面层级对不上（见 `render_volume_axes`）。
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            head = [fh.readline() for _ in range(5)]
+    except OSError:
+        return None
+    if len(head) < 5:
+        return None
+    try:
+        scale = float(head[1].split()[0])
+        vecs = [[float(x) * scale for x in head[i].split()[:3]] for i in (2, 3, 4)]
+    except (IndexError, ValueError):
+        return None
+    if any(len(v) != 3 for v in vecs):
+        return None
+    va, vb, vc = vecs
+
+    def _norm(v) -> float:
+        return math.sqrt(sum(x * x for x in v))
+
+    la, lb, lc = _norm(va), _norm(vb), _norm(vc)
+    if min(la, lb, lc) <= 0:
+        return None
+
+    def _angle(u, v) -> float:
+        cos = sum(x * y for x, y in zip(u, v)) / (_norm(u) * _norm(v))
+        return math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+
+    return (la, lb, lc, _angle(vb, vc), _angle(va, vc), _angle(va, vb))
+
+
+def _rotation_angles(view: Sequence[Sequence[float]]) -> Tuple[float, float, float]:
+    """把目标场景矩阵分解成 VESTA 的 `-rotate_x/-rotate_y/-rotate_z` 角度（度）。
+
+    实测口径（2026-10-14，真机 VESTA 3.5.4 逐项对过）：
+    - 直接 `-open <体积文件>` 后 SCENE = 单位阵（= 默认视角）；
+    - `-rotate_x 90` → SCENE = [[1,0,0],[0,0,-1],[0,1,0]]（标准 Rx(90°)），y / z 同理；
+    - 多个 `-rotate_*` 按命令行顺序**左乘** → R = Rz(c)·Ry(b)·Rx(a)。
+    这里就按 R = Rz·Ry·Rx 反解，与命令里 x、y、z 的书写顺序一致。
+    """
+    r = [[float(view[i][j]) for j in range(3)] for i in range(3)]
+    beta = math.asin(max(-1.0, min(1.0, -r[2][0])))
+    if abs(math.cos(beta)) < 1e-8:
+        alpha = 0.0
+        gamma = math.atan2(-r[0][1], r[1][1])
+    else:
+        alpha = math.atan2(r[2][1], r[2][2])
+        gamma = math.atan2(r[1][0], r[0][0])
+    return (math.degrees(alpha), math.degrees(beta), math.degrees(gamma))
+
+
 def render_volume_axes(
     structure_path: Path,
     image_dir: Path,
     label: str = "chgdiff",
     force: bool = False,
-    zoom: Optional[float] = None,
     axes: Sequence[str] = ("a", "b", "c"),
     wait_seconds: int = VOLUME_RENDER_WAIT,
 ) -> Dict[str, Any]:
     """用 VESTA 把**体积文件**（CHGCAR_diff 等）导出 a / b / c 三轴 PNG。
 
-    与 `render_task`（POSCAR/CONTCAR）共用同一套视角定义与模板流程
-    （`AXIS_VIEW` + `_apply_axis_settings`）：先 `-open <体积文件> -save 模板`
-    （VESTA 按内容识别 VASP CHGCAR，默认带等值面），再逐轴导出（口径与报告里的结构图一致）。
+    **不走模板**（2026-10-14 修正，关键）：`-open <体积文件>` 时 VESTA 会按默认层级
+    自动生成等值面；而"存模板 → 重开模板"会走 `IMPORT_DENSITY` 重新导入密度，
+    归一化不同（VASP CHGCAR 的值要除以晶胞体积）→ 等值面层级对不上，
+    分子那侧的瓣会整块消失（实测：只剩最靠近衬底的那层）。所以这里**直接打开体积文件**，
+    再用 `-rotate_x/-rotate_y/-rotate_z` 把它转到 `AXIS_VIEW` 定义的目标轴向
+    （角度由 `_rotation_angles` 反解），最后 `-export_img`。
 
     - 输出：`<image_dir>/<label>_{a,b,c}.png`，**同名覆盖**；
     - 缓存：`force=False` 时"图比源文件新且 PNG 完整（有 IEND）"就复用，连 VESTA 都不启动；
+    - 取景：用 VESTA 默认缩放（与手动导入一致）；结构图那条路径仍用 `vesta_zoom`（1.7）；
     - 串行：整个渲染持有 `vesta_render_lock()`（**跨进程**）—— 百 MB 体积数据一次渲染
       要几百 MB 内存，禁止和结构图渲染同时开 VESTA（2026-10-14 用户要求避免卡死）。
 
@@ -772,12 +863,24 @@ def render_volume_axes(
     warnings: List[str] = []
     if not structure_path.is_file() or structure_path.stat().st_size == 0:
         return {"images": {}, "warnings": warnings, "skipped": f"源文件不存在：{structure_path}"}
-    if zoom is None:
-        zoom = _vesta_zoom()
+    cell = _cell_params_from_volume(structure_path)
+    if cell is None:
+        return {
+            "images": {},
+            "warnings": warnings + ["体积文件头部读不出晶胞参数（不是 VASP 体积文件？）"],
+            "skipped": "晶胞参数读取失败",
+        }
     image_dir.mkdir(parents=True, exist_ok=True)
     paths = volume_image_paths(image_dir, label, axes)
     images: Dict[str, str] = {}
     with vesta_render_lock():
+        # 出图口径变过（如 v0.9.48 改了等值面渲染方式）→ 旧图整批作废，别让界面拿到旧格式
+        if not _volume_cache_is_current(image_dir):
+            for axis in axes:
+                paths[axis].unlink(missing_ok=True)
+            warnings.append(
+                f"体积图渲染口径已更新（v{VOLUME_RENDER_VERSION}），旧图作废重画"
+            )
         if (not force) and all(
             _image_is_fresh(paths[axis], structure_path) for axis in axes
         ):
@@ -786,26 +889,44 @@ def render_volume_axes(
                 "warnings": warnings,
                 "skipped": None,
             }
-        with tempfile.TemporaryDirectory() as tmp:
-            work_dir = Path(tmp)
-            template = _build_vesta_template(
-                structure_path, work_dir, wait_seconds=wait_seconds
+        for axis in axes:
+            png_path = paths[axis]
+            if (not force) and _image_is_fresh(png_path, structure_path):
+                images[axis] = str(png_path)
+                continue
+            view = axis_view_matrix(cell, axis)
+            if view is None:
+                warnings.append(f"{axis} 轴视角矩阵算不出来（晶胞退化？）")
+                continue
+            ax, ay, az = _rotation_angles(view)
+            ok = _run_vesta_cli(
+                [
+                    _vesta_exe(),
+                    "-open",
+                    str(structure_path),
+                    "-rotate_x",
+                    f"{ax:.6f}",
+                    "-rotate_y",
+                    f"{ay:.6f}",
+                    "-rotate_z",
+                    f"{az:.6f}",
+                    "-flush",
+                    "-export_img",
+                    str(png_path),
+                    f"scale={_vesta_image_scale()}",
+                    "-close",
+                    str(structure_path),
+                ],
+                png_path,
+                wait_seconds=wait_seconds,
+                marker=str(structure_path),
             )
-            if template is None:
-                warnings.append("VESTA 模板生成失败（检查 vesta_path 配置 / Xvfb 环境）")
-                return {"images": {}, "warnings": warnings, "skipped": "模板生成失败"}
-            template_text = template.read_text(encoding="utf-8", errors="replace")
-            for axis in axes:
-                png_path = paths[axis]
-                if (not force) and _image_is_fresh(png_path, structure_path):
-                    images[axis] = str(png_path)
-                    continue
-                if _render_axis(
-                    work_dir, template_text, axis, zoom, png_path, wait_seconds=wait_seconds
-                ):
-                    images[axis] = str(png_path)
-                else:
-                    warnings.append(f"{axis} 轴导出失败")
+            if ok:
+                images[axis] = str(png_path)
+            else:
+                warnings.append(f"{axis} 轴导出失败")
+    if images:
+        _mark_volume_cache(image_dir)
     return {
         "images": images,
         "warnings": warnings,

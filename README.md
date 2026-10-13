@@ -404,7 +404,9 @@ v0.6.0 按「状态 → 资源 → 趋势 → 明细」四层重构，数据全�
   **大小差别 < 1%**，不通过带具体原因拒绝）② 在**远端主目录**用 VTST `chgsum.pl` + `chgdiff.pl`
   算差分 ③ 只回传 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`（不再把各分块/完整 CHGCAR 都拉到本地，
   本机无需装 VTST，脚本路径可用 `servers.json: vtst_dir` 覆盖）④ 导入 VESTA 导出 a/b/c 三轴图
-  直接显示在详情页（与报告结构图同一套视角/模板，`vesta_render.render_volume_axes`）。
+  直接显示在详情页（`vesta_render.render_volume_axes`：与结构图同一套视角定义，但**直接打开体积文件**
+  再 `-rotate_*` 转到目标朝向 —— 不经模板，否则 VESTA 的 `IMPORT_DENSITY` 重导入会让等值面
+  只剩最强的那层，和手动打开该文件看到的不一样）。
   之后每次加载按阶梯 **本地图 → 本地差分文件 → 远端差分文件 → 远端可算**；中断（关页面 / 断网 /
   重启服务）后再点一次只补缺的那步。链路全异步 + 阶段上报（校验 / 计算 / 回传进度 / 出图），
   全局同时只跑一条，VESTA 渲染与结构图渲染用 `data/locks/vesta_render.lock` **跨进程串行**，

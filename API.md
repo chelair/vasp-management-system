@@ -306,8 +306,11 @@ body: {
 
 入口在**巡检详情 →「电子结构分析 → 差分电荷」标签**（前端 `DiffChargePanel`）。第一次点击依次做四件事：
 ① 远端校验文件完整性（完整结构 + 各分块 `CHGCAR`，**大小差别应 < 1%**，否则拒绝并给出具体原因）；
-② 远端 VTST 算差分；③ 回传 `CHGCAR_diff`；④ 导入 VESTA 导出 a/b/c 三轴 PNG（与报告结构图同一套
-视角与模板流程，`vesta_render.render_volume_axes`）。之后每次加载按阶梯取值：
+② 远端 VTST 算差分；③ 回传 `CHGCAR_diff`；④ 导入 VESTA 导出 a/b/c 三轴 PNG
+（`vesta_render.render_volume_axes`：**直接打开体积文件**再 `-rotate_x/-rotate_y/-rotate_z`
+转到 `AXIS_VIEW` 定义的目标朝向 —— 与结构图共用同一套视角定义，但**不走模板**：
+VESTA 的 `.vesta` 不保存等值面，经 `IMPORT_DENSITY` 重导入的密度归一化也不同，
+会只剩最强的那层瓣；取景用 VESTA 默认缩放，与手动打开该文件一致）。之后每次加载按阶梯取值：
 **本地图 → 本地差分文件 → 远端差分文件 → 远端可算**（前两级零 SSH）。
 
 ```

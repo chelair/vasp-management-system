@@ -52,6 +52,44 @@ import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import OutcarTailDialog from '../components/inspection/OutcarTailDialog';
 import StatusTag from '../components/common/StatusTag';
+
+/**
+ * 「点击后再加载」的详情分区（2026-10-13 用户要求）：
+ * 默认只渲染标题 + 提示，用户点「点击加载」才挂载内容（图表/3D/远端探测都省下来），
+ * 挂载后保持挂载（再点是收起）。切换任务时用 `key` 重置。
+ */
+function LazySection({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="inspection-detail__section">
+      <h3>
+        {title}
+        <button
+          type="button"
+          className="inspection-lazy-btn"
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? '收起' : '点击加载'}
+        </button>
+      </h3>
+      {open ? (
+        children
+      ) : (
+        <p className="preview-note">
+          {hint ?? '内容按需加载：点右侧「点击加载」再取数据/画图，避免拖慢详情打开速度。'}
+        </p>
+      )}
+    </div>
+  );
+}
 import type {
   CheckStatus,
   InspectionDetail,
@@ -1219,20 +1257,29 @@ export default function Inspection() {
             )}
 
             {detailData.force_history.length > 0 && (
-              <div className="inspection-detail__section">
-                <h3>能量与力 · 离子步</h3>
+              <LazySection
+                key={`${detailData.task_id}-force`}
+                title="能量与力 · 离子步"
+                hint={`按需加载（${detailData.force_history.length} 个离子步的曲线，点击再画）`}
+              >
                 <ForceHistoryCharts
                   history={detailData.force_history}
                   forceThreshold={detailData.force_thresholds?.max_force_threshold ?? null}
                   forceThresholdSource={detailData.force_thresholds?.source ?? null}
                 />
-              </div>
+              </LazySection>
             )}
 
             <div className="inspection-detail__section">
               <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
               {detailData.task_type === 'ele' ? (
-                <EleAnalysisPanel detail={detailData} />
+                <LazySection
+                  key={`${detailData.task_id}-ele`}
+                  title="电子结构分析"
+                  hint="按需加载：展开后才识别远端输出文件、按需跑 PDOS 等分析"
+                >
+                  <EleAnalysisPanel detail={detailData} />
+                </LazySection>
               ) : detailData.task_type === 'neb' ? (
                 // NEB 专属分析：只走映像结构视图，**不要**落到 StructurePanel
                 // （StructurePanel 期望 opt 的 files/poscar/warnings 字段，NEB 载荷没有会白屏）
@@ -1272,8 +1319,12 @@ export default function Inspection() {
             </div>
 
             {detailData.diff_charge && (
-              <div className="inspection-detail__section">
-                <h3>差分电荷分块 · {detailData.diff_charge.block_count} 个分块</h3>
+              <LazySection
+                key={`${detailData.task_id}-diffcharge`}
+                title={`差分电荷分块 · ${detailData.diff_charge.block_count} 个分块`}
+                hint="按需加载：展开后看各分块状态表"
+              >
+
                 <p className="preview-note">
                   各分块在主任务目录下独立提交（<code>/1</code>、<code>/2</code> …）；CHGCAR 拉回本地后
                   重命名为 <code>diffcharge_files/chgfiles/1..{detailData.diff_charge.block_count}.vasp</code>
@@ -1352,7 +1403,7 @@ export default function Inspection() {
                     },
                   ]}
                 />
-              </div>
+                            </LazySection>
             )}
 
             {detailData.frac && (

@@ -1,13 +1,14 @@
 """巡检接口：结果列表 / 触发巡检 / 调度信息。"""
 
 import re
+import time
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
-from checks_store import collect_results, list_runs, to_frontend_rows
+from checks_store import list_runs, merged_results, to_frontend_rows
 from cif_convert import read_neb_image_cifs, read_or_convert_cif
 from config import load_settings, load_servers
 from continuation import _remote_latest_con
@@ -25,6 +26,11 @@ from task_paths import task_remote_dir
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 
+#: `_check_remote_files` 的短缓存：远端探文件要一次 SSH exec（约 0.5–1.5s），
+#: 巡检详情/面板短期内会反复问同一批文件，缓存 120s（2026-10-13：ele 详情慢的主因）
+_REMOTE_FILES_CACHE: dict = {}
+REMOTE_FILES_TTL = 120.0
+
 
 @router.get("")
 def list_inspections(request: Request):
@@ -35,7 +41,9 @@ def list_inspections(request: Request):
     """
     try:
         db = load_db()
-        merged = collect_results()
+        # 与总览/仪表盘同一口径：用**带 30s 缓存**的 merged_results（巡检归档后会 invalidate_cache），
+        # 否则每次打开巡检列表/详情都要重扫 data/checks 下 20MB+ 归档（实测 1.5s，2026-10-13 用户反馈）
+        merged = merged_results()
         rows = to_frontend_rows(db, merged)
         names = permissions.visible_project_names(db, getattr(request.state, "user", None))
         rows = [r for r in rows if str(r.get("project_name") or "") in names]
@@ -233,7 +241,12 @@ def _build_analysis(project: dict, task: dict, entry: dict, history: list):
 
 
 def _check_remote_files(server: str, remote_dir: str, filenames) -> dict:
-    """检查远端任务目录中指定文件是否存在且非空。"""
+    """检查远端任务目录中指定文件是否存在且非空（带 120s 缓存）。"""
+    cache_key = f"{server}|{remote_dir}|{','.join(str(f) for f in filenames)}"
+    now = time.time()
+    cached = _REMOTE_FILES_CACHE.get(cache_key)
+    if cached and now - float(cached.get("at") or 0) < REMOTE_FILES_TTL:
+        return dict(cached.get("data") or {})
     result = {}
     conds = " ".join(
         f'[ -s "{remote_dir}/{name}" ] && echo OK_{i} || echo MISS_{i};'
@@ -249,6 +262,7 @@ def _check_remote_files(server: str, remote_dir: str, filenames) -> dict:
     except Exception:  # noqa: BLE001 - 检查失败视为不可用
         for name in filenames:
             result[name] = False
+    _REMOTE_FILES_CACHE[cache_key] = {"at": now, "data": dict(result)}
     return result
 
 
@@ -292,7 +306,7 @@ def inspection_detail(task_id: str, request: Request):
     """单任务巡检详情：能量/力曲线数据 + 结构分析（晶格对比 + VESTA 渲染图）。"""
     try:
         db = load_db()
-        merged = collect_results()
+        merged = merged_results()
         entry = merged.get(task_id)
         if entry is None:
             return JSONResponse(status_code=404, content=fail("该任务暂无巡检结果"))
@@ -392,26 +406,11 @@ def inspection_detail(task_id: str, request: Request):
         history = entry.get("force_history") or []
         analysis = _build_analysis(project, task, entry, history)
 
-        # 电子结构：自动识别可分析内容（对应输出文件存在且非空）
+        # 电子结构"可分析内容"（要不要探测远端文件）不在这里做 —— 它要一次 SSH exec（~1s），
+        # 会让每次打开详情都卡一下。改由前端按需调
+        # `GET /api/inspections/{task_id}/available-analyses`（带 120s 缓存）。
+        # 载荷里保留 available_analyses=None，老前端读不到就自己拉（2026-10-13）
         available_analyses = None
-        if task.get("task_type") == "ele":
-            ele_dir = task_remote_dir(project.get("server"), task).rstrip("/")
-            files = _check_remote_files(
-                project.get("server"),
-                ele_dir,
-                ["DOSCAR", "AECCAR0", "AECCAR1", "AECCAR2", "COHPCAR", "LOCPOT"],
-            )
-            available_analyses = {
-                "pdos": bool(files.get("DOSCAR")),
-                "bader": bool(
-                    files.get("AECCAR0")
-                    and files.get("AECCAR1")
-                    and files.get("AECCAR2")
-                ),
-                "cohp": bool(files.get("COHPCAR")),
-                "work_function": bool(files.get("LOCPOT")),
-                "diff_charge": False,
-            }
 
         # NEB 过渡态：nebef.pl 输出（受力/能量/相对能垒）
         # 巡检已回传 neb_barrier 则直接用，否则实时运行 nebef.pl 兜底
@@ -465,6 +464,56 @@ def inspection_detail(task_id: str, request: Request):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:
         return JSONResponse(status_code=500, content=fail(f"读取巡检详情失败：{e}"))
+
+
+@router.get("/{task_id}/available-analyses")
+def inspection_available_analyses(task_id: str, request: Request):
+    """电子结构任务"可分析内容"识别（**按需调用**，前端在展开分析面板/打开 PDOS 菜单时才拉）：
+    `{pdos, bader, cohp, work_function, diff_charge}` —— 每项 = 远端对应输出文件存在且非空。
+
+    为什么单独一个接口：探测要一次远端 exec（约 0.5–1.5s），放在详情载荷里会让每次打开
+    电子结构详情都卡一下（2026-10-13 用户反馈"点详情加载很久"）。这里带 120s 缓存。
+    """
+    try:
+        db = load_db()
+        pair = None
+        for project in db.get("projects", []):
+            for task in project.get("tasks", []):
+                if task.get("task_id") == task_id:
+                    pair = (project, task)
+                    break
+            if pair:
+                break
+        if pair is None:
+            return JSONResponse(status_code=404, content=fail("未找到任务"))
+        project, task = pair
+        permissions.ensure_project_owner(project, getattr(request.state, "user", None))
+        if str(task.get("task_type") or "") != "ele":
+            return ok("查询成功", {"applicable": False})
+        ele_dir = task_remote_dir(project.get("server"), task).rstrip("/")
+        files = _check_remote_files(
+            project.get("server"),
+            ele_dir,
+            ["DOSCAR", "AECCAR0", "AECCAR1", "AECCAR2", "COHPCAR", "LOCPOT"],
+        )
+        return ok(
+            "查询成功",
+            {
+                "applicable": True,
+                "pdos": bool(files.get("DOSCAR")),
+                "bader": bool(
+                    files.get("AECCAR0") and files.get("AECCAR1") and files.get("AECCAR2")
+                ),
+                "cohp": bool(files.get("COHPCAR")),
+                "work_function": bool(files.get("LOCPOT")),
+                "diff_charge": False,
+                "remote_dir": ele_dir,
+            },
+        )
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"识别可分析内容失败：{e}"))
 
 
 @router.get("/{task_id}/atomic-forces")

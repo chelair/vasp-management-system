@@ -97,6 +97,24 @@ export async function runSingleInspection(taskId: string): Promise<InspectionRun
   );
 }
 
+/**
+ * 电子结构任务「可分析内容」识别（**按需调用**：展开分析面板时才拉）。
+ *
+ * 探测要一次远端 exec（0.5–1.5s），所以不放在详情载荷里 —— 否则每次打开电子结构详情都卡一下
+ * （2026-10-13 用户反馈）。后端带 120s 缓存。
+ */
+export async function fetchAvailableAnalyses(taskId: string): Promise<{
+  applicable?: boolean;
+  pdos?: boolean;
+  bader?: boolean;
+  cohp?: boolean;
+  work_function?: boolean;
+  diff_charge?: boolean;
+  remote_dir?: string;
+}> {
+  return request(`/inspections/${encodeURIComponent(taskId)}/available-analyses`);
+}
+
 /** 单任务巡检详情（能量/力曲线 + 结构分析） */
 export async function fetchInspectionDetail(
   taskId: string,

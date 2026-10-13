@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { App, Button, Descriptions, Dropdown, Tooltip } from 'antd';
 import PdosModal from './PdosModal';
 import { clearPdos, fetchPdosStatus } from '../../api/jobs';
+import { fetchAvailableAnalyses } from '../../api/inspections';
 import type { InspectionDetail } from '../../types';
 
 interface Props {
@@ -17,7 +18,30 @@ export default function EleAnalysisPanel({ detail }: Props) {
   const [pdosBusy, setPdosBusy] = useState(false);
   /** 二级菜单里"有没有已有结果"（打开菜单时查一次，用于禁用"查看已有结果"） */
   const [pdosHasData, setPdosHasData] = useState<boolean | null>(null);
-  const aa = detail.available_analyses;
+  /**
+   * 可分析内容：详情载荷里不再带（那里探远端文件会让每次打开详情都慢 ~1s），
+   * 改为**面板挂载后再拉**（面板本身也只在用户展开「电子结构分析」时才挂载）。
+   */
+  const [aa, setAa] = useState(detail.available_analyses ?? null);
+  const [aaLoading, setAaLoading] = useState(!detail.available_analyses);
+  useEffect(() => {
+    if (detail.available_analyses) return;
+    let cancelled = false;
+    setAaLoading(true);
+    fetchAvailableAnalyses(detail.task_id)
+      .then((data) => {
+        if (!cancelled) setAa(data as typeof aa);
+      })
+      .catch(() => {
+        if (!cancelled) setAa(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail.task_id, detail.available_analyses]);
 
   /**
    * PDOS 的**二级菜单**（2026-10-13 用户要求）：
@@ -49,6 +73,16 @@ export default function EleAnalysisPanel({ detail }: Props) {
         <Descriptions.Item label="子类型">{detail.model_name || '—'}</Descriptions.Item>
         <Descriptions.Item label="远程目录">
           {detail.current_output?.dir || '—'}
+        </Descriptions.Item>
+        <Descriptions.Item label="可分析内容">
+          {aaLoading ? (
+            <span className="preview-note">正在识别远端输出文件…</span>
+          ) : (
+            ['pdos', 'bader', 'cohp', 'work_function']
+              .filter((key) => (aa as Record<string, boolean> | null)?.[key])
+              .map((key) => ({ pdos: 'PDOS', bader: 'Bader', cohp: 'COHP', work_function: '功函数' })[key])
+              .join(' / ') || '暂无（缺 DOSCAR/AECCAR/LOCPOT 等）'
+          )}
         </Descriptions.Item>
       </Descriptions>
       <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>

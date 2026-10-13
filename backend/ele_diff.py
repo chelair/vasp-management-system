@@ -14,9 +14,17 @@
     files/                    ← 完整结构（主任务，既有约定）
     diffcharge_files/1/       ← 分块计算文件（flat：文件直接放这里，不再套 files/）
     diffcharge_files/2/
-    diffcharge_files/chgfiles/{1.vasp,2.vasp,…,(块数+1).vasp}
-                              ← CHGCAR 下载重命名：1..N = 各分块，N+1 = 完整结构
+    diffcharge_files/chgfiles/CHGCAR_diff.vasp
+                              ← **只回传一个差分文件**（2026-10-14 口径变更）
     diffcharge_files/images/  ← VESTA 处理出来的图
+
+差分怎么算（2026-10-14 用户口径）：**在远端主目录用 VTST 脚本算好再回传**，
+不再把各分块/完整结构的 CHGCAR（各 200MB+）都拉下来：
+
+    chgsum.pl 1/CHGCAR 2/CHGCAR …      # → CHGCAR_sum
+    chgdiff.pl CHGCAR CHGCAR_sum       # → CHGCAR_diff
+
+（`chgsum.pl` / `chgdiff.pl` 在 VTST vtstscripts 目录里，可用 `servers.json: vtst_dir` 覆盖。）
 
 规则：
 - POSCAR 来自**主任务的 POSCAR**（电子结构主任务是静态计算，不用 CONTCAR）；
@@ -31,6 +39,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -253,14 +262,20 @@ def block_remote_dir(ele_remote: str, index: int) -> str:
     return f"{ele_remote.rstrip('/')}/{int(index)}"
 
 
-def chg_file_name(block_count: int, index: int) -> str:
-    """CHGCAR 下载后的文件名：`<N>.vasp`（1..块数 = 各分块，块数+1 = 完整结构）。"""
-    return f"{int(index)}.vasp"
+#: VTST 的 chgsum.pl / chgdiff.pl 所在目录（可用 servers.json: vtst_dir 覆盖）
+VTST_DEFAULT_DIR = "/data/gpfs03/mdye/VTST/vtstscripts"
+#: 远端生成的差分文件名（VTST 约定）与本地回传后的名字
+CHG_SUM_NAME = "CHGCAR_sum"
+CHG_DIFF_NAME = "CHGCAR_diff"
+LOCAL_CHG_DIFF_NAME = "CHGCAR_diff.vasp"
 
 
-def full_chg_index(block_count: int) -> int:
-    """完整结构的 CHGCAR 编号 = 分块数 + 1（两块 → 3.vasp）。"""
-    return int(block_count) + 1
+def vtst_dir(server: str) -> str:
+    """VTST 脚本目录：`servers.json: vtst_dir` → 默认路径。"""
+    from config import load_servers
+
+    configured = str(load_servers().get(server, {}).get("vtst_dir") or "").strip()
+    return configured or VTST_DEFAULT_DIR
 
 
 def diff_charge_blocks(
@@ -390,6 +405,19 @@ def read_main_incar(server: str, project: Dict[str, Any], task: Dict[str, Any]) 
 def _download_text(server: str, remote_path: str) -> str:
     result = ssh.run_remote(server, f'cat "{remote_path}" 2>/dev/null || true', timeout=60)
     return str(result.get("stdout") or "")
+
+
+def _run_capture(server: str, cmds: List[str], timeout: int = 180) -> Dict[str, Any]:
+    """跑一段远端 bash，**返回原始结果**（stdout/stderr/exit_code），不抛异常。
+
+    与 `_run` 的区别：这里的脚本会主动打 `@@@XXX` 标记说明失败原因（缺文件 / 脚本缺失 / 转换失败…），
+    调用方需要读原始输出才能给出准确提示。
+    """
+    import base64
+
+    script = "\n".join(cmds)
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    return ssh.run_remote(server, f"echo {encoded} | base64 -d | bash", timeout=timeout)
 
 
 def _run(server: str, cmds: List[str], timeout: int = 180) -> None:
@@ -530,18 +558,24 @@ def create_block_files(
         "potcar_blocks": potcar_blocks,
         "remote_root": ele_remote,
         "local_root": to_local_rel(str(root_local)),
-        "full_chg_index": full_chg_index(block_count),
         "created_at": now_iso(),
     }
 
 
-def download_charge_files(
+def compute_charge_difference(
     server: str, project: Dict[str, Any], task: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """把各分块与完整结构的 CHGCAR 拉回本地，重命名成 `chgfiles/<N>.vasp`。
+    """**远端**用 VTST 脚本算好差分电荷，只把 `CHGCAR_diff` 回传本地（2026-10-14 口径）。
 
-    编号口径（用户 2026-10-13）：1..块数 = 各分块，**块数+1 = 完整结构**
-    （两块 → `1.vasp` 分块A、`2.vasp` 分块B、`3.vasp` 完整体系）。
+    在主任务目录里执行：
+
+        chgsum.pl 1/CHGCAR 2/CHGCAR …   → CHGCAR_sum（各分块电荷密度相加）
+        chgdiff.pl CHGCAR CHGCAR_sum    → CHGCAR_diff（完整 − 分块之和）
+
+    **为什么改成这样**：三个 CHGCAR 各 200MB+，原来要全拉回本地（700MB+）再自己处理，
+    现在远端一条命令算完，只回传一个差分文件（约 200MB），本地也不用装 VTST。
+    本地落 `<任务>/diffcharge_files/chgfiles/CHGCAR_diff.vasp`（保留 .vasp 扩展名，VESTA 直接能开）。
+
     CHGCAR 体积大，只在**归档时**（或手动触发）调用，不进巡检循环。
     """
     project_name = str(project.get("name") or "")
@@ -549,43 +583,74 @@ def download_charge_files(
     blocks = diff_charge_blocks(project, task)
     if not ele_remote or not blocks:
         raise DiffChargeError("该任务还没有差分电荷分块")
+
+    script_dir = vtst_dir(server)
+    inputs = " ".join(f'"{int(b.get("ele_block") or 0)}/CHGCAR"' for b in blocks)
+    cmds = [
+        "set -e",
+        f'cd "{ele_remote}"',
+        f'VTST="{script_dir}"',
+        "for f in chgsum.pl chgdiff.pl; do",
+        '  [ -x "$VTST/$f" ] || { echo "@@@NOSCRIPT=$VTST/$f"; exit 5; }',
+        "done",
+        f"for f in CHGCAR {inputs}; do",
+        '  [ -s "$f" ] || { echo "@@@MISSING=$f"; exit 4; }',
+        "done",
+        # 注意：`set -e` 下 `OUT=$(cmd)` 失败会直接退出脚本，因此必须用 `if !` 包住才能
+        # 把失败原因用 `@@@CHGSUM_FAIL` 记号带回本地（否则只剩一句笼统的"执行失败"）。
+        f'if ! OUT=$("$VTST/chgsum.pl" {inputs} 2>&1); then '
+        'echo "@@@CHGSUM_FAIL"; echo "$OUT" | tail -n 20; exit 6; fi',
+        f'[ -s "{CHG_SUM_NAME}" ] || {{ echo "@@@NO_SUM"; exit 7; }}',
+        f'if ! OUT=$("$VTST/chgdiff.pl" CHGCAR {CHG_SUM_NAME} 2>&1); then '
+        'echo "@@@CHGDIFF_FAIL"; echo "$OUT" | tail -n 20; exit 8; fi',
+        f'[ -s "{CHG_DIFF_NAME}" ] || {{ echo "@@@NO_DIFF"; exit 9; }}',
+        f'echo "@@@SIZE=$(wc -c < "{CHG_DIFF_NAME}" | tr -d \' \')"',
+    ]
+    started = time.time()
+    result = _run_capture(server, cmds, timeout=1800)
+    raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+
+    def fail(message: str) -> DiffChargeError:
+        tail = " / ".join(line.strip() for line in raw.splitlines() if line.strip())[-500:]
+        return DiffChargeError(f"{message}{('；远端输出：' + tail) if tail else ''}")
+
+    for marker, message in (
+        ("@@@NOSCRIPT=", "远端找不到 VTST 脚本"),
+        ("@@@MISSING=", "远端缺少 CHGCAR"),
+        ("@@@CHGSUM_FAIL", "chgsum.pl 执行失败"),
+        ("@@@NO_SUM", "chgsum.pl 跑完但没有生成 CHGCAR_sum"),
+        ("@@@CHGDIFF_FAIL", "chgdiff.pl 执行失败"),
+        ("@@@NO_DIFF", "chgdiff.pl 跑完但没有生成 CHGCAR_diff"),
+    ):
+        if marker in raw:
+            detail = ""
+            if marker.endswith("="):
+                detail = raw.split(marker, 1)[1].split("\n", 1)[0].strip()
+                if marker.startswith("@@@NOSCRIPT"):
+                    detail += "（可用 servers.json: vtst_dir 覆盖 VTST 目录）"
+            raise fail(f"{message}{('：' + detail) if detail else ''}")
+    if int(result.get("exit_code") or 0) != 0:
+        raise fail("远端计算差分电荷失败")
+
     chg_dir = diff_charge_root_local(project_name, task) / CHG_DIR
     chg_dir.mkdir(parents=True, exist_ok=True)
-    saved: List[str] = []
-    missing: List[str] = []
-    for block in blocks:
-        index = int(block.get("ele_block") or 0)
-        remote = f"{ele_remote}/{index}/CHGCAR"
-        target = chg_dir / chg_file_name(len(blocks), index)
-        try:
-            ok = ssh.download_file(server, remote, str(target))
-        except Exception:  # noqa: BLE001 - 单文件失败不影响其它
-            ok = False
-        if ok and target.is_file() and target.stat().st_size > 0:
-            saved.append(target.name)
-        else:
-            if target.is_file() and target.stat().st_size == 0:
-                target.unlink(missing_ok=True)
-            missing.append(f"{index}.vasp（{remote}）")
-    full_index = full_chg_index(len(blocks))
-    remote_full = f"{ele_remote}/CHGCAR"
-    target_full = chg_dir / chg_file_name(len(blocks), full_index)
-    try:
-        ok = ssh.download_file(server, remote_full, str(target_full))
-    except Exception:  # noqa: BLE001
-        ok = False
-    if ok and target_full.is_file() and target_full.stat().st_size > 0:
-        saved.append(target_full.name)
-    else:
-        if target_full.is_file() and target_full.stat().st_size == 0:
-            target_full.unlink(missing_ok=True)
-        missing.append(f"{full_index}.vasp（{remote_full}）")
+    target = chg_dir / LOCAL_CHG_DIFF_NAME
+    remote_path = f"{ele_remote}/{CHG_DIFF_NAME}"
+    if not ssh.download_file(server, remote_path, str(target)):
+        raise fail("差分文件回传失败（远端 CHGCAR_diff 下载不到）")
+    if not target.is_file() or target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+        raise fail("差分文件回传后为空")
     return {
-        "dir": to_local_rel(str(chg_dir)),
-        "saved": saved,
-        "missing": missing,
+        "ok": True,
         "block_count": len(blocks),
-        "full_index": full_index,
+        "remote_path": remote_path,
+        "remote_sum": f"{ele_remote}/{CHG_SUM_NAME}",
+        "local_path": to_local_rel(str(target)),
+        "dir": to_local_rel(str(chg_dir)),
+        "bytes": target.stat().st_size,
+        "elapsed_seconds": round(time.time() - started, 1),
+        "vtst_dir": script_dir,
     }
 
 

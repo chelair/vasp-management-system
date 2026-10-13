@@ -606,7 +606,6 @@ export async function createDiffCharge(
 ): Promise<{
   group_id: string;
   block_count: number;
-  full_chg_index: number;
   local_root: string;
   remote_root: string;
   incar_fixes: Record<string, string>;

@@ -1322,11 +1322,23 @@ export default function Inspection() {
               >
 
                 <p className="preview-note">
-                  各分块在主任务目录下独立提交（<code>/1</code>、<code>/2</code> …）；CHGCAR 拉回本地后
-                  重命名为 <code>diffcharge_files/chgfiles/1..{detailData.diff_charge.block_count}.vasp</code>
-                  （各分块），<code>
-                    {detailData.diff_charge.full_chg_index}.vasp
-                  </code> = 完整结构。
+                  各分块在主任务目录下独立提交（<code>/1</code>、<code>/2</code> …）；归档时在远端主目录用
+                  VTST 脚本算差分（<code>chgsum.pl 1/CHGCAR 2/CHGCAR …</code> 再
+                  <code>chgdiff.pl CHGCAR CHGCAR_sum</code>），只把 <code>CHGCAR_diff</code> 回传本地，
+                  落 <code>diffcharge_files/chgfiles/CHGCAR_diff.vasp</code>。
+                  {(() => {
+                    const cd = detailData.diff_charge?.charge_diff ?? null;
+                    if (!cd) return null;
+                    if (!cd.ok) {
+                      return `（差分计算失败：${cd.error ?? '未知原因'}）`;
+                    }
+                    const bytes = cd.bytes ?? 0;
+                    const size =
+                      bytes >= 1024 * 1024
+                        ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+                        : `${bytes} B`;
+                    return `（已回传 ${size}，耗时 ${cd.elapsed_seconds ?? '-'} s）`;
+                  })()}
                 </p>
                 <Table
                   size="small"

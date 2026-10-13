@@ -680,9 +680,10 @@ def _ele_details(
                 "result_files": [],
                 "chart_paths": [],
                 "notes": fact["notes"],
-                # 差分电荷：块数 + 各分块状态；CHGCAR 本地编号 = 1..块数，块数+1 = 完整结构
+                # 差分电荷：块数 + 各分块状态；差分文件由**远端** VTST 脚本算好回传
+                # （2026-10-14 口径变更，见 backend/ele_diff.py::compute_charge_difference）
                 "diff_charge": blocks,
-                "diff_charge_chg_index": (len(blocks) + 1) if blocks else None,
+                "charge_diff": task.get("charge_diff") or None,
             }
         )
     return items
@@ -977,11 +978,29 @@ def _sections_markdown(report, charts):
                         ],
                     )
                 )
-                full_index = item.get("diff_charge_chg_index")
+                charge_diff = item.get("charge_diff") or {}
+                if charge_diff.get("ok"):
+                    bytes_ = charge_diff.get("bytes") or 0
+                    size = (
+                        f"{bytes_ / 1024 / 1024:.1f} MB"
+                        if bytes_ >= 1024 * 1024
+                        else f"{bytes_} B"
+                    )
+                    diff_state = (
+                        f"已在远端用 VTST 脚本算好差分电荷（chgsum.pl 各分块 → "
+                        f"chgdiff.pl 完整 \u2212 分块和），回传为 "
+                        f"**`diffcharge_files/chgfiles/CHGCAR_diff.vasp`**（{size}，"
+                        f"耗时 {charge_diff.get('elapsed_seconds', '-')} s）。"
+                    )
+                elif charge_diff:
+                    diff_state = (
+                        f"\u26a0 差分电荷计算失败：{charge_diff.get('error') or '未知原因'}。"
+                    )
+                else:
+                    diff_state = "差分电荷尚未生成（主任务归档时会自动在远端计算并回传）。"
                 ele_blocks.append(
-                    f"CHGCAR 本地文件：`diffcharge_files/chgfiles/` 下 1.."
-                    f"{len(item['diff_charge'])}.vasp = 各分块，**{full_index}.vasp = 完整结构**；"
-                    "差分图（VESTA）放在 `diffcharge_files/images/`（处理逻辑待接入）。\n"
+                    f"{diff_state} 差分图（VESTA）放在 `diffcharge_files/images/`"
+                    "（处理逻辑待接入）。\n"
                 )
         ele_blocks.append(
             f"\n待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"

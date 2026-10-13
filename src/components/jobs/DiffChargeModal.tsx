@@ -206,7 +206,7 @@ export default function DiffChargeModal({
       const res = await createDiffCharge(taskId, { blocks: payloadBlocks });
       const fixes = Object.entries(res.incar_fixes ?? {});
       message.success(
-        `已创建 ${res.tasks.length} 个分块计算（CHGCAR 编号：完整结构 = ${res.full_chg_index}.vasp）`,
+        `已创建 ${res.tasks.length} 个分块计算；归档时会在远端用 chgsum.pl + chgdiff.pl 算好差分并回传 CHGCAR_diff`,
       );
       if (fixes.length > 0) {
         message.info(

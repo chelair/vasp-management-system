@@ -136,6 +136,27 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
 > 体积/风险：xvfb 很小；真正的代价是**渲染耗时**（约 1.5 s/张）。缓存按 `<任务目录>/images/.view_version`
 > 判断，改了视角定义（`AXIS_VIEW` / `VIEW_VERSION`）会自动作废重画，不用手动删图。
 
+### 3c. VTST scripts（差分电荷 / NEB 的远端外部脚本 · 2026-10-14 登记）
+
+用途：**远端**用 VTST 官方脚本算差分电荷、NEB 能垒，本项目只调用、不再本地安装。
+
+| 脚本 | 用途 | 本项目调用点 |
+| --- | --- | --- |
+| `chgsum.pl` | 把各分块 `CHGCAR` 相加 → `CHGCAR_sum` | `backend/ele_diff.py::compute_charge_difference`（差分电荷，2026-10-14 口径） |
+| `chgdiff.pl` | `完整 CHGCAR − CHGCAR_sum` → `CHGCAR_diff` | 同上 |
+| `nebef.pl` | NEB 各映像能量 / 能垒 | `backend/batch_check.py`、`routers/inspections.py`（NEB 能垒分析） |
+| `nebmake.pl` | 生成 NEB 映像 | `backend/continuation.py`（NEB 续算） |
+
+- **不是 Python 包**：VTST 是 VASP 的扩展脚本集，随 VASP 一起编译/放置，无需 pip 安装。
+- **默认路径**：`/data/gpfs03/mdye/VTST/vtstscripts`（`backend/ele_diff.py::VTST_DEFAULT_DIR`）。
+  换机器 / 换路径时在 `data/servers.json` 对应服务器下加 `"vtst_dir": "/path/to/vtstscripts"`
+  覆盖（缺省回退到上面的默认路径；`chgsum.pl` / `chgdiff.pl` 需具可执行权限）。
+- **差分电荷口径（2026-10-14 变更）**：不再把各分块和完整结构的 `CHGCAR`（各 200MB+）都拉回本地，
+  改为在远端主目录一条命令算完（`chgsum.pl 1/CHGCAR 2/CHGCAR …` → `chgdiff.pl CHGCAR CHGCAR_sum`），
+  只回传一个 `CHGCAR_diff`（本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`）。
+  **本地因此不需要装 VTST**；远端缺脚本会明确报"远端找不到 VTST 脚本"并提示用 `vtst_dir` 覆盖。
+- 体积/风险：脚本本身极小；风险是远端机器路径 / 权限不同导致找不到脚本，已做显式报错而非静默失败。
+
 ## 4. pymatgen 专项说明
 
 用途：仅未来的 POTCAR 生成等功能需要。**`scripts/vasp2cif.py` 已改为
@@ -203,6 +224,9 @@ python -m pip install pymatgen
 
 ## 7. 变更记录
 
+- 2026-10-14：登记 **VTST scripts**（§3c）——差分电荷改为**远端**用 `chgsum.pl` + `chgdiff.pl` 算好只回传
+  `CHGCAR_diff`，不再把各分块/完整 CHGCAR 都拉回本地；本机无需安装 VTST，脚本路径可经
+  `data/servers.json: vtst_dir` 覆盖。
 - 2026-10-06：登记 **VESTA 结构渲染**的外部依赖（§3b）——Linux 无头服务器需要 **Xvfb + Mesa 软件 GL**
   （生产机已装 xvfb；VESTA 二进制已存在），并记录调用方式、实测耗时与代码侧修的三点（LORIENT 视图中心、
   进程组收尾、b 视图视线方向）。该渲染路径当前未被调用，属"以后接入时按此方案准备"。

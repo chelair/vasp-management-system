@@ -224,8 +224,24 @@ export interface InspectionDiffChargeBlock {
 export interface InspectionDiffChargeDetail {
   group_id: string | null;
   block_count: number;
-  /** 完整结构 CHGCAR 的本地编号 = 块数 + 1（两块 → 3.vasp） */
-  full_chg_index: number;
+  /**
+   * 差分电荷结果（2026-10-14 口径）：远端用 VTST chgsum.pl + chgdiff.pl 算好后
+   * 只回传一个 `CHGCAR_diff`，本地落 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`。
+   * 未归档 / 未计算时为 null；计算失败时 `ok=false` 且带 `error`。
+   */
+  charge_diff: {
+    ok: boolean;
+    block_count?: number;
+    remote_path?: string;
+    remote_sum?: string;
+    local_path?: string;
+    dir?: string;
+    bytes?: number;
+    elapsed_seconds?: number;
+    vtst_dir?: string;
+    error?: string;
+    synced_at?: string;
+  } | null;
   blocks: InspectionDiffChargeBlock[];
 }
 

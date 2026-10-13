@@ -398,8 +398,10 @@ v0.6.0 按「状态 → 资源 → 趋势 → 明细」四层重构，数据全�
   INCAR 校验 `LCHARG=.TRUE.`/`IBRION=-1`/`ISTART=0`/`ICHARG=2` 且**除 LCHARG 外不带其它输出参数**
   （INCAR 页对分块也不显示/不写回这些字段），POTCAR 由远端 `pos2pot` 递归生成）；分块是**附属任务**：
   巡检列表不单独成行（ele 详情里用一张表看状态）、不计当量、归档/重开跟随主任务；
-  归档时把各分块文件与三个 CHGCAR 拉回本地 `diffcharge_files/`（`chgfiles/1..N.vasp` = 分块、
-  `N+1.vasp` = 完整结构）；报告「电子结构」章节同步出这张表（VESTA 差分图处理逻辑待接入）；
+  归档时拉回各分块文件，并在**远端主目录**用 VTST `chgsum.pl` + `chgdiff.pl` 算好差分、只回传
+  `diffcharge_files/chgfiles/CHGCAR_diff.vasp`（不再把各分块/完整 CHGCAR 都拉到本地，本机无需装 VTST，
+  脚本路径可用 `servers.json: vtst_dir` 覆盖）；报告「电子结构」章节同步出这张表与差分结果
+  （VESTA 差分图处理逻辑待接入）；
   报告页可隐藏章节/任务块/结构图（右上角「已隐藏 N 项」可恢复），状态落 `data/reports/edits/`，
   导出 HTML 时同步排除
 - **已关闭项目的报告折叠**到列表底部（默认折叠、灰显、带「已关闭」标签），与总览 / 巡检中心 / 作业管理一致

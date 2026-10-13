@@ -1,6 +1,6 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-10-13 · 当前版本：v0.9.44（差分电荷分块计算：作业管理划分子块 → 独立提交 → 巡检详情表 → 归档连带同步 CHGCAR → 报告「电子结构」章节；v0.9.43 报告注解按口径重做）
+> 生成时间：2026-08-29 · 最近更新：2026-10-14 · 当前版本：v0.9.45（差分电荷改为**远端算好只回传 CHGCAR_diff**：归档时在主任务目录用 VTST `chgsum.pl` + `chgdiff.pl` 生成，本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`，本机无需装 VTST；v0.9.44 差分电荷分块计算）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
@@ -51,7 +51,8 @@ data/
 ├── projects/                  # 本地项目镜像目录（每个任务一份 files/，见 §3）
 │                              # v0.9.44 起：电子结构任务的差分电荷分块放在
 │                              #   <ele 任务>/diffcharge_files/<N>/（flat，文件直接放这里）
-│                              #   + diffcharge_files/chgfiles/（CHGCAR：1..N.vasp = 分块，N+1.vasp = 完整结构）
+│                              #   + diffcharge_files/chgfiles/（CHGCAR_diff.vasp = 差分电荷，
+│                              #       远端 chgsum.pl + chgdiff.pl 算好回传；2026-10-14 口径）
 │                              #   + diffcharge_files/images/（VESTA 差分图，处理逻辑待接入）
 ├── reports/                   # 分项目报告（v0.7.0 起）：<项目>/<报告ID>/{report.json,report.md,charts/*.svg} + index.json
 │                              # v0.9.42 起另落 structured/<报告ID>.json（规范化 AI 视图，供后续向量化/RAG）
@@ -149,7 +150,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天；**v0.9.42** 加 `_needed_scope()`（GET→read / `POST /pending-actions`→propose / 其余写→write），**只对带 `scope` 的 token 生效**（人类会话不受影响） |
 | `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期/吊销）；**v0.9.42** 加 `POST /api/auth/users`（建号，支持 `role=agent` + `delegate_to`）与 `scope` 参数 |
 | `pending_actions.py` + `routers/pending_actions.py` | **待确认队列（v0.9.42）**：AI 触发的 confirm 级动作先入队等人批准。`data/pending_actions.json`（原子写 + 锁），状态机 `pending → approved / failed / rejected`；入队时做归属校验；**agent 角色不能 approve/reject**；批准时复用 `automation/actions.py` 的 preflight+execute；提案/批准/驳回各写 `auth.pending-*` 审计 |
-| `ele_diff.py` | **差分电荷分块计算（v0.9.44）**：POSCAR 解析与"按原子取子集"、`plan_blocks`（≥2 块且覆盖全部原子）、`check_incar`（校验 `LCHARG=.TRUE.` / `IBRION=-1` / `ISTART=0` / `ICHARG=2`）、`create_block_files`（建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf + pos2pot）、`build_block_task`（`task_type=ele_diff` 子任务记录）、`download_charge_files`（CHGCAR → `chgfiles/<N>.vasp`）、`diff_charge_blocks` |
+| `ele_diff.py` | **差分电荷分块计算（v0.9.44；差分口径 v0.9.45）**：POSCAR 解析与"按原子取子集"、`plan_blocks`（≥2 块且覆盖全部原子）、`check_incar`（校验 `LCHARG=.TRUE.` / `IBRION=-1` / `ISTART=0` / `ICHARG=2`）、`create_block_files`（建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf + pos2pot）、`build_block_task`（`task_type=ele_diff` 子任务记录）、**`compute_charge_difference`（v0.9.45：远端 `chgsum.pl` + `chgdiff.pl` 算差、只回传 `CHGCAR_diff` → `chgfiles/CHGCAR_diff.vasp`；`vtst_dir` 可覆盖脚本目录）**、`diff_charge_blocks` |
 | `pdos.py` | **PDOS 分析链路（v0.9.45）**：`start()` 起后台线程（上传 `scripts/dos_extract.py` → 远端 `--quiet` 跑 → 回传 `dos.json`）返回 run_id、`status()` 轮询、`load_view()` 解析成三级菜单树 + 曲线（文件指纹内存缓存）、`clear()` 清除；产物 `<任务>/pdos/{dos.json,meta.json}`；`build_view()` 只对 **p、d** 生成方向投影子级 |
 | `potcar.py` | **pos2pot 运行器（v0.9.44 抽出）**：把原 `/generate-potcar` 里的单次 exec 脚本（定位最新 conN → 跑 pos2pot → 解析 POTCAR 摘要）抽成 `run_pos2pot()`，支持 `use_latest_con=False`（差分电荷在主目录递归生成）；`PotcarError(kind=no_dir/not_found)` |
 | `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
@@ -255,7 +256,28 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.44）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.45）
+
+- 2026-10-14（用户："之前定义了差分电荷计算，会下载分块和完整的 CHGCAR 为 1.vasp 等在本地处理，现在改一下……可以在主目录采用 chgsum.pl + chgdiff.pl 直接生成 CHGCAR_diff，下载 CHGCAR_diff 到本地即可"；"同样做好依赖声明(VTST)"）：
+  **差分电荷改为"远端算好、只回传一个差分文件"**（v0.9.45）。原口径是把各分块和完整结构的
+  CHGCAR（各 200MB+，三个共 700MB+）全部拉回本地再自己处理；现在归档时在**远端主任务目录**
+  直接跑 VTST 脚本：
+  `chgsum.pl 1/CHGCAR 2/CHGCAR …` → `CHGCAR_sum`，`chgdiff.pl CHGCAR CHGCAR_sum` → `CHGCAR_diff`，
+  只把 `CHGCAR_diff` 回传本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`
+  （保留 `.vasp` 扩展名，VESTA 直接能开）；**本地不再需要 VTST，也不再落 1..N.vasp / N+1.vasp**。
+  **实现**：`backend/ele_diff.py` 删掉 `chg_file_name/full_chg_index`，新增
+  `VTST_DEFAULT_DIR`（`/data/gpfs03/mdye/VTST/vtstscripts`，可用 `data/servers.json: vtst_dir` 覆盖）
+  与 `vtst_dir(server)`；`download_charge_files()` 重写为 **`compute_charge_difference()`**
+  （`_run_capture` 单次远端 exec + `@@@NOSCRIPT/@@@MISSING/@@@CHGSUM_FAIL/@@@NO_SUM/@@@CHGDIFF_FAIL/
+  @@@NO_DIFF` 标记 → 中文报错，timeout 1800s，返回 `{ok, remote_path, local_path, bytes,
+  elapsed_seconds, vtst_dir}`）；`routers/jobs.py` 归档后台流程改调它，并把结果记到 ele 主任务
+  `task["charge_diff"]`（含 `synced_at`，失败记 `{ok:false, error}`）；`routers/inspections.py`
+  巡检详情 `diff_charge` 去掉 `full_chg_index`、改透出 `charge_diff`。**报告**：`report_builder.py`
+  的「电子结构」章节改成按 `charge_diff` 显示差分结果（成功带大小/耗时、失败带原因、未算给提示）；
+  前端 `types/index.ts` / `api/jobs.ts` / `DiffChargeModal.tsx` / `Inspection.tsx` 同步去掉
+  `full_chg_index` 并把提示文案改为"远端算好回传 CHGCAR_diff"。**依赖声明**：`DEPENDENCIES.md`
+  新增 **§3c VTST scripts**（登记 `chgsum.pl`/`chgdiff.pl`/`nebef.pl`/`nebmake.pl` 的用途与调用点、
+  默认路径与 `vtst_dir` 覆盖方式），API.md/README.md/process.md 同步。
 
 - 2026-10-13（用户："完善电子结构部分的结果分析，同时接入巡检和报告生成；首先是差分电荷"）：
   **差分电荷分块计算打通"创建 → 巡检 → 归档 → 报告"**（v0.9.44）。口径按用户三条确认：

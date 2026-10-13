@@ -398,8 +398,9 @@ def inspection_detail(task_id: str, request: Request):
                 diff_charge = {
                     "group_id": blocks[0].get("diff_charge_group"),
                     "block_count": len(blocks),
-                    # CHGCAR 本地编号：1..块数 = 各分块，块数+1 = 完整结构
-                    "full_chg_index": len(blocks) + 1,
+                    # 差分电荷（2026-10-14 口径变更）：远端 chgsum.pl + chgdiff.pl 算好后
+                    # **只回传一个 CHGCAR_diff**，本地落 diffcharge_files/chgfiles/CHGCAR_diff.vasp
+                    "charge_diff": task.get("charge_diff") or None,
                     "blocks": block_items,
                 }
 

@@ -273,7 +273,7 @@ body: {
   ④ 在主任务目录跑一次远端 `pos2pot`（脚本递归）→ 主结构与各分块一起生成 POTCAR。
 - **前置**：任务必须是 `ele`（否则 `400`）；主任务本地/远端要有 `POSCAR`；同一任务已有分块时 `409`
   （要重做先删旧分块）；分块必须覆盖全部原子（漏原子/重叠/空块 → `400`）。
-- **返回**：`{group_id, block_count, full_chg_index, tasks[{task_id, model_name, ele_block, atoms_count,
+- **返回**：`{group_id, block_count, tasks[{task_id, model_name, ele_block, atoms_count,
   remote_dir}], local_root, remote_root, incar_fixes, incar_warnings, potcar, potcar_generated}`。
   `potcar_generated` 以**各分块**是否都有 POTCAR 为准，另有 `potcar_blocks` 给出每块的字节数
   （`pos2pot` 的 `potcar` 摘要只反映主任务目录，主目录没有 POSCAR 时会是 MISSING，别误判）。
@@ -287,11 +287,18 @@ body: {
 ├── POSCAR/INCAR/…             ├── files/                      （主任务）
 ├── 1/   ← 分块A               ├── diffcharge_files/1/          （分块文件，flat）
 ├── 2/   ← 分块B               ├── diffcharge_files/2/
-└── …（3、4 …）                ├── diffcharge_files/chgfiles/   （CHGCAR：1..N.vasp = 分块，
-                               │                                  N+1.vasp = 完整结构）
+└── …（3、4 …）                ├── diffcharge_files/chgfiles/   （CHGCAR_diff.vasp = 差分电荷，
+                               │                                  远端 chgsum.pl + chgdiff.pl 生成）
                                └── diffcharge_files/images/     （VESTA 差分图，处理逻辑待接入）
 ```
 
+- **差分电荷口径（2026-10-14 变更）**：归档时在**远端主目录**用 VTST 脚本算好差分，只回传一个文件：
+  `chgsum.pl 1/CHGCAR 2/CHGCAR …` → `CHGCAR_sum`，再 `chgdiff.pl CHGCAR CHGCAR_sum` → `CHGCAR_diff`；
+  回传后本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`。不再把各分块/完整结构的 CHGCAR（各 200MB+）
+  都拉到本地。脚本路径默认 `/data/gpfs03/mdye/VTST/vtstscripts`，可用 `data/servers.json: vtst_dir` 覆盖；
+  远端缺脚本/缺 CHGCAR 会明确报错（见 DEPENDENCIES.md §3c）。结果记在 ele 主任务
+  `charge_diff`（`{ok, remote_path, local_path, bytes, elapsed_seconds, vtst_dir, synced_at}` 或
+  `{ok:false, error}`），巡检详情 `diff_charge.charge_diff` 直接透出。
 - **耗时**：远端 bash + pos2pot **timeout 180s**。**审计**：`create-diff-charge`。
 
 #### ⑤ NEB 创建计算文件

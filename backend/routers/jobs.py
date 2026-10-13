@@ -49,7 +49,7 @@ from ele_diff import (
     create_block_files,
     diff_charge_blocks,
     diff_charge_group_id,
-    download_charge_files,
+    compute_charge_difference,
     plan_blocks,
     read_main_poscar,
 )
@@ -1736,13 +1736,15 @@ def _schedule_archive_outputs(
                 f"OK saved={','.join(result.get('saved') or []) or '-'} "
                 f"missing={','.join(result.get('missing') or []) or '-'}{extra}",
             )
-            # 电子结构主任务归档 → 各差分电荷分块也拉回本地镜像，并把 CHGCAR 收进 chgfiles/
-            # （CHGCAR 体积大，只在归档这一下拿，不进巡检循环）
+            # 电子结构主任务归档 → 各差分电荷分块拉回本地镜像；
+            # 差分电荷在**远端**用 VTST chgsum.pl + chgdiff.pl 算好，只回传 CHGCAR_diff
+            # （CHGCAR 各 200MB+，只在归档这一下动，不进巡检循环；2026-10-14 用户口径）
             blocks = diff_charge_blocks(project, task)
             if blocks:
                 server = str(project.get("server") or "")
                 block_saved: List[str] = []
                 block_missing: List[str] = []
+                charge_diff: Dict[str, Any] = {}
                 for block in blocks:
                     try:
                         br = download_archive_outputs(server, block)
@@ -1752,13 +1754,14 @@ def _schedule_archive_outputs(
                     block_saved.append(str(block.get("model_name") or ""))
                     block_missing.extend(br.get("missing") or [])
                 try:
-                    chg = download_charge_files(server, project, task)
+                    charge_diff = compute_charge_difference(server, project, task)
                     chg_note = (
-                        f"chg_saved={','.join(chg.get('saved') or []) or '-'} "
-                        f"chg_missing={','.join(chg.get('missing') or []) or '-'}"
+                        f"chg_diff={charge_diff.get('remote_path')} "
+                        f"bytes={charge_diff.get('bytes')} elapsed={charge_diff.get('elapsed_seconds')}s"
                     )
                 except Exception as e:  # noqa: BLE001
                     chg_note = f"chg_failed={e}"
+                    charge_diff = {"ok": False, "error": str(e)}
                 _audit_log(
                     project_name,
                     task_id,
@@ -1767,6 +1770,26 @@ def _schedule_archive_outputs(
                     f"OK blocks={len(blocks)} synced={','.join(block_saved) or '-'} "
                     f"missing={','.join(block_missing) or '-'} {chg_note}",
                 )
+                # 记在 ele 主任务上，前端/报告可直接展示"差分是否算好、在哪"
+                try:
+                    with db_transaction() as db3:
+                        proj3 = next(
+                            (p for p in db3.get("projects", []) if p.get("name") == project_name),
+                            None,
+                        )
+                        task3 = (
+                            next(
+                                (t for t in proj3.get("tasks", []) if t.get("task_id") == task_id),
+                                None,
+                            )
+                            if proj3
+                            else None
+                        )
+                        if task3 is not None:
+                            task3["charge_diff"] = {**charge_diff, "synced_at": now_iso()}
+                except Exception as e:  # noqa: BLE001 - 记台账失败不影响归档
+                    _audit_log(project_name, task_id, "", "archive-diff-charge",
+                               f"FAILED to record charge_diff: {e}")
             # 文件同步完成后**再触发一次**结构三视图渲染：归档刚拉回/更新了 CONTCAR / 各映像结构，
             # 这时画的图才是最新的（用刚 reload 出来的 task，状态已是 archived）
             try:

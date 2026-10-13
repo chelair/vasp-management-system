@@ -164,6 +164,17 @@ export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
     return (view?.tree ?? []).map(mapNode);
   }, [view]);
 
+  /** 默认展开到二级（元素 + 轨道），方向投影那级收起 —— 元素多时菜单不会太长 */
+  const defaultExpandedKeys = useMemo(() => {
+    const keys: string[] = [];
+    const walk = (node: PdosTreeNode) => {
+      if (node.level <= 2) keys.push(node.key);
+      (node.children ?? []).forEach(walk);
+    };
+    (view?.tree ?? []).forEach(walk);
+    return keys;
+  }, [view]);
+
   /** 选中项 → 要画的曲线（父节点勾选后其自身曲线也被选中） */
   const curves = useMemo<CurveEntry[]>(() => {
     if (!view) return [];
@@ -290,9 +301,12 @@ export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
     };
   }, [curves, view, meta, mirror, spin, range, showZero]);
 
-  const containerRef = useEcharts(option, [option], (instance) =>
-    setChart(instance ? { getDataURL: (opts?: unknown) => instance.getDataURL(opts as never) } : null),
-  );
+  const containerRef = useEcharts(option, [option], (instance) => {
+    // 只保留实例（导出 PNG 用）；卸载时的 null 不回写 state，避免卸载后 setState
+    if (instance) {
+      setChart({ getDataURL: (opts?: unknown) => instance.getDataURL(opts as never) });
+    }
+  });
 
   const reset = () => {
     setCheckedKeys(['total']);
@@ -369,8 +383,8 @@ export default function PdosModal({ open, taskId, taskName, onClose }: Props) {
               <Tree
                 checkable
                 blockNode
-                defaultExpandAll
                 treeData={treeData}
+                defaultExpandedKeys={defaultExpandedKeys}
                 checkedKeys={checkedKeys}
                 onCheck={(keys) =>
                   setCheckedKeys(

@@ -301,6 +301,20 @@ export const IDIPOL_OPTIONS = [
 
 type GatedIncarCategory = IncarCategory & { gate?: string };
 
+/**
+ * 差分电荷分块（`task_type=ele_diff`）的 INCAR **不写**的输出参数（2026-10-13 用户口径：
+ * 分块除了 LCHARG 以外不要其它输出参数）。创建分块时后端也会删掉它们；
+ * 这里再挡一道——否则用户在 INCAR 页保存一次，编辑器会把它们按默认值重新写回去。
+ */
+export const DIFF_CHARGE_DROP_KEYS = [
+  'LWAVE',
+  'LAECHG',
+  'LVHAR',
+  'LVTOT',
+  'LORBIT',
+  'NEDOS',
+];
+
 /** 写 INCAR 时的完整分类顺序：通用分类 + 两个带主开关的扩展卡片 */
 const INCAR_TEXT_CATEGORIES: GatedIncarCategory[] = [
   ...INCAR_CATEGORIES,
@@ -686,9 +700,12 @@ export function buildIncarText(
   params: Record<string, string>,
   categories: GatedIncarCategory[] = INCAR_TEXT_CATEGORIES,
   customText = '',
+  /** 这些键**不写进文本**（仍算"已用"，不会掉到「其他参数」里） */
+  dropKeys: string[] = [],
 ): string {
   const blocks: string[] = [];
   const used = new Set<string>();
+  const dropped = new Set(dropKeys.map((key) => key.toUpperCase()));
   for (const cat of categories) {
     const rows: { key: string; value: string }[] = [];
     // 带主开关的分类：主开关不是真值时整组不写入（但键仍标记为已用，
@@ -698,6 +715,7 @@ export function buildIncarText(
       const raw = params[def.key];
       used.add(def.key);
       if (gatedOff) continue;
+      if (dropped.has(def.key.toUpperCase())) continue;
       if (raw == null || String(raw).trim() === '') continue;
       rows.push({ key: def.key, value: formatIncarValue(def, raw) });
     }
@@ -709,6 +727,7 @@ export function buildIncarText(
   // 不在预设表单里的参数（如从远端同步回来的其他参数）也要写进 INCAR
   for (const [key, value] of Object.entries(params)) {
     if (used.has(key)) continue;
+    if (dropped.has(key.toUpperCase())) continue;
     if (value == null || String(value).trim() === '') continue;
     if (customRows.some((row) => row.key.toUpperCase() === key.toUpperCase())) continue;
     customRows.push({ key, value: String(value).trim() });

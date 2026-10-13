@@ -260,7 +260,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   **差分电荷分块计算打通"创建 → 巡检 → 归档 → 报告"**（v0.9.44）。口径按用户三条确认：
   ① 分块复用 POSCAR 页那套原子选择（点选 / Ctrl 多选 / Shift 框选），默认两块、可加到 C/D（目录 3/4）；
   ② INCAR 来自完整结构任务，复制时**校验** `LCHARG=.TRUE.` / `IBRION=-1` / `ISTART=0` / `ICHARG=2`
-  （分块从零开始算；不一致就地改并回报），MAGMOM 暂不动（留后续自动化）；
+  （分块从零开始算；不一致就地改并回报），并**删掉除 LCHARG 以外的输出参数**
+  （LWAVE/LAECHG/LVHAR/LVTOT/LORBIT/NEDOS → `incar_removed`），MAGMOM 暂不动（留后续自动化，
+  条目数与分块原子数不一致时给警告）；
   ③ 分块在 LSF 上**各自独立提交**，但数据/前端都是**附属任务**
   （归档跟随主任务、不计当量）。
   **实现**：新增 `backend/ele_diff.py`（POSCAR 解析/按原子取子集/`plan_blocks` 校验"≥2 块且覆盖全部原子"/
@@ -287,6 +289,13 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   ② 作业管理里显示"分块undefined"：`mappers.map_task` 漏映射 `ele_block / ele_block_label /
   ele_block_atoms / diff_charge_group / local_layout`（库里数据是全的，只是没透出给前端）→ 已补，
   前端标签回显「分块A（56 原子）」，并对缺失值加了兜底。
+  ③ **分块 INCAR 不保留除 LCHARG 以外的输出参数**（用户口径）：`ele_diff` 创建时整行删掉
+  `LWAVE/LAECHG/LVHAR/LVTOT/LORBIT/NEDOS`（回报在 `incar_removed`）；同时前端 INCAR 页对
+  `ele_diff` 任务**不显示这些字段、也不写回**（`DIFF_CHARGE_DROP_KEYS` + `buildIncarText(dropKeys)`）——
+  否则用户保存一次 INCAR，编辑器会按默认值把它们重新写回去（实测就是这个原因：18:47 那次保存
+  把 LWAVE/LORBIT/NEDOS 带回来了）。已建的 `FS_Kaolin/ele/model2` 分块A/B 都以**远端最新内容**为基准
+  清理并同步（分块B 的 `MAGMOM = 68*0` 是用户自己改的，保留），复核两边 `LCHARG=.TRUE. /
+  ISTART=0 / ICHARG=2 / IBRION=-1`，输出参数计数 0。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

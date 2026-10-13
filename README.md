@@ -393,7 +393,8 @@ v0.6.0 按「状态 → 资源 → 趋势 → 明细」四层重构，数据全�
   「差分电荷计算」→ 复用 POSCAR 页的点选/Ctrl 多选/Shift 框选把原子划成若干分块（默认两块，
   可加到 C/D；分块按颜色预览，"选中其余原子"可一次把剩下的归入下一块）→ 各分块在
   `ele/<任务>/1|2|…` 下独立提交（POSCAR 只保留本块原子，KPOINTS/vasp.lsf 复制主任务，
-  INCAR 校验 `LCHARG=.TRUE.`/`IBRION=-1`，POTCAR 由远端 `pos2pot` 递归生成）；分块是**附属任务**：
+  INCAR 校验 `LCHARG=.TRUE.`/`IBRION=-1`/`ISTART=0`/`ICHARG=2` 且**除 LCHARG 外不带其它输出参数**
+  （INCAR 页对分块也不显示/不写回这些字段），POTCAR 由远端 `pos2pot` 递归生成）；分块是**附属任务**：
   巡检列表不单独成行（ele 详情里用一张表看状态）、不计当量、归档/重开跟随主任务；
   归档时把各分块文件与三个 CHGCAR 拉回本地 `diffcharge_files/`（`chgfiles/1..N.vasp` = 分块、
   `N+1.vasp` = 完整结构）；报告「电子结构」章节同步出这张表（VESTA 差分图处理逻辑待接入）；

@@ -53,6 +53,9 @@ from task_paths import (
 #: 分块**从零开始算**（不读主任务的波函数/电荷密度）：ISTART=0 + ICHARG=2；
 #: 静态单点 IBRION=-1；同时要写 CHGCAR 供后续差分（LCHARG=.TRUE.）。
 REQUIRED_INCAR = {"LCHARG": ".TRUE.", "IBRION": -1, "ISTART": 0, "ICHARG": 2}
+#: 分块 INCAR **不保留**的输出类参数（用户 2026-10-13 口径：除了 LCHARG 以外不要其它输出参数）。
+#: 键名与作业管理 INCAR 页「输出与文件」分组一致；MAGMOM/ENCUT/ISMEAR 这些照常复制。
+DROP_INCAR_KEYS = ("LWAVE", "LAECHG", "LVHAR", "LVTOT", "LORBIT", "NEDOS")
 #: 本地 CHGCAR 目录名（下载重命名后的 .vasp）
 CHG_DIR = "chgfiles"
 #: 本地图片目录名（VESTA 处理数据图）
@@ -300,14 +303,37 @@ def count_magmom_entries(incar_text: str) -> Optional[int]:
     return total
 
 
+def strip_incar_keys(
+    incar_text: str, keys: Sequence[str] = DROP_INCAR_KEYS
+) -> Tuple[str, List[str]]:
+    """删掉指定 INCAR 键所在的行，返回 `(新文本, 被删掉的键)`。
+
+    注释行与其它参数原样保留；重复出现的键全部删掉。
+    """
+    wanted = {str(k).upper() for k in keys}
+    kept: List[str] = []
+    removed: List[str] = []
+    for line in (incar_text or "").splitlines():
+        body = line.split("#", 1)[0].split("!", 1)[0]
+        if "=" in body:
+            key = body.split("=", 1)[0].strip().upper()
+            if key in wanted:
+                if key not in removed:
+                    removed.append(key)
+                continue
+        kept.append(line)
+    return "\n".join(kept) + ("\n" if kept else ""), removed
+
+
 def check_incar(incar_text: str, extra: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, str], List[str]]:
-    """复制 INCAR 时校验关键参数（不一致就地改）：
+    """复制 INCAR 时：先**去掉分块不需要的输出参数**，再校验关键参数（不一致就地改）。
 
     `LCHARG = .TRUE.`、`IBRION = -1`、`ISTART = 0`、`ICHARG = 2`。
+    其它输出类参数（`LWAVE/LAECHG/LVHAR/LVTOT/LORBIT/NEDOS`）整行删除 —— 分块只需要 CHGCAR。
 
     返回 `(新文本, 改了什么, 警告)`。MAGMOM 不动（用户口径：先直接复制，后续再做自动化）。
     """
-    text = incar_text or ""
+    text, removed = strip_incar_keys(incar_text or "")
     fixes: Dict[str, str] = {}
 
     def _current(key: str) -> Optional[str]:
@@ -329,6 +355,8 @@ def check_incar(incar_text: str, extra: Optional[Dict[str, Any]] = None) -> Tupl
     # 用户显式传了同名字段 → 以他传的为准，不算“我们改过”
     for key in explicit:
         fixes.pop(str(key), None)
+    if removed:
+        warnings.insert(0, f"已去掉分块不需要的输出参数：{'、'.join(removed)}（只保留 LCHARG）")
     return updated, fixes, warnings
 
 
@@ -401,9 +429,9 @@ def create_block_files(
     for sub in (CHG_DIR, IMAGES_DIR):
         (root_local / sub).mkdir(parents=True, exist_ok=True)
 
-    incar_text, fixes, warnings = check_incar(
-        read_main_incar(server, project, task), incar_params
-    )
+    raw_incar = read_main_incar(server, project, task)
+    incar_text, fixes, warnings = check_incar(raw_incar, incar_params)
+    _, incar_removed = strip_incar_keys(raw_incar)
     # MAGMOM 目前是**原样复制**（用户口径：留后续做自动化），但条目数与分块原子数不一致时
     # VASP 会直接报错，这里只**提示**不改动，避免分块白跑一轮。
     magmom_count = count_magmom_entries(incar_text)
@@ -458,6 +486,7 @@ def create_block_files(
         "blocks": written,
         "block_count": block_count,
         "incar_fixes": fixes,
+        "incar_removed": incar_removed,
         "incar_warnings": warnings,
         "potcar": potcar.get("potcar") or {},
         "potcar_generated": bool(potcar.get("generated")),

@@ -267,7 +267,9 @@ body: {
   ① 每个分块只保留自己那部分原子的 POSCAR（晶胞不变、元素顺序沿用父结构、重新统计数量）；
   ② INCAR 复制主任务并**校验关键参数** `LCHARG = .TRUE.`、`IBRION = -1`、
   **`ISTART = 0`、`ICHARG = 2`**（分块从零开始算，不读主任务的波函数/电荷密度；不一致就地改并在
-  `incar_fixes` 里回报；MAGMOM 暂不改）；③ KPOINTS / vasp.lsf 直接复制主任务；
+  `incar_fixes` 里回报），且**删掉除 LCHARG 以外的输出参数**
+  （`LWAVE / LAECHG / LVHAR / LVTOT / LORBIT / NEDOS`，回报在 `incar_removed`；分块只要 CHGCAR）；
+  MAGMOM 暂不改（只在条目数与分块原子数不一致时给 `incar_warnings` 提示）；③ KPOINTS / vasp.lsf 直接复制主任务；
   ④ 在主任务目录跑一次远端 `pos2pot`（脚本递归）→ 主结构与各分块一起生成 POTCAR。
 - **前置**：任务必须是 `ele`（否则 `400`）；主任务本地/远端要有 `POSCAR`；同一任务已有分块时 `409`
   （要重做先删旧分块）；分块必须覆盖全部原子（漏原子/重叠/空块 → `400`）。

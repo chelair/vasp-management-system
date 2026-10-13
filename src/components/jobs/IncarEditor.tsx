@@ -46,6 +46,7 @@ import {
   PRESET_INCAR_KEYS,
   incarUploadParams,
   buildIncarText,
+  DIFF_CHARGE_DROP_KEYS,
   defaultLdauRows,
   incarParamDef,
   incarValueEquals,
@@ -113,7 +114,15 @@ export default function IncarEditor({
 
   const params = workspace.incarParams;
   const precision = workspace.precision;
-  const incarText = useMemo(() => buildIncarText(params), [params]);
+  // 差分电荷分块只保留 LCHARG：其余输出参数既不显示也不写进 INCAR（2026-10-13 用户口径）
+  const dropOutputKeys = useMemo(
+    () => (task.task_type === 'ele_diff' ? DIFF_CHARGE_DROP_KEYS : []),
+    [task.task_type],
+  );
+  const incarText = useMemo(
+    () => buildIncarText(params, undefined, '', dropOutputKeys),
+    [params, dropOutputKeys],
+  );
   const pendingSet = useMemo(() => new Set(pendingKeys), [pendingKeys]);
   const isChanged = (key: string) => {
     const base = String(snapshotParams[key] ?? '');
@@ -444,6 +453,8 @@ export default function IncarEditor({
       <div className="job-incar-fields">
         {cat.params
           .filter((def) => !def.fracOnly || task.task_type === 'frac')
+          // 差分电荷分块：输出参数（除 LCHARG 外）不显示，避免改了个不生效的值
+          .filter((def) => !dropOutputKeys.includes(def.key))
           .map((def) => (
             <div
               key={def.key}

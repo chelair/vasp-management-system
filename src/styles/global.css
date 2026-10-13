@@ -5081,8 +5081,7 @@ button.report-chip {
 
 dialog.project-edit-dialog,
 dialog.note-edit-dialog,
-dialog.outcar-tail-dialog,
-dialog.pdos-dialog {
+dialog.outcar-tail-dialog {
   width: min(680px, 94vw);
   max-height: 92vh;
   padding: 0;
@@ -5094,15 +5093,13 @@ dialog.pdos-dialog {
 
 dialog.project-edit-dialog::backdrop,
 dialog.note-edit-dialog::backdrop ,
-dialog.outcar-tail-dialog::backdrop,
-dialog.pdos-dialog::backdrop {
+dialog.outcar-tail-dialog::backdrop {
   background: rgba(16, 26, 44, 0.55);
 }
 
 dialog.project-edit-dialog header,
 dialog.note-edit-dialog header ,
-dialog.outcar-tail-dialog header,
-dialog.pdos-dialog header {
+dialog.outcar-tail-dialog header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -5113,16 +5110,14 @@ dialog.pdos-dialog header {
 
 dialog.project-edit-dialog h3,
 dialog.note-edit-dialog h3 ,
-dialog.outcar-tail-dialog h3,
-dialog.pdos-dialog h3 {
+dialog.outcar-tail-dialog h3 {
   margin: 0;
   font-size: 15px;
 }
 
 dialog.project-edit-dialog .close,
 dialog.note-edit-dialog .close ,
-dialog.outcar-tail-dialog .close,
-dialog.pdos-dialog .close {
+dialog.outcar-tail-dialog .close {
   min-width: 44px;
   min-height: 44px;
   border: none;
@@ -5136,8 +5131,7 @@ dialog.pdos-dialog .close {
 
 dialog.project-edit-dialog .body,
 dialog.note-edit-dialog .body ,
-dialog.outcar-tail-dialog .body,
-dialog.pdos-dialog .body {
+dialog.outcar-tail-dialog .body {
   padding: 14px 16px 4px;
   overflow: auto;
   max-height: calc(92vh - 132px);
@@ -5779,26 +5773,17 @@ h5:hover > .report-hide-btn,
   }
 }
 
-/* ---------- PDOS 分析弹窗（2026-10-13）：工具条 + 内联轨道菜单 + 全宽折线，小屏全屏 ---------- */
+/* ---------- PDOS 分析面板（2026-10-13）：巡检详情「电子结构分析」标签页里的内联面板 ---------- */
 
-/*
- * ⚠️ 只给 [open] 上写 display —— 千万不要无条件给 dialog 写 display，
- * 那会覆盖浏览器默认的「未打开 = display:none」，弹窗就会**以内联块的形式挂在页面上**
- * （2026-10-13 用户看到"PDOS 分析挂在巡检详情下面"就是这个原因）。
- */
-dialog.pdos-dialog[open] {
-  display: flex;
-  flex-direction: column;
-  width: min(1180px, 95vw);
-  height: min(84vh, 860px);
-  max-height: 92vh;
+.pdos-panel {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px 12px 8px;
 }
 
-dialog.pdos-dialog .body {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  padding: 10px 14px 6px;
+.pdos-panel__body {
+  min-height: 120px;
 }
 
 .pdos-main {
@@ -5912,8 +5897,8 @@ dialog.pdos-dialog .body {
 
 .pdos-chart {
   position: relative;
-  flex: 1;
-  min-height: 0;
+  /* 内联在标签页里，直接给个固定高度（不再依赖弹窗撑高） */
+  height: 420px;
   border: 1px solid var(--color-border-soft);
   border-radius: 10px;
   background: #fff;
@@ -5964,6 +5949,13 @@ dialog.pdos-dialog .body {
   color: var(--color-text);
 }
 
+.pdos-empty__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 .pdos-empty .pdos-menu__hint {
   max-width: 420px;
   text-align: center;
@@ -5999,12 +5991,8 @@ dialog.pdos-dialog .body {
 }
 
 @media (max-width: 720px) {
-  dialog.pdos-dialog {
-    width: 100vw;
-    height: 100vh;
-    max-height: 100vh;
-    border-radius: 0;
-    margin: 0;
+  .pdos-chart {
+    height: 320px;
   }
 
   .pdos-menu-card {

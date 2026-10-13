@@ -1273,13 +1273,9 @@ export default function Inspection() {
             <div className="inspection-detail__section">
               <h3>{ANALYSIS_SECTION_TITLE[detailData.task_type] ?? '结构分析'}</h3>
               {detailData.task_type === 'ele' ? (
-                <LazySection
-                  key={`${detailData.task_id}-ele`}
-                  title="电子结构分析"
-                  hint="按需加载：展开后才识别远端输出文件、按需跑 PDOS 等分析"
-                >
-                  <EleAnalysisPanel detail={detailData} />
-                </LazySection>
+                // 电子结构：分析入口是**并列的一级标签页**（PDOS / Bader / COHP / 功函数），
+                // 标签页本身惰性挂载，所以这里不再套 LazySection
+                <EleAnalysisPanel detail={detailData} />
               ) : detailData.task_type === 'neb' ? (
                 // NEB 专属分析：只走映像结构视图，**不要**落到 StructurePanel
                 // （StructurePanel 期望 opt 的 files/poscar/warnings 字段，NEB 载荷没有会白屏）

@@ -1,13 +1,12 @@
 /**
- * PDOS 分析弹窗（2026-10-13 链路重建）。
+ * PDOS 分析**面板**（2026-10-13；2026-10-13 晚从弹窗改为内联，放进巡检详情的
+ * 「电子结构分析」一级标签页里 —— 用户口径："PDOS 放到巡检的一级菜单中，切到那个加载那个"）。
  *
- * 链路：点「PDOS · 开始分析」→ 后端异步跑远端 vaspkit（整合数据回传本地）→ 轮询状态 → 出图。
- * - 已有分析结果时直接展示（不重复跑远端）；
- * - 左侧三级轨道菜单（一级总态密度 / 二级元素×轨道 / 三级只对 p、d 分方向），右侧 ECharts 折线；
- * - 横轴 = 相对费米能级的能量（数据已由提取脚本校正），零点画竖直虚线；纵轴 Intensity；
- * - 自旋极化默认**镜像布局**（up 上 / down 下翻转），可切叠加；曲线：up 实线、down 虚线；
- * - 底部：费米能级 + 能量范围（默认 −10~10，可自适应）+ 重置 + 导出图片 + 重新分析；
- * - 原生 `<dialog>`，≤720px 全屏。
+ * 链路：面板挂载 → 查一次本地状态（快）→
+ *   · 已有整合数据：先给"上次分析"小结，点「查看图表」才画（不拖慢详情打开）；
+ *   · 没有：给「开始分析」按钮 → 后端异步跑远端 vaspkit（整合数据回传本地）→ 轮询 → 出图。
+ * 图表：三级轨道菜单（悬浮卡片）/ ECharts 折线；横轴相对费米能级、零点竖直虚线；
+ * 自旋默认镜像布局（up 上 / down 下）、up 实线 down 虚线；底部 E_F + 范围 + 重置 + 导出 + 重新分析。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -26,12 +25,8 @@ import type { PdosTreeNode, PdosView } from '../../types';
 import useEcharts from '../dashboard/useEcharts';
 
 interface Props {
-  open: boolean;
   taskId: string;
   taskName?: string;
-  /** 点「PDOS · 开始分析」进来的：没有结果就直接开始跑；从别处打开只展示 */
-  autoStart?: boolean;
-  onClose: () => void;
 }
 
 /** 每条可见曲线的绘图信息（由菜单选中项展开而来） */
@@ -51,13 +46,16 @@ interface CurveEntry {
 const LEVEL_WIDTH: Record<number, number> = { 1: 3, 2: 1.8, 3: 1.2 };
 const SPIN_LABEL: Record<string, string> = { up: '↑', down: '↓', total: '' };
 
-export default function PdosModal({ open, taskId, taskName, autoStart = false, onClose }: Props) {
+export default function PdosPanel({ taskId, taskName }: Props) {
   const { message } = App.useApp();
-  const ref = useRef<HTMLDialogElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const [view, setView] = useState<PdosView | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+  /** 有数据但还没点「查看图表」：先只显示小结，避免一进详情就加载 1MB+ 数据并画图 */
+  const [hasData, setHasData] = useState(false);
+  const [showChart, setShowChart] = useState(false);
   const [error, setError] = useState('');
   const [checkedKeys, setCheckedKeys] = useState<string[]>(['total']);
   const [mirror, setMirror] = useState(true);
@@ -80,6 +78,8 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
     const data = await fetchPdosData(taskId);
     setView(data);
     setStatus('done');
+    setHasData(true);
+    setShowChart(true);
     setError('');
     setMirror(data.meta.spin_polarized !== false);
     setCheckedKeys(['total']);
@@ -124,41 +124,30 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
     [taskId, stopPolling, loadData],
   );
 
-  // 打开：已有结果直接画；没有的话——点按钮进来的才自动开跑，否则等用户点「开始分析」
+  // 面板挂载（= 切到这个标签页）：先查一次本地状态（很快，纯本地）
+  //   · 已有数据 → 只显示"上次分析"小结，点「查看图表」才拉数据画图；
+  //   · 上次失败 → 直接把原因摆出来等用户点重试（不自动重跑，别反复占远端算力）；
+  //   · 没有 → 显示「开始分析」按钮等用户点。
   useEffect(() => {
-    if (!open) return;
     let cancelled = false;
     (async () => {
       setStatus('idle');
+      setShowChart(false);
       try {
-        const data = await fetchPdosData(taskId);
-        if (!cancelled) {
-          setView(data);
-          setStatus('done');
-          setMirror(data.meta.spin_polarized !== false);
-          setCheckedKeys(['total']);
+        const st = await fetchPdosStatus(taskId);
+        if (cancelled) return;
+        if (st.has_data) {
+          setHasData(true);
+          setStatus('idle');
+          return;
+        }
+        setHasData(false);
+        if (st.status === 'failed') {
+          setStatus('failed');
+          setError(st.error || '上次分析失败');
         }
       } catch {
-        if (cancelled) return;
-        // 没有结果：先看上一次是不是失败了 —— 失败就把原因摆出来等用户点重试，别反复占远端算力
-        let lastFailed = false;
-        let lastError = '';
-        try {
-          const st = await fetchPdosStatus(taskId);
-          lastFailed = st.status === 'failed' && st.has_data !== true;
-          lastError = st.error || '';
-        } catch {
-          lastFailed = false;
-        }
-        if (cancelled) return;
-        if (lastFailed) {
-          setStatus('failed');
-          setError(lastError || '上次分析失败');
-        } else if (autoStart) {
-          await runAnalysis(false);
-        } else {
-          setStatus('idle');
-        }
+        if (!cancelled) setStatus('idle');
       }
     })();
     return () => {
@@ -166,14 +155,7 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
       stopPolling();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, taskId, autoStart]);
-
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
+  }, [taskId]);
 
   const meta = view?.meta;
   const spin = Boolean(meta?.spin_polarized);
@@ -452,25 +434,8 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
   const running = status === 'running';
 
   return (
-    <dialog
-      ref={ref}
-      className="pdos-dialog"
-      onCancel={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
-      onClick={(event) => {
-        if (event.target === ref.current) onClose();
-      }}
-    >
-      <header>
-        <h3>PDOS 分析{taskName ? ` · ${taskName}` : ''}</h3>
-        <button type="button" className="close" aria-label="关闭" onClick={onClose}>
-          ×
-        </button>
-      </header>
-
-      <div className="body">
+    <div className="pdos-panel" ref={panelRef}>
+      <div className="pdos-panel__body">
         {running && (
           <div className="pdos-progress">
             <Spin size="small" />
@@ -490,7 +455,41 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
             </div>
           </div>
         )}
-        {status === 'done' && view && (
+        {/* 已有数据但还没点「查看图表」：只给小结 + 按钮，不加载数据也不画图 */}
+        {showChart === false && hasData && status === 'idle' && (
+          <div className="pdos-empty">
+            <p>该任务已有 PDOS 分析结果。</p>
+            <div className="pdos-empty__actions">
+              <Button type="primary" onClick={() => void loadData().catch((e) => {
+                setStatus('failed');
+                setError(e instanceof Error ? e.message : '读取 PDOS 数据失败');
+              })}>
+                查看图表
+              </Button>
+              <Button onClick={() => void runAnalysis(true)}>重新分析</Button>
+              <Button
+                danger
+                onClick={async () => {
+                  try {
+                    const r = await clearPdos(taskId);
+                    setHasData(false);
+                    setView(null);
+                    setShowChart(false);
+                    message.success(r.removed.length ? `已清除：${r.removed.join('、')}` : '本地没有可清除的结果');
+                  } catch (e) {
+                    message.error(e instanceof Error ? e.message : '清除失败');
+                  }
+                }}
+              >
+                清除本地结果
+              </Button>
+            </div>
+            <p className="pdos-menu__hint">
+              点「查看图表」再拉取数据并渲染（约 1–2 MB），避免拖慢详情打开速度
+            </p>
+          </div>
+        )}
+        {status === 'done' && view && showChart && (
           <div className="pdos-main">
             <div className="pdos-toolbar">
               {/* 悬浮卡片式菜单：**必须挂在弹窗内部**（原生 <dialog> 在 top layer，
@@ -500,7 +499,7 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
                 placement="bottomLeft"
                 open={menuOpen}
                 onOpenChange={setMenuOpen}
-                getPopupContainer={() => ref.current ?? document.body}
+                getPopupContainer={() => panelRef.current ?? document.body}
                 content={
                   <div className="pdos-menu-card">
                     <Tree
@@ -574,6 +573,8 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
         )}
       </div>
 
+      {/* 底部控件只在图表视图下出现（没有图表时这些开关没有意义） */}
+      {status === 'done' && view && showChart && (
       <footer className="pdos-footer">
         <span className="pdos-footer__meta">
           费米能级 E_F ={' '}
@@ -634,6 +635,7 @@ export default function PdosModal({ open, taskId, taskName, autoStart = false, o
           </Tooltip>
         </span>
       </footer>
-    </dialog>
+      )}
+    </div>
   );
 }

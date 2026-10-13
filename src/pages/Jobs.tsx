@@ -1118,10 +1118,14 @@ export default function Jobs() {
     // NEB 映像任务没有"单个输入结构"（结构是整条映像路径，见 NEB 组详情/巡检映像看板），
     // 因此不给它 POSCAR 标签页，避免显示无意义的空 POSCAR
     const showPoscar = task.task_type !== 'neb';
+    // 切换任务时可能残留在新任务里不存在的标签页（例：从有 POSCAR 的任务切到 NEB 任务）
+    // → 回落到「概览」，否则 Tabs 找不到对应 key 会整块空白（2026-10-13 用户反馈）
+    const tabKeys = ['overview', ...(showPoscar ? ['poscar'] : []), 'incar', 'kpoints', 'submit'];
+    const currentTab = tabKeys.includes(activeTab) ? activeTab : 'overview';
     return (
       <Tabs
         key={task.task_id}
-        activeKey={activeTab}
+        activeKey={currentTab}
         onChange={setActiveTab}
         items={[
           {

@@ -5,6 +5,7 @@
  * 分块子任务在左侧树里不单独成节点、巡检列表里也不单独成行；归档/重开跟随主任务。
  */
 
+import { useEffect } from 'react';
 import { Button, Tabs, Tag, Tooltip } from 'antd';
 import type { ReactNode } from 'react';
 import { ExperimentOutlined } from '@ant-design/icons';
@@ -37,6 +38,14 @@ export default function EleDetail({
   onActiveKeyChange,
 }: Props) {
   const hasBlocks = blocks.length > 0;
+  // 切换任务时 activeKey 可能停在「上一个任务的分块」上（新任务没有这个标签页）→
+  // 回落到「主任务」，否则 Tabs 找不到对应 key 会整块空白（2026-10-13 用户反馈）
+  const blockKeys = blocks.map((block) => `block:${block.task_id}`);
+  const tabKeys = ['main', ...blockKeys];
+  const currentKey = tabKeys.includes(activeKey) ? activeKey : 'main';
+  useEffect(() => {
+    if (currentKey !== activeKey) onActiveKeyChange(currentKey);
+  }, [currentKey, activeKey, onActiveKeyChange]);
   const disabledReason = hasBlocks
     ? '已有差分电荷分块（要重做先删除旧分块）'
     : !canCreate
@@ -64,7 +73,7 @@ export default function EleDetail({
         </Tooltip>
       </div>
       <Tabs
-        activeKey={activeKey}
+        activeKey={currentKey}
         onChange={onActiveKeyChange}
         items={[
           {

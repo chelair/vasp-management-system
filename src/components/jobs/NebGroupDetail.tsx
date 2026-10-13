@@ -67,6 +67,9 @@ export default function NebGroupDetail({
         ]
       : []),
   ];
+  // 同上：切组/切任务时残留的 key 可能不在当前 items 里 → 回落到第一个可用标签页
+  const tabKeys = items.map((item) => item.key);
+  const currentKey = activeKey && tabKeys.includes(activeKey) ? activeKey : tabKeys[0];
   return (
     <div className="job-panel">
       <div className="job-detail-head">
@@ -87,7 +90,7 @@ export default function NebGroupDetail({
         )}
       </div>
       <Tabs
-        activeKey={activeKey}
+        activeKey={currentKey}
         onChange={onActiveKeyChange}
         items={items}
       />

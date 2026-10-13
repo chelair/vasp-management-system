@@ -76,6 +76,13 @@ def map_project(
                 "group": task.get("group") or None,
                 "parent_task_id": task.get("parent_task_id") or None,
                 "input_source": task.get("input_source") or None,
+                # 差分电荷分块（task_type=ele_diff，2026-10-13）：块序号/块名/该块原子/本地布局，
+                # 前端"电子结构任务页"的标签页与巡检提示都用它（漏映射会显示"分块undefined"）
+                "ele_block": task.get("ele_block"),
+                "ele_block_label": task.get("ele_block_label") or None,
+                "ele_block_atoms": task.get("ele_block_atoms") or [],
+                "diff_charge_group": task.get("diff_charge_group") or None,
+                "local_layout": task.get("local_layout") or None,
                 # 归档（关闭）：归档前状态与时间，"重新打开"按 archived_from 恢复
                 "archived_from": task.get("archived_from") or None,
                 "archived_at": task.get("archived_at") or None,

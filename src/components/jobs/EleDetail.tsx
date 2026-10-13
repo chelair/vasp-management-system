@@ -80,7 +80,7 @@ export default function EleDetail({
             key: `block:${block.task_id}`,
             label: (
               <span>
-                {block.ele_block_label || `分块${block.ele_block}`}
+                {block.ele_block_label || (block.ele_block ? `分块${block.ele_block}` : '分块')}
                 {Array.isArray(block.ele_block_atoms)
                   ? `（${block.ele_block_atoms.length} 原子）`
                   : ''}

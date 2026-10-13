@@ -149,7 +149,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `middleware/auth.py` | **认证中间件（v0.9.0）**：白名单只有 `POST /api/auth/login` 与 `GET /api/health`，`/api/**` 与 `/docs`、`/openapi.json`、`/redoc` 未登录一律 401；跳过 OPTIONS；token 取值 `Authorization: Bearer` → `X-Auth-Token` → `?token=`/Cookie（**仅 GET/HEAD**，防 CSRF）；校验后把 `user/session/token` 挂到 `request.state` 并滑动续期 14 天；**v0.9.42** 加 `_needed_scope()`（GET→read / `POST /pending-actions`→propose / 其余写→write），**只对带 `scope` 的 token 生效**（人类会话不受影响） |
 | `routers/auth.py` | **认证接口（v0.9.0）**：`login`（失败限速 5 次/15 分钟，登录写 HttpOnly Cookie 供浏览器打开 `/docs`）、`logout`（旧 token 立即失效）、`me`、`tokens` 的签发（仅 admin，可命名/设过期/吊销）；**v0.9.42** 加 `POST /api/auth/users`（建号，支持 `role=agent` + `delegate_to`）与 `scope` 参数 |
 | `pending_actions.py` + `routers/pending_actions.py` | **待确认队列（v0.9.42）**：AI 触发的 confirm 级动作先入队等人批准。`data/pending_actions.json`（原子写 + 锁），状态机 `pending → approved / failed / rejected`；入队时做归属校验；**agent 角色不能 approve/reject**；批准时复用 `automation/actions.py` 的 preflight+execute；提案/批准/驳回各写 `auth.pending-*` 审计 |
-| `ele_diff.py` | **差分电荷分块计算（v0.9.44）**：POSCAR 解析与"按原子取子集"、`plan_blocks`（≥2 块且覆盖全部原子）、`check_incar`（校验 `LCHARG=.TRUE.` / `IBRION=-1`）、`create_block_files`（建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf + pos2pot）、`build_block_task`（`task_type=ele_diff` 子任务记录）、`download_charge_files`（CHGCAR → `chgfiles/<N>.vasp`）、`diff_charge_blocks` |
+| `ele_diff.py` | **差分电荷分块计算（v0.9.44）**：POSCAR 解析与"按原子取子集"、`plan_blocks`（≥2 块且覆盖全部原子）、`check_incar`（校验 `LCHARG=.TRUE.` / `IBRION=-1` / `ISTART=0` / `ICHARG=2`）、`create_block_files`（建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf + pos2pot）、`build_block_task`（`task_type=ele_diff` 子任务记录）、`download_charge_files`（CHGCAR → `chgfiles/<N>.vasp`）、`diff_charge_blocks` |
 | `potcar.py` | **pos2pot 运行器（v0.9.44 抽出）**：把原 `/generate-potcar` 里的单次 exec 脚本（定位最新 conN → 跑 pos2pot → 解析 POTCAR 摘要）抽成 `run_pos2pot()`，支持 `use_latest_con=False`（差分电荷在主目录递归生成）；`PotcarError(kind=no_dir/not_found)` |
 | `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
@@ -259,8 +259,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - 2026-10-13（用户："完善电子结构部分的结果分析，同时接入巡检和报告生成；首先是差分电荷"）：
   **差分电荷分块计算打通"创建 → 巡检 → 归档 → 报告"**（v0.9.44）。口径按用户三条确认：
   ① 分块复用 POSCAR 页那套原子选择（点选 / Ctrl 多选 / Shift 框选），默认两块、可加到 C/D（目录 3/4）；
-  ② INCAR 来自完整结构任务，复制时**校验** `LCHARG=.TRUE.` / `IBRION=-1`（不一致就地改并回报），
-  MAGMOM 暂不动（留后续自动化）；③ 分块在 LSF 上**各自独立提交**，但数据/前端都是**附属任务**
+  ② INCAR 来自完整结构任务，复制时**校验** `LCHARG=.TRUE.` / `IBRION=-1` / `ISTART=0` / `ICHARG=2`
+  （分块从零开始算；不一致就地改并回报），MAGMOM 暂不动（留后续自动化）；
+  ③ 分块在 LSF 上**各自独立提交**，但数据/前端都是**附属任务**
   （归档跟随主任务、不计当量）。
   **实现**：新增 `backend/ele_diff.py`（POSCAR 解析/按原子取子集/`plan_blocks` 校验"≥2 块且覆盖全部原子"/
   建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS·vasp.lsf + 跑 pos2pot + CHGCAR 下载重命名）与
@@ -280,6 +281,12 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   「差分电荷计算」按钮，与自由能「频率计算」同构）与 `DiffChargeModal.tsx`（复用 `Structure3DFrame`
   的点选/框选，分块按颜色预览、支持"选中其余原子"快速把剩下的归入下一块、可加/移除分块）；
   `EleInputModal` 去掉原来灰着的"差分电荷"选项；巡检详情在频率矫正表后面同样加一张"差分电荷分块"表。
+  **补（2026-10-13，用户反馈两处）**：① 分块 INCAR 增加校验 `ISTART=0` / `ICHARG=2`
+  （分块从零开始算，不读主任务的波函数/电荷密度）——代码已加，用户已建的 `FS_Kaolin/ele/model2`
+  分块B（`ISTART 1→0`、`ICHARG 0→2`）已用 `/upload-incar` 同步到远端（分块A 本来就对）；
+  ② 作业管理里显示"分块undefined"：`mappers.map_task` 漏映射 `ele_block / ele_block_label /
+  ele_block_atoms / diff_charge_group / local_layout`（库里数据是全的，只是没透出给前端）→ 已补，
+  前端标签回显「分块A（56 原子）」，并对缺失值加了兜底。
   **实测（隔离数据目录 + mock SSH）**：两块创建（16 + 115 原子）→ 本地 `diffcharge_files/{1,2}/POSCAR`
   元素数量正确、远端 `1|2/{POSCAR,INCAR,KPOINTS,vasp.lsf}` 齐备、`LCHARG .FALSE.→.TRUE.` 已修、
   MAGMOM 原样；重复创建 409、漏原子 400、非 ele 任务 400；归档→两块跟随归档、重开→跟随恢复；

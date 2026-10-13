@@ -22,8 +22,8 @@
 - POSCAR 来自**主任务的 POSCAR**（电子结构主任务是静态计算，不用 CONTCAR）；
 - 分块由用户在作业管理里框选原子指定（复用 POSCAR 页的选择逻辑），各块不重叠且合起来 = 全部原子；
 - 每个分块只保留自己那部分原子（晶胞不变、元素顺序沿用父结构、重新统计元素数量）；
-- INCAR 复制主任务的 INCAR 并**校验关键参数**：`LCHARG = .TRUE.`、`IBRION = -1`
-  （不一致就地改并回报；MAGMOM 暂不改，留后续自动化）；
+- INCAR 复制主任务的 INCAR 并**校验关键参数**：`LCHARG = .TRUE.`、`IBRION = -1`、
+  `ISTART = 0`、`ICHARG = 2`（不一致就地改并回报；MAGMOM 暂不改，留后续自动化）；
 - KPOINTS / vasp.lsf 直接复制主任务的；
 - POTCAR 用远端 `pos2pot`（递归）生成 —— 在主任务目录跑一次，主结构与各分块一起出。
 """
@@ -49,8 +49,10 @@ from task_paths import (
     task_remote_dir,
 )
 
-#: 差分电荷必须校验的 INCAR 关键参数（不一致就改，并在返回里说明）
-REQUIRED_INCAR = {"LCHARG": ".TRUE.", "IBRION": -1}
+#: 差分电荷必须校验的 INCAR 关键参数（不一致就改，并在返回里说明）。
+#: 分块**从零开始算**（不读主任务的波函数/电荷密度）：ISTART=0 + ICHARG=2；
+#: 静态单点 IBRION=-1；同时要写 CHGCAR 供后续差分（LCHARG=.TRUE.）。
+REQUIRED_INCAR = {"LCHARG": ".TRUE.", "IBRION": -1, "ISTART": 0, "ICHARG": 2}
 #: 本地 CHGCAR 目录名（下载重命名后的 .vasp）
 CHG_DIR = "chgfiles"
 #: 本地图片目录名（VESTA 处理数据图）
@@ -280,8 +282,28 @@ def diff_charge_group_id(ele_task: Dict[str, Any]) -> str:
 # ------------------------------------------------------------------ INCAR
 
 
+def count_magmom_entries(incar_text: str) -> Optional[int]:
+    """MAGMOM 的条目数（`4*3 2*-3 32*0` → 38）；没有 MAGMOM 返回 None。"""
+    match = re.search(r"(?im)^[ \t]*MAGMOM[ \t]*=[ \t]*(.+)$", incar_text or "")
+    if not match:
+        return None
+    total = 0
+    for token in match.group(1).split():
+        head, sep, _ = token.partition("*")
+        if sep:
+            try:
+                total += int(head)
+            except ValueError:
+                return None
+        else:
+            total += 1
+    return total
+
+
 def check_incar(incar_text: str, extra: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, str], List[str]]:
-    """复制 INCAR 时校验关键参数：`LCHARG = .TRUE.`、`IBRION = -1`（不一致就地改）。
+    """复制 INCAR 时校验关键参数（不一致就地改）：
+
+    `LCHARG = .TRUE.`、`IBRION = -1`、`ISTART = 0`、`ICHARG = 2`。
 
     返回 `(新文本, 改了什么, 警告)`。MAGMOM 不动（用户口径：先直接复制，后续再做自动化）。
     """
@@ -382,6 +404,17 @@ def create_block_files(
     incar_text, fixes, warnings = check_incar(
         read_main_incar(server, project, task), incar_params
     )
+    # MAGMOM 目前是**原样复制**（用户口径：留后续做自动化），但条目数与分块原子数不一致时
+    # VASP 会直接报错，这里只**提示**不改动，避免分块白跑一轮。
+    magmom_count = count_magmom_entries(incar_text)
+    if magmom_count is not None:
+        for item in plan:
+            if magmom_count != len(item["atoms"]):
+                warnings.append(
+                    f"{item['label']}：MAGMOM 有 {magmom_count} 个条目，但该分块只有 "
+                    f"{len(item['atoms'])} 个原子（MAGMOM 暂按『原样复制』处理，"
+                    "请手动改成对应的每原子初始磁矩，否则 VASP 会报错）"
+                )
 
     remote_cmds: List[str] = []
     written: List[Dict[str, Any]] = []

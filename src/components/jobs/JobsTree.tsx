@@ -24,6 +24,13 @@ import {
 import type { TaskCheckSummary } from '../../types';
 import { formatStructureLabel } from '../../utils/project';
 
+/**
+ * 树节点（在 antd `DataNode` 上多带一个标记）：
+ * `allArchived` = 该节点及其所有子任务**全部已归档** → 默认折叠（用户仍可手动展开，
+ * 2026-10-13 用户要求："一个组或该类型任务全部归档，则默认折叠"）。
+ */
+type JobNode = DataNode & { allArchived?: boolean };
+
 interface Props {
   projects: Project[];
   selectedProjectId: string | null;
@@ -70,16 +77,17 @@ function taskTitle(t: Task) {
   );
 }
 
-function taskNode(t: Task): DataNode {
+function taskNode(t: Task): JobNode {
   return {
     key: `t:${t.task_id}`,
     icon: <FileOutlined style={{ color: '#9aa7b8' }} />,
     title: taskTitle(t),
     isLeaf: true,
+    allArchived: t.status === 'archived',
   };
 }
 
-function freeEnergyChildren(tasks: Task[]): DataNode[] {
+function freeEnergyChildren(tasks: Task[]): JobNode[] {
   const byLabel = new Map<string, Task[]>();
   for (const t of tasks) {
     const label = t.group?.structure_label ?? t.model_name;
@@ -111,6 +119,8 @@ function freeEnergyChildren(tasks: Task[]): DataNode[] {
         </span>
       ),
       isLeaf: true,
+      // 结构节点 = opt + frac 两个任务：两个都归档才算"全归档"
+      allArchived: members.every((t) => t.status === 'archived'),
     };
   });
 }
@@ -120,7 +130,7 @@ function buildProjectChildren(
   onNewTask: (projectId: string, type: 'opt' | 'ele') => void,
   onNewGroup: (projectId: string, kind: 'free_energy' | 'neb') => void,
   onAddStructure: (projectId: string, groupId: string) => void,
-): DataNode[] {
+): JobNode[] {
   const groups = new Map<string, Task[]>();
   const byCategory: Record<string, Task[]> = { opt: [], frac: [], neb: [], ele: [] };
   for (const t of p.tasks) {
@@ -132,7 +142,10 @@ function buildProjectChildren(
       byCategory[t.task_type]?.push(t);
     }
   }
-  const children: DataNode[] = [];
+  const children: JobNode[] = [];
+  /** 子节点全部归档（且非空）→ 这一层默认折叠 */
+  const allArchived = (nodes: JobNode[]) =>
+    nodes.length > 0 && nodes.every((node) => node.allArchived === true);
 
   // 结构优化（独立 opt）
   const optNodes = sortTasksByStatus(byCategory.opt).map(taskNode);
@@ -155,14 +168,16 @@ function buildProjectChildren(
       </span>
     ),
     children: optNodes,
+    allArchived: allArchived(optNodes),
   });
 
   // 自由能（组 + 独立 frac）
-  const feNodes: DataNode[] = [];
+  const feNodes: JobNode[] = [];
   for (const [groupId, tasks] of groups) {
     if (tasks[0].group?.group_type !== 'free_energy') continue;
     const groupStatus = pickGroupStatus(tasks);
     const groupCheck = pickGroupCheck(tasks);
+    const structureNodes = freeEnergyChildren(tasks);
     feNodes.push({
       key: `g:${p.id}:${groupId}`,
       icon: <ApartmentOutlined style={{ color: 'var(--color-secondary)' }} />,
@@ -183,7 +198,9 @@ function buildProjectChildren(
           </span>
         </span>
       ),
-      children: freeEnergyChildren(tasks),
+      children: structureNodes,
+      // 组内结构（opt + frac）全部归档 → 该组默认折叠
+      allArchived: structureNodes.length > 0 && structureNodes.every((n) => n.allArchived === true),
     });
   }
   feNodes.push(...sortTasksByStatus(byCategory.frac).map(taskNode));
@@ -206,14 +223,27 @@ function buildProjectChildren(
       </span>
     ),
     children: feNodes,
+    allArchived: allArchived(feNodes),
   });
 
   // NEB（组 + 独立 neb）
-  const nebNodes: DataNode[] = [];
+  const nebNodes: JobNode[] = [];
   for (const [groupId, tasks] of groups) {
     if (tasks[0].group?.group_type !== 'neb') continue;
     const groupStatus = pickGroupStatus(tasks);
     const groupCheck = pickGroupCheck(tasks);
+    const memberNodes = sortTasksByStatus(tasks).map((t) => ({
+      ...taskNode(t),
+      title: (
+        <span className="job-tree__task">
+          <span className="job-tree__task-name">
+            {GROUP_ROLE_LABELS[t.group?.group_role as GroupMeta['group_role']] ??
+              TASK_TYPE_LABELS[t.task_type]}
+          </span>
+          <StatusTag status={t.status} />
+        </span>
+      ),
+    }));
     nebNodes.push({
       key: `g:${p.id}:${groupId}`,
       icon: <ThunderboltOutlined style={{ color: '#7b61d6' }} />,
@@ -224,18 +254,8 @@ function buildProjectChildren(
           {groupStatus && <StatusTag status={groupStatus} />}
         </span>
       ),
-      children: sortTasksByStatus(tasks).map((t) => ({
-        ...taskNode(t),
-        title: (
-          <span className="job-tree__task">
-            <span className="job-tree__task-name">
-              {GROUP_ROLE_LABELS[t.group?.group_role as GroupMeta['group_role']] ??
-                TASK_TYPE_LABELS[t.task_type]}
-            </span>
-            <StatusTag status={t.status} />
-          </span>
-        ),
-      })),
+      children: memberNodes,
+      allArchived: allArchived(memberNodes),
     });
   }
   nebNodes.push(...sortTasksByStatus(byCategory.neb).map(taskNode));
@@ -258,9 +278,11 @@ function buildProjectChildren(
       </span>
     ),
     children: nebNodes,
+    allArchived: allArchived(nebNodes),
   });
 
   // 电子结构
+  const eleNodes = sortTasksByStatus(byCategory.ele).map(taskNode);
   children.push({
     key: `c:${p.id}:ele`,
     icon: <ExperimentOutlined style={{ color: '#2c9da8' }} />,
@@ -279,7 +301,8 @@ function buildProjectChildren(
         </span>
       </span>
     ),
-    children: sortTasksByStatus(byCategory.ele).map(taskNode),
+    children: eleNodes,
+    allArchived: allArchived(eleNodes),
   });
   return children;
 }
@@ -357,31 +380,63 @@ export default function JobsTree({
     children: buildProjectChildren(p, onNewTask, onNewGroup, onAddStructure),
   }));
 
-  const selectedKeys = selectedTaskId
-    ? [`t:${selectedTaskId}`]
-    : selectedStructureKey
-      ? [selectedStructureKey]
-      : selectedNebGroupKey
-        ? [selectedNebGroupKey]
-        : selectedProjectId
-          ? [`p:${selectedProjectId}`]
-          : [];
+  /**
+   * 选中项对应的树节点 key。
+   *
+   * 注意**自由能组内的任务在树里不是独立节点**（opt + frac 合并成一个 `s:<组>:<结构>` 结构节点），
+   * 所以外部（总览点任务 / 巡检跳转）选中组内任务时要把任务 id 映射回结构节点，
+   * 否则既不高亮、也定位不到（2026-10-13 用户反馈）。
+   */
+  const focusKey = useMemo(() => {
+    if (selectedTaskId) {
+      const task = orderedProjects
+        .flatMap((p) => p.tasks)
+        .find((t) => t.task_id === selectedTaskId);
+      if (task?.group?.group_type === 'free_energy') {
+        const label = task.group.structure_label ?? task.model_name;
+        return `s:${task.group.group_id}:${label}`;
+      }
+      return `t:${selectedTaskId}`;
+    }
+    if (selectedStructureKey) return selectedStructureKey;
+    if (selectedNebGroupKey) return selectedNebGroupKey;
+    if (selectedProjectId) return `p:${selectedProjectId}`;
+    return '';
+  }, [selectedTaskId, selectedStructureKey, selectedNebGroupKey, selectedProjectId, orderedProjects]);
+  const selectedKeys = focusKey ? [focusKey] : [];
 
   // 已关闭项目默认折叠（不展开其子树），其余项目保持展开
   const closedProjectKeys = new Set(
     orderedProjects.filter((p) => p.closed).map((p) => `p:${p.id}`),
   );
-  const collectKeys = (nodes: DataNode[], underClosed = false): string[] =>
+  /**
+   * 收集"默认展开"的节点 key：跳过已关闭项目的子树，以及**全部已归档**的组/类型
+   * （用户可以手动展开，但默认折叠 —— 2026-10-13 用户要求）。
+   */
+  const collectKeys = (nodes: JobNode[], underCollapsed = false): string[] =>
     nodes.flatMap((node) => {
       const key = String(node.key);
-      const closedHere = underClosed || closedProjectKeys.has(key);
-      const own = closedHere ? [] : [key];
-      const children = (node.children as DataNode[] | undefined) ?? [];
-      return [...own, ...collectKeys(children, closedHere)];
+      const collapsedHere =
+        underCollapsed || closedProjectKeys.has(key) || node.allArchived === true;
+      const own = collapsedHere ? [] : [key];
+      const children = (node.children as JobNode[] | undefined) ?? [];
+      return [...own, ...collectKeys(children, collapsedHere)];
     });
+  /** 树里**存在**的所有 key（用于刷新时判断"这个 key 还在不在"） */
+  const collectExistingKeys = (nodes: JobNode[]): string[] =>
+    nodes.flatMap((node) => [
+      String(node.key),
+      ...collectExistingKeys((node.children as JobNode[] | undefined) ?? []),
+    ]);
   const allExpandableKeys = useMemo(
     () => collectKeys(treeData),
     // treeData 由 projects 派生，随 projects 变化重算即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projects],
+  );
+  /** 树上存在的全部 key：刷新时只按它剔除"已经不存在"的 key（见下面的展开状态处理） */
+  const existingKeys = useMemo(
+    () => new Set(collectExistingKeys(treeData)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projects],
   );
@@ -400,7 +455,10 @@ export default function JobsTree({
   useEffect(() => {
     const known = knownKeysRef.current;
     const fresh = allExpandableKeys.filter((key) => !known.has(key));
-    const valid = new Set(allExpandableKeys);
+    // 有效性按"节点是否还在树上"判断 —— 不能只用默认展开集合：
+    // 用户手动展开了"全归档"的组、或从总览跳进来时自动展开了某条路径，
+    // 这些 key 不在默认集合里，但必须保留（否则一次刷新就把它们折回去）。
+    const valid = existingKeys;
     knownKeysRef.current = valid;
     setExpandedKeys((prev) => {
       const kept = prev.filter((key) => valid.has(key));
@@ -412,8 +470,56 @@ export default function JobsTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allExpandableKeys]);
 
+  /** 从总览/巡检点任务跳进来时：展开这个节点所在路径，并把它滚到视野中间。 */
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const focusedKeyRef = useRef<string>('');
+  const skipScrollRef = useRef(false);
+
+  const ancestorKeysOf = useMemo(() => {
+    const build = (target: string): string[] => {
+      const walk = (nodes: JobNode[], trail: string[]): string[] | null => {
+        for (const node of nodes) {
+          const key = String(node.key);
+          if (key === target) return trail;
+          const children = (node.children as JobNode[] | undefined) ?? [];
+          if (!children.length) continue;
+          const found = walk(children, [...trail, key]);
+          if (found) return found;
+        }
+        return null;
+      };
+      return walk(treeData, []) ?? [];
+    };
+    return build;
+  }, [treeData]);
+
+  useEffect(() => {
+    if (!focusKey || focusedKeyRef.current === focusKey) return;
+    focusedKeyRef.current = focusKey;
+    const fromTree = skipScrollRef.current; // 用户自己在树上点选的：已在视野里，不滚
+    skipScrollRef.current = false;
+    // 找到这条路径上的可展开节点：
+    // - 归属"全归档"的组/类型 → 平时折叠着，这里临时展开（点了任务就该看得到）
+    // - 归属已关闭项目 → 同理（原来一律折叠，跳进来就会"找不到任务"）
+    const ancestors = ancestorKeysOf(focusKey);
+    if (ancestors.length) {
+      setExpandedKeys((prev) => {
+        const next = Array.from(new Set([...prev, ...ancestors]));
+        return next.length === prev.length ? prev : next;
+      });
+    }
+    if (fromTree) return;
+    // 等展开后的 DOM 落地再滚动（antd 树没有虚拟滚动，直接查选中的那一行）
+    const timer = window.setTimeout(() => {
+      const node = wrapRef.current?.querySelector('.ant-tree-treenode-selected');
+      node?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusKey, ancestorKeysOf]);
+
   return (
-    <div className="job-tree">
+    <div className="job-tree" ref={wrapRef}>
       <Tree
         showIcon
         blockNode
@@ -423,6 +529,7 @@ export default function JobsTree({
         onExpand={(keys) => setExpandedKeys(keys.map(String))}
         onSelect={(_keys, info) => {
           const key = String(info.node.key);
+          skipScrollRef.current = true;
           if (key.startsWith('t:')) onSelectTask(key.slice(2));
           else if (key.startsWith('s:')) onSelectStructure(key.slice(2));
           else if (key.startsWith('g:')) onSelectGroup(key.slice(2));

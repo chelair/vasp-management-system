@@ -282,7 +282,28 @@ export default function Jobs() {
         if (initialTask) {
           const owner = ps.find((p) => p.tasks.some((t) => t.task_id === initialTask.task_id));
           setSelectedProjectId(owner?.id ?? ps[0]?.id ?? null);
-          setSelectedTaskId(initialTask.task_id);
+          // 组内任务：和"在树里点该任务"一个效果 —— NEB 打开组页面、自由能打开结构页面，
+          // 否则左侧树定位不到（组内成员在树里不是一个独立节点，2026-10-13）
+          const gtype = initialTask.group?.group_type;
+          if (gtype === 'neb' && owner) {
+            setNebActiveTab(
+              initialTask.group?.group_role === 'final_opt'
+                ? 'fs'
+                : initialTask.group?.group_role === 'neb_images'
+                  ? 'neb'
+                  : 'is',
+            );
+            setSelectedTaskId(null);
+            setSelectedStructureKey(null);
+            setSelectedNebGroupKey(`g:${owner.id}:${initialTask.group?.group_id}`);
+          } else if (gtype === 'free_energy') {
+            const label = initialTask.group?.structure_label ?? initialTask.model_name;
+            setSelectedTaskId(null);
+            setSelectedNebGroupKey(null);
+            setSelectedStructureKey(`s:${initialTask.group?.group_id}:${label}`);
+          } else {
+            setSelectedTaskId(initialTask.task_id);
+          }
         } else if (ps.length > 0) {
           setSelectedProjectId(ps[0].id);
           setSelectedTaskId(ps[0].tasks[0]?.task_id ?? null);

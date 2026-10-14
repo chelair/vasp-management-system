@@ -44,6 +44,13 @@ interface Props {
 /** 参与参数同步的文件（POTCAR / submit.sh 不在同步范围，只显示本地就绪状态） */
 const SYNCED_FILES = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR'];
 const FILE_ORDER = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR', 'POTCAR', 'vasp.lsf'];
+/** 状态配色（一处定义，图标/文字/边框都跟它走） */
+const STATE_COLOR = {
+  fresh: 'var(--color-success)',
+  stale: '#c98a1f',
+  pending: '#e8a33d',
+  muted: '#9aa7b8',
+} as const;
 
 export default function TaskOverview({
   task,
@@ -69,18 +76,60 @@ export default function TaskOverview({
     (input?.changes ?? []).filter((c) => !c.applied_at).map((c) => c.file),
   );
 
-  /** 单个文件的同步状态：最新（绿）/ 有修改待提交（高亮）/ 过时（黄）/ 未同步（灰） */
+  /**
+   * 单个文件的展示状态（**2026-10-14 统一口径**，用户："这几个的显示逻辑改一下"）。
+   *
+   * 改之前有两种毛病：① 「本地没有」这一种情况在同步文件上叫「未同步」、在 POTCAR/vasp.lsf 上叫
+   * 「未生成」，文案不统一；② 图标颜色只有不同步文件那条分支显式给了灰，同步文件那条继承成深色
+   * ——同样是"没有这份文件"，CONTCAR 是黑 ⊖、POTCAR 是灰 ⊖。
+   *
+   * 现在按 **远端最新目录有没有 × 本地有没有** 判：
+   *   远端有 + 本地有 → 最新（绿）        ｜ 草案未生效 → 有修改待提交（橙）
+   *   远端有 + 本地无 → 待同步（灰）      ｜ 远端无 + 本地有 → 过时（黄）
+   *   远端无 + 本地无 → 未生成（灰）      ｜ 不同步文件：本地有 → 已生成（绿）/ 无 → 未生成（灰）
+   * 每个状态都带 tooltip 说明"下一步该做什么"。
+   */
   const syncStateOf = (name: string) => {
     if (pendingFiles.has(name as 'INCAR' | 'KPOINTS')) {
-      return { key: 'pending', label: '有修改待提交', icon: <EditOutlined /> };
+      return {
+        key: 'pending',
+        label: '有修改待提交',
+        icon: <EditOutlined style={{ color: STATE_COLOR.pending }} />,
+        tip: '参数已改、还没生效：下次提交/续算时写入远端（不想改可撤销）',
+      };
     }
-    if (input?.files?.[name]) {
-      return { key: 'fresh', label: '最新', icon: <CheckCircleFilled /> };
+    const remoteHas = Boolean(input?.files?.[name]);
+    const localHas = Boolean(workspace.files[name]);
+    if (remoteHas && localHas) {
+      return {
+        key: 'fresh',
+        label: '最新',
+        icon: <CheckCircleFilled style={{ color: STATE_COLOR.fresh }} />,
+        tip: '本地与远端最新计算目录一致',
+      };
     }
-    if (workspace.files[name]) {
-      return { key: 'stale', label: '过时', icon: <MinusCircleFilled /> };
+    if (remoteHas) {
+      return {
+        key: 'none',
+        label: '待同步',
+        icon: <MinusCircleFilled style={{ color: STATE_COLOR.muted }} />,
+        tip: '远端最新目录里有这份文件、本地还没有：点「同步最新参数」拉回本地',
+      };
     }
-    return { key: 'none', label: '未同步', icon: <MinusCircleFilled /> };
+    if (localHas) {
+      return {
+        key: 'stale',
+        label: '过时',
+        icon: <MinusCircleFilled style={{ color: STATE_COLOR.stale }} />,
+        tip: '本地有、远端最新计算目录里没有（远端换过计算目录或这份文件已被替换）',
+      };
+    }
+    return {
+      key: 'none',
+      label: '未生成',
+      icon: <MinusCircleFilled style={{ color: STATE_COLOR.muted }} />,
+      tip: '远端和本地都还没有这份文件（还没生成输入文件 / 还没算出来）',
+    };
   };
 
   /** 归档确认文案：自由能主任务会连带归档频率矫正，未完成时特别提醒 */
@@ -293,36 +342,43 @@ export default function TaskOverview({
         <div className="job-files">
           {FILE_ORDER.map((name) => {
             const synced = SYNCED_FILES.includes(name);
-            const state = synced ? syncStateOf(name) : null;
             const localReady = !!workspace.files[name];
-            const stateKey = synced ? state!.key : localReady ? 'fresh' : 'none';
-            const stateLabel = synced ? state!.label : localReady ? '本地已就绪' : '未生成';
+            // 同步文件：远端×本地判状态；不同步文件（POTCAR / vasp.lsf）：只看本地有没有生成
+            const state = synced
+              ? syncStateOf(name)
+              : {
+                  key: localReady ? 'fresh' : 'none',
+                  label: localReady ? '已生成' : '未生成',
+                  icon: localReady ? (
+                    <CheckCircleFilled style={{ color: STATE_COLOR.fresh }} />
+                  ) : (
+                    <MinusCircleFilled style={{ color: STATE_COLOR.muted }} />
+                  ),
+                  tip: localReady
+                    ? '已生成（这份文件不走「同步最新参数」覆盖逻辑）'
+                    : '还没生成：POTCAR 在 POSCAR 页生成、vasp.lsf 在提交脚本页生成',
+                };
             return (
-              <div key={name} className={`job-file job-file--${stateKey}`}>
-                {synced ? (
-                  state!.icon
-                ) : localReady ? (
-                  <CheckCircleFilled style={{ color: 'var(--color-success)' }} />
-                ) : (
-                  <MinusCircleFilled style={{ color: 'var(--color-text-muted)' }} />
-                )}
-                <span className="job-file__name">{name}</span>
-                <span className="job-file__state">
-                  {stateLabel}
-                  {!synced && (
-                    <Tooltip title="不参与参数同步（POTCAR 由伪势模块生成，vasp.lsf 由提交脚本页生成并写入远端）">
-                      <span className="job-file__hint"> · 不参与同步</span>
-                    </Tooltip>
-                  )}
-                </span>
-              </div>
+              <Tooltip key={name} title={state.tip}>
+                <div className={`job-file job-file--${state.key}`}>
+                  {state.icon}
+                  <span className="job-file__name">{name}</span>
+                  <span className="job-file__state">
+                    {state.label}
+                    {!synced && <span className="job-file__hint"> · 不参与同步</span>}
+                  </span>
+                </div>
+              </Tooltip>
             );
           })}
         </div>
         <div className="preview-note" style={{ marginTop: 10 }}>
-          <b style={{ color: 'var(--color-success)' }}>最新</b> = 已同步远端最新计算目录；
-          <b style={{ color: '#b8761f' }}>有修改待提交</b> = 参数已改，等下次续算写入；
-          <b style={{ color: 'var(--color-text-muted)' }}>未同步</b> = 本地还没有这份文件。
+          <b style={{ color: STATE_COLOR.fresh }}>最新</b> = 本地与远端最新计算目录一致；
+          <b style={{ color: STATE_COLOR.pending }}>有修改待提交</b> = 参数已改，等下次续算写入；
+          <b style={{ color: STATE_COLOR.stale }}>过时</b> = 本地有、远端最新目录里没有；
+          <b style={{ color: STATE_COLOR.muted }}>待同步</b> = 远端有、本地还没有（点下面按钮拉回）；
+          <b style={{ color: STATE_COLOR.muted }}>未生成</b> = 远端和本地都还没有。
+          POTCAR / vasp.lsf 只显示「已生成 / 未生成」，不参与同步覆盖。
           点「同步最新参数」会用远端最新目录覆盖本地文件（有未生效改动的文件跳过）。
           归档时后台会静默拉取该次计算的 OUTCAR / OSZICAR。
         </div>

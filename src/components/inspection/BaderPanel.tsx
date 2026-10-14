@@ -13,17 +13,32 @@
  * 中断补偿同差分电荷：远端已有 ACF.dat 就只回传；本地已有就只解析，不重跑。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, Descriptions, Empty, Popconfirm, Spin, Table, Tag, Tooltip } from 'antd';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  App,
+  Button,
+  Descriptions,
+  Empty,
+  Popconfirm,
+  Segmented,
+  Spin,
+  Table,
+  Tag,
+  Tooltip,
+} from 'antd';
 import { DeleteOutlined, ExperimentOutlined, ReloadOutlined } from '@ant-design/icons';
 
 import {
   clearBader,
   fetchBaderData,
   fetchBaderStatus,
+  fetchTaskInput,
   triggerBader,
 } from '../../api/jobs';
+import { parseCif } from '../../utils/structure3d';
 import type { BaderAtom, BaderData, BaderStatus } from '../../types';
+import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 
 interface Props {
   taskId: string;
@@ -52,6 +67,13 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  /** 结构预览用的结构（含 POSCAR/CONTCAR 的 CIF；ele 任务的巡检详情里没有 analysis，走 /input） */
+  const [cifState, setCifState] = useState<{ poscar: string | null; contcar: string | null }>({
+    poscar: null,
+    contcar: null,
+  });
+  const [structureView, setStructureView] = useState<'contcar' | 'poscar'>('contcar');
+  const [selectedAtoms, setSelectedAtoms] = useState<AtomRef[]>([]);
   const pollRef = useRef<number | null>(null);
   const aliveRef = useRef(true);
 
@@ -69,6 +91,23 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
     } catch {
       if (aliveRef.current) setData(null);
     }
+  }, [taskId]);
+
+  /** 结构预览：本地 POSCAR/CONTCAR 的 CIF（ele 详情没有 analysis，这里走 /input，纯本地读文件） */
+  useEffect(() => {
+    let alive = true;
+    fetchTaskInput(taskId)
+      .then((state) => {
+        if (alive) {
+          setCifState({ poscar: state.poscar_cif ?? null, contcar: state.contcar_cif ?? null });
+        }
+      })
+      .catch(() => {
+        /* 取不到结构就不显示预览，不影响 Bader 结果本身 */
+      });
+    return () => {
+      alive = false;
+    };
   }, [taskId]);
 
   const load = useCallback(
@@ -161,6 +200,35 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
   const hasLocal = Boolean(status?.local?.has_acf);
   const remote = status?.remote;
   const stateLabel = STATE_LABELS[String(remote?.state || '')] || '';
+  const activeView: 'contcar' | 'poscar' =
+    structureView === 'contcar' && !cifState.contcar ? 'poscar' : structureView;
+  const activeCif = (activeView === 'contcar' ? cifState.contcar : cifState.poscar) ?? null;
+  /** 结构预览里的 CIF 原子数（用来确认与 ACF.dat 是同一份结构） */
+  const cifAtoms = useMemo(() => {
+    if (!activeCif) return 0;
+    try {
+      return parseCif(activeCif)?.atoms.length ?? 0;
+    } catch {
+      return 0;
+    }
+  }, [activeCif]);
+  /**
+   * 逐原子读数（点原子看 Bader 电荷）。**坐标口径**：ACF.dat 的行序 = POSCAR 原子序（1 起），
+   * 而 3D 框按 CIF 下标（0 起）取值 → 这里做 -1 换算；原子数对不上就整块不挂（避免错位）。
+   */
+  const atomReadouts = useMemo(() => {
+    if (!data || !activeCif) return null;
+    if (cifAtoms && cifAtoms !== data.n_atoms) return null;
+    const map: Record<number, string> = {};
+    for (const atom of data.atoms) {
+      const parts = [`q ${atom.charge.toFixed(6)} e`];
+      if (atom.min_dist != null) parts.push(`dmin ${atom.min_dist.toFixed(3)} Å`);
+      if (atom.atomic_vol != null) parts.push(`V ${atom.atomic_vol.toFixed(2)} Å³`);
+      map[atom.index - 1] = parts.join('  ·  ');
+    }
+    return map;
+  }, [data, activeCif, cifAtoms]);
+  const atomCountMismatch = Boolean(data && activeCif && !atomReadouts);
   const result = (status?.result || (data?.meta?.result as Record<string, unknown>) || {}) as Record<
     string,
     unknown
@@ -296,6 +364,60 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
               </span>
             )}
           </div>
+          <div className="structure-panel__section-title">结构预览 · 逐原子 Bader 电荷</div>
+          {activeCif ? (
+            <>
+              <Structure3DFrame
+                cif={activeCif}
+                height={420}
+                selected={selectedAtoms}
+                atomReadouts={atomReadouts}
+                atomReadoutTitle="选中原子 · Bader 电荷"
+                showSelectedCoords
+                onClickAtom={(atom, additive) =>
+                  setSelectedAtoms((prev) => {
+                    if (!additive) return [atom];
+                    const exists = prev.some((x) => x.index === atom.index);
+                    return exists
+                      ? prev.filter((x) => x.index !== atom.index)
+                      : [...prev, atom];
+                  })
+                }
+                onBoxSelect={(atoms, additive) =>
+                  setSelectedAtoms((prev) => {
+                    if (!additive) return atoms;
+                    const seen = new Set(prev.map((x) => x.index));
+                    return [...prev, ...atoms.filter((x) => !seen.has(x.index))];
+                  })
+                }
+                onClearSelection={() => setSelectedAtoms([])}
+                toolbarExtra={
+                  cifState.poscar && cifState.contcar ? (
+                    <Segmented
+                      size="small"
+                      value={activeView}
+                      onChange={(v) => setStructureView(v as 'contcar' | 'poscar')}
+                      options={[
+                        { label: '优化后（CONTCAR）', value: 'contcar' },
+                        { label: '初始（POSCAR）', value: 'poscar' },
+                      ]}
+                    />
+                  ) : null
+                }
+              />
+              <p className="preview-note" style={{ marginTop: 6, marginBottom: 10 }}>
+                在结构上<b>点原子</b>（或 Ctrl 多选 / Shift 框选）看它的 Bader 电荷；当前
+                <b>只显示数值、不着色</b>（按元素配色）。按数值着色、按元素分组统计属于分析链路，下一轮做。
+                {atomCountMismatch
+                  ? ' ⚠ 结构原子数与 ACF.dat 对不上，暂不挂电荷读数（先确认两边是同一份结构）。'
+                  : ''}
+              </p>
+            </>
+          ) : (
+            <p className="preview-note" style={{ marginBottom: 10 }}>
+              本地还没有可预览的结构（POSCAR/CONTCAR 未同步到本地），只能看下面的表。
+            </p>
+          )}
           <Table<BaderAtom>
             size="small"
             rowKey="index"

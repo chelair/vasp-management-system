@@ -383,6 +383,10 @@ DELETE /api/jobs/tasks/{task_id}/bader           # 清除本地 ACF.dat / meta�
 - **审计**：`bader-analyze` / `bader-clear`；链路日志 `data/bader.log`。
 - **还没做（分析链路，下一轮）**：净电荷 `Δq = ZVAL − Bader 电荷`（要读 POTCAR 的 ZVAL）、
   按元素/原子分组统计、图表、写进报告 —— 本轮的产出就是**原始 Bader 电荷表**。
+- **前端**：Bader 标签页里带一个**结构预览框**（v0.9.53，结构取 `/jobs/tasks/{id}/input` 的
+  `poscar_cif`/`contcar_cif`）：点原子（Ctrl 多选 / Shift 框选）在左上角看该原子的
+  `Bader 电荷 / dmin / 原子体积` —— **只显示读数、暂不着色**（按元素配色）；
+  原子序按 `ACF.dat` 行序（1 起）与 CIF 下标（0 起）做换算，并先比对两边原子数，不一致就不挂读数。
 
 #### ⑤ NEB 创建计算文件
 

@@ -46,6 +46,14 @@ interface Props {
    * **显示受力而不是分数坐标**；没传则维持原来的坐标显示。
    */
   atomForces?: Record<number, AtomForce> | null;
+  /**
+   * 逐原子自定义读数（键 = **CIF 原子下标，0 起**；如 Bader 电荷）。
+   * 与 `atomForces` 同一个位置：传了它（且没传受力）时，"选中原子"面板显示这个读数而不是分数坐标。
+   * **只改读数、不改配色** —— 想按数值着色再另外传 `atomColors`。
+   */
+  atomReadouts?: Record<number, string> | null;
+  /** 读数模式下面板标题（默认「选中原子」） */
+  atomReadoutTitle?: string;
   /** 3Dmol viewer 就绪回调（创建后给出 viewer，销毁/切换时给 null）——供外部同步视角用 */
   onViewerReady?: (viewer: any | null) => void;
   /** 追加到工具栏末尾的自定义控件（如 NEB 的「同步旋转」开关） */
@@ -85,6 +93,8 @@ export default function Structure3DFrame({
   toolbarExtra,
   atomColors,
   atomForces,
+  atomReadouts,
+  atomReadoutTitle,
 }: Props) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
@@ -184,6 +194,8 @@ export default function Structure3DFrame({
    * 序号排序）；**打开「查看原子受力」时改为显示该原子的受力**（Fx Fy Fz |F|，eV/Å）。
    */
   const forceMode = Boolean(atomForces);
+  /** 读数模式（如 Bader 电荷）：只换"选中原子"面板显示的内容，不动配色 */
+  const readoutMode = !forceMode && Boolean(atomReadouts);
   const selectedCoords = useMemo(() => {
     if (!showSelectedCoords || !structure) return [];
     return [...selected]
@@ -198,6 +210,8 @@ export default function Structure3DFrame({
           text =
             `Fx ${num(force.fx)}  Fy ${num(force.fy)}  Fz ${num(force.fz)}` +
             `  |F| ${mag.toFixed(4)}${force.fixed ? '  · 固定' : ''}`;
+        } else if (atomReadouts?.[atom.index]) {
+          text = atomReadouts[atom.index];
         } else if (parsed) {
           text = [formatCoord(parsed.fx), formatCoord(parsed.fy), formatCoord(parsed.fz)].join('  ');
         } else {
@@ -209,7 +223,7 @@ export default function Structure3DFrame({
           text,
         };
       });
-  }, [showSelectedCoords, structure, selected, atomForces]);
+  }, [showSelectedCoords, structure, selected, atomForces, atomReadouts]);
 
   /** 每个元素一套球棍/空间填充样式 */
   function elementStyle(element: string, s: number, ball: boolean) {
@@ -586,11 +600,19 @@ export default function Structure3DFrame({
           )}
           {shiftHeld && !band && <div className="s3d-editor__band-hint">按住拖动框选原子</div>}
         </div>
-        {/* 选中原子信息（灰色小字，不拦截鼠标事件）：默认分数坐标，受力模式下显示受力 */}
+        {/* 选中原子信息（灰色小字，不拦截鼠标事件）：默认分数坐标；受力/读数模式下换成对应数值 */}
         {selectedCoords.length > 0 && (
-          <div className={`s3d-editor__coords${forceMode ? ' s3d-editor__coords--force' : ''}`}>
+          <div
+            className={`s3d-editor__coords${
+              forceMode || readoutMode ? ' s3d-editor__coords--force' : ''
+            }`}
+          >
             <div className="s3d-editor__coords-title">
-              {forceMode ? '选中原子 · 受力 (eV/Å) · Fx Fy Fz |F|' : '选中原子 · 分数坐标'}
+              {forceMode
+                ? '选中原子 · 受力 (eV/Å) · Fx Fy Fz |F|'
+                : readoutMode
+                  ? atomReadoutTitle || '选中原子'
+                  : '选中原子 · 分数坐标'}
             </div>
             {selectedCoords.slice(0, COORD_MAX_ROWS).map((item) => (
               <div className="s3d-editor__coord-row" key={item.key}>

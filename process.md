@@ -258,7 +258,25 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.52）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.53）
+
+- 2026-10-15（用户："参考显示原子受力那部分代码，把 Bader 电荷放和结构预览框相结合，**先不用上色**"）：
+  **Bader 电荷接进结构预览框**（v0.9.53）。参考「查看原子受力」那套（`useAtomicForces` +
+  `StructurePanel` 把 `atomColors`/`atomForces` 传给 `Structure3DFrame`），这轮只做**读数、不做配色**：
+  - `Structure3DFrame` 新增通用逐原子读数 `atomReadouts`（键 = **CIF 原子下标 0 起**）+
+    `atomReadoutTitle`：给了它（且没给受力）时，"选中原子"面板显示该读数而不是分数坐标 ——
+    与受力模式同一位置、同一版式（复用 `--force` 的宽度），**不改配色**；受力逻辑一字未动。
+  - `BaderPanel` 里加「结构预览 · 逐原子 Bader 电荷」块：结构取本地 `/input` 的
+    `poscar_cif`/`contcar_cif`（ele 任务的巡检详情里 `analysis` 是空的，所以不能像 opt 那样从 detail 拿），
+    默认 CONTCAR、没有就 POSCAR，带同样的「优化后 / 初始」切换；
+    点原子（Ctrl 多选 / Shift 框选）即在左上角看到 `q 11.123456 e · dmin 0.568 Å · V 12.35 Å³`。
+  - **坐标口径**：ACF.dat 的行序 = POSCAR 原子序（1 起），3D 框按 CIF 下标（0 起）取值 → 面板里做 `-1`
+    换算；并且**先比对 CIF 原子数与 `ACF.dat` 的原子数**，对不上就整块不挂读数 + 明确提示
+    （避免"看的是另一份结构"这种错位）。
+  - 提示文案写明："当前只显示数值、不着色（按元素配色）；按数值着色、按元素分组统计属于分析链路"。
+  **验证**：jsdom 渲染真组件（3Dmol 打桩）—— ① 面板出现「结构预览」块与"只显示数值、不着色"提示、
+  原子表仍在；② `Structure3DFrame` 传 `atomReadouts` + 选中原子后，"选中原子 · Bader 电荷"与
+  `q 11.123456 e` 正常渲染。纯前端改动（`npm run build` 即可，不用重启后端）。
 
 - 2026-10-15（用户："这里的 `CHGCAR_sum` 是之前算电荷差分时留下的"）：
   **修 Bader 参考电荷用错文件**（v0.9.52）—— 用户一眼看出的真 bug。`chgsum.pl` 的输出名

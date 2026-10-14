@@ -6,6 +6,8 @@ import {
   simulateFallbackSnapshot,
 } from '../data/mock/cluster';
 import type {
+  BaderData,
+  BaderStatus,
   ChargeDiffStatus,
   ClusterSnapshot,
   IncarPreset,
@@ -628,6 +630,46 @@ export async function createDiffCharge(
     body: JSON.stringify(payload),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Bader 电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → Bader」标签。
+// 远端算（chgsum.pl + bader）→ 回传 ACF.dat → 本地解析；本轮的产出是原子电荷表。
+
+
+/** 触发 Bader 电荷分析（异步）：校验 AECCAR → chgsum → bader → 回传解析 ACF.dat */
+export async function triggerBader(
+  taskId: string,
+  payload: { force?: boolean } = {},
+): Promise<{ run_id: string; status: string; reused?: boolean }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/bader/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Bader 链路状态（`remote=1` 时附带远端探测：AECCAR 完整性 / bader 可执行文件 / 远端 ACF.dat） */
+export async function fetchBaderStatus(
+  taskId: string,
+  options: { runId?: string; remote?: boolean } = {},
+): Promise<BaderStatus> {
+  const params = new URLSearchParams();
+  if (options.runId) params.set('run_id', options.runId);
+  if (options.remote) params.set('remote', '1');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/bader/status${suffix}`);
+}
+
+/** Bader 解析结果（ACF.dat → 原子表 + 页脚汇总）；没算过返回 404 */
+export async function fetchBaderData(taskId: string): Promise<BaderData> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/bader`);
+}
+
+/** 清除本地 Bader 结果（ACF.dat + meta），远端文件不动 */
+export async function clearBader(taskId: string): Promise<{ removed: string[]; dir: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/bader`, { method: 'DELETE' });
+}
+
 
 // ---------------------------------------------------------------------------
 // 差分电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → 差分电荷」标签。

@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react';
 import { Descriptions, Empty, Tabs, Tag } from 'antd';
 
 import ErrorBoundary from '../common/ErrorBoundary';
+import BaderPanel from './BaderPanel';
 import DiffChargePanel from './DiffChargePanel';
 import PdosPanel from './PdosPanel';
 import { fetchAvailableAnalyses } from '../../api/inspections';
@@ -37,7 +38,6 @@ interface Analyses {
 
 /** 预留的分析类型（除 PDOS 外都还没实现，保持原状） */
 const PLACEHOLDER_TABS = [
-  { key: 'bader', label: 'Bader', needs: 'AECCAR0 / AECCAR1 / AECCAR2', tip: '电荷转移分析' },
   { key: 'cohp', label: 'COHP', needs: 'COHPCAR（ISYM=-1 + LORBIT）', tip: '键合分析' },
   { key: 'work_function', label: '功函数', needs: 'LOCPOT（LVHAR）', tip: '功函数 / 真空能级' },
 ] as const;
@@ -119,6 +119,26 @@ export default function EleAnalysisPanel({ detail }: Props) {
                   taskId={detail.task_id}
                   taskName={detail.model_name}
                   hasBlocks={Boolean(detail.diff_charge?.blocks?.length)}
+                />
+              ),
+            },
+            {
+              key: 'bader',
+              label: (
+                <span>
+                  Bader
+                  {aa && !aa.bader ? (
+                    <span className="preview-note">（缺 AECCAR）</span>
+                  ) : null}
+                </span>
+              ),
+              // Bader 入口（2026-10-14）：远端 chgsum + bader → 回传解析 ACF.dat（处理链路）；
+              // 净电荷/分组/图表属分析链路，下一轮。
+              children: (
+                <BaderPanel
+                  taskId={detail.task_id}
+                  taskName={detail.model_name}
+                  available={aa ? Boolean(aa.bader) : null}
                 />
               ),
             },

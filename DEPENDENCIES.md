@@ -161,6 +161,24 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
   某块没算完 / 被截断），不通过就带具体原因拒绝，不会白跑 VTST。
 - 体积/风险：脚本本身极小；风险是远端机器路径 / 权限不同导致找不到脚本，已做显式报错而非静默失败。
 
+### 3d. Bader（远端外部二进制 · 2026-10-14 登记）
+
+用途：**远端**做 Bader 电荷分析（`bader.py` 链路）：先用 VTST `chgsum.pl` 把 `AECCAR0 + AECCAR2`
+加成参考电荷 `CHGCAR_sum`，再 `bader CHGCAR -ref CHGCAR_sum` 得到 `ACF.dat`。
+
+- **不是 Python 包、也不在 PATH 里**：集群上在 `/data/gpfs03/mdye/projects/potcar/bader`
+  （`bader -h` 报 1.05 08/19/23；实测是 Fortran 版，默认**不写体积文件**，`AVF.dat` 要显式 `-p` 才写，
+  所以默认只落 `ACF.dat` + `BCF.dat`）。换机器 / 换路径时在 `data/servers.json` 对应服务器下加
+  `"bader_exe": "/path/to/bader"` 覆盖（缺省回退上面的默认路径）。
+- **`ACF.dat` 格式**：header `# X Y Z CHARGE MIN DIST ATOMIC VOL` + 每原子一行
+  （序号 / x / y / z / Bader 电荷 / 最近表面距离 / 原子体积），页脚三行
+  `VACUUM CHARGE` / `VACUUM VOLUME` / `NUMBER OF ELECTRONS`；解析在
+  `backend/bader.py::parse_acf`（老 C 版没有 ATOMIC VOL、页脚是数字表，也一并兼容）。
+- **输入前提**：INCAR 里 `LAECHG=.TRUE.` 才有 `AECCAR0/1/2`；三个文件写在同一 FFT 网格上，
+  大小应当一致（链路按 **差别 < 1%** 校验，不一致就拒绝并说明"某一份没写完或被截断"）。
+- 依赖 **`chgsum.pl`**（见 §3c，VTST 目录）与远端 `bader` 都需要可执行权限；缺失时链路在
+  `checking` 阶段就明确报错（不会白跑几十分钟）。
+
 ## 4. pymatgen 专项说明
 
 用途：仅未来的 POTCAR 生成等功能需要。**`scripts/vasp2cif.py` 已改为

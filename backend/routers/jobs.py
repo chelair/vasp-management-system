@@ -55,6 +55,7 @@ from ele_diff import (
 from envelope import fail, ok
 from incar import modify_incar
 import charge_diff
+import bader
 import permissions
 import pdos
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
@@ -2691,6 +2692,101 @@ def charge_diff_clear(task_id: str, images_only: bool = Query(default=False)):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"清除差分电荷结果失败：{e}"))
+
+
+# ---------------------------------------------------------------------------
+# Bader 电荷分析链路（2026-10-14）：入口在巡检详情的「电子结构分析 → Bader」标签。
+# 远端算（chgsum.pl + bader）→ 回传 ACF.dat → 本地解析；净电荷/图表属于下一轮的分析链路。
+
+
+@router.post("/tasks/{task_id}/bader/analyze")
+def bader_analyze(task_id: str, payload: dict = Body(default={})):
+    """触发 **Bader 电荷分析**（异步）：校验 AECCAR → chgsum → bader → 回传解析 ACF.dat。
+
+    body: `{"force": false}` —— `force=true` 忽略本地/远端缓存，重算重传。
+    返回 `{run_id, status, reused}`；前端用 `GET .../bader/status` 轮询进度。
+    远端已有 `ACF.dat` 就只回传、本地已有就只解析（中断补偿，同差分电荷）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        if str(task.get("task_type") or "") != "ele":
+            return JSONResponse(status_code=400, content=fail("仅电子结构任务支持 Bader 分析"))
+        started = bader.start(project, task, force=bool((payload or {}).get("force")))
+        _audit_log(
+            project["name"],
+            task_id,
+            str(task.get("remote_dir") or ""),
+            "bader-analyze",
+            f"OK run={started['run_id']} reused={started.get('reused')}",
+        )
+        return ok("已开始 Bader 分析", started)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except bader.BaderError as e:
+        return JSONResponse(status_code=e.status, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"触发 Bader 分析失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/bader/status")
+def bader_status(
+    task_id: str,
+    run_id: str = Query(default=""),
+    remote: bool = Query(default=False),
+):
+    """Bader 链路状态（本地 + run 进度；`remote=1` 时附带远端探测）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        data = bader.status(
+            str(project.get("name") or ""), task, run_id, remote=bool(remote), project=project
+        )
+        return ok("查询成功", data)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"查询 Bader 状态失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/bader")
+def bader_data(task_id: str):
+    """Bader 解析结果（`ACF.dat` → 原子表 + 页脚汇总）；没算过返回 404。"""
+    try:
+        project, task = _resolve_task(task_id)
+        return ok("查询成功", bader.load_data(str(project.get("name") or ""), task))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except bader.BaderError as e:
+        return JSONResponse(status_code=e.status, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取 Bader 数据失败：{e}"))
+
+
+@router.delete("/tasks/{task_id}/bader")
+def bader_clear(task_id: str):
+    """清除本地 Bader 结果（ACF.dat + meta），远端文件不动。"""
+    try:
+        project, task = _resolve_task(task_id)
+        result = bader.clear(str(project.get("name") or ""), task)
+        _audit_log(
+            project["name"],
+            task_id,
+            str(task.get("remote_dir") or ""),
+            "bader-clear",
+            f"OK removed={','.join(result.get('removed') or []) or '-'}",
+        )
+        return ok("已清除 Bader 结果", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"清除 Bader 结果失败：{e}"))
 
 
 @router.post("/tasks/{task_id}/calculate-correction")

@@ -1,0 +1,762 @@
+"""Bader 电荷分析链路（2026-10-14 新建）：远端算 → 回传 `ACF.dat` → 本地解析。
+
+用户口径（2026-10-14）：
+
+- **同差分电荷，Bader 也在远端算**，入口同样在巡检详情的「电子结构分析 → Bader」标签；
+- 链路：① 检查 `AECCAR0/1/2` 是否存在、**大小是否相差 < 1%** →
+  ② 远端 `chgsum.pl AECCAR0 AECCAR2` 生成 `CHGCAR_sum`（已有就跳过）→
+  ③ 远端 `bader CHGCAR -ref CHGCAR_sum`（**耗时可能较长**）生成关键文件 `ACF.dat` →
+  ④ 回传 `ACF.dat` 并解析；
+- 本轮只做**处理链路**（算 + 回传 + 解析）；净电荷（要 POTCAR 的 ZVAL）、按元素/原子分组、
+  图表与报告属于**分析链路**，下一轮再做。
+
+远端前提（2026-10-14 只读侦察确认）：
+
+- `bader` 可执行文件在 `/data/gpfs03/mdye/projects/potcar/bader`（**不在 PATH 里**），
+  版本是 Fortran 版（`-h` 报 1.05 08/19/23）；可用 `data/servers.json: bader_exe` 覆盖。
+  默认**不写体积文件**（`AVF.dat` 要显式 `-p` 才写），只出 `ACF.dat` + `BCF.dat`。
+- `chgsum.pl` 在 VTST 目录（`ele_diff.vtst_dir`，差分电荷那条链路已经在用）。
+- `AECCAR0/1/2` 由 INCAR 的 `LAECHG=.TRUE.` 产生（写在同一 FFT 网格上，所以三者大小应当一致）。
+
+本地产物（`<ele 任务目录>/bader/`）：
+
+    ACF.dat     远端回传的 Bader 原子电荷表
+    meta.json   最近一次链路运行的状态（跨重启保留失败原因）
+
+异步模型与 `charge_diff.py` / `pdos.py` 一致：`start()` 起后台线程返回 `run_id`，
+`status()` 轮询，同一任务已有 run 在跑时复用。
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import re
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import ssh
+from dates import now_iso
+from ele_diff import vtst_dir
+from paths import to_local_rel
+from storage import db_transaction
+from task_paths import task_dir, task_remote_dir
+
+#: AECCAR 三个文件（完整结构 + 芯 + 价；Bader 用 AECCAR0 + AECCAR2 的和做参考电荷）
+AECCAR_FILES: Tuple[str, ...] = ("AECCAR0", "AECCAR1", "AECCAR2")
+#: 三个 AECCAR 的大小差别阈值（同差分电荷口径：**< 1%**）
+SIZE_TOLERANCE = 0.01
+#: 远端 bader 可执行文件（不在 PATH 里；`servers.json: bader_exe` 可覆盖）
+BADER_DEFAULT_EXE = "/data/gpfs03/mdye/projects/potcar/bader"
+#: 本地目录 / 文件名
+DIR_NAME = "bader"
+ACF_NAME = "ACF.dat"
+META_JSON = "meta.json"
+#: 远端中间产物名（VTST chgsum.pl 约定）
+CHG_SUM_NAME = "CHGCAR_sum"
+
+#: 阶段名 → 前端展示文案
+STAGE_LABELS = {
+    "checking": "远端校验 AECCAR 文件（大小差别应 < 1%）",
+    "summing": "远端 chgsum.pl AECCAR0 + AECCAR2 生成 CHGCAR_sum",
+    "bader": "远端 bader 分析（耗时较长）",
+    "downloading": "回传 ACF.dat",
+    "parsing": "解析 ACF.dat",
+    "done": "已完成",
+}
+
+#: 远端探测缓存：task_id → (时间戳, 结果)
+_PROBE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+PROBE_TTL_SECONDS = 120.0
+#: run 状态（进程内）
+_RUNS: Dict[str, Dict[str, Any]] = {}
+_TASK_RUN: Dict[str, str] = {}
+#: 全局串行：bader 很吃 CPU/IO，一次只跑一条（同差分电荷的取舍）
+_JOB_LOCK = threading.Lock()
+_LOCK = threading.Lock()
+
+_LOG = Path(__file__).resolve().parent.parent / "data" / "bader.log"
+
+
+class BaderError(RuntimeError):
+    """链路错误：`status` = 建议的 HTTP 状态码。"""
+
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _log_line(message: str) -> None:
+    try:
+        _LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{now_iso()} {message}\n")
+    except OSError:
+        pass
+
+
+# ------------------------------------------------------------------ 路径/配置
+
+
+def local_dir(project_name: str, task: Dict[str, Any]) -> Path:
+    return task_dir(project_name, task) / DIR_NAME
+
+
+def acf_path(project_name: str, task: Dict[str, Any]) -> Path:
+    return local_dir(project_name, task) / ACF_NAME
+
+
+def meta_path(project_name: str, task: Dict[str, Any]) -> Path:
+    return local_dir(project_name, task) / META_JSON
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def read_meta(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return json.loads(meta_path(project_name, task).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def bader_exe(server: str) -> str:
+    """远端 bader 可执行文件：`servers.json: bader_exe` → 默认路径。"""
+    from config import load_servers
+
+    configured = str(load_servers().get(server, {}).get("bader_exe") or "").strip()
+    return configured or BADER_DEFAULT_EXE
+
+
+def has_local(project_name: str, task: Dict[str, Any]) -> bool:
+    path = acf_path(project_name, task)
+    return path.is_file() and path.stat().st_size > 0
+
+
+# ------------------------------------------------------------------ ACF.dat 解析
+
+
+def parse_acf(text: str) -> Dict[str, Any]:
+    """解析 bader 的 `ACF.dat`（**已按集群上那个 Fortran 版的写出格式对齐**）。
+
+    集群版（`bader -h` 报 1.05 08/19/23，源码 `bader_mod.f90::bader_output`）格式：
+
+        <空行>
+            #         X           Y           Z       CHARGE     MIN DIST    ATOMIC VOL
+         ----------------------------------------------------------------   ----------------
+            1   0.408754   0.107450   0.122784   11.123456      0.567890      12.345678
+        ...
+         ----------------------------------------------------------------   ----------------
+            VACUUM CHARGE:             0.0000
+            VACUUM VOLUME:             0.0000
+            NUMBER OF ELECTRONS:     620.0000
+
+    老版 C 实现（v1.05）没有 `ATOMIC VOL` 列、页脚是 `N / 总电荷 / 最小距离` 的数字表 ——
+    这里两种都认：**原子行 = 以整数开头、后面至少 5 个数字**；页脚按关键字读，
+    读不到关键字就把纯数字行存成 `summary_row`。
+    """
+    atoms: List[Dict[str, Any]] = []
+    footer_lines: List[str] = []
+    seen_separator = False
+    in_footer = False
+    has_atomic_vol = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if set(line) <= {"-", " "}:  # 分隔线
+            if atoms:
+                in_footer = True
+            seen_separator = True
+            continue
+        if line.startswith("#"):
+            if "ATOMIC VOL" in line.upper():
+                has_atomic_vol = True
+            continue
+        if not in_footer:
+            parts = line.split()
+            if len(parts) >= 6 and re.fullmatch(r"\d+", parts[0]):
+                try:
+                    values = [float(x) for x in parts[1:]]
+                except ValueError:
+                    footer_lines.append(line)
+                    continue
+                atom = {
+                    "index": int(parts[0]),
+                    "x": values[0],
+                    "y": values[1],
+                    "z": values[2],
+                    "charge": values[3],
+                    "min_dist": values[4] if len(values) > 4 else None,
+                    "atomic_vol": values[5] if len(values) > 5 else None,
+                }
+                atoms.append(atom)
+                continue
+            footer_lines.append(line)
+        else:
+            footer_lines.append(line)
+
+    def _pick(keys: Tuple[str, ...]) -> Optional[float]:
+        for line in footer_lines:
+            upper = line.upper()
+            for key in keys:
+                if key in upper:
+                    nums = re.findall(r"[-+]?\d+\.\d+|[-+]?\d+", line.split(":", 1)[-1])
+                    if nums:
+                        try:
+                            return float(nums[-1])
+                        except ValueError:
+                            return None
+        return None
+
+    summary_row: Optional[List[float]] = None
+    for line in footer_lines:
+        if ":" in line:
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and all(re.fullmatch(r"[-+]?\d*\.?\d+", p) for p in parts):
+            summary_row = [float(p) for p in parts]
+            break
+
+    total_charge = sum(a["charge"] for a in atoms)
+    return {
+        "n_atoms": len(atoms),
+        "atoms": atoms,
+        "total_charge": round(total_charge, 6),
+        "vacuum_charge": _pick(("VACUUM CHARGE",)),
+        "vacuum_volume": _pick(("VACUUM VOLUME",)),
+        "n_electrons": _pick(("NUMBER OF ELECTRONS",)),
+        "summary_row": summary_row,
+        "has_atomic_vol": has_atomic_vol,
+        "has_min_dist": any(a["min_dist"] is not None for a in atoms),
+        "footer_lines": footer_lines,
+        "seen_separator": seen_separator,
+    }
+
+
+def load_data(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    """本地 `ACF.dat` → 解析结果（没算过就抛 `BaderError(404)`）。"""
+    path = acf_path(project_name, task)
+    if not (path.is_file() and path.stat().st_size > 0):
+        raise BaderError("本地还没有 Bader 结果（先在巡检详情里点一次「计算 Bader 电荷」）", 404)
+    parsed = parse_acf(path.read_text(encoding="utf-8", errors="replace"))
+    parsed["meta"] = read_meta(project_name, task)
+    parsed["source"] = to_local_rel(str(path))
+    parsed["bytes"] = path.stat().st_size
+    parsed["mtime"] = int(path.stat().st_mtime)
+    return parsed
+
+
+# ------------------------------------------------------------------ 远端探测
+
+
+def _remote_probe_script(ele_remote: str, exe: str, vtst: str) -> str:
+    return "\n".join(
+        [
+            f'cd "{ele_remote}" 2>/dev/null || {{ echo "@@@NODIR"; exit 3; }}',
+            'echo "@@@EXE"',
+            f'B="{exe}"',
+            '[ -x "$B" ] && echo "R bader ok" || echo "R bader missing"',
+            f'[ -x "{vtst}/chgsum.pl" ] && echo "R chgsum ok" || echo "R chgsum missing"',
+            'echo "@@@FILES"',
+            "for f in " + " ".join(AECCAR_FILES) + f" CHGCAR {CHG_SUM_NAME} {ACF_NAME}; do",
+            '  if [ -s "$f" ]; then echo "T $f $(wc -c < "$f" | tr -d \' \')"; else echo "T $f 0"; fi',
+            "done",
+            'echo "@@@END"',
+        ]
+    )
+
+
+def _integrity(sizes: Dict[str, int]) -> Dict[str, Any]:
+    """AECCAR0/1/2 都要在，且大小差别 < `SIZE_TOLERANCE`。
+
+    三个文件写在同一 FFT 网格上（同差分电荷的分块 CHGCAR 一样），大小应当基本一致；
+    差得多说明某一份没写完 / 被截断（LAECHG 写 AECCAR0/1/2 时逐份落盘）。
+    """
+    missing = [name for name in AECCAR_FILES if not sizes.get(name)]
+    values = [sizes[name] for name in AECCAR_FILES if sizes.get(name)]
+    if missing:
+        return {
+            "ok": False,
+            "missing": missing,
+            "max": max(values) if values else 0,
+            "min": min(values) if values else 0,
+            "spread": None,
+            "reason": "远端缺少 " + "、".join(missing) + "（或大小为 0）"
+            + "（需要 INCAR 里 LAECHG=.TRUE. 并重新算一轮）",
+        }
+    hi, lo = max(values), min(values)
+    spread = (hi - lo) / hi if hi else 0.0
+    if spread > SIZE_TOLERANCE:
+        return {
+            "ok": False,
+            "missing": [],
+            "max": hi,
+            "min": lo,
+            "spread": round(spread, 4),
+            "reason": (
+                f"三个 AECCAR 大小差别 {spread * 100:.1f}%（{lo} B ~ {hi} B），"
+                f"超过 {SIZE_TOLERANCE * 100:.0f}% 阈值：可能某一份没写完或被截断"
+            ),
+        }
+    return {
+        "ok": True,
+        "missing": [],
+        "max": hi,
+        "min": lo,
+        "spread": round(spread, 4),
+        "reason": f"三个 AECCAR 大小一致（差别 {spread * 100:.2f}%）",
+    }
+
+
+def probe_remote(
+    project: Dict[str, Any], task: Dict[str, Any], *, refresh: bool = False
+) -> Dict[str, Any]:
+    """远端探测（一次 exec，约 0.5–1.5s）：AECCAR 完整性 + bader/chgsum 可用性 + ACF.dat 在不在。"""
+    task_id = str(task.get("task_id") or "")
+    with _LOCK:
+        cached = _PROBE_CACHE.get(task_id)
+        if cached and not refresh and time.time() - cached[0] < PROBE_TTL_SECONDS:
+            return cached[1]
+
+    server = str(project.get("server") or "")
+    ele_remote = task_remote_dir(server, task).rstrip("/")
+    result: Dict[str, Any] = {
+        "remote_dir": ele_remote,
+        "checked_at": now_iso(),
+        "ok": False,
+        "state": "unknown",
+        "reason": "",
+        "sizes": {},
+        "integrity": None,
+        "tools": {},
+        "has_sum": False,
+        "has_remote_acf": False,
+        "bader_exe": bader_exe(server),
+    }
+    if not ele_remote:
+        result["reason"] = "任务缺少远程目录"
+        return result
+
+    script = _remote_probe_script(ele_remote, result["bader_exe"], vtst_dir(server))
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    try:
+        run = ssh.run_remote(server, f"echo {encoded} | base64 -d | bash", timeout=180)
+    except Exception as e:  # noqa: BLE001 - 远端不可达
+        result["reason"] = f"远端探测失败：{type(e).__name__}: {e}"
+        return result
+    raw = f"{run.get('stdout', '')}\n{run.get('stderr', '')}".strip()
+    if "@@@NODIR" in raw:
+        result["reason"] = f"远端任务目录不存在：{ele_remote}"
+        return result
+
+    sizes: Dict[str, int] = {}
+    tools: Dict[str, bool] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("T "):
+            parts = line[2:].split(" ", 1)
+            if len(parts) == 2 and parts[1].strip().isdigit():
+                sizes[parts[0]] = int(parts[1].strip())
+        elif line.startswith("R "):
+            parts = line[2:].split(" ", 1)
+            if len(parts) == 2:
+                tools[parts[0]] = parts[1].strip() == "ok"
+
+    result["sizes"] = sizes
+    result["tools"] = tools
+    result["has_sum"] = bool(sizes.get(CHG_SUM_NAME))
+    result["has_remote_acf"] = bool(sizes.get(ACF_NAME))
+    result["integrity"] = _integrity(sizes)
+
+    if result["has_remote_acf"]:
+        result.update({"ok": True, "state": "remote_acf",
+                       "reason": "远端已有 ACF.dat（可直接回传，不必重算）"})
+    elif not result["integrity"]["ok"]:
+        result.update({"state": "incomplete", "reason": result["integrity"]["reason"]})
+    elif not tools.get("bader"):
+        result.update({"state": "no_bader",
+                       "reason": f"远端找不到 bader 可执行文件：{result['bader_exe']}"
+                                 "（可用 servers.json: bader_exe 覆盖）"})
+    elif not tools.get("chgsum"):
+        result.update({"state": "no_chgsum",
+                       "reason": f"远端找不到 chgsum.pl：{vtst_dir(server)}"
+                                 "（可用 servers.json: vtst_dir 覆盖）"})
+    elif sizes.get("CHGCAR", 0) <= 0:
+        result.update({"state": "incomplete", "reason": "远端缺少 CHGCAR（bader 的待分析电荷）"})
+    else:
+        note = "远端已有 CHGCAR_sum（跳过 chgsum）" if result["has_sum"] else "可计算（会先跑 chgsum.pl）"
+        result.update({"ok": True, "state": "ready", "reason": note})
+    with _LOCK:
+        _PROBE_CACHE[task_id] = (time.time(), result)
+    return result
+
+
+# ------------------------------------------------------------------ 状态查询
+
+
+def local_status(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    """只看本地（零 SSH）：有没有 ACF.dat。"""
+    path = acf_path(project_name, task)
+    has = path.is_file() and path.stat().st_size > 0
+    return {
+        "has_acf": has,
+        "acf_path": str(path) if has else "",
+        "acf_bytes": path.stat().st_size if has else 0,
+        "acf_mtime": int(path.stat().st_mtime) if has else 0,
+        "meta": read_meta(project_name, task),
+    }
+
+
+def status(
+    project_name: str,
+    task: Dict[str, Any],
+    run_id: str = "",
+    *,
+    remote: bool = False,
+    project: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """链路状态：本地 + 当前/最近一次 run（`remote=True` 时附带远端探测）。"""
+    task_id = str(task.get("task_id") or "")
+    local = local_status(project_name, task)
+    with _LOCK:
+        rid = run_id or _TASK_RUN.get(task_id, "")
+        if not rid:
+            latest = [r for r in _RUNS.values() if r.get("task_id") == task_id]
+            rid = latest[-1]["run_id"] if latest else ""
+        run = dict(_RUNS.get(rid) or {})
+    meta = local.get("meta") or {}
+    if not run:
+        run = {
+            "run_id": rid,
+            "status": "failed" if meta.get("status") == "failed" else (
+                "done" if local["has_acf"] else "idle"
+            ),
+            "error": meta.get("error"),
+            "stage": meta.get("stage"),
+            "finished_at": meta.get("finished_at"),
+        }
+    run["stage_label"] = STAGE_LABELS.get(str(run.get("stage") or ""), "")
+    run["local"] = {k: v for k, v in local.items() if k != "meta"}
+    run["meta"] = meta
+    if remote and project is not None:
+        run["remote"] = probe_remote(project, task)
+    return run
+
+
+# ------------------------------------------------------------------ 异步链路
+
+
+def start(project: Dict[str, Any], task: Dict[str, Any], *, force: bool = False) -> Dict[str, Any]:
+    """触发链路：已有在跑的 run 就复用，否则起后台线程。"""
+    task_id = str(task.get("task_id") or "")
+    if not task_remote_dir(str(project.get("server") or ""), task):
+        raise BaderError("任务缺少远程目录", 400)
+    with _LOCK:
+        current = _TASK_RUN.get(task_id)
+        if current and _RUNS.get(current, {}).get("status") == "running":
+            return {"run_id": current, "status": "running", "reused": True}
+        run_id = f"bader_{int(time.time() * 1000)}"
+        _RUNS[run_id] = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "status": "running",
+            "stage": "checking",
+            "started_at": now_iso(),
+        }
+        _TASK_RUN[task_id] = run_id
+    threading.Thread(
+        target=_background,
+        args=(dict(project), dict(task), run_id, bool(force)),
+        name=f"bader-{task_id}",
+        daemon=True,
+    ).start()
+    return {"run_id": run_id, "status": "running", "reused": False}
+
+
+def _set_stage(run_id: str, stage: str, **extra: Any) -> None:
+    with _LOCK:
+        run = _RUNS.get(run_id)
+        if run is not None:
+            run.update({"stage": stage, **extra})
+
+
+def _run_capture(server: str, script: str, *, timeout: int) -> Dict[str, Any]:
+    """跑一段远端 bash（专用连接：bader 可能跑很久，别占常驻池的串行锁）。"""
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    return ssh.run_remote(
+        server, f"echo {encoded} | base64 -d | bash", timeout=timeout, dedicated=True
+    )
+
+
+def _remote_compute_script(ele_remote: str, exe: str, vtst: str, reuse_sum: bool) -> str:
+    """远端：chgsum.pl AECCAR0 AECCAR2 → CHGCAR_sum；bader CHGCAR -ref CHGCAR_sum → ACF.dat。"""
+    lines = [
+        f'cd "{ele_remote}" || {{ echo "@@@NODIR"; exit 3; }}',
+        f'B="{exe}"',
+        '[ -x "$B" ] || { echo "@@@NOBADER=$B"; exit 4; }',
+        f'[ -x "{vtst}/chgsum.pl" ] || {{ echo "@@@NOSCRIPT"; exit 5; }}',
+        "for f in AECCAR0 AECCAR2 CHGCAR; do",
+        '  [ -s "$f" ] || { echo "@@@MISSING=$f"; exit 6; }',
+        "done",
+    ]
+    if reuse_sum:
+        lines.append(f'[ -s "{CHG_SUM_NAME}" ] || {{ echo "@@@MISSING={CHG_SUM_NAME}"; exit 6; }}')
+        lines.append('echo "@@@SUM_REUSED"')
+    else:
+        lines += [
+            f'if ! "{vtst}/chgsum.pl" AECCAR0 AECCAR2 > chgsum.log 2>&1; then '
+            'echo "@@@CHGSUM_FAIL"; tail -n 20 chgsum.log; exit 7; fi',
+            f'[ -s "{CHG_SUM_NAME}" ] || {{ echo "@@@NO_SUM"; exit 8; }}',
+            'echo "@@@SUM_OK"',
+        ]
+    lines += [
+        # Bader 本体：默认不写体积文件（AVF.dat 要 -p 才写），只出 ACF.dat / BCF.dat
+        'if ! "$B" CHGCAR -ref ' + CHG_SUM_NAME + ' > bader.log 2>&1; then '
+        'echo "@@@BADER_FAIL"; tail -n 30 bader.log; exit 9; fi',
+        f'[ -s "{ACF_NAME}" ] || {{ echo "@@@NO_ACF"; tail -n 20 bader.log; exit 10; }}',
+        f'echo "@@@ACF_BYTES=$(wc -c < {ACF_NAME} | tr -d \' \')"',
+        'echo "@@@BADER_TAIL"',
+        'tail -n 8 bader.log || true',
+        'echo "@@@END"',
+    ]
+    return "\n".join(lines)
+
+
+def _parse_markers(raw: str) -> Dict[str, Any]:
+    acf_bytes = 0
+    m = re.search(r"@@@ACF_BYTES=(\d+)", raw)
+    if m:
+        acf_bytes = int(m.group(1))
+    tail = ""
+    if "@@@BADER_TAIL" in raw:
+        tail = raw.split("@@@BADER_TAIL", 1)[1].split("@@@END", 1)[0].strip()
+    return {"acf_bytes": acf_bytes, "bader_tail": tail[-800:]}
+
+
+def _fail(
+    project_name: str,
+    task: Dict[str, Any],
+    run_id: str,
+    stage: str,
+    message: str,
+    started: str,
+) -> None:
+    meta = read_meta(project_name, task)
+    meta.update(
+        {
+            "task_id": str(task.get("task_id") or ""),
+            "project_name": project_name,
+            "run_id": run_id,
+            "status": "failed",
+            "stage": stage,
+            "error": message,
+            "started_at": started,
+            "finished_at": now_iso(),
+        }
+    )
+    try:
+        _write_json(meta_path(project_name, task), meta)
+    except Exception as e:  # noqa: BLE001
+        _log_line(f"[warn] 写 meta 失败：{e}")
+    with _LOCK:
+        run = _RUNS.get(run_id)
+        if run is not None:
+            run.update(
+                {
+                    "status": "failed",
+                    "stage": stage,
+                    "error": message,
+                    "finished_at": meta["finished_at"],
+                }
+            )
+    _log_line(f"[fail] {project_name}/{task.get('task_id')} stage={stage} {message}")
+
+
+def _record_task_bader(project_name: str, task_id: str, payload: Optional[Dict[str, Any]]) -> None:
+    """把结果记到 ele 主任务 `task["bader"]`（巡检详情 / 报告以后读这个字段）。"""
+    try:
+        with db_transaction() as db:
+            proj = next(
+                (p for p in db.get("projects", []) if p.get("name") == project_name), None
+            )
+            task = (
+                next((t for t in proj.get("tasks", []) if t.get("task_id") == task_id), None)
+                if proj
+                else None
+            )
+            if task is not None:
+                if payload is None:
+                    task.pop("bader", None)
+                else:
+                    task["bader"] = {**payload, "synced_at": now_iso()}
+    except Exception as e:  # noqa: BLE001
+        _log_line(f"[warn] 写回 bader 台账失败（{project_name}/{task_id}）：{e}")
+
+
+def _background(
+    project: Dict[str, Any], task: Dict[str, Any], run_id: str, force: bool
+) -> None:
+    """后台线程：校验 → chgsum → bader → 回传 → 解析 → 写台账。"""
+    project_name = str(project.get("name") or "")
+    server = str(project.get("server") or "")
+    task_id = str(task.get("task_id") or "")
+    started = now_iso()
+    t0 = time.time()
+    stage = "checking"
+    with _JOB_LOCK:
+        try:
+            ele_remote = task_remote_dir(server, task).rstrip("/")
+            if not ele_remote:
+                raise BaderError("任务缺少远程目录", 400)
+
+            local_has = has_local(project_name, task)
+            probe: Dict[str, Any] = {"state": "local", "reason": "本地已有 ACF.dat，只重新解析"}
+            compute: Dict[str, Any] = {"acf_bytes": 0, "bader_tail": "", "sum_reused": False}
+            target = acf_path(project_name, task)
+            remote_acf = f"{ele_remote}/{ACF_NAME}"
+            # 中断补偿：本地已有结果且不是强制重算 → 完全不碰远端，只重新解析
+            if not local_has or force:
+                _set_stage(run_id, "checking")
+                probe = probe_remote(project, task, refresh=True)
+                if not probe.get("ok") and not probe.get("has_remote_acf"):
+                    raise BaderError(f"远端文件校验未通过：{probe.get('reason') or '未知原因'}", 400)
+                # 远端已有 ACF.dat（且不是强制重算）→ 只回传，不重跑 chgsum/bader
+                if force or not probe.get("has_remote_acf"):
+                    _set_stage(run_id, "summing" if not probe.get("has_sum") else "bader")
+                    script = _remote_compute_script(
+                        ele_remote,
+                        bader_exe(server),
+                        vtst_dir(server),
+                        reuse_sum=bool(probe.get("has_sum")),
+                    )
+                    run = _run_capture(server, script, timeout=3600)
+                    raw = f"{run.get('stdout', '')}\n{run.get('stderr', '')}".strip()
+                    if int(run.get("exit_code") or 0) != 0 or "@@@END" not in raw:
+                        detail = " / ".join(
+                            line.strip() for line in raw.splitlines() if line.strip()
+                        )[-500:]
+                        for marker, message in (
+                            ("@@@NOBADER=", "远端找不到 bader 可执行文件"),
+                            ("@@@NOSCRIPT", "远端找不到 chgsum.pl"),
+                            ("@@@MISSING=", "远端缺少文件"),
+                            ("@@@CHGSUM_FAIL", "chgsum.pl 执行失败"),
+                            ("@@@NO_SUM", "chgsum.pl 跑完但没有生成 CHGCAR_sum"),
+                            ("@@@BADER_FAIL", "bader 执行失败"),
+                            ("@@@NO_ACF", "bader 跑完但没有生成 ACF.dat"),
+                        ):
+                            if marker in raw:
+                                extra = ""
+                                if marker.endswith("="):
+                                    extra = "：" + raw.split(marker, 1)[1].split("\n", 1)[0].strip()
+                                raise BaderError(
+                                    f"{message}{extra}；远端输出：{detail}"
+                                    if detail
+                                    else f"{message}{extra}",
+                                    502,
+                                )
+                        raise BaderError(
+                            f"远端计算失败（exit={run.get('exit_code')}）：{detail}", 502
+                        )
+                    compute = _parse_markers(raw)
+                    compute["sum_reused"] = "@@@SUM_REUSED" in raw
+
+                stage = "downloading"
+                _set_stage(run_id, "downloading")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not ssh.download_file(server, remote_acf, str(target)):
+                    raise BaderError("ACF.dat 回传失败（远端下载不到）", 502)
+            if not (target.is_file() and target.stat().st_size > 0):
+                raise BaderError("本地没有 ACF.dat（回传失败？）", 502)
+
+            stage = "parsing"
+            _set_stage(run_id, "parsing")
+            parsed = parse_acf(target.read_text(encoding="utf-8", errors="replace"))
+            if parsed["n_atoms"] <= 0:
+                raise BaderError("ACF.dat 解析不出原子行（格式不认识？）", 500)
+
+            payload = {
+                "ok": True,
+                "n_atoms": parsed["n_atoms"],
+                "total_charge": parsed["total_charge"],
+                "n_electrons": parsed["n_electrons"],
+                "vacuum_charge": parsed["vacuum_charge"],
+                "vacuum_volume": parsed["vacuum_volume"],
+                "has_atomic_vol": parsed["has_atomic_vol"],
+                "has_min_dist": parsed["has_min_dist"],
+                "local_path": to_local_rel(str(target)),
+                "remote_path": remote_acf,
+                "bytes": target.stat().st_size,
+                "elapsed_seconds": round(time.time() - t0, 1),
+                "sum_reused": bool(compute.get("sum_reused")),
+                "bader_exe": bader_exe(server),
+                "integrity": probe.get("integrity"),
+                "bader_tail": compute.get("bader_tail") or "",
+            }
+            meta = {
+                "task_id": task_id,
+                "project_name": project_name,
+                "run_id": run_id,
+                "status": "done",
+                "stage": "done",
+                "started_at": started,
+                "finished_at": now_iso(),
+                "elapsed_seconds": payload["elapsed_seconds"],
+                "remote": {
+                    "state": probe.get("state"),
+                    "reason": probe.get("reason"),
+                    "remote_dir": probe.get("remote_dir") or ele_remote,
+                },
+                "result": payload,
+            }
+            _write_json(meta_path(project_name, task), meta)
+            _record_task_bader(project_name, task_id, payload)
+            with _LOCK:
+                run_state = _RUNS.get(run_id)
+                if run_state is not None:
+                    run_state.update(
+                        {
+                            "status": "done",
+                            "stage": "done",
+                            "finished_at": meta["finished_at"],
+                            "elapsed_seconds": payload["elapsed_seconds"],
+                            "result": payload,
+                        }
+                    )
+            _log_line(
+                f"[ok] {project_name}/{task_id} atoms={payload['n_atoms']} "
+                f"electrons={payload['n_electrons']} bytes={payload['bytes']} "
+                f"sum_reused={payload['sum_reused']} elapsed={payload['elapsed_seconds']}s"
+            )
+        except BaderError as exc:
+            _fail(project_name, task, run_id, stage, str(exc), started)
+        except Exception as exc:  # noqa: BLE001 - 线程里不能抛
+            _fail(project_name, task, run_id, stage, f"{type(exc).__name__}: {exc}", started)
+        finally:
+            with _LOCK:
+                if _TASK_RUN.get(task_id) == run_id:
+                    _TASK_RUN.pop(task_id, None)
+
+
+def clear(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    """清除本地 Bader 结果（ACF.dat + meta），远端文件不动。"""
+    removed: List[str] = []
+    for path, label in ((acf_path(project_name, task), "ACF.dat"),
+                        (meta_path(project_name, task), "meta.json")):
+        if path.is_file():
+            path.unlink(missing_ok=True)
+            removed.append(label)
+    task_id = str(task.get("task_id") or "")
+    with _LOCK:
+        _PROBE_CACHE.pop(task_id, None)
+        rid = _TASK_RUN.pop(task_id, "")
+        if rid:
+            _RUNS.pop(rid, None)
+    _record_task_bader(project_name, task_id, None)
+    return {"removed": removed, "dir": str(local_dir(project_name, task))}

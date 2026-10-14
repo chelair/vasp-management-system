@@ -345,6 +345,36 @@ DELETE /api/jobs/tasks/{task_id}/charge-diff                # 清除本地结果
   `data/ssh_transfer.log`（server / bytes / dedicated / elapsed / path）。
 - **审计**：`charge-diff-analyze` / `charge-diff-clear`；链路日志 `data/charge_diff.log`。
 
+#### ④d Bader 电荷分析（巡检详情入口，v0.9.51 · 本轮只到处理链路）
+
+入口在**巡检详情 →「电子结构分析 → Bader」标签**（前端 `BaderPanel`）。链路：
+① 远端校验 `AECCAR0/1/2` 是否存在、**大小差别 < 1%**（一次 exec）；
+② 远端 `chgsum.pl AECCAR0 AECCAR2` → `CHGCAR_sum`（远端已有就跳过）；
+③ 远端 `bader CHGCAR -ref CHGCAR_sum`（**耗时可能较长**，timeout 3600s，走专用连接）→ `ACF.dat`；
+④ 回传 `ACF.dat` 到 `<任务本地目录>/bader/` 并解析成原子表。
+**中断补偿**：远端已有 `ACF.dat` 就只回传；本地已有就只重新解析，不重跑。
+
+```
+POST   /api/jobs/tasks/{task_id}/bader/analyze   # 触发（异步），body {"force": false}
+GET    /api/jobs/tasks/{task_id}/bader/status    # 状态；?remote=1 附带远端探测（120s 缓存）
+GET    /api/jobs/tasks/{task_id}/bader           # 解析结果（ACF 原子表 + 页脚汇总）；没算过 404
+DELETE /api/jobs/tasks/{task_id}/bader           # 清除本地 ACF.dat / meta（远端不动）
+```
+
+- **状态返回**：`status`（`running|done|failed|idle`）、`stage` + `stage_label`
+  （`checking` 校验 / `summing` chgsum / `bader` 分析 / `downloading` 回传 / `parsing` 解析 / `done`）、
+  `elapsed_seconds`、`error`、`local`（`{has_acf, acf_path, acf_bytes, acf_mtime}`）、
+  `remote`（仅 `remote=1`：`{state, reason, sizes, integrity, tools, has_sum, has_remote_acf, bader_exe}`）。
+  远端 `state`：`ready`（可算，会先跑 chgsum）/ `remote_acf`（远端已有 ACF）/ `incomplete`（缺 AECCAR 或大小不一致）/
+  `no_bader` / `no_chgsum`（脚本缺失，按提示改 `servers.json`）。
+- **解析结果**（`GET .../bader`）：`{n_atoms, atoms[{index,x,y,z,charge,min_dist?,atomic_vol?}],
+  total_charge, n_electrons, vacuum_charge, vacuum_volume, has_atomic_vol, has_min_dist, source, bytes, meta}`。
+  兼容集群上的 Fortran 版（含 `ATOMIC VOL` 列 + `VACUUM CHARGE/VOLUME`、`NUMBER OF ELECTRONS` 页脚）
+  与老 C 版（无 ATOMIC VOL、页脚是数字表 → 放 `summary_row`）。
+- **审计**：`bader-analyze` / `bader-clear`；链路日志 `data/bader.log`。
+- **还没做（分析链路，下一轮）**：净电荷 `Δq = ZVAL − Bader 电荷`（要读 POTCAR 的 ZVAL）、
+  按元素/原子分组统计、图表、写进报告 —— 本轮的产出就是**原始 Bader 电荷表**。
+
 #### ⑤ NEB 创建计算文件
 
 ```
@@ -389,6 +419,7 @@ body: {
 | 配置 | `PUT /settings/root-paths` · `PUT /path-mapping` · `POST /path-mapping/rebase` · `PUT /ssh/config` · `POST /ssh/test` | 运维类，**权限敏感** |
 | 分析 | `POST /jobs/tasks/{id}/pdos/analyze` · `GET /jobs/tasks/{id}/pdos/status` · `GET /jobs/tasks/{id}/pdos` · `DELETE /jobs/tasks/{id}/pdos` | **PDOS 分析（v0.9.45 重建）**：异步触发（返回 `run_id`）→ 轮询 → 取解析数据 → 清除重跑；见 §4.5 |
 | 分析 | `POST /jobs/tasks/{id}/charge-diff/analyze` · `GET .../charge-diff/status` · `GET .../charge-diff/images/{axis}` · `DELETE .../charge-diff` | **差分电荷（v0.9.46）**：巡检详情入口；远端校验（三份 CHGCAR 大小差 < 1%）→ VTST 算差分 → 回传 → VESTA 三视图；异步 + 阶梯缓存；见 §4.2 ④c |
+| 分析 | `POST /jobs/tasks/{id}/bader/analyze` · `GET .../bader/status` · `GET .../bader` · `DELETE .../bader` | **Bader 电荷（v0.9.51，处理链路）**：巡检详情入口；远端校验 AECCAR 完整性 → `chgsum.pl` → `bader CHGCAR -ref CHGCAR_sum` → 回传解析 `ACF.dat`；净电荷/图表属分析链路；见 §4.2 ④d |
 | 分析 | `POST /jobs/tasks/{id}/calculate-correction` | 自由能矫正项（vaspkit 501） |
 | 结构转换 | `POST /tools/cif-to-poscar` | CIF → POSCAR（`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；纯文本不落盘，页面「导入 POSCAR」选 .cif 走的就是它；解析失败 400 带中文原因） |
 

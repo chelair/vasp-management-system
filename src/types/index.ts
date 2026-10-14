@@ -1055,6 +1055,83 @@ export interface PdosView {
 }
 
 /**
+ * Bader 电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → Bader」标签。
+ * 远端算（chgsum.pl AECCAR0+AECCAR2 → CHGCAR_sum，再 bader CHGCAR -ref CHGCAR_sum）
+ * → 回传 ACF.dat → 本地解析。净电荷（要 POTCAR ZVAL）/ 分组 / 图表属于下一轮分析链路。
+ */
+export interface BaderAtom {
+  index: number;
+  x: number;
+  y: number;
+  z: number;
+  /** Bader 体积内的电荷（电子数） */
+  charge: number;
+  /** 到最近 Bader 表面的距离（Å） */
+  min_dist?: number | null;
+  /** 原子体积（Å³，新版权才写这一列） */
+  atomic_vol?: number | null;
+}
+
+/** `GET /api/jobs/tasks/{id}/bader` 的返回（ACF.dat 解析结果） */
+export interface BaderData {
+  n_atoms: number;
+  atoms: BaderAtom[];
+  total_charge: number;
+  n_electrons?: number | null;
+  vacuum_charge?: number | null;
+  vacuum_volume?: number | null;
+  has_atomic_vol: boolean;
+  has_min_dist: boolean;
+  source: string;
+  bytes: number;
+  mtime: number;
+  meta?: {
+    elapsed_seconds?: number;
+    result?: {
+      sum_reused?: boolean;
+      bader_exe?: string;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+}
+
+/** 远端探测（`status?remote=1`） */
+export interface BaderRemote {
+  state?: string;
+  reason?: string;
+  remote_dir?: string;
+  ok?: boolean;
+  sizes?: Record<string, number>;
+  integrity?: ChargeDiffIntegrity | null;
+  tools?: Record<string, boolean>;
+  has_sum?: boolean;
+  has_remote_acf?: boolean;
+  bader_exe?: string;
+  checked_at?: string;
+}
+
+/** `GET /api/jobs/tasks/{id}/bader/status` 的返回 */
+export interface BaderStatus {
+  run_id?: string;
+  status: 'idle' | 'running' | 'done' | 'failed';
+  stage?: string;
+  stage_label?: string;
+  error?: string | null;
+  elapsed_seconds?: number;
+  finished_at?: string | null;
+  local: {
+    has_acf: boolean;
+    acf_path?: string;
+    acf_bytes?: number;
+    acf_mtime?: number;
+  };
+  remote?: BaderRemote;
+  result?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+}
+
+/**
  * 差分电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → 差分电荷」标签。
  * 状态取值阶梯：本地图 → 本地差分文件 → 远端差分文件 → 远端可算（见 backend/charge_diff.py）。
  */

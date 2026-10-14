@@ -152,6 +152,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `pending_actions.py` + `routers/pending_actions.py` | **待确认队列（v0.9.42）**：AI 触发的 confirm 级动作先入队等人批准。`data/pending_actions.json`（原子写 + 锁），状态机 `pending → approved / failed / rejected`；入队时做归属校验；**agent 角色不能 approve/reject**；批准时复用 `automation/actions.py` 的 preflight+execute；提案/批准/驳回各写 `auth.pending-*` 审计 |
 | `ele_diff.py` | **差分电荷分块计算（v0.9.44；差分口径 v0.9.45）**：POSCAR 解析与"按原子取子集"、`plan_blocks`（≥2 块且覆盖全部原子）、`check_incar`（校验 `LCHARG=.TRUE.` / `IBRION=-1` / `ISTART=0` / `ICHARG=2`）、`create_block_files`（建远端分块目录 + 上传 POSCAR/INCAR + 复制 KPOINTS/vasp.lsf + pos2pot）、`build_block_task`（`task_type=ele_diff` 子任务记录）、**`compute_charge_difference`（v0.9.45：远端 `chgsum.pl` + `chgdiff.pl` 算差、只回传 `CHGCAR_diff` → `chgfiles/CHGCAR_diff.vasp`；`vtst_dir` 可覆盖脚本目录）**、`diff_charge_blocks` |
 | `pdos.py` | **PDOS 分析链路（v0.9.45）**：`start()` 起后台线程（上传 `scripts/dos_extract.py` → 远端 `--quiet` 跑 → 回传 `dos.json`）返回 run_id、`status()` 轮询、`load_view()` 解析成三级菜单树 + 曲线（文件指纹内存缓存）、`clear()` 清除；产物 `<任务>/pdos/{dos.json,meta.json}`；`build_view()` 只对 **p、d** 生成方向投影子级 |
+| `charge_diff.py` | **差分电荷链路（v0.9.46）**：入口在巡检详情；完整性校验（各 CHGCAR 大小差 < 1%）→ 远端 VTST 算差 → 回传 `CHGCAR_diff` → VESTA 三视图；阶梯缓存 + 中断补偿 + 全局串行 |
+| `bader.py` | **Bader 电荷链路（v0.9.51，**只到处理链路**）**：`probe_remote()` 一次 exec 查 `AECCAR0/1/2` 完整性（大小差 < 1%）+ `bader`/`chgsum.pl` 可用性 + 远端 `ACF.dat`；`start()`/`status()` 异步跑「chgsum → bader → 回传 → 解析」；`parse_acf()` 认集群那个 Fortran 版（含 `ATOMIC VOL` 列 + `VACUUM CHARGE/VOLUME`、`NUMBER OF ELECTRONS` 页脚）**和老 C 版的数字页脚**；产物 `<任务>/bader/{ACF.dat,meta.json}`，结果记 `task["bader"]`。**净电荷（ZVAL − 电荷）/分组/图表/报告属分析链路，尚未做** |
 | `potcar.py` | **pos2pot 运行器（v0.9.44 抽出）**：把原 `/generate-potcar` 里的单次 exec 脚本（定位最新 conN → 跑 pos2pot → 解析 POTCAR 摘要）抽成 `run_pos2pot()`，支持 `use_latest_con=False`（差分电荷在主目录递归生成）；`PotcarError(kind=no_dir/not_found)` |
 | `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
@@ -256,7 +258,33 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.50）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.51）
+
+- 2026-10-14（用户："现在我要继续开发 Bader 电荷分析链路，同差分电荷，Bader 也需要在远端计算，链路为检查
+  AECCAR0-2 是否存在、大小是否相差 <1% - 远端执行 chgsum.pl AECCAR0 AECCAR2 生成 CHGCAR_sum -
+  执行 Bader 分析 bader CHGCAR -ref CHGCAR_sum（耗时可能较长）生成关键文件 ACF.dat - 回传解析 ACF.dat；
+  **先写处理链路，后面写分析链路**"）：
+  **Bader 处理链路落地**（v0.9.51）。新增 `backend/bader.py`（与 `charge_diff.py` 同构）：
+  ① `probe_remote()` 一次 exec 查 `AECCAR0/1/2` 完整性（**大小差别 < 1%**，缺文件/大小不一致都给具体原因，
+  并提示要 `LAECHG=.TRUE.`）+ `bader`（集群上是 `/data/gpfs03/mdye/projects/potcar/bader`，
+  **不在 PATH**，用 `servers.json: bader_exe` 覆盖）与 VTST `chgsum.pl` 可用性 + 远端 `ACF.dat` 在不在；
+  ② 远端 `chgsum.pl AECCAR0 AECCAR2` → `CHGCAR_sum`（已有就跳过）→ `bader CHGCAR -ref CHGCAR_sum`
+  → `ACF.dat`（timeout 3600s，**走专用连接**不占常驻池锁）；③ 回传 → `parse_acf()` 解析。
+  **解析口径**：集群那个二进制实测是 Fortran 版（`-h` 报 1.05 08/19/23，字符串与上游 f90 源码逐条对上），
+  ACF.dat = `# X Y Z CHARGE MIN DIST ATOMIC VOL` + 每原子一行 + 页脚 `VACUUM CHARGE/VOLUME`、
+  `NUMBER OF ELECTRONES`；老 C 版（无 ATOMIC VOL、页脚是数字表）也能解析（存 `summary_row`）。
+  **中断补偿**：远端已有 ACF.dat → 只回传；本地已有 → 只重新解析（完全不碰远端）。
+  产物 `<任务>/bader/{ACF.dat,meta.json}`，结果记 `task["bader"]`；接口 4 个（analyze/status/data/delete）；
+  前端把原来的 **Bader 占位标签**换成 `BaderPanel`（状态 + 阶段 + 原始电荷表，含 ATOMIC VOL 列）。
+  **本轮只到处理链路**：净电荷 `Δq = ZVAL − Bader 电荷`（要读 POTCAR 的 ZVAL）、按元素分组、
+  图表与报告留给下一轮（分析链路）。**验证**：mock 端到端 —— 首次点击 `chgsum AECCAR0 AECCAR2` +
+  `bader CHGCAR -ref CHGCAR_sum` 调用正确、解析出 3 原子/总电荷 31.611110/电子数 31.6111；
+  本地已有 → 只解析（0 次远端调用）；远端已有 ACF.dat → 只回传（0 次重算）；
+  AECCAR2 小 30% → `checking` 阶段拒绝且**没调用任何远端工具**；缺 bader → 明确报错；
+  HTTP 层（独立 uvicorn + 隔离数据目录）登录/状态/触发/取数据/匿名 401/清除后 404 全过；
+  jsdom 渲染真组件：本地有结果显示摘要+原子表（含原子体积列）、`available=false` 显示 LAECHG 提示。
+  真机只读探测：model2 / PMS@model1 / PMS@model2 = `ready`（AECCAR 三份大小完全一致、已有 CHGCAR_sum）、
+  model1 = 缺 AECCAR（精确报错）、Co_260902/Li2S4 = 远端目录不存在。
 
 - 2026-10-14（用户截图 + "作业管理里这几个的显示逻辑改一下" —— 截图里 CONTCAR 是**深色 ⊖ + 未同步**，
   POTCAR / vasp.lsf 是**灰 ⊖ + 未生成 · 不参与同步**）：
@@ -1202,7 +1230,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 2. **NEB 映像 POSCAR 线性插值**：`create_neb_files` 依赖 nebmake.pl，尚未内置线性插值兜底。
 3. **电子结构链路**：PDOS（v0.9.45 重建，巡检详情标签页 + 三级轨道菜单）与**差分电荷**
    （v0.9.46：巡检详情入口 → 完整性校验 → VTST 算差分 → 回传 → VESTA 三视图）**已落地**；
-   Bader / COHP / 功函数仍为占位（`available-analyses` 会探测远端对应文件是否具备）。
+   **Bader**（v0.9.51：入口 → 完整性校验 → `chgsum.pl` → `bader` → 回传解析 `ACF.dat`；
+   纯处理链路）已落地，**分析链路（净电荷 Δq = ZVAL − 电荷、按元素/原子分组、图表、报告）待做**；
+   COHP / 功函数仍为占位（`available-analyses` 会探测远端对应文件是否具备）。
 4. **POTCAR 生成**：后端按 POSCAR 元素拼接伪势（pymatgen）仍为占位
 5. ~~后端定时巡检未真正调度~~ → v0.6.2 已用自建后台线程实现（未引入 APScheduler），见 §6.8。
 6. 提交/巡检路径的进一步合并 exec 优化（提交已 3 次调用，可压到 1 次）。

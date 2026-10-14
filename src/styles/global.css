@@ -2820,6 +2820,57 @@ body.is-atom-selecting * {
   color: var(--color-text-secondary);
 }
 
+/* Bader 电荷：结构预览 + 选中原子统计卡片（v0.9.55） */
+.bader-select-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.bader-preview {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.bader-preview__frame {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bader-stat-card {
+  flex: 0 0 248px;
+}
+
+.bader-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 2;
+}
+
+.bader-stat > span:first-child {
+  color: var(--color-text-muted);
+  min-width: 72px;
+}
+
+.bader-stat > span:last-child {
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 1100px) {
+  .bader-preview {
+    flex-direction: column;
+  }
+
+  .bader-stat-card {
+    flex: 1 1 auto;
+  }
+}
+
 .structure-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

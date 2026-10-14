@@ -376,10 +376,17 @@ DELETE /api/jobs/tasks/{task_id}/bader           # 清除本地 ACF.dat / meta�
   sum_aec_valid, has_remote_acf, bader_exe}`）。
   远端 `state`：`ready`（可算；`sum_aec_valid=true` 才跳过 chgsum）/ `remote_acf`（远端已有 ACF）/
   `incomplete`（缺 AECCAR 或大小不一致）/ `no_bader` / `no_chgsum`（按提示改 `servers.json`）。
-- **解析结果**（`GET .../bader`）：`{n_atoms, atoms[{index,x,y,z,charge,min_dist?,atomic_vol?}],
-  total_charge, n_electrons, vacuum_charge, vacuum_volume, has_atomic_vol, has_min_dist, source, bytes, meta}`。
+- **解析结果**（`GET .../bader`）：`{n_atoms, atoms[{index,x,y,z,charge,min_dist?,atomic_vol?,
+  element?,zval?,net_charge?}], total_charge, n_electrons, vacuum_charge, vacuum_volume,
+  has_atomic_vol, has_min_dist, elements, zval, net_charge_available, net_charge_reason, stats, source, bytes, meta}`。
   兼容集群上的 Fortran 版（含 `ATOMIC VOL` 列 + `VACUUM CHARGE/VOLUME`、`NUMBER OF ELECTRONS` 页脚）
   与老 C 版（无 ATOMIC VOL、页脚是数字表 → 放 `summary_row`）。
+- **净电荷（v0.9.54）**：`Δq = ZVAL − Bader 电荷`（正=失电子）。ZVAL 取自**远端 POTCAR 的一次极轻
+  grep**（`grep -E '^ *TITEL|ZVAL' POTCAR`；真 POTCAR 里 `ZVAL` 与 `POMASS` **同一行**），
+  解析结果缓存在本地 `bader/meta.json` 的 `zval` 里 → `GET .../bader` 仍然**纯本地**（不连远端）。
+  元素序列取本地 `files/POSCAR`；任一缺失则 `net_charge_available=false` +
+  `net_charge_reason`（前端只显示原始电荷，不猜）。`stats` = `{n_atoms, charge_total, zval_total,
+  net_total, net_mean, net_max{value,index,element}, net_min{…}}`。
 - **审计**：`bader-analyze` / `bader-clear`；链路日志 `data/bader.log`。
 - **还没做（分析链路，下一轮）**：净电荷 `Δq = ZVAL − Bader 电荷`（要读 POTCAR 的 ZVAL）、
   按元素/原子分组统计、图表、写进报告 —— 本轮的产出就是**原始 Bader 电荷表**。
@@ -387,6 +394,13 @@ DELETE /api/jobs/tasks/{task_id}/bader           # 清除本地 ACF.dat / meta�
   `poscar_cif`/`contcar_cif`）：点原子（Ctrl 多选 / Shift 框选）在左上角看该原子的
   `Bader 电荷 / dmin / 原子体积` —— **只显示读数、暂不着色**（按元素配色）；
   原子序按 `ACF.dat` 行序（1 起）与 CIF 下标（0 起）做换算，并先比对两边原子数，不一致就不挂读数。
+  **v0.9.54 补齐**：预览框**旁边一张卡片**对**当前选中原子实时**统计平均/最大/最小（+合计），
+  选择方式 = 点选 / Ctrl 多选 / Shift 框选 / **按元素全选**（元素按钮，再点取消）；
+  **「按电荷上色」开关**（与受力同位置）：红 = 失电子（Δq > 0）、蓝 = 得电子（Δq < 0），
+  对称尺度 ±max|Δq|（下限 0.5 e），卡片里给图例；读数里也带 `Δq`。**不做元素分组**。
+- **报告**：`report_builder` 的「电子结构」章节新增 `#### <任务> · Bader 电荷`：结论一句话
+  （Σq / ΣZVAL / ΣΔq / 平均 / Δq 最正与最负的原子）+ 按 |Δq| 排序前 10 个原子的表；
+  缺 ZVAL 时降级说明。图片/图表本轮不加。
 
 #### ⑤ NEB 创建计算文件
 

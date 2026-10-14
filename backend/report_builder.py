@@ -44,6 +44,7 @@ from storage import load_db
 from structure_analysis import analyze as analyze_structure
 import structure_images
 import charge_diff
+import bader
 from ele_diff import diff_charge_blocks
 from task_paths import is_auxiliary_task, is_continuation_task, task_dir
 
@@ -705,6 +706,8 @@ def _ele_details(
                 # （2026-10-14 口径变更，见 backend/ele_diff.py::compute_charge_difference）
                 "diff_charge": blocks,
                 "charge_diff": task.get("charge_diff") or None,
+                # Bader 电荷：远端算完的 ACF.dat 台账（v0.9.51；逐原子净电荷在 build_report 里补）
+                "bader": task.get("bader") or None,
             }
         )
     return items
@@ -968,13 +971,14 @@ def _sections_markdown(report, charts):
         blocks.append("_本项目暂无可展示的科学结果（需任务产出 OUTCAR/CONTCAR 后自动生成）_\n")
     ele_note = science.get("ele") or {}
     ele_tasks = ele_note.get("tasks") or []
-    with_diff = [item for item in ele_tasks if item.get("diff_charge")]
-    # 「电子结构」章节：有差分电荷分块时**一定**出（哪怕项目里还没有别的科学结果），
+    # 「电子结构」章节：有差分电荷分块 / Bader 结果时**一定**出（哪怕项目里还没有别的科学结果），
     # 否则跟其它类型一样只留一句占位说明。
+    with_diff = [item for item in ele_tasks if item.get("diff_charge") or item.get("bader")]
     if with_diff or not empty_project:
         ele_blocks: List[str] = ["### 电子结构\n"]
         if with_diff:
-            for item in with_diff:
+            # 分两块渲染：差分电荷（有分块的任务）/ Bader 电荷（有 ACF.dat 的任务）
+            for item in [x for x in with_diff if x.get("diff_charge")]:
                 ele_blocks.append(f"\n#### {item['task_name']} · 差分电荷\n")
                 ele_blocks.append(
                     "把完整结构按原子拆成若干分块单独做静态计算（各自独立提交），"
@@ -1038,6 +1042,55 @@ def _sections_markdown(report, charts):
                 else:
                     ele_blocks.append(
                         f"{diff_state} 差分图（VESTA 三视图）放在 `diffcharge_files/images/`。\n\n"
+                    )
+            # Bader 电荷（v0.9.54）：远端 ACF.dat 的结果 + 逐原子净电荷统计（不做元素分组）
+            for item in [x for x in with_diff if x.get("bader_summary")]:
+                summary = item["bader_summary"]
+                stats = summary.get("stats") or {}
+                ele_blocks.append(f"\n#### {item['task_name']} · Bader 电荷\n")
+                ele_blocks.append(
+                    "在**远端**用 `chgsum.pl AECCAR0 AECCAR2` 求参考电荷，再 `bader CHGCAR "
+                    "-ref CHGCAR_sum_aec` 做 Bader 划分，回传 `ACF.dat` 解析逐原子电荷"
+                    "（每个原子按其 Bader 体积内的电子数计）。\n\n"
+                )
+                if summary.get("net_charge_available") and stats:
+                    ele_blocks.append(
+                        f"共 {summary['n_atoms']} 个原子：Bader 电荷合计 "
+                        f"{stats['charge_total']:.4f} e，价电子数（POTCAR ZVAL）合计 "
+                        f"{stats['zval_total']:.4f} e，**净电荷合计 {stats['net_total']:+.4f} e**"
+                        f"（平均 {stats['net_mean']:+.4f} e/原子）。"
+                        f"Δq 最大（最正）的是 {stats['net_max']['element']}{stats['net_max']['index']}"
+                        f"（{stats['net_max']['value']:+.4f} e），Δq 最小（最负）的是 "
+                        f"{stats['net_min']['element']}{stats['net_min']['index']}"
+                        f"（{stats['net_min']['value']:+.4f} e）。"
+                        f"（净电荷 \u0394q = ZVAL \u2212 Bader 电荷，正值表示该原子失电子。）\n\n"
+                    )
+                    if summary.get("top"):
+                        ele_blocks.append(
+                            _md_table(
+                                ["原子", "元素", "Bader 电荷 (e)", "ZVAL (e)", "净电荷 Δq (e)"],
+                                [
+                                    [
+                                        f"{atom['element']}{atom['index']}",
+                                        atom["element"],
+                                        _fmt(atom["charge"], 4),
+                                        _fmt(atom["zval"], 2),
+                                        f"{atom['net_charge']:+.4f}",
+                                    ]
+                                    for atom in summary["top"]
+                                ],
+                            )
+                        )
+                        ele_blocks.append(
+                            f"（按 |\u0394q| 列最大的 {len(summary['top'])} 个原子；"
+                            f"完整表见巡检详情「电子结构分析 → Bader」。）\n\n"
+                        )
+                else:
+                    ele_blocks.append(
+                        f"已算出 `ACF.dat`（{summary['n_atoms']} 个原子，Bader 电荷合计 "
+                        f"{summary['total_charge']:.4f} e），但"
+                        f"{summary.get('net_charge_reason') or '缺 ZVAL'}，"
+                        "本次报告只给这里的原始电荷。\n\n"
                     )
         ele_blocks.append(
             f"\n待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"
@@ -1868,8 +1921,8 @@ def build_report(
             "neb": neb_science,
             "ele": {
                 "note": (
-                    "电子结构分析：差分电荷已接入（结果 + VESTA 三视图弹窗）；"
-                    "PDOS / Bader / COHP / 功函数待接入报告"
+                    "电子结构分析：差分电荷（结果 + VESTA 三视图弹窗）与 Bader 电荷"
+                    "（ACF.dat + 逐原子净电荷统计）已接入报告；PDOS / COHP / 功函数待接入"
                 ),
                 "tasks": _ele_details(project, facts, merged),
             },
@@ -1986,6 +2039,50 @@ def build_report(
     # 差分电荷三视图（v0.9.47）：算好了就在「电子结构」章节给一个 a/b/c 弹窗，
     # 图片复用同一个 images/ 内联通道（口径与结构/映像三视图完全一致）
     for item in ((report.get("science") or {}).get("ele") or {}).get("tasks") or []:
+        # Bader（v0.9.54）：把逐原子净电荷/统计一次性算好挂到 item 上，供章节渲染。
+        # 纯本地读文件（ACF.dat + meta 里的 ZVAL + 本地 POSCAR），不连远端。
+        bader_record = item.get("bader") or {}
+        if bader_record.get("ok"):
+            ele_obj = next(
+                (
+                    x
+                    for x in project.get("tasks", [])
+                    if str(x.get("task_id")) == str(item.get("task_id"))
+                ),
+                None,
+            )
+            if ele_obj is not None:
+                try:
+                    parsed = bader.load_data(project_name, ele_obj)
+                    item["bader_summary"] = {
+                        "n_atoms": parsed["n_atoms"],
+                        "total_charge": parsed["total_charge"],
+                        "n_electrons": parsed["n_electrons"],
+                        "vacuum_charge": parsed["vacuum_charge"],
+                        "net_charge_available": parsed.get("net_charge_available"),
+                        "net_charge_reason": parsed.get("net_charge_reason"),
+                        "stats": parsed.get("stats"),
+                        "local_path": parsed.get("source"),
+                        "elapsed_seconds": bader_record.get("elapsed_seconds"),
+                        "top": sorted(
+                            (
+                                {
+                                    "index": atom["index"],
+                                    "element": atom.get("element"),
+                                    "charge": atom["charge"],
+                                    "zval": atom.get("zval"),
+                                    "net_charge": atom.get("net_charge"),
+                                }
+                                for atom in parsed["atoms"]
+                                if atom.get("net_charge") is not None
+                            ),
+                            key=lambda a: abs(a["net_charge"]),
+                            reverse=True,
+                        )[:10],
+                    }
+                except Exception as exc:  # noqa: BLE001 - 报告不因 Bader 失败
+                    collection_errors.append(f"{item.get('task_name')} Bader 结果读取失败：{exc}")
+
         record = item.get("charge_diff") or {}
         if not record.get("ok"):
             continue

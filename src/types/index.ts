@@ -1070,6 +1070,23 @@ export interface BaderAtom {
   min_dist?: number | null;
   /** 原子体积（Å³，新版权才写这一列） */
   atomic_vol?: number | null;
+  /** 元素（由本地 POSCAR 的元素行展开而来；算不出净电荷时可能没有） */
+  element?: string;
+  /** 该元素的价电子数 ZVAL（POTCAR TITEL/ZVAL 两行解析） */
+  zval?: number;
+  /** 净电荷 Δq = ZVAL − charge（正=失电子；没有 ZVAL 时为 null） */
+  net_charge?: number | null;
+}
+
+/** 逐原子净电荷的整体统计（后端算好，报告/面板都能用） */
+export interface BaderStats {
+  n_atoms: number;
+  charge_total: number;
+  zval_total: number;
+  net_total: number;
+  net_mean: number;
+  net_max: { value: number; index: number; element: string };
+  net_min: { value: number; index: number; element: string };
 }
 
 /** `GET /api/jobs/tasks/{id}/bader` 的返回（ACF.dat 解析结果） */
@@ -1082,6 +1099,14 @@ export interface BaderData {
   vacuum_volume?: number | null;
   has_atomic_vol: boolean;
   has_min_dist: boolean;
+  /** 逐原子元素序列（长度 = n_atoms） */
+  elements?: string[];
+  /** 元素 → ZVAL */
+  zval?: Record<string, number>;
+  /** 能不能算净电荷（缺本地 POSCAR / 远端 POTCAR 时为 false） */
+  net_charge_available?: boolean;
+  net_charge_reason?: string;
+  stats?: BaderStats;
   source: string;
   bytes: number;
   mtime: number;

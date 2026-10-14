@@ -42,7 +42,7 @@ from dates import now_iso
 from ele_diff import vtst_dir
 from paths import to_local_rel
 from storage import db_transaction
-from task_paths import task_dir, task_remote_dir
+from task_paths import local_files_dir, task_dir, task_remote_dir
 
 #: AECCAR 三个文件（完整结构 + 芯 + 价；Bader 用 AECCAR0 + AECCAR2 的和做参考电荷）
 AECCAR_FILES: Tuple[str, ...] = ("AECCAR0", "AECCAR1", "AECCAR2")
@@ -67,6 +67,8 @@ CHG_SUM_NAME = "CHGCAR_sum"
 CHG_SUM_AEC_NAME = "CHGCAR_sum_aec"
 #: chgsum 的临时工作目录（放 AECCAR 的软链，输出落在里面，避免覆盖遗留的 CHGCAR_sum）
 SUM_WORK_DIR = ".bader_sum"
+#: 远端伪势文件（只 grep TITEL/ZVAL 两行拿每种元素的 ZVAL；**不下载、不用 pymatgen**）
+POTCAR_NAME = "POTCAR"
 
 #: 阶段名 → 前端展示文案
 STAGE_LABELS = {
@@ -137,6 +139,28 @@ def read_meta(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def _remember_zval(
+    project_name: str, task: Dict[str, Any], zval: Dict[str, float]
+) -> None:
+    """把探测到的 ZVAL 合并进本地 `meta.json`（不动其它字段）。
+
+    为什么要缓存：`load_data()` 是**纯本地**接口（不连远端），净电荷要用 ZVAL；
+    对"ACF.dat 早就下载好、但 meta 里还没有 ZVAL"的任务（升级前算的），
+    前端探一次远端状态就能把 ZVAL 补进 meta，之后一直可用。
+    """
+    if not zval:
+        return
+    meta = read_meta(project_name, task)
+    if meta.get("zval") == zval:
+        return
+    meta["zval"] = zval
+    meta["zval_at"] = now_iso()
+    try:
+        _write_json(meta_path(project_name, task), meta)
+    except Exception as e:  # noqa: BLE001 - 缓存失败不影响链路
+        _log_line(f"[warn] 缓存 ZVAL 失败：{e}")
+
+
 def bader_exe(server: str) -> str:
     """远端 bader 可执行文件：`servers.json: bader_exe` → 默认路径。"""
     from config import load_servers
@@ -148,6 +172,79 @@ def bader_exe(server: str) -> str:
 def has_local(project_name: str, task: Dict[str, Any]) -> bool:
     path = acf_path(project_name, task)
     return path.is_file() and path.stat().st_size > 0
+
+
+# ------------------------------------------------------------------ 元素 / ZVAL
+
+
+def poscar_atom_elements(path: Path) -> List[str]:
+    """本地 POSCAR → **逐原子元素列表**（VASP5 第 6 行元素、第 7 行计数，按序展开）。
+
+    用来把 `ACF.dat` 的原子行（行序 = POSCAR 原子序）对上元素；读的是本地小文件，零负担。
+    VASP4（第 6 行是数字）拿不到元素名 → 返回空列表，后续按"没有 ZVAL"降级处理。
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = [fh.readline() for _ in range(7)]
+    except OSError:
+        return []
+    if len(lines) < 7:
+        return []
+    symbols = lines[5].split()
+    counts = lines[6].split()
+    if not symbols or not counts:
+        return []
+    if all(re.fullmatch(r"\d+", s) for s in symbols):  # VASP4：第 6 行是计数
+        return []
+    try:
+        nums = [int(c) for c in counts]
+    except ValueError:
+        return []
+    if len(symbols) != len(nums):
+        return []
+    out: List[str] = []
+    for symbol, count in zip(symbols, nums):
+        out.extend([symbol] * count)
+    return out
+
+
+def parse_potcar_zval(text: str) -> Dict[str, float]:
+    """从 `grep -E '^ *TITEL|ZVAL' POTCAR` 的输出里解析 **元素 → ZVAL**。
+
+    POTCAR 是各元素块拼接的，每块一行 `TITEL  = PAW_PBE Fe 06Sep2000`（元素名在其中）
+    和一行 **`POMASS = 55.845; ZVAL = 8.000    mass and valenz`** —— 注意 ZVAL 与 POMASS
+    写在同一行（2026-10-15 在集群真文件上确认），所以用正则从行里取 `ZVAL = <数值>`。
+    元素符号取 TITEL 里第一个"不含数字、不是 PAW/PW/US 前缀"的 token（`Fe_pv` 这类后缀不影响判断）。
+    """
+    result: Dict[str, float] = {}
+    pending: Optional[str] = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("TITEL"):
+            pending = None
+            for token in line.split("=", 1)[-1].split():
+                if any(ch.isdigit() for ch in token):
+                    continue  # 日期 / 版本（06Sep2000、54）
+                if token.upper().startswith(("PAW", "PW", "US", "LDA", "GGA")):
+                    continue
+                m = re.match(r"([A-Za-z]{1,2})", token)
+                if m:
+                    pending = m.group(1).capitalize()
+                    break
+        if "ZVAL" in line.upper():
+            m = re.search(r"ZVAL\s*=\s*([-+]?\d*\.?\d+)", line, re.IGNORECASE)
+            if m:
+                try:
+                    value = float(m.group(1))
+                except ValueError:
+                    value = None
+                if value is not None:
+                    if pending:
+                        result[pending] = value
+                    pending = None
+    return result
 
 
 # ------------------------------------------------------------------ ACF.dat 解析
@@ -251,13 +348,92 @@ def parse_acf(text: str) -> Dict[str, Any]:
     }
 
 
+def _attach_net_charges(
+    parsed: Dict[str, Any],
+    project_name: str,
+    task: Dict[str, Any],
+    meta: Dict[str, Any],
+) -> None:
+    """给每个原子补 `element` / `zval` / `net_charge = ZVAL − Bader 电荷`，并算整体统计。
+
+    口径：`ACF.dat` 的行序 = POSCAR 原子序 → 元素序列取**本地 POSCAR**（`files/POSCAR`），
+    每种元素的 ZVAL 取**远端 POTCAR 的 TITEL/ZVAL 两行**（在探测/计算那一次 exec 里顺手 grep，
+    不下载 POTCAR、不用 pymatgen）。任一份缺了就标记 `net_charge_available=false` 并写明原因，
+    前端只显示原始 Bader 电荷（不猜）。
+    """
+    parsed["elements"] = []
+    parsed["zval"] = meta.get("zval") or {}
+    parsed["net_charge_available"] = False
+    poscar = local_files_dir(project_name, task) / "POSCAR"
+    elements = poscar_atom_elements(poscar)
+    zval: Dict[str, float] = parsed["zval"] or {}
+    if not elements:
+        parsed["net_charge_reason"] = (
+            "本地没有可解析的 POSCAR（VASP5 元素行），算不出逐原子净电荷；"
+            "点「同步最新参数」把 POSCAR 取回本地后再看"
+        )
+        return
+    if len(elements) != parsed["n_atoms"]:
+        parsed["net_charge_reason"] = (
+            f"POSCAR 原子数（{len(elements)}）与 ACF.dat（{parsed['n_atoms']}）不一致，"
+            "不挂净电荷（先确认两边是同一份结构）"
+        )
+        parsed["elements"] = elements
+        return
+    if not zval or any(el not in zval for el in set(elements)):
+        missing = sorted({el for el in elements if el not in zval})
+        parsed["net_charge_reason"] = (
+            ("远端 POTCAR 没读到" if not zval else f"POTCAR 里缺 {('、'.join(missing))}")
+            + "，算不出净电荷"
+        )
+        parsed["elements"] = elements
+        return
+
+    net_values: List[float] = []
+    for atom, element in zip(parsed["atoms"], elements):
+        z = float(zval[element])
+        atom["element"] = element
+        atom["zval"] = round(z, 6)
+        atom["net_charge"] = round(z - float(atom["charge"]), 6)
+        net_values.append(atom["net_charge"])
+    parsed["elements"] = elements
+    parsed["net_charge_available"] = True
+    zval_total = sum(float(zval[el]) for el in elements)
+    net_total = sum(net_values)
+    idx_max = max(range(len(net_values)), key=lambda i: net_values[i])
+    idx_min = min(range(len(net_values)), key=lambda i: net_values[i])
+    parsed["stats"] = {
+        "n_atoms": len(net_values),
+        "charge_total": round(parsed["total_charge"], 6),
+        "zval_total": round(zval_total, 6),
+        "net_total": round(net_total, 6),
+        "net_mean": round(net_total / len(net_values), 6),
+        "net_max": {
+            "value": net_values[idx_max],
+            "index": parsed["atoms"][idx_max]["index"],
+            "element": elements[idx_max],
+        },
+        "net_min": {
+            "value": net_values[idx_min],
+            "index": parsed["atoms"][idx_min]["index"],
+            "element": elements[idx_min],
+        },
+    }
+
+
 def load_data(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
-    """本地 `ACF.dat` → 解析结果（没算过就抛 `BaderError(404)`）。"""
+    """本地 `ACF.dat` → 解析结果（没算过就抛 `BaderError(404)`）。
+
+    一并补上逐原子净电荷与统计（元素序列来自本地 POSCAR、ZVAL 来自远端 POTCAR 的两行 grep，
+    缓存在 `meta.json` 里）——**纯本地读文件，不连远端**。
+    """
     path = acf_path(project_name, task)
     if not (path.is_file() and path.stat().st_size > 0):
         raise BaderError("本地还没有 Bader 结果（先在巡检详情里点一次「计算 Bader 电荷」）", 404)
     parsed = parse_acf(path.read_text(encoding="utf-8", errors="replace"))
-    parsed["meta"] = read_meta(project_name, task)
+    meta = read_meta(project_name, task)
+    _attach_net_charges(parsed, project_name, task, meta)
+    parsed["meta"] = meta
     parsed["source"] = to_local_rel(str(path))
     parsed["bytes"] = path.stat().st_size
     parsed["mtime"] = int(path.stat().st_mtime)
@@ -292,6 +468,13 @@ def _remote_probe_script(ele_remote: str, exe: str, vtst: str) -> str:
             '  if [ -n "$_h2" ] && [ "$_h1" = "$_h2" ] && [ "$_l1" = "$_l2" ]; then',
             '    echo "V aec ok"; else echo "V aec mismatch"; fi',
             'else echo "V aec absent"; fi',
+            # 元素价电子数 ZVAL：只 grep POTCAR 两行（几百字节），不下载 POTCAR、不引依赖
+            'echo "@@@POTCAR"',
+            f'[ -s "{POTCAR_NAME}" ] && echo "P potcar ok" || echo "P potcar missing"',
+            # 注意：真 POTCAR 的 ZVAL 与 POMASS 写在同一行（`POMASS = 26.982; ZVAL = 3.000 mass and valenz`），
+            # 所以不能按行首匹配 ZVAL，用 `^ *TITEL|ZVAL` 抓两种行
+            f'grep -E \'^ *TITEL|ZVAL\' "{POTCAR_NAME}" 2>/dev/null | head -n 60',
+            'echo "@@@POTCAR_END"',
             'echo "@@@END"',
         ]
     )
@@ -385,8 +568,20 @@ def probe_remote(
     sizes: Dict[str, int] = {}
     tools: Dict[str, bool] = {}
     sum_aec_state = "absent"
+    potcar_text: List[str] = []
+    in_potcar = False
     for line in raw.splitlines():
-        line = line.strip()
+        stripped = line.strip()
+        if stripped == "@@@POTCAR":
+            in_potcar = True
+            continue
+        if stripped == "@@@POTCAR_END":
+            in_potcar = False
+            continue
+        if in_potcar:
+            potcar_text.append(line)
+            continue
+        line = stripped
         if line.startswith("T "):
             parts = line[2:].split(" ", 1)
             if len(parts) == 2 and parts[1].strip().isdigit():
@@ -405,6 +600,10 @@ def probe_remote(
     result["sum_aec_valid"] = sum_aec_state == "ok"
     result["has_remote_acf"] = bool(sizes.get(ACF_NAME))
     result["integrity"] = _integrity(sizes)
+    result["zval"] = parse_potcar_zval("\n".join(potcar_text))
+    result["has_potcar"] = any(
+        ln.strip().startswith("P potcar ok") for ln in potcar_text
+    )
     legacy_note = (
         f"（注：目录里另有一份 `{CHG_SUM_NAME}`，那是差分电荷的分块和，Bader 不用它）"
         if result["has_sum"]
@@ -438,6 +637,8 @@ def probe_remote(
         result.update({"ok": True, "state": "ready", "reason": note})
     with _LOCK:
         _PROBE_CACHE[task_id] = (time.time(), result)
+    # 顺手把 ZVAL 缓进本地 meta（给纯本地的 load_data 用；探测一次就够）
+    _remember_zval(str(project.get("name") or ""), task, result.get("zval") or {})
     return result
 
 
@@ -755,6 +956,7 @@ def _background(
                 "sum_reused": bool(compute.get("sum_reused")),
                 "bader_exe": bader_exe(server),
                 "integrity": probe.get("integrity"),
+                "has_potcar": bool(probe.get("has_potcar")),
                 "bader_tail": compute.get("bader_tail") or "",
             }
             meta = {
@@ -771,6 +973,8 @@ def _background(
                     "reason": probe.get("reason"),
                     "remote_dir": probe.get("remote_dir") or ele_remote,
                 },
+                # 元素价电子数（远端 POTCAR 两行 grep 的结果）——load_data 用它算净电荷
+                "zval": probe.get("zval") or {},
                 "result": payload,
             }
             _write_json(meta_path(project_name, task), meta)

@@ -18,11 +18,13 @@ import {
   Alert,
   App,
   Button,
+  Card,
   Descriptions,
   Empty,
   Popconfirm,
   Segmented,
   Spin,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -37,6 +39,7 @@ import {
   triggerBader,
 } from '../../api/jobs';
 import { parseCif } from '../../utils/structure3d';
+import { buildChargeColors } from '../../utils/chargeColor';
 import type { BaderAtom, BaderData, BaderStatus } from '../../types';
 import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 
@@ -74,8 +77,12 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
   });
   const [structureView, setStructureView] = useState<'contcar' | 'poscar'>('contcar');
   const [selectedAtoms, setSelectedAtoms] = useState<AtomRef[]>([]);
+  /** 「按 Bader 电荷上色」开关（与受力那套同一个位置、同样交互；默认关） */
+  const [colorBy, setColorBy] = useState(false);
   const pollRef = useRef<number | null>(null);
   const aliveRef = useRef(true);
+  /** 「缺 ZVAL 时只补探一次远端」的一次性开关 */
+  const healedRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -88,8 +95,10 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
     try {
       const payload = await fetchBaderData(taskId);
       if (aliveRef.current) setData(payload);
+      return payload;
     } catch {
       if (aliveRef.current) setData(null);
+      return null;
     }
   }, [taskId]);
 
@@ -156,7 +165,14 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
         return;
       }
       if (local?.local?.has_acf) {
-        await loadData();
+        const payload = await loadData();
+        // 升级前算的 ACF.dat：meta 里还没有 ZVAL → 探一次远端把它补进 meta，再取一次数据。
+        // 只试一次（探测本身有 120s 缓存 + 结果落盘），不会反复连远端。
+        if (payload && payload.net_charge_available === false && !healedRef.current) {
+          healedRef.current = true;
+          await load(true);
+          await loadData();
+        }
       } else if (available !== false) {
         await load(true); // 本地没有 → 探一次远端，给出"能不能算"
       }
@@ -222,6 +238,7 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
     const map: Record<number, string> = {};
     for (const atom of data.atoms) {
       const parts = [`q ${atom.charge.toFixed(6)} e`];
+      if (atom.net_charge != null) parts.push(`Δq ${atom.net_charge >= 0 ? '+' : ''}${atom.net_charge.toFixed(6)} e`);
       if (atom.min_dist != null) parts.push(`dmin ${atom.min_dist.toFixed(3)} Å`);
       if (atom.atomic_vol != null) parts.push(`V ${atom.atomic_vol.toFixed(2)} Å³`);
       map[atom.index - 1] = parts.join('  ·  ');
@@ -229,6 +246,66 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
     return map;
   }, [data, activeCif, cifAtoms]);
   const atomCountMismatch = Boolean(data && activeCif && !atomReadouts);
+  /** 逐原子"用于统计/着色"的数值：优先净电荷，没有就退回原始 Bader 电荷 */
+  const valueByIndex = useMemo(() => {
+    const map: Record<number, { value: number; isNet: boolean }> = {};
+    for (const atom of data?.atoms ?? []) {
+      const isNet = atom.net_charge != null;
+      map[atom.index - 1] = {
+        value: isNet ? (atom.net_charge as number) : atom.charge,
+        isNet,
+      };
+    }
+    return map;
+  }, [data]);
+  const chargeColors = useMemo(() => {
+    if (!colorBy || !data) return { colors: null, scale: null };
+    return buildChargeColors(
+      (data.atoms || []).map((atom) => (atom.net_charge != null ? atom.net_charge : null)),
+    );
+  }, [colorBy, data]);
+  /** 选中原子的实时统计（卡片：平均 / 极值） */
+  const selectionStats = useMemo(() => {
+    const picked = selectedAtoms
+      .map((atom) => {
+        const entry = valueByIndex[atom.index];
+        return entry ? { ...entry, poscarIndex: atom.poscarIndex, element: atom.element } : null;
+      })
+      .filter((x): x is { value: number; isNet: boolean; poscarIndex: number; element: string } =>
+        Boolean(x),
+      );
+    if (!picked.length) return null;
+    const values = picked.map((x) => x.value);
+    const total = values.reduce((a, b) => a + b, 0);
+    const max = picked.reduce((a, b) => (b.value > a.value ? b : a));
+    const min = picked.reduce((a, b) => (b.value < a.value ? b : a));
+    return {
+      count: picked.length,
+      isNet: picked[0].isNet,
+      mean: total / picked.length,
+      total,
+      max,
+      min,
+    };
+  }, [selectedAtoms, valueByIndex]);
+  /** 元素 → 该元素的全部原子（「按元素选中」用） */
+  const atomsByElement = useMemo(() => {
+    if (!activeCif) return [] as { element: string; atoms: AtomRef[] }[];
+    let parsed: ReturnType<typeof parseCif> = null;
+    try {
+      parsed = parseCif(activeCif);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) return [] as { element: string; atoms: AtomRef[] }[];
+    const groups = new Map<string, AtomRef[]>();
+    parsed.atoms.forEach((atom, index) => {
+      const list = groups.get(atom.element) ?? [];
+      list.push({ index, poscarIndex: index + 1, element: atom.element });
+      groups.set(atom.element, list);
+    });
+    return [...groups.entries()].map(([element, atoms]) => ({ element, atoms }));
+  }, [activeCif]);
   const result = (status?.result || (data?.meta?.result as Record<string, unknown>) || {}) as Record<
     string,
     unknown
@@ -367,47 +444,153 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
           <div className="structure-panel__section-title">结构预览 · 逐原子 Bader 电荷</div>
           {activeCif ? (
             <>
-              <Structure3DFrame
-                cif={activeCif}
-                height={420}
-                selected={selectedAtoms}
-                atomReadouts={atomReadouts}
-                atomReadoutTitle="选中原子 · Bader 电荷"
-                showSelectedCoords
-                onClickAtom={(atom, additive) =>
-                  setSelectedAtoms((prev) => {
-                    if (!additive) return [atom];
-                    const exists = prev.some((x) => x.index === atom.index);
-                    return exists
-                      ? prev.filter((x) => x.index !== atom.index)
-                      : [...prev, atom];
-                  })
-                }
-                onBoxSelect={(atoms, additive) =>
-                  setSelectedAtoms((prev) => {
-                    if (!additive) return atoms;
-                    const seen = new Set(prev.map((x) => x.index));
-                    return [...prev, ...atoms.filter((x) => !seen.has(x.index))];
-                  })
-                }
-                onClearSelection={() => setSelectedAtoms([])}
-                toolbarExtra={
-                  cifState.poscar && cifState.contcar ? (
-                    <Segmented
+              {/* 选择方式（用户口径）：点击选中 / Ctrl 多选 / Shift 框选 / **按元素全选** */}
+              <div className="bader-select-bar">
+                <span className="preview-note">
+                  选择：点原子 · Ctrl 多选 · Shift 框选 · 按元素全选
+                </span>
+                {atomsByElement.map(({ element, atoms }) => {
+                  const all = atoms.every((a) =>
+                    selectedAtoms.some((sel) => sel.index === a.index),
+                  );
+                  return (
+                    <Button
+                      key={element}
                       size="small"
-                      value={activeView}
-                      onChange={(v) => setStructureView(v as 'contcar' | 'poscar')}
-                      options={[
-                        { label: '优化后（CONTCAR）', value: 'contcar' },
-                        { label: '初始（POSCAR）', value: 'poscar' },
-                      ]}
+                      type={all ? 'primary' : 'default'}
+                      onClick={() =>
+                        setSelectedAtoms((prev) => {
+                          const rest = prev.filter(
+                            (sel) => !atoms.some((a) => a.index === sel.index),
+                          );
+                          return all ? rest : [...rest, ...atoms];
+                        })
+                      }
+                    >
+                      {element}（{atoms.length}）
+                    </Button>
+                  );
+                })}
+                <Button
+                  size="small"
+                  disabled={!selectedAtoms.length}
+                  onClick={() => setSelectedAtoms([])}
+                >
+                  清空选择
+                </Button>
+                <Tooltip title="按电荷上色：红 = 失电子（Δq > 0）· 蓝 = 得电子（Δq < 0）；没有 ZVAL 时按 Bader 电荷">
+                  <span className="atomic-force__switch" style={{ marginLeft: 'auto' }}>
+                    <Switch
+                      size="small"
+                      checked={colorBy}
+                      disabled={!data}
+                      onChange={setColorBy}
                     />
-                  ) : null
-                }
-              />
+                    按电荷上色
+                  </span>
+                </Tooltip>
+              </div>
+              <div className="bader-preview">
+                <div className="bader-preview__frame">
+                  <Structure3DFrame
+                    cif={activeCif}
+                    height={420}
+                    selected={selectedAtoms}
+                    atomReadouts={atomReadouts}
+                    atomReadoutTitle="选中原子 · Bader 电荷"
+                    atomColors={chargeColors.colors}
+                    showSelectedCoords
+                    onClickAtom={(atom, additive) =>
+                      setSelectedAtoms((prev) => {
+                        if (!additive) return [atom];
+                        const exists = prev.some((x) => x.index === atom.index);
+                        return exists
+                          ? prev.filter((x) => x.index !== atom.index)
+                          : [...prev, atom];
+                      })
+                    }
+                    onBoxSelect={(atoms, additive) =>
+                      setSelectedAtoms((prev) => {
+                        if (!additive) return atoms;
+                        const seen = new Set(prev.map((x) => x.index));
+                        return [...prev, ...atoms.filter((x) => !seen.has(x.index))];
+                      })
+                    }
+                    onClearSelection={() => setSelectedAtoms([])}
+                    toolbarExtra={
+                      cifState.poscar && cifState.contcar ? (
+                        <Segmented
+                          size="small"
+                          value={activeView}
+                          onChange={(v) => setStructureView(v as 'contcar' | 'poscar')}
+                          options={[
+                            { label: '优化后（CONTCAR）', value: 'contcar' },
+                            { label: '初始（POSCAR）', value: 'poscar' },
+                          ]}
+                        />
+                      ) : null
+                    }
+                  />
+                </div>
+                <Card size="small" title="选中原子统计" className="bader-stat-card">
+                  {selectionStats ? (
+                    <>
+                      <div className="bader-stat">
+                        <span>选中</span>
+                        <b>{selectionStats.count}</b>
+                        <span>个原子</span>
+                      </div>
+                      <div className="bader-stat">
+                        <span>{selectionStats.isNet ? '平均净电荷' : '平均电荷'}</span>
+                        <b>{fmt(selectionStats.mean, 4)}</b>
+                        <span>e</span>
+                      </div>
+                      <div className="bader-stat">
+                        <span>最大</span>
+                        <b>{fmt(selectionStats.max.value, 4)}</b>
+                        <span>
+                          {selectionStats.max.element}
+                          {selectionStats.max.poscarIndex}
+                        </span>
+                      </div>
+                      <div className="bader-stat">
+                        <span>最小</span>
+                        <b>{fmt(selectionStats.min.value, 4)}</b>
+                        <span>
+                          {selectionStats.min.element}
+                          {selectionStats.min.poscarIndex}
+                        </span>
+                      </div>
+                      <div className="preview-note" style={{ marginTop: 6 }}>
+                        合计 {fmt(selectionStats.total, 4)} e
+                        {selectionStats.isNet
+                          ? '（净电荷；正值=失电子）'
+                          : '（⚠ 该结构没有 ZVAL，这里是 Bader 原始电荷）'}
+                      </div>
+                    </>
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={
+                        <span className="preview-note">
+                          还没选原子：点原子 / Ctrl 多选 / Shift 框选，
+                          <br />
+                          或点上面元素按钮整元素全选
+                        </span>
+                      }
+                    />
+                  )}
+                  {chargeColors.scale && (
+                    <div className="preview-note" style={{ marginTop: 8 }}>
+                      {chargeColors.scale.note}
+                    </div>
+                  )}
+                </Card>
+              </div>
               <p className="preview-note" style={{ marginTop: 6, marginBottom: 10 }}>
                 在结构上<b>点原子</b>（或 Ctrl 多选 / Shift 框选）看它的 Bader 电荷；当前
-                <b>只显示数值、不着色</b>（按元素配色）。按数值着色、按元素分组统计属于分析链路，下一轮做。
+                <b>「按电荷上色」开关</b>可以让原子按净电荷着色（红=失电子 / 蓝=得电子）。
+                右侧卡片对<b>当前选中原子</b>实时统计平均 / 极值。
                 {atomCountMismatch
                   ? ' ⚠ 结构原子数与 ACF.dat 对不上，暂不挂电荷读数（先确认两边是同一份结构）。'
                   : ''}

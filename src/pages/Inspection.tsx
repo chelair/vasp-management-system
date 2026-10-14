@@ -54,20 +54,30 @@ import OutcarTailDialog from '../components/inspection/OutcarTailDialog';
 import StatusTag from '../components/common/StatusTag';
 
 /**
- * 「点击后再加载」的详情分区（2026-10-13 用户要求）：
- * 默认只渲染标题 + 提示，用户点「点击加载」才挂载内容（图表/3D/远端探测都省下来），
- * 挂载后保持挂载（再点是收起）。切换任务时用 `key` 重置。
+ * 详情分区（可折叠）：`defaultOpen` 的分区**直接渲染**，其余仍「点一下再加载」。
+ *
+ * 口径（2026-10-14 用户反馈）：懒加载只在**真贵**的时候才值 —— 要连远端探测
+ * （电子结构分析的 available-analyses）、要拉大 JSON（PDOS 图表）才值得挡一下；
+ * 数据本来就在详情载荷里、只是画两张曲线或一张小表的（能量与力、差分电荷分块表），
+ * 默认展开，省掉每次看详情都多一次点击。切换任务时靠 `key` 重置。
  */
 function LazySection({
   title,
   hint,
+  defaultOpen = false,
   children,
 }: {
   title: string;
   hint?: string;
+  /**
+   * 默认展开（2026-10-14）：**数据已经随详情载荷一起返回**、渲染开销又小的分区
+   * （能量/力曲线、差分电荷分块状态表）不必再让用户点一下 —— 实测这一步省不下什么，
+   * 反而每次看详情都多一次点击。真正贵的（远端探测 / 大图 / 大 JSON）仍然按需。
+   */
+  defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="inspection-detail__section">
       <h3>
@@ -1260,7 +1270,8 @@ export default function Inspection() {
               <LazySection
                 key={`${detailData.task_id}-force`}
                 title="能量与力 · 离子步"
-                hint={`按需加载（${detailData.force_history.length} 个离子步的曲线，点击再画）`}
+                defaultOpen
+                hint={`收起中：${detailData.force_history.length} 个离子步的能量与最大力曲线（数据随详情一起返回，展开即可看）`}
               >
                 <ForceHistoryCharts
                   history={detailData.force_history}
@@ -1318,7 +1329,11 @@ export default function Inspection() {
               <LazySection
                 key={`${detailData.task_id}-diffcharge`}
                 title={`差分电荷分块 · ${detailData.diff_charge.block_count} 个分块`}
-                hint="按需加载：展开后看各分块状态表（计算/看图在「电子结构分析 → 差分电荷」标签）"
+                defaultOpen
+                hint={
+                  `收起中：${detailData.diff_charge.block_count} 个分块的提交/收敛状态表` +
+                  '（数据随详情一起返回；计算与看图在「电子结构分析 → 差分电荷」标签）'
+                }
               >
 
                 <p className="preview-note">

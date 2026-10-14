@@ -258,7 +258,26 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.51）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.52）
+
+- 2026-10-15（用户："这里的 `CHGCAR_sum` 是之前算电荷差分时留下的"）：
+  **修 Bader 参考电荷用错文件**（v0.9.52）—— 用户一眼看出的真 bug。`chgsum.pl` 的输出名
+  **写死成 `CHGCAR_sum`**（脚本里 `open (OUT,">CHGCAR_sum")`，没有参数可改），而差分电荷链路跑的是
+  `chgsum.pl 1/CHGCAR 2/CHGCAR …`（**分块和**），Bader 要的是 `chgsum.pl AECCAR0 AECCAR2`
+  （**芯+价的和**）—— 两条链路撞名。v0.9.51 的探测把"远端有 `CHGCAR_sum`"当成"和已经算过了"，
+  会直接把差分电荷留下的分块和当 `-ref` 用，Bader 电荷全错。
+  **现场核实**（只读）：`PMS@model1` 的 `CHGCAR_sum` 头是 `Fe S / 24 32`（= 分块 `1/CHGCAR` 的头），
+  而 `AECCAR0/2`、`CHGCAR` 都是 `Fe S O H / 24 33 5 1`（完整结构）→ 实锤。
+  **修法**：① Bader 的参考电荷改名为 **`CHGCAR_sum_aec`**；② chgsum 在**子目录 `.bader_sum/`** 里跑
+  （软链 AECCAR0/AECCAR2 当输入，输出落在子目录里再 mv 出来）→ **不覆盖**那份遗留的 `CHGCAR_sum`（非破坏）；
+  ③ 只有**校验通过**才复用：比对 `CHGCAR_sum_aec` 与 `AECCAR0` 的**元素/计数行（第 6-7 行）+ 总行数**一致
+  （读 `chgsum.pl` 源码确认：它把第一个输入的前若干行（含坐标、网格行）原样拷进输出，所以这个判据可靠）；
+  ④ 探测文案明确写出"目录里那份 `CHGCAR_sum` 是差分电荷的分块和，Bader 不用它"。
+  **验证**：mock 端到端三个场景 —— 遗留分块和存在 → `sum_aec_valid=false`、重跑 chgsum（cwd 在
+  `.bader_sum/`）、`bader -ref CHGCAR_sum_aec`、且**遗留文件逐字节未变**；预置合法 `CHGCAR_sum_aec`
+  （头/行数与 AECCAR0 一致）→ 复用、0 次 chgsum；预置头部不匹配的 `CHGCAR_sum_aec` → 不信任、重跑。
+  原有场景（首跑/本地已有/远端已有 ACF/完整性失败/缺 bader）全部复跑通过；真机只读探测：
+  model2 / PMS@model1 / PMS@model2 全部改成"将先跑 chgsum → CHGCAR_sum_aec"并带上面那句提示。
 
 - 2026-10-14（用户："现在我要继续开发 Bader 电荷分析链路，同差分电荷，Bader 也需要在远端计算，链路为检查
   AECCAR0-2 是否存在、大小是否相差 <1% - 远端执行 chgsum.pl AECCAR0 AECCAR2 生成 CHGCAR_sum -

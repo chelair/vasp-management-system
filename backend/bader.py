@@ -56,6 +56,17 @@ ACF_NAME = "ACF.dat"
 META_JSON = "meta.json"
 #: 远端中间产物名（VTST chgsum.pl 约定）
 CHG_SUM_NAME = "CHGCAR_sum"
+#: Bader **自己的**参考电荷文件名（2026-10-15 修）。
+#: 为什么不能直接用 `CHGCAR_sum`：`chgsum.pl` 把输出名写死成 `CHGCAR_sum`，
+#: 差分电荷链路跑的是 `chgsum.pl 1/CHGCAR 2/CHGCAR …`（分块和），Bader 要的是
+#: `chgsum.pl AECCAR0 AECCAR2`（芯+价的和）—— 两者撞名。现场就踩到了：
+#: FS_Kaolin/model2 等目录里那份 `CHGCAR_sum` 的头是 `Fe S / 24 32`（分块），
+#: 而 AECCAR/CHGCAR 是 `Fe S O H / 24 33 5 1`，拿它当 `-ref` 会算出错的 Bader 电荷。
+#: 现在 Bader 在专用子目录 `.bader_sum/` 里跑 chgsum（不碰那份遗留文件），再 mv 成
+#: `CHGCAR_sum_aec`；复用它之前会**校验头部+行数与 AECCAR0 一致**。
+CHG_SUM_AEC_NAME = "CHGCAR_sum_aec"
+#: chgsum 的临时工作目录（放 AECCAR 的软链，输出落在里面，避免覆盖遗留的 CHGCAR_sum）
+SUM_WORK_DIR = ".bader_sum"
 
 #: 阶段名 → 前端展示文案
 STAGE_LABELS = {
@@ -265,9 +276,22 @@ def _remote_probe_script(ele_remote: str, exe: str, vtst: str) -> str:
             '[ -x "$B" ] && echo "R bader ok" || echo "R bader missing"',
             f'[ -x "{vtst}/chgsum.pl" ] && echo "R chgsum ok" || echo "R chgsum missing"',
             'echo "@@@FILES"',
-            "for f in " + " ".join(AECCAR_FILES) + f" CHGCAR {CHG_SUM_NAME} {ACF_NAME}; do",
+            "for f in " + " ".join(AECCAR_FILES) + f" CHGCAR {CHG_SUM_NAME} {CHG_SUM_AEC_NAME} {ACF_NAME}; do",
             '  if [ -s "$f" ]; then echo "T $f $(wc -c < "$f" | tr -d \' \')"; else echo "T $f 0"; fi',
             "done",
+            # Bader 的参考电荷能不能复用：CHGCAR_sum_aec 必须与 AECCAR0 **同结构同网格**。
+            # chgsum.pl 把第一个输入的前若干行（元素/计数/坐标/网格行）原样拷进输出，
+            # 所以比对这几行 + 总行数就能判定它是不是 AECCAR0+AECCAR2 的和
+            # （差分电荷留下的分块和头是分块元素，一定对不上）。
+            'echo "@@@SUMAEC"',
+            f'if [ -s "{CHG_SUM_AEC_NAME}" ]; then',
+            f'  _h1=$(sed -n \'6,7p\' AECCAR0 | tr -s \' \\t\' \' \')',
+            f'  _h2=$(sed -n \'6,7p\' "{CHG_SUM_AEC_NAME}" | tr -s \' \\t\' \' \')',
+            f'  _l1=$(wc -l < AECCAR0 | tr -d \' \')',
+            f'  _l2=$(wc -l < "{CHG_SUM_AEC_NAME}" | tr -d \' \')',
+            '  if [ -n "$_h2" ] && [ "$_h1" = "$_h2" ] && [ "$_l1" = "$_l2" ]; then',
+            '    echo "V aec ok"; else echo "V aec mismatch"; fi',
+            'else echo "V aec absent"; fi',
             'echo "@@@END"',
         ]
     )
@@ -337,6 +361,8 @@ def probe_remote(
         "integrity": None,
         "tools": {},
         "has_sum": False,
+        "has_sum_aec": False,
+        "sum_aec_valid": False,
         "has_remote_acf": False,
         "bader_exe": bader_exe(server),
     }
@@ -358,6 +384,7 @@ def probe_remote(
 
     sizes: Dict[str, int] = {}
     tools: Dict[str, bool] = {}
+    sum_aec_state = "absent"
     for line in raw.splitlines():
         line = line.strip()
         if line.startswith("T "):
@@ -368,12 +395,21 @@ def probe_remote(
             parts = line[2:].split(" ", 1)
             if len(parts) == 2:
                 tools[parts[0]] = parts[1].strip() == "ok"
+        elif line.startswith("V aec "):
+            sum_aec_state = line[len("V aec "):].strip()
 
     result["sizes"] = sizes
     result["tools"] = tools
     result["has_sum"] = bool(sizes.get(CHG_SUM_NAME))
+    result["has_sum_aec"] = bool(sizes.get(CHG_SUM_AEC_NAME))
+    result["sum_aec_valid"] = sum_aec_state == "ok"
     result["has_remote_acf"] = bool(sizes.get(ACF_NAME))
     result["integrity"] = _integrity(sizes)
+    legacy_note = (
+        f"（注：目录里另有一份 `{CHG_SUM_NAME}`，那是差分电荷的分块和，Bader 不用它）"
+        if result["has_sum"]
+        else ""
+    )
 
     if result["has_remote_acf"]:
         result.update({"ok": True, "state": "remote_acf",
@@ -391,7 +427,14 @@ def probe_remote(
     elif sizes.get("CHGCAR", 0) <= 0:
         result.update({"state": "incomplete", "reason": "远端缺少 CHGCAR（bader 的待分析电荷）"})
     else:
-        note = "远端已有 CHGCAR_sum（跳过 chgsum）" if result["has_sum"] else "可计算（会先跑 chgsum.pl）"
+        if result["sum_aec_valid"]:
+            note = (
+                f"远端已有 Bader 自己的参考电荷 {CHG_SUM_AEC_NAME}"
+                f"（校验过与 AECCAR0 同结构同网格），跳过 chgsum"
+            )
+        else:
+            note = f"可计算（先在 .bader_sum/ 里跑 chgsum.pl AECCAR0 AECCAR2 → {CHG_SUM_AEC_NAME}）"
+        note += legacy_note
         result.update({"ok": True, "state": "ready", "reason": note})
     with _LOCK:
         _PROBE_CACHE[task_id] = (time.time(), result)
@@ -496,7 +539,12 @@ def _run_capture(server: str, script: str, *, timeout: int) -> Dict[str, Any]:
 
 
 def _remote_compute_script(ele_remote: str, exe: str, vtst: str, reuse_sum: bool) -> str:
-    """远端：chgsum.pl AECCAR0 AECCAR2 → CHGCAR_sum；bader CHGCAR -ref CHGCAR_sum → ACF.dat。"""
+    """远端：`chgsum.pl AECCAR0 AECCAR2` →（Bader 自己的）`CHGCAR_sum_aec`；再 bader 出 `ACF.dat`。
+
+    `reuse_sum=True` 表示探测阶段已经**校验过** `CHGCAR_sum_aec` 与 AECCAR0 同结构同网格，
+    可以直接复用；否则在子目录 `.bader_sum/` 里跑 chgsum（软链到 AECCAR0/AECCAR2），
+    输出 mv 成 `CHGCAR_sum_aec` —— **不碰**目录里那份可能是差分电荷留下的 `CHGCAR_sum`。
+    """
     lines = [
         f'cd "{ele_remote}" || {{ echo "@@@NODIR"; exit 3; }}',
         f'B="{exe}"',
@@ -507,18 +555,24 @@ def _remote_compute_script(ele_remote: str, exe: str, vtst: str, reuse_sum: bool
         "done",
     ]
     if reuse_sum:
-        lines.append(f'[ -s "{CHG_SUM_NAME}" ] || {{ echo "@@@MISSING={CHG_SUM_NAME}"; exit 6; }}')
+        lines.append(
+            f'[ -s "{CHG_SUM_AEC_NAME}" ] || {{ echo "@@@MISSING={CHG_SUM_AEC_NAME}"; exit 6; }}'
+        )
         lines.append('echo "@@@SUM_REUSED"')
     else:
         lines += [
-            f'if ! "{vtst}/chgsum.pl" AECCAR0 AECCAR2 > chgsum.log 2>&1; then '
-            'echo "@@@CHGSUM_FAIL"; tail -n 20 chgsum.log; exit 7; fi',
-            f'[ -s "{CHG_SUM_NAME}" ] || {{ echo "@@@NO_SUM"; exit 8; }}',
+            f'mkdir -p "{SUM_WORK_DIR}"',
+            f'ln -sf "$PWD/AECCAR0" "$PWD/AECCAR2" "{SUM_WORK_DIR}/"',
+            f'if ! ( cd "{SUM_WORK_DIR}" && "{vtst}/chgsum.pl" AECCAR0 AECCAR2 '
+            '> chgsum.log 2>&1 ); then '
+            f'echo "@@@CHGSUM_FAIL"; tail -n 20 "{SUM_WORK_DIR}/chgsum.log"; exit 7; fi',
+            f'[ -s "{SUM_WORK_DIR}/{CHG_SUM_NAME}" ] || {{ echo "@@@NO_SUM"; exit 8; }}',
+            f'mv -f "{SUM_WORK_DIR}/{CHG_SUM_NAME}" "{CHG_SUM_AEC_NAME}"',
             'echo "@@@SUM_OK"',
         ]
     lines += [
         # Bader 本体：默认不写体积文件（AVF.dat 要 -p 才写），只出 ACF.dat / BCF.dat
-        'if ! "$B" CHGCAR -ref ' + CHG_SUM_NAME + ' > bader.log 2>&1; then '
+        'if ! "$B" CHGCAR -ref ' + CHG_SUM_AEC_NAME + ' > bader.log 2>&1; then '
         'echo "@@@BADER_FAIL"; tail -n 30 bader.log; exit 9; fi',
         f'[ -s "{ACF_NAME}" ] || {{ echo "@@@NO_ACF"; tail -n 20 bader.log; exit 10; }}',
         f'echo "@@@ACF_BYTES=$(wc -c < {ACF_NAME} | tr -d \' \')"',
@@ -629,12 +683,16 @@ def _background(
                     raise BaderError(f"远端文件校验未通过：{probe.get('reason') or '未知原因'}", 400)
                 # 远端已有 ACF.dat（且不是强制重算）→ 只回传，不重跑 chgsum/bader
                 if force or not probe.get("has_remote_acf"):
-                    _set_stage(run_id, "summing" if not probe.get("has_sum") else "bader")
+                    # 只有在探测里**校验通过**（与 AECCAR0 同结构同网格）才复用 Bader 自己的和；
+                    # 目录里那份 `CHGCAR_sum` 可能是差分电荷留下的分块和 —— 一律不认。
+                    _set_stage(
+                        run_id, "bader" if probe.get("sum_aec_valid") else "summing"
+                    )
                     script = _remote_compute_script(
                         ele_remote,
                         bader_exe(server),
                         vtst_dir(server),
-                        reuse_sum=bool(probe.get("has_sum")),
+                        reuse_sum=bool(probe.get("sum_aec_valid")),
                     )
                     run = _run_capture(server, script, timeout=3600)
                     raw = f"{run.get('stdout', '')}\n{run.get('stderr', '')}".strip()

@@ -349,10 +349,18 @@ DELETE /api/jobs/tasks/{task_id}/charge-diff                # 清除本地结果
 
 入口在**巡检详情 →「电子结构分析 → Bader」标签**（前端 `BaderPanel`）。链路：
 ① 远端校验 `AECCAR0/1/2` 是否存在、**大小差别 < 1%**（一次 exec）；
-② 远端 `chgsum.pl AECCAR0 AECCAR2` → `CHGCAR_sum`（远端已有就跳过）；
-③ 远端 `bader CHGCAR -ref CHGCAR_sum`（**耗时可能较长**，timeout 3600s，走专用连接）→ `ACF.dat`；
+② 远端 `chgsum.pl AECCAR0 AECCAR2` → **`CHGCAR_sum_aec`**（在子目录 `.bader_sum/` 里跑 chgsum 再 mv 出来）；
+③ 远端 `bader CHGCAR -ref CHGCAR_sum_aec`（**耗时可能较长**，timeout 3600s，走专用连接）→ `ACF.dat`；
 ④ 回传 `ACF.dat` 到 `<任务本地目录>/bader/` 并解析成原子表。
 **中断补偿**：远端已有 `ACF.dat` 就只回传；本地已有就只重新解析，不重跑。
+
+> ⚠ **为什么参考电荷叫 `CHGCAR_sum_aec` 而不是 `CHGCAR_sum`**（2026-10-15 修）：`chgsum.pl` 把输出名
+> **写死成 `CHGCAR_sum`**，而差分电荷链路跑的是 `chgsum.pl 1/CHGCAR 2/CHGCAR …`（**分块和**）——
+> 两者撞名。现场就踩到了：`FS_Kaolin/model2` 等目录里那份 `CHGCAR_sum` 的头部是 `Fe S / 24 32`（分块），
+> 而 `AECCAR0` 是 `Fe S O H / 24 33 5 1`（完整结构），拿它当 `-ref` 会算出错的 Bader 电荷。
+> 现在 Bader 在 `.bader_sum/` 子目录里跑 chgsum（软链到两个 AECCAR，**不覆盖**那份遗留文件），
+> 输出 mv 成 `CHGCAR_sum_aec`；复用它之前会校验**头部元素/计数行 + 总行数与 `AECCAR0` 一致**
+> （`chgsum.pl` 会把第一个输入的前若干行原样拷进输出，所以这个判据是可靠的）。
 
 ```
 POST   /api/jobs/tasks/{task_id}/bader/analyze   # 触发（异步），body {"force": false}
@@ -364,9 +372,10 @@ DELETE /api/jobs/tasks/{task_id}/bader           # 清除本地 ACF.dat / meta�
 - **状态返回**：`status`（`running|done|failed|idle`）、`stage` + `stage_label`
   （`checking` 校验 / `summing` chgsum / `bader` 分析 / `downloading` 回传 / `parsing` 解析 / `done`）、
   `elapsed_seconds`、`error`、`local`（`{has_acf, acf_path, acf_bytes, acf_mtime}`）、
-  `remote`（仅 `remote=1`：`{state, reason, sizes, integrity, tools, has_sum, has_remote_acf, bader_exe}`）。
-  远端 `state`：`ready`（可算，会先跑 chgsum）/ `remote_acf`（远端已有 ACF）/ `incomplete`（缺 AECCAR 或大小不一致）/
-  `no_bader` / `no_chgsum`（脚本缺失，按提示改 `servers.json`）。
+  `remote`（仅 `remote=1`：`{state, reason, sizes, integrity, tools, has_sum, has_sum_aec,
+  sum_aec_valid, has_remote_acf, bader_exe}`）。
+  远端 `state`：`ready`（可算；`sum_aec_valid=true` 才跳过 chgsum）/ `remote_acf`（远端已有 ACF）/
+  `incomplete`（缺 AECCAR 或大小不一致）/ `no_bader` / `no_chgsum`（按提示改 `servers.json`）。
 - **解析结果**（`GET .../bader`）：`{n_atoms, atoms[{index,x,y,z,charge,min_dist?,atomic_vol?}],
   total_charge, n_electrons, vacuum_charge, vacuum_volume, has_atomic_vol, has_min_dist, source, bytes, meta}`。
   兼容集群上的 Fortran 版（含 `ATOMIC VOL` 列 + `VACUUM CHARGE/VOLUME`、`NUMBER OF ELECTRONS` 页脚）

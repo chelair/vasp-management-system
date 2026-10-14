@@ -209,8 +209,9 @@ export default function BaderPanel({ taskId, taskName, available }: Props) {
 
       <p className="preview-note" style={{ marginBottom: 12 }}>
         点击后依次执行：远端校验 AECCAR0/1/2（大小差别 &lt; 1%）→
-        <code>chgsum.pl AECCAR0 AECCAR2</code> 生成 <code>CHGCAR_sum</code> →
-        <code>bader CHGCAR -ref CHGCAR_sum</code>（这一步可能跑很久）→ 回传
+        在子目录里 <code>chgsum.pl AECCAR0 AECCAR2</code> 生成 <b>Bader 自己的</b>参考电荷
+        <code>CHGCAR_sum_aec</code>（<b>不碰</b>目录里那份差分电荷留下的 <code>CHGCAR_sum</code>）→
+        <code>bader CHGCAR -ref CHGCAR_sum_aec</code>（这一步可能跑很久）→ 回传
         <code>ACF.dat</code> 并解析。远端已有 ACF.dat 就只回传、本地已有就只解析，不会重复算。
         <br />
         <span className="preview-note">

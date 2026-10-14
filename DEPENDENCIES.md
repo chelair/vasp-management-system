@@ -178,6 +178,13 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
   大小应当一致（链路按 **差别 < 1%** 校验，不一致就拒绝并说明"某一份没写完或被截断"）。
 - 依赖 **`chgsum.pl`**（见 §3c，VTST 目录）与远端 `bader` 都需要可执行权限；缺失时链路在
   `checking` 阶段就明确报错（不会白跑几十分钟）。
+- ⚠ **`chgsum.pl` 的输出名写死是 `CHGCAR_sum`**（`open (OUT,">CHGCAR_sum")`，没有参数可改），
+  而差分电荷链路（§3c）也用它算**分块和**——两条链路撞名（2026-10-15 现场踩到：目录里的
+  `CHGCAR_sum` 是差分电荷留下的分块和，头部 `Fe S / 24 32`，而 `AECCAR0` 是完整结构
+  `Fe S O H / 24 33 5 1`）。因此 Bader 链路**在子目录 `.bader_sum/` 里跑 chgsum**（软链两个 AECCAR
+  作为输入，不覆盖遗留文件），输出存成自己的 **`CHGCAR_sum_aec`**，并用
+  `bader CHGCAR -ref CHGCAR_sum_aec`；复用前会比对它与 `AECCAR0` 的**元素/计数行 + 总行数**
+  （`chgsum.pl` 原样拷贝第一个输入的头部，所以这个判据可靠）。
 
 ## 4. pymatgen 专项说明
 

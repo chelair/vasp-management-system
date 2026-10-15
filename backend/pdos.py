@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import threading
@@ -132,14 +133,17 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
 
     series: Dict[str, Dict[str, Any]] = {}
 
+    #: 曲线配色计数：按遍历顺序从调色板轮转取色（同一次分析里顺序固定 → 颜色稳定，
+    #: 勾掉/勾上别的曲线不会让已显示的曲线换色）。up/down 相邻 → 必然不同色。
+    curve_seq = itertools.count()
+
     def add_curves(
         node: Dict[str, Any],
         prefix: Tuple[str, ...],
         buckets: Dict[str, List[float]],
         grid: str,
-        color: str,
     ) -> None:
-        """把 up/down/total 三条（有几条加几条）挂到节点上。"""
+        """把 up/down/total 三条（有几条加几条）挂到节点上；**每条曲线一个颜色**。"""
         curves: List[Dict[str, Any]] = []
         order = [("up", "自旋向上"), ("down", "自旋向下")] if spin else [("total", "合计")]
         for key, label in order:
@@ -148,13 +152,18 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             cid = _curve_id(*prefix, key)
             series[cid] = {"grid": grid, "values": values}
+            color = _CURVE_PALETTE[next(curve_seq) % len(_CURVE_PALETTE)]
             curves.append({"id": cid, "spin": key, "label": label, "color": color})
         if curves:
             node["curves"] = curves
 
     # 一级：总态密度
     total_node: Dict[str, Any] = {"key": "total", "label": "总态密度", "level": 1, "children": []}
-    add_curves(total_node, ("total",), total_dos, "total", "#5B8DEF")
+    # 总态密度固定用蓝色族（它是参考曲线，跟投影曲线的调色板区分开）：
+    # up = 主蓝、down = 浅一档的蓝 —— 自旋两条也不重复颜色。
+    add_curves(total_node, ("total",), total_dos, "total")
+    for curve in total_node.get("curves") or []:
+        curve["color"] = "#8AB4F8" if curve.get("spin") == "down" else "#5B8DEF"
     tree: List[Dict[str, Any]] = [total_node]
 
     # 二级 / 三级：元素 → 轨道 →（p/d）方向
@@ -200,7 +209,6 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
                 ("el", element, orbital),
                 orbital_buckets,
                 partial_grid,
-                _element_color(element),
             )
             # 三级：只有 p / d 分方向
             for direction, label in DIRECTIONS.get(orbital, []):
@@ -218,7 +226,6 @@ def build_view(payload: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
                     ("el", element, orbital, direction),
                     direction_buckets,
                     partial_grid,
-                    _element_color(element),
                 )
                 if direction_node.get("curves"):
                     orbital_node["children"].append(direction_node)
@@ -280,6 +287,40 @@ _ELEMENT_COLORS = {
     "Cl": "#F0A020",
 }
 _FALLBACK_COLORS = ["#5B8DEF", "#67C6B0", "#F0A020", "#B37FEB", "#EB6F8A", "#4EA1D3", "#7b61d6"]
+
+
+#: **逐曲线**调色板（v0.9.56）。为什么要单独一套：
+#: 以前同一元素的所有曲线共用一个颜色（`add_curves(color=_element_color(element))`），
+#: 于是 Fe 的 dxy/dyz/dz2/dxz/dx2 五条、以及自旋 up/down 全是同一个颜色 ——
+#: 用户 2026-10-15 反馈"不同曲线颜色都一样、带中心的 up/down 不好区分"。
+#: 这套调色板**刻意冷暖交替**：相邻两个颜色对比强烈，而曲线的遍历顺序里
+#: up/down 紧挨着（同一轨道先 up 后 down）→ 自旋一定不同色；不同方向也依次换色。
+#: 23 个颜色足够把常见一屏（几组轨道 + 全部方向）都染成互不相同的颜色。
+_CURVE_PALETTE = (
+    "#E4572E",  # 橙红
+    "#2E86DE",  # 蓝
+    "#F2B134",  # 琥珀
+    "#12A594",  # 青绿
+    "#9B5DE5",  # 紫
+    "#4CAF50",  # 绿
+    "#E1467C",  # 玫红
+    "#3D9BE9",  # 亮蓝
+    "#C77D02",  # 棕黄
+    "#0FA3A3",  # 蓝绿
+    "#7B61D6",  # 蓝紫
+    "#D9535B",  # 红
+    "#67C6B0",  # 薄荷
+    "#B37FEB",  # 淡紫
+    "#EB6F8A",  # 粉红
+    "#4EA1D3",  # 天蓝
+    "#F0A020",  # 橙
+    "#A0C814",  # 黄绿
+    "#E86A33",  # 橘
+    "#00A6A6",  # 深青
+    "#8E6BBF",  # 藕紫
+    "#D14E86",  # 洋红
+    "#2C9DA8",  # 青
+)
 
 
 def _element_color(element: str) -> str:

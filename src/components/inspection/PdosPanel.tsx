@@ -305,14 +305,26 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   /**
    * 图上画哪几条带中心虚线：显示 ≤4 条时全画（常见的"选一组轨道 = up/down 两条"），
    * 更多时只画「只看这条」选中的那条 —— 否则 40 多条虚线叠在一起没法看。
+   * 顺带算一个**标签错行号**：两条带中心挨得近（< 可视范围的 ~4.5%）时标签上下错开，
+   * 不然数值标签会叠在一起看不清（用户 2026-10-15 反馈）。
    */
   const centerLines = useMemo(() => {
     if (!showCenter) return [];
-    return curves
+    const picked = curves
       .filter((curve) => curves.length <= 4 || curve.id === isolated)
       .map((curve) => ({ curve, value: centers[curve.id] }))
-      .filter((item): item is { curve: CurveEntry; value: number } => item.value != null);
-  }, [showCenter, curves, isolated, centers]);
+      .filter((item): item is { curve: CurveEntry; value: number } => item.value != null)
+      .sort((a, b) => b.value - a.value);
+    const span = Math.max(range.max - range.min, 1e-6);
+    const rowGap = span * 0.045;
+    let row = 0;
+    let prev: number | null = null;
+    return picked.map((item) => {
+      row = prev !== null && Math.abs(item.value - prev) < rowGap ? (row + 1) % 4 : 0;
+      prev = item.value;
+      return { ...item, row };
+    });
+  }, [showCenter, curves, isolated, centers, range]);
 
   const option = useMemo(() => {
     const efermi = meta?.efermi ?? 0;
@@ -473,10 +485,12 @@ export default function PdosPanel({ taskId, taskName }: Props) {
                     lineStyle: { type: 'solid' as const, color: '#b9c4d4', width: 1 },
                   },
                   // 带中心：每条显示曲线的加权平均能量（同色垂直虚线 + 数值标签）
-                  ...centerLines.map(({ curve, value }) => ({
+                  ...centerLines.map(({ curve, value, row }) => ({
                     xAxis: value,
                     lineStyle: {
-                      type: 'dashed' as const,
+                      // up / down 除了颜色不同，虚线样式也不同（长虚线 vs 点线）：
+                      // 两条带中心挨得近时也能分清哪条是哪个自旋（2026-10-15 用户反馈）
+                      type: (curve.spin === 'down' ? [2, 3] : [7, 4]) as number[],
                       color: curve.color,
                       width: 1.2,
                       opacity: 0.95,
@@ -485,6 +499,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
                       show: true,
                       formatter: `${curve.name} 带中心 ${formatCenter(value)} eV`,
                       position: 'insideEndTop' as const,
+                      distance: [0, 6 + row * 14],
                       color: curve.color,
                       fontSize: 11,
                     },

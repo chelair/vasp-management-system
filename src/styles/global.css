@@ -2831,6 +2831,185 @@ body.is-atom-selecting * {
   margin: 10px 0 14px;
 }
 
+/* 报告页：看板组件宿主（自由能台阶图 / NEB 能垒曲线，v0.9.62） */
+.report-panel-host {
+  width: 100%;
+}
+
+.report-panel {
+  width: 100%;
+}
+
+.report-cards {
+  display: flex;
+  gap: 10px;
+  margin: 8px 0 6px;
+}
+
+.report-card {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px 11px;
+  border: 1px solid #edf1f7;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fbfdff, #f3f8fd);
+}
+
+.report-card__label {
+  font-size: 12px;
+  color: #9aa7b8;
+}
+
+.report-card__value {
+  font-size: 19px;
+  font-weight: 700;
+  color: #3f6fe0;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.report-card__sub {
+  font-size: 11px;
+  color: #9aa7b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.report-panel__legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 2px 0 4px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.report-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.report-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.report-legend-dot--empty {
+  background: #fff;
+  border: 1px dashed #c3ceda;
+}
+
+.report-panel__legend-ref {
+  margin-left: auto;
+}
+
+/* 项目进度看板（v0.9.62，替代 charts/progress.svg） */
+.report-progress {
+  width: 100%;
+  margin: 10px 0 14px;
+  padding: 14px 16px 12px;
+  border: 1px solid #edf1f7;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.report-progress__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.report-progress__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.report-progress__percent {
+  font-size: 22px;
+  font-weight: 700;
+  color: #3f6fe0;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-progress__detail {
+  margin: 2px 0 8px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.report-progress__main {
+  height: 12px;
+  border-radius: 6px;
+  background: #eef2f8;
+  overflow: hidden;
+}
+
+.report-progress__main i {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #7fa7f7, #5b8def);
+  transition: width 0.4s ease;
+}
+
+.report-progress__segs {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.report-progress__seg {
+  flex-basis: 0;
+  min-width: 4px;
+  height: 24px;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.report-progress__seg i {
+  display: block;
+  height: 100%;
+  border-radius: 7px;
+  transition: width 0.4s ease;
+}
+
+.report-progress__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 12px;
+  font-size: 11px;
+  color: #5a6a80;
+}
+
+.report-progress__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.report-progress__note {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: #5a6a80;
+  line-height: 1.6;
+}
+
+.report-progress__foot {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
 .report-bader-collapse {
   margin: 6px 0 14px;
 }
@@ -3679,49 +3858,18 @@ body.is-atom-selecting * {
   margin-left: auto;
 }
 
-.fe-chart__svg {
+/* 台阶图改用 ECharts（v0.9.62）：画布高度固定 300（与旧 SVG 画布一致），
+   几何由 buildFreeEnergyStepOption 按容器宽度重算；横轴说明由 DOM 承载 */
+.fe-chart__canvas {
   width: 100%;
-  height: auto;
-  display: block;
+  height: 300px;
 }
 
-/* 台阶与动画 */
-
-.fe-step {
-  transition: transform 0.2s ease;
-  animation: fe-step-in 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
-}
-
-.fe-step.is-hover {
-  transform: translateY(-3px);
-}
-
-.fe-step__bar {
-  transition:
-    stroke-width 0.18s ease,
-    filter 0.18s ease;
-}
-
-.fe-step.is-hover .fe-step__bar {
-  stroke-width: 5.5;
-  filter: drop-shadow(0 4px 8px rgba(44, 157, 168, 0.35));
-}
-
-.fe-step__area {
-  animation: fe-fade-in 0.5s ease backwards;
-}
-
-.fe-step__value,
-.fe-step__label {
-  animation: fe-fade-up 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
-}
-
-.fe-step__hit {
-  cursor: pointer;
-}
-
-.fe-link {
-  animation: fe-fade-in 0.45s ease backwards;
+.fe-chart__axis {
+  margin: -4px 0 4px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-text-muted);
 }
 
 /* 悬停信息卡 */
@@ -3737,6 +3885,13 @@ body.is-atom-selecting * {
   box-shadow: 0 10px 26px rgba(35, 48, 67, 0.14);
   pointer-events: none;
   animation: fe-fade-in 0.16s ease;
+}
+
+/* ECharts tooltip 里承载的信息卡（v0.9.62）：卡片本身仍用 .fe-tip 的视觉，只是不再自己定位 */
+.fe-tip--ec {
+  position: static;
+  animation: none;
+  box-shadow: none;
 }
 
 .fe-tip__title {
@@ -3931,17 +4086,6 @@ body.is-atom-selecting * {
   }
 }
 
-@keyframes fe-step-in {
-  from {
-    opacity: 0;
-    transform: translateX(-16px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 .fe-anim {
   animation: fe-fade-up 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
 }
@@ -3967,11 +4111,6 @@ body.is-atom-selecting * {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fe-step,
-  .fe-step__area,
-  .fe-step__value,
-  .fe-step__label,
-  .fe-link,
   .fe-anim,
   .fe-tip {
     animation: none !important;
@@ -4137,8 +4276,30 @@ body.is-atom-selecting * {
   white-space: nowrap;
 }
 
-.nebmd-curve__svg {
-  display: block;
+/* 曲线改用 ECharts（v0.9.62）：画布高度由组件传入（默认 240，与旧 SVG 一致），
+   宽度跟着容器走；空状态用浮层文案（与旧图里的居中提示同一位置） */
+.nebmd-curve__plot {
+  position: relative;
+}
+
+.nebmd-curve__canvas {
+  width: 100%;
+}
+
+.nebmd-curve__canvas canvas {
+  cursor: pointer;
+}
+
+.nebmd-curve__empty {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  pointer-events: none;
 }
 
 /* ② 主视图 */

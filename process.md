@@ -197,6 +197,10 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 - `pages/`：Dashboard（总览，v0.6.0 重构：状态→资源→趋势→明细四层 + 快捷操作）、Inspection（巡检中心，含筛选/详情/单任务巡检/自由能详情看板）、Jobs（作业管理，任务树 + 详情面板）、Report、SSH。
   - 巡检中心**列表排序 + 路径列跨行合并**（v0.6.6 排序 / v0.8.6 合并修复）：状态优先级 `错误(0) > 警告(1) > 待提交/未检(2) > 正常(3) > 关闭(4)`；自由能 / NEB **同一组算一个排序单元**，用组内最高优先级状态整体参与排序（组内成员恒定相邻）；整组归档的单元沉到其他任务下面；其余保持原规则（类别 → 组名自然序 → 组内结构顺序 → 任务名）。同项目下自由能组与 NEB 组可能同名（如都有 PATH1），**排序单元键与跨行合并键都必须带 `task_category`**（`项目|类别|组名`）——合并键漏掉类别会让同名两组在排序相邻时被并成一格（v0.8.6 已修，见 §7）。
+  - **前台图表全部是 ECharts 了**（v0.9.62 收尾）：自由能台阶图、NEB 能量曲线、能量/力曲线、PDOS、功函数、
+    核数圆环都是 ECharts；`PathStepChart` / `NebEnergyCurve` 各自导出**纯函数 option 构建器**
+    （`buildFreeEnergyStepOption` / `buildNebEnergyOption`），详情页与报告页共用同一套配置。
+    前端唯一的自绘 SVG 只剩 `components/layout/BrandLogo.tsx`（logo，不是图）。
 - `components/dashboard/`：RunningTasksPanel（bjobs 实时作业表，点行跳 `/jobs?task=`）、CoresUsagePanel（ECharts 圆环 + 项目着色 + 90%/100% 阈值）、ClusterHealthPanel（节点灯 / 队列拥堵 / 存储进度）、RiskAlertsPanel（未收敛+Zombie+巡检异常，点条目跳转）、TrendPanel（近 7 天核数/运行任务/提交数）、ProjectProgressPanel（四象限气泡 + 项目进度列表 + **已关闭项目折叠区**，样式为胶囊按钮 + 虚线分隔）、`useEcharts.ts`（**ECharts 按需注册**：Pie/Line/Bar/Scatter + Grid/Tooltip/Legend/Title/MarkLine + Canvas）。
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
@@ -262,7 +266,50 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.61）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.62）
+
+- 2026-10-15（用户："现在把其他svg图也迁移一下，可以稍微优化一下美术风格，但是不要改布局和功能"）：
+  **剩余 SVG 图表全部迁到 ECharts**（v0.9.62）。口径：**布局 / 功能 / 读数一律不变**，只换实现 + 轻微美术打磨。
+  盘点后"还在画 SVG 的图"只有四处：巡检详情的**自由能台阶图**（`PathStepChart`）、**NEB 能量曲线**
+  （`NebEnergyCurve`），报告正文的 **自由能路径看板**、**NEB 能垒看板**、**项目进度条**（后端 `report_panels.py`）。
+
+  **① `PathStepChart` → ECharts custom 系列**：几何与旧 SVG **逐像素同口径**（边距 68/24/34/60、
+  `GAP_RATIO = 0.45`、chip 68×22/r11），台阶的「面积 + 4px 圆头台阶边 + 数值 + 状态点 + 结构编号 chip +
+  整列热区」全部由 `renderItem` 画出；配色照旧（青 `#2C9DA8` / 琥珀 `#E8A33D` / 灰虚线 `#C3CEDA`），
+  颜色统计口径（收敛且已矫正 = 青，否则琥珀，无数据 = 灰虚线）也照旧。交互：悬停上浮 3px + 台阶边加粗到 5px +
+  **`.fe-tip` 信息卡**（自由能 / 相对 ΔE / DFT / 矫正项 + 收敛矫正状态 + "点击查看巡检详情"）走 ECharts
+  tooltip 承载（新增 `.fe-tip--ec` 只改定位方式，卡片视觉不变）；点击台阶 → 打开该结构巡检详情。
+  美术微调：台阶边与面积改**横向渐变**（青/琥珀同族深浅），入场动画改 ECharts 错峰生长（80 ms/个）。
+
+  **② `NebEnergyCurve` → ECharts line + scatter**：`boundaryGap: false` 让首末点贴左右边距（与旧
+  `px(i) = left + i*plotW/(n-1)` 一致）、边距 54/22/22/32、零线虚线 + `0.00` 标注、曲线下渐变面积、
+  数据点（选中放大 + 光晕、鞍点红色实心）、悬停竖线虚线、点密时按 `labelStep`（`ceil(n/12)`）抽样编号且
+  首末/选中加重；头部读数（`hover ?? selected` 的映像号 / ΔE / F / E / 鞍点）与点击切换主视图都保留。
+  热区用一条 `scatter`（`symbol: 'rect'`）按 `coordSys` 算成"整高竖直带"，宽度 = 映像间距。
+  美术微调：曲线描边改横向渐变（`#A78BFA → #7B61D6`）。
+
+  **③ 报告页看板就地换组件**（`components/reports/ReportPanels.tsx` 新增）：报告里那三张后端 SVG
+  （`<group_id>_step.svg` / `<task_id>_barrier.svg` / `progress.svg`）在页面上换成
+  **HTML 统计卡 + 图例 + ECharts 图**（进度条是纯 DOM，不需要画布），做法与能量/力曲线一致
+  （渲染后按文件名找 `<img>` → 换 host div → portal 挂组件；**figcaption 保留**）。
+  - 自由能 / NEB 看板的 **4 张统计卡与图例文案与后端静态图逐字对齐**（实测 Ag：中间体 7 / 矫正 7/7 /
+    收敛 7/7 / 最高相对能 +14.664；NEB 映像 5 / Ea +0.120 / 最大受力 0.020 / 末态 −0.245，与静态 SVG 文本**完全一致**）；
+  - 点台阶 / 数据点 → 打开对应的结构三视图弹窗（复用报告里既有的 `<dialog>`，与点 chip 同一行为）；
+  - 项目进度看板：大百分比 + 主进度条 + 「块宽 = 当量占比」的分段条 + 每类型图例 + 工作量/算力两行 + 底部口径说明；
+  - **导出仍用后端静态 SVG**（新挂点只在报告页生效），与能量/力曲线同一口径。
+
+  **④ 顺带清理**：`report_charts.line_chart` + `_nice_ticks`（能量/力迁 ECharts 后已无调用方）删除；
+  前端删掉 SVG 时代的 `.fe-step*` / `.fe-link` / `.fe-chart__svg` / `.nebmd-curve__svg` 样式与
+  `@keyframes fe-step-in`；`useEcharts` 注册 `CustomChart`（台阶图需要）。
+
+  **验证（全部真机数据）**：台阶图/曲线 **25 项断言全过** —— 边距不变、台阶几何与 `ΔE=0` 面积对齐、
+  三种状态配色、无数据灰虚线、悬停上浮 3px + 加粗、信息卡四项读数 + warn 圆点、零线、错峰延迟、
+  NEB 首末贴边 / 零线 + 悬停竖线 / 鞍点标红 / 选中加粗 / 编号抽样 / 热区宽度 / 单映像不炸；
+  报告看板 + 替换逻辑 **22 项断言全过**（3 张自由能 + 6 张 NEB + 1 张进度全部命中、图注保留、
+  统计卡与结构化数据一致、进度看板六项文案/宽度）；v0.9.61 的三套回归（PDOS 控件 18 项、导出运行时 11 项、
+  挂点渲染）**全部仍然通过**；后端已 `systemctl restart`，前端 `dist/` 已重建。
+  **未迁移**：`cores_donut.svg` / `storage_bar.svg` —— 后端仍在生成，但**报告正文里没有任何章节引用它们**
+  （`resources` 自 v0.7.2 起不进正文），没有可迁移的展示位；要展示属于新增布局，等用户拍板。
 
 - 2026-10-15（用户："后面嵌入报告要支持调整范围、带中心计算、选择轨道等复杂操作，你确定不嵌入可以实现吗" →
   助手确认**不嵌入做不到**并给出量化 → 用户："可以，按照你想的来"）：
@@ -1501,7 +1548,9 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.61**（commit `477f82a`；`待办.md` 的最后一条"电子结构接报告"已交付，
+> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.62**（v0.9.61 = `477f82a`，待办表最后一条"电子结构接报告"已交付，
+> v0.9.62 = 把剩下的 SVG 图全迁 ECharts：自由能台阶图 / NEB 能量曲线 / 报告里的自由能·NEB 看板 / 项目进度条，
+> 布局与读数不变、只做美术微调，详见 §7 顶端条目。前端**除 logo 外不再有自绘 SVG 图表**）。
 > 报告里的 PDOS/功函数图可交互、单文件导出默认注入 ECharts 运行时；**后端改过 → 已 `systemctl restart`**，
 > 前端 `dist/` 已重建含 `dist/report/report-interactive.js`）。
 > v0.9.60 = `d019d82`（能量/力收敛曲线

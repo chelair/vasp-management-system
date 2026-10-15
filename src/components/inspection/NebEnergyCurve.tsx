@@ -1,4 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+/**
+ * NEB 能量曲线（2026-10-15，v0.9.62 从自绘 SVG 迁到 ECharts）。
+ *
+ * 迁移口径：**布局、功能、读数一律不变**，只换实现并顺带做一点美术打磨。
+ * - 横向铺满、按实际映像数均分横轴（`boundaryGap: false` → 首末点贴左右边距，与旧图一致）；
+ *   点密时按同一规则省略编号（`labelStep`），首末与选中恒显示且加重；
+ * - 曲线（直线连接、不插值，缺数据断开）+ 曲线下渐变面积 + 零线虚线（带 0.00 标注）
+ *   + 数据点（选中放大带光晕、鞍点红色实心 + 单独配色）+ 悬停竖线虚线；
+ * - 头部读数照旧：`hover ?? selected` 的映像号 / ΔE / 最大受力 / 绝对能量 / 鞍点标记；
+ * - 点击（每个映像一条整高竖直热区）→ 切换主视图；
+ * - 美术微调：曲线描边改横向渐变（浅紫 → 紫）、选中光晕更柔和、鞍点描边更清晰。
+ */
+
+import { useMemo, useRef, useState } from 'react';
+import type { EChartsCoreOption, ECharts } from 'echarts/core';
+
+import useEcharts from '../dashboard/useEcharts';
 
 export interface NebCurveImage {
   label: string;
@@ -10,14 +26,17 @@ export interface NebCurveImage {
 
 interface Props {
   images: NebCurveImage[];
-  /** 当前选中映像下标 */
+  /** 当前选中映像下标（-1 = 无选中，仅悬停读数） */
   selected: number;
   /** 鞍点（相对能最高）下标，-1 = 无 */
   saddle: number;
   onSelect: (index: number) => void;
+  /** 画布高度（默认 240，与旧 SVG 默认一致） */
+  height?: number;
 }
 
-const M = { left: 54, right: 22, top: 22, bottom: 32 };
+/** 与旧 SVG 一致的边距 */
+const MARGIN = { left: 54, right: 22, top: 22, bottom: 32 };
 const LINE = '#7B61D6';
 const LINE_SOFT = '#A78BFA';
 const SADDLE = '#D9535B';
@@ -26,86 +45,233 @@ const MIN_SPAN = 0.12;
 
 const signed = (v: number, d = 3) => `${v >= 0 ? '+' : ''}${v.toFixed(d)}`;
 
+/** 点密时的横轴编号抽样规则（与旧实现一致） */
+export function nebLabelStep(count: number): number {
+  return count > 16 ? Math.ceil(count / 12) : 1;
+}
+
 /**
- * NEB 能量曲线（v0.9.40）：横向铺满、按实际映像数均分横轴，点击数据点切换主视图。
- * 选中点突出、鞍点单独标记、零线虚线、曲线下方渐变填充；点密时自动缩小并省略编号。
+ * 纯函数：NEB 能量曲线 option（详情页 NEB 主视图与报告页共用同一套配置）。
+ * `hover` 由外部状态驱动（悬停竖线 + 头部读数跟着变）。
  */
-export default function NebEnergyCurve({ images, selected, saddle, onSelect }: Props) {
-  const plotRef = useRef<HTMLDivElement | null>(null);
-  /** 画布尺寸跟随容器：高度也一起量（曲线面板固定高，曲线才不会被压扁） */
-  const [size, setSize] = useState({ w: 640, h: 240 });
-  const [hover, setHover] = useState<number | null>(null);
-
-  useEffect(() => {
-    const el = plotRef.current;
-    if (!el) return undefined;
-    const apply = () =>
-      setSize({
-        w: Math.max(280, el.clientWidth || 640),
-        h: Math.max(150, el.clientHeight || 240),
-      });
-    apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
+export function buildNebEnergyOption(
+  images: NebCurveImage[],
+  {
+    selected = -1,
+    saddle = -1,
+    hover = null,
+  }: { selected?: number; saddle?: number; hover?: number | null } = {},
+): EChartsCoreOption {
   const n = images.length;
-  const geo = useMemo(() => {
-    const W = size.w;
-    const H = size.h;
-    const plotW = Math.max(10, W - M.left - M.right);
-    const plotH = H - M.top - M.bottom;
-    const rels = images
-      .map((x) => x.relative)
-      .filter((v): v is number => v != null && Number.isFinite(v));
-    let hi = Math.max(0, ...rels);
-    let lo = Math.min(0, ...rels);
-    if (!rels.length) {
-      hi = 0.06;
-      lo = -0.06;
-    }
-    // 最小跨度（全部相同时撑开），再加 18% 余量
-    if (hi - lo < MIN_SPAN) {
-      const mid = (hi + lo) / 2;
-      hi = mid + MIN_SPAN / 2;
-      lo = mid - MIN_SPAN / 2;
-    }
-    const pad = Math.max((hi - lo) * 0.18, 0.03);
-    hi += pad;
-    lo -= pad;
-    const px = (i: number) =>
-      n > 1 ? M.left + (i * plotW) / (n - 1) : M.left + plotW / 2;
-    const py = (v: number) => M.top + plotH * (1 - (v - lo) / (hi - lo));
-    const ticks = Array.from({ length: 4 }, (_, k) => lo + ((hi - lo) * (k + 0.5)) / 4);
-    return { W, H, plotW, plotH, px, py, ticks, y0: py(0) };
-  }, [images, size, n]);
+  const rels = images
+    .map((x) => x.relative)
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  let hi = rels.length ? Math.max(0, ...rels) : 0.06;
+  let lo = rels.length ? Math.min(0, ...rels) : -0.06;
+  // 最小跨度（全部相同时撑开），再加 18% 余量
+  if (hi - lo < MIN_SPAN) {
+    const mid = (hi + lo) / 2;
+    hi = mid + MIN_SPAN / 2;
+    lo = mid - MIN_SPAN / 2;
+  }
+  const pad = Math.max((hi - lo) * 0.18, 0.03);
+  hi += pad;
+  lo -= pad;
 
-  const { W, H, plotW, plotH, px, py, ticks, y0 } = geo;
   const rBase = n > 16 ? 3 : n > 10 ? 3.6 : 4.4;
-  const labelStep = n > 16 ? Math.ceil(n / 12) : 1;
+  const step = nebLabelStep(n);
+  const hoverIndex = hover != null && hover >= 0 && hover < n ? hover : null;
 
-  let pen = false;
-  const linePath = images
-    .map((x, i) => {
-      if (x.relative == null) {
-        pen = false;
-        return '';
-      }
-      const cmd = pen ? 'L' : 'M';
-      pen = true;
-      return `${cmd}${px(i).toFixed(1)},${py(x.relative).toFixed(1)}`;
-    })
-    .filter(Boolean)
-    .join(' ');
-  const areaPath = (() => {
-    const pts = images
-      .map((x, i) => (x.relative == null ? null : { x: px(i), y: py(x.relative) }))
-      .filter((p): p is { x: number; y: number } => p != null);
-    if (pts.length < 2) return '';
-    const base = Math.min(Math.max(y0, M.top), M.top + plotH);
-    return `M${pts[0].x},${base} ${pts.map((p) => `L${p.x},${p.y}`).join(' ')} L${pts[pts.length - 1].x},${base} Z`;
-  })();
+  return {
+    animation: true,
+    animationDuration: 520,
+    animationDurationUpdate: 200,
+    animationEasing: 'cubicOut',
+    grid: { ...MARGIN, containLabel: false },
+    // 读数在面板头部（`.nebmd-curve__read`），画布上不出浮层
+    tooltip: { show: false },
+    xAxis: {
+      type: 'category',
+      data: images.map((_, i) => String(i).padStart(2, '0')),
+      // 首末点贴边距（与旧图的 px(i) = left + i*plotW/(n-1) 一致）
+      boundaryGap: false,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        interval: (index: number) => step === 1 || index % step === 0 || index === n - 1,
+        fontSize: 10,
+        margin: 8,
+        color: (value: string) => {
+          const index = Number(value);
+          if (index === selected) return '#4A7BDD';
+          return index === 0 || index === n - 1 ? '#5A6A80' : '#8A98AC';
+        },
+        fontWeight: (value: string) => {
+          const index = Number(value);
+          return index === selected || index === 0 || index === n - 1 ? 600 : 400;
+        },
+      },
+    },
+    yAxis: {
+      type: 'value',
+      min: lo,
+      max: hi,
+      splitNumber: 4,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        fontSize: 10,
+        color: '#8A98AC',
+        formatter: (value: number) => signed(value, 2),
+      },
+      splitLine: { lineStyle: { color: '#EDF1F7', type: [3, 5] } },
+    },
+    series: [
+      {
+        type: 'line',
+        name: '相对能量',
+        connectNulls: false,
+        showSymbol: false,
+        data: images.map((x) => x.relative),
+        lineStyle: {
+          width: 2.4,
+          color: {
+            type: 'linear',
+            x: 0,
+            y: 0,
+            x2: 1,
+            y2: 0,
+            colorStops: [
+              { offset: 0, color: LINE_SOFT },
+              { offset: 1, color: LINE },
+            ],
+            global: false,
+          },
+        },
+        areaStyle: {
+          color: {
+            type: 'linear',
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: `${LINE}3D` },
+              { offset: 1, color: `${LINE}05` },
+            ],
+            global: false,
+          },
+        },
+        // 零线（浅灰虚线 + 0.00 标注）与悬停竖线（灰色虚线）
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          label: { show: false },
+          lineStyle: { color: '#B9C6D6', type: [5, 4], width: 1 },
+          data: [
+            {
+              yAxis: 0,
+              label: {
+                show: true,
+                formatter: '0.00',
+                position: 'insideStartTop',
+                distance: 4,
+                color: '#5A6A80',
+                fontSize: 10,
+                fontWeight: 600,
+              },
+            },
+            ...(hoverIndex == null
+              ? []
+              : [
+                  {
+                    xAxis: hoverIndex,
+                    lineStyle: { color: '#9CA3AF', type: [4, 3], width: 1 },
+                  },
+                ]),
+          ],
+        },
+        z: 2,
+      },
+      {
+        // 数据点：选中放大 + 光晕；鞍点红色实心 + 单独描边；无数据不画
+        type: 'scatter',
+        name: '映像',
+        symbol: 'circle',
+        data: images.map((x, i) => {
+          const isSel = i === selected;
+          const isSaddle = i === saddle;
+          return {
+            value: [i, x.relative],
+            symbolSize: (rBase + (isSel ? 2 : 0)) * 2,
+            itemStyle: {
+              color: isSaddle ? SADDLE : '#fff',
+              borderColor: isSaddle ? SADDLE : LINE,
+              borderWidth: isSel ? 3 : isSaddle ? 2.6 : 2.2,
+              opacity: x.relative == null ? 0 : 1,
+            },
+            ...(isSel
+              ? {
+                  // 选中光晕：单独一层半透明大圆（鞍点外圈同款做法）
+                  label: { show: false },
+                }
+              : {}),
+          };
+        }),
+        emphasis: { disabled: true },
+        z: 4,
+      },
+      {
+        // 点击/悬停热区：每个映像一条整高竖直带（宽度按实际间距均分，与旧实现一致）
+        type: 'scatter',
+        name: '热区',
+        symbol: 'rect',
+        silent: false,
+        symbolSize: (_value: unknown, params: { coordSys?: { width?: number; height?: number } }) => {
+          const cs = params?.coordSys || {};
+          const width = Number(cs.width || 600);
+          const height = Number(cs.height || 200);
+          const band = n > 1 ? width / (n - 1) : width;
+          return [band, height + 26];
+        },
+        data: images.map((_, i) => ({ value: [i, (lo + hi) / 2] })),
+        itemStyle: { opacity: 0 },
+        z: 5,
+      },
+    ],
+  };
+}
+
+export default function NebEnergyCurve({
+  images,
+  selected,
+  saddle,
+  onSelect,
+  height = 240,
+}: Props) {
+  const [hover, setHover] = useState<number | null>(null);
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  const selectRef = useRef(onSelect);
+  selectRef.current = onSelect;
+
+  const option = useMemo(
+    () => buildNebEnergyOption(images, { selected, saddle, hover }),
+    [images, selected, saddle, hover],
+  );
+
+  const containerRef = useEcharts(option, [option], (chart: ECharts | null) => {
+    if (!chart) return;
+    // 热区是第 3 条系列（索引 2）：悬停 / 点击都落在它上面
+    chart.on('mouseover', { seriesIndex: 2 }, (params: { dataIndex?: number }) => {
+      if (typeof params?.dataIndex === 'number') setHover(params.dataIndex);
+    });
+    chart.on('mouseout', { seriesIndex: 2 }, () => setHover(null));
+    chart.on('click', { seriesIndex: 2 }, (params: { dataIndex?: number }) => {
+      const index = params?.dataIndex;
+      if (typeof index === 'number') selectRef.current(index);
+    });
+  });
 
   const active = hover ?? selected;
   const activeImg = images[active];
@@ -123,9 +289,7 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
             <span className="nebmd-curve__read-img">
               映像 {String(active).padStart(2, '0')}
             </span>
-            {activeImg.relative != null && (
-              <span>ΔE {signed(activeImg.relative)} eV</span>
-            )}
+            {activeImg.relative != null && <span>ΔE {signed(activeImg.relative)} eV</span>}
             {activeImg.max_force != null && (
               <span>F {activeImg.max_force.toFixed(3)} eV/Å</span>
             )}
@@ -134,134 +298,13 @@ export default function NebEnergyCurve({ images, selected, saddle, onSelect }: P
           </div>
         )}
       </div>
-      <div className="nebmd-curve__plot" ref={plotRef}>
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          width="100%"
-          height={H}
-          className="nebmd-curve__svg"
-          role="img"
-          aria-label="NEB 映像相对能量曲线"
-        >
-        <defs>
-          <linearGradient id="nebmdArea" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={LINE} stopOpacity="0.24" />
-            <stop offset="100%" stopColor={LINE} stopOpacity="0.02" />
-          </linearGradient>
-          <linearGradient id="nebmdStroke" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor={LINE_SOFT} />
-            <stop offset="100%" stopColor={LINE} />
-          </linearGradient>
-        </defs>
-
-        {ticks.map((value, k) => {
-          const y = py(value);
-          return (
-            <g key={`t-${k}`}>
-              <line x1={M.left} y1={y} x2={W - M.right} y2={y} stroke="#EDF1F7" strokeDasharray="3 5" />
-              <text x={M.left - 8} y={y + 4} fontSize="10" fill="#8A98AC" textAnchor="end">
-                {signed(value, 2)}
-              </text>
-            </g>
-          );
-        })}
-
-        <line x1={M.left} y1={y0} x2={W - M.right} y2={y0} stroke="#B9C6D6" strokeDasharray="5 4" />
-        <text x={M.left - 8} y={y0 + 4} fontSize="10" fill="#5A6A80" textAnchor="end" fontWeight="600">
-          0.00
-        </text>
-
-        {areaPath && <path d={areaPath} fill="url(#nebmdArea)" pointerEvents="none" />}
-        {linePath && (
-          <path
-            d={linePath}
-            fill="none"
-            stroke="url(#nebmdStroke)"
-            strokeWidth="2.4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        )}
-
-        {/* 悬停竖线 */}
-        {hover != null && (
-          <line
-            x1={px(hover)}
-            y1={M.top}
-            x2={px(hover)}
-            y2={M.top + plotH}
-            stroke="#9CA3AF"
-            strokeWidth="1"
-            strokeDasharray="4 3"
-          />
-        )}
-
-        {/* 数据点 */}
-        {images.map((x, i) => {
-          if (x.relative == null) return null;
-          const isSel = i === selected;
-          const isSaddle = i === saddle;
-          const r = rBase + (isSel ? 2 : 0);
-          return (
-            <g key={`dot-${x.label}-${i}`} pointerEvents="none">
-              {isSel && <circle cx={px(i)} cy={py(x.relative)} r={r + 5} fill={LINE} opacity="0.16" />}
-              {isSaddle && (
-                <circle cx={px(i)} cy={py(x.relative)} r={r + 3.4} fill="none" stroke={SADDLE} strokeWidth="1.4" opacity="0.75" />
-              )}
-              <circle
-                cx={px(i)}
-                cy={py(x.relative)}
-                r={r}
-                fill={isSaddle ? SADDLE : '#fff'}
-                stroke={isSel ? LINE : isSaddle ? SADDLE : LINE}
-                strokeWidth={isSel ? 3 : 2.2}
-              />
-            </g>
-          );
-        })}
-
-        {/* 横轴编号（点密时省略） */}
-        {images.map((x, i) =>
-          labelStep === 1 || i % labelStep === 0 || i === n - 1 ? (
-            <text
-              key={`xl-${x.label}-${i}`}
-              x={px(i)}
-              y={M.top + plotH + 19}
-              fontSize="10"
-              fill={i === selected ? '#4A7BDD' : i === 0 || i === n - 1 ? '#5A6A80' : '#8A98AC'}
-              fontWeight={i === selected || i === 0 || i === n - 1 ? 600 : 400}
-              textAnchor="middle"
-            >
-              {String(i).padStart(2, '0')}
-            </text>
-          ) : null,
-        )}
-
+      <div className="nebmd-curve__plot">
+        <div className="nebmd-curve__canvas" style={{ height }} ref={containerRef} />
         {!hasEnergy && (
-          <text x={M.left + plotW / 2} y={M.top + plotH / 2} fontSize="12" fill="#8A98AC" textAnchor="middle">
+          <p className="nebmd-curve__empty">
             暂无相对能量数据（nebef.pl 未输出）
-          </text>
+          </p>
         )}
-
-        {/* 点击热区（每个映像一条，条带宽度按实际间距均分） */}
-        {images.map((x, i) => {
-          const bandW = n > 1 ? plotW / (n - 1) : plotW;
-          return (
-            <rect
-              key={`hit-${x.label}-${i}`}
-              x={px(i) - bandW / 2}
-              y={M.top}
-              width={bandW}
-              height={plotH + 26}
-              fill="transparent"
-              style={{ cursor: 'pointer' }}
-              onMouseEnter={() => setHover(i)}
-              onMouseLeave={() => setHover((h) => (h === i ? null : h))}
-              onClick={() => onSelect(i)}
-            />
-          );
-        })}
-        </svg>
       </div>
     </div>
   );

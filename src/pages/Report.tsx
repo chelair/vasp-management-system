@@ -51,6 +51,14 @@ import {
   type BaderAtom,
   type WorkFunctionSummary,
 } from '../components/reports/ReportScienceWidgets';
+import {
+  FreeEnergyReportPanel,
+  NebReportPanel,
+  ProjectProgressPanel,
+  type ReportFreeEnergyPath,
+  type ReportNebItem,
+  type ReportProgressSegment,
+} from '../components/reports/ReportPanels';
 import PageTransition from '../components/common/PageTransition';
 import type { Project, ProjectReportDetail, ProjectReportMeta, ReportNote } from '../types';
 import { renderMarkdown } from '../utils/markdown';
@@ -451,6 +459,70 @@ export default function Report() {
       setWidgetHosts([]);
     };
   }, [renderedSections, detail]);
+
+  /**
+   * 自由能台阶图 / NEB 能垒曲线（v0.9.62）：报告里那两张后端看板 SVG
+   * （`<group_id>_step.svg` / `<task_id>_barrier.svg`）就地换成 ECharts 看板 ——
+   * 做法与能量/力曲线一致：渲染后按文件名找到 `<img>`，换成 host div 再 portal 挂组件。
+   * 图注（figcaption）保留，图的版式与读数对齐原静态图。
+   */
+  const [panelHosts, setPanelHosts] = useState<
+    { kind: 'fe' | 'neb' | 'progress'; key: string; el: HTMLElement }[]
+  >([]);
+
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root) return;
+    const hosts: { kind: 'fe' | 'neb' | 'progress'; key: string; el: HTMLElement }[] = [];
+    root.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') || '';
+      // 项目进度条（`charts/progress.svg`）：换成 DOM 版进度看板
+      if (/(^|\/)progress\.svg$/.test(src)) {
+        const host = document.createElement('div');
+        host.className = 'report-panel-host';
+        host.setAttribute('data-panel', 'progress');
+        img.replaceWith(host);
+        hosts.push({ kind: 'progress', key: 'progress', el: host });
+        return;
+      }
+      const fe = /([^/\\]+)_step\.svg/.exec(src);
+      const neb = /([^/\\]+)_barrier\.svg/.exec(src);
+      const matched = fe ?? neb;
+      if (!matched) return;
+      const host = document.createElement('div');
+      host.className = 'report-panel-host';
+      host.setAttribute('data-panel', fe ? 'free-energy' : 'neb');
+      host.setAttribute('data-panel-key', matched[1]);
+      // 只替换图片本身：figcaption（图注）留在原处，版式观感与原来一致
+      img.replaceWith(host);
+      hosts.push({ kind: fe ? 'fe' : 'neb', key: matched[1], el: host });
+    });
+    setPanelHosts(hosts);
+    return () => {
+      hosts.forEach((h) => h.el.replaceChildren());
+      setPanelHosts([]);
+    };
+  }, [renderedSections, detail]);
+
+  /** 打开报告里某个结构三视图弹窗（与点击 `.report-chip[data-dialog]` 同一行为） */
+  const openReportDialog = useCallback((dialogId: string) => {
+    const dialog = document.getElementById(dialogId);
+    if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
+  }, []);
+
+  /** 报告里的自由能路径 / NEB 任务（结构化数据，按 group_id / task_id 索引） */
+  const freeEnergyPaths = useMemo<ReportFreeEnergyPath[]>(() => {
+    const structured = detail?.structured as
+      | { science?: { free_energy?: ReportFreeEnergyPath[] } }
+      | undefined;
+    return structured?.science?.free_energy ?? [];
+  }, [detail]);
+  const nebItems = useMemo<ReportNebItem[]>(() => {
+    const structured = detail?.structured as
+      | { science?: { neb?: ReportNebItem[] } }
+      | undefined;
+    return structured?.science?.neb ?? [];
+  }, [detail]);
 
   /** 报告里的电子结构结果（PDOS / Bader / 功函数）：结构化数据里取，按 task_id 索引 */
   const eleTasks = useMemo(() => {
@@ -1094,6 +1166,66 @@ export default function Report() {
                         <EnergyForceCharts points={points} height={260} />,
                         host.el,
                         host.key,
+                      );
+                    })}
+
+                    {/* 自由能台阶图 / NEB 能垒曲线（v0.9.62）：换成就地挂载的 ECharts 看板 */}
+                    {panelHosts.map((host) => {
+                      if (host.kind === 'progress') {
+                        const basic = (detail?.structured as
+                          | {
+                              basic_info?: {
+                                progress_segments?: ReportProgressSegment[];
+                                weighted_progress_percent?: number;
+                                /** 与本文件顶部的 `ReportWorkload` 同一份字段 */
+                                workload?: ReportWorkload;
+                              };
+                            }
+                          | undefined)?.basic_info;
+                        if (!basic?.progress_segments?.length) return null;
+                        const stats = (detail?.structured as
+                          | { executive_summary?: { task_stats?: Record<string, number> } }
+                          | undefined)?.executive_summary?.task_stats;
+                        return createPortal(
+                          <ProjectProgressPanel
+                            segments={basic.progress_segments}
+                            mainPercent={basic.weighted_progress_percent}
+                            taskStats={
+                              stats
+                                ? {
+                                    completed: stats.completed,
+                                    total: stats.total,
+                                    archived: stats.archived,
+                                  }
+                                : undefined
+                            }
+                            workload={basic.workload}
+                          />,
+                          host.el,
+                          'progress',
+                        );
+                      }
+                      if (host.kind === 'fe') {
+                        const path = freeEnergyPaths.find(
+                          (p) =>
+                            String(p.group_id ?? '') === host.key ||
+                            String(p.group_name ?? '') === host.key,
+                        );
+                        if (!path?.structures?.length) return null;
+                        return createPortal(
+                          <FreeEnergyReportPanel path={path} onOpenDialog={openReportDialog} />,
+                          host.el,
+                          `fe:${host.key}`,
+                        );
+                      }
+                      const item = nebItems.find(
+                        (n) => String(n.task_id ?? '') === host.key,
+                      );
+                      if (!item?.images?.length) return null;
+                      return createPortal(
+                        <NebReportPanel item={item} onOpenDialog={openReportDialog} />,
+                        host.el,
+                        `neb:${host.key}`,
                       );
                     })}
 

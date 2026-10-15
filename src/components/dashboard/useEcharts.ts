@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import * as echarts from 'echarts/core';
-import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
+import { BarChart, CustomChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
 import {
   AxisPointerComponent,
   GridComponent,
@@ -18,6 +18,8 @@ echarts.use([
   LineChart,
   BarChart,
   ScatterChart,
+  // 自定义系列：自由能「台阶图」用它一次画出面积/台阶边/数值/结构编号（v0.9.62）
+  CustomChart,
   GridComponent,
   TooltipComponent,
   // 十字准线（tooltip.axisPointer.type='cross'，PDOS 折线要用）

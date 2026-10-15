@@ -252,10 +252,11 @@ export function buildFreeEnergyStepOption(
 
   return {
     animation: true,
-    animationDuration: 480,
-    animationDurationUpdate: 180,
+    // 台阶生长 / 悬停高亮的速度（与 NEB 曲线同一口径，2026-10-15 调快）
+    animationDuration: 300,
+    animationDurationUpdate: 80,
     animationEasing: 'cubicOut',
-    animationDelay: (index: number) => index * 80,
+    animationDelay: (index: number) => index * 45,
     grid: { ...MARGIN, containLabel: false },
     tooltip: {
       trigger: 'item',

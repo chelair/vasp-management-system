@@ -12,6 +12,7 @@ import { useMemo } from 'react';
 
 import NebEnergyCurve, { type NebCurveImage } from '../inspection/NebEnergyCurve';
 import PathStepChart from '../inspection/PathStepChart';
+import useEcharts from '../dashboard/useEcharts';
 import type { FreeEnergyStructure } from '../../api/inspections';
 
 /** 一排统计卡（对齐静态图 `stat_cards`：浅渐变底 + 圆角 12 + 三行文字） */
@@ -37,6 +38,121 @@ const signed = (v: number | null | undefined, digits = 3) =>
   v == null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(digits)}`;
 const fixed = (v: number | null | undefined, digits = 3) =>
   v == null || !Number.isFinite(v) ? '—' : v.toFixed(digits);
+
+/** 报告结构化数据里的集群资源（`resources.cores` / `resources.storage`） */
+export interface ReportCores {
+  used?: number | null;
+  total?: number | null;
+  available?: number | null;
+  used_percent?: number | null;
+  project_used?: number | null;
+  running_jobs?: number | null;
+}
+
+export interface ReportStorage {
+  filesystem?: string | null;
+  mounted_on?: string | null;
+  used_gb?: number | null;
+  total_gb?: number | null;
+  available_gb?: number | null;
+  used_percent?: number | null;
+}
+
+/**
+ * 集群核数占用（v0.9.63）：原 `charts/cores_donut.svg` 的 DOM 版 ——
+ * 圆环 + 圆心「已用 / 上限」+「使用率」，阈值配色与后端一致（≥90% 橙、≥100% 红）。
+ */
+export function buildCoresDonutOption(cores: ReportCores) {
+  const used = cores.used ?? null;
+  const total = cores.total ?? null;
+  const percent = cores.used_percent ?? (used != null && total ? (used / total) * 100 : null);
+  const color =
+    percent == null ? '#5B8DEF' : percent >= 100 ? '#D9535B' : percent >= 90 ? '#E8A33D' : '#5B8DEF';
+  return {
+    animation: true,
+    animationDuration: 300,
+    tooltip: {
+      trigger: 'item' as const,
+      formatter: (params: { name: string; value: number }) =>
+        `${params.name}<br/>${params.value} 核`,
+    },
+    title: {
+      text: used != null && total != null ? `${used} / ${total}` : '—',
+      subtext:
+        (percent != null ? `使用率 ${percent.toFixed(0)}%` : '未取到核数上限') +
+        (cores.project_used ? ` · 本项目 ${cores.project_used} 核` : ''),
+      left: 'center' as const,
+      top: '40%',
+      textStyle: { fontSize: 20, fontWeight: 700, color: '#233043' },
+      subtextStyle: { fontSize: 11.5, color: '#8A98AC' },
+    },
+    series: [
+      {
+        type: 'pie' as const,
+        radius: ['46%', '66%'],
+        center: ['50%', '54%'],
+        label: { show: false },
+        labelLine: { show: false },
+        itemStyle: { borderWidth: 0 },
+        data:
+          used != null && total
+            ? [
+                { name: '已用', value: Math.min(Number(used), Number(total)), itemStyle: { color } },
+                {
+                  name: '剩余',
+                  value: Math.max(0, Number(total) - Number(used)),
+                  itemStyle: { color: '#EEF2F8' },
+                },
+              ]
+            : [{ name: '暂无数据', value: 1, itemStyle: { color: '#EEF2F8' } }],
+      },
+    ],
+  };
+}
+
+export function CoresDonutPanel({ cores }: { cores: ReportCores }) {
+  const option = useMemo(() => buildCoresDonutOption(cores), [cores]);
+  const containerRef = useEcharts(option, [option]);
+  return (
+    <div className="report-resource">
+      <p className="report-resource__title">集群核数占用</p>
+      <div className="report-resource__canvas" ref={containerRef} />
+    </div>
+  );
+}
+
+/** 集群存储使用（v0.9.63）：原 `charts/storage_bar.svg` 的 DOM 版（≥85% 变红，与后端一致） */
+export function StorageBarPanel({ storage }: { storage: ReportStorage }) {
+  const percent = storage.used_percent ?? null;
+  const value = percent == null ? null : Math.max(0, Math.min(Number(percent), 100));
+  const color = value != null && value >= 85 ? '#D9535B' : '#5B8DEF';
+  const usedTb = storage.used_gb != null ? Number(storage.used_gb) / 1024 : null;
+  const totalTb = storage.total_gb != null ? Number(storage.total_gb) / 1024 : null;
+  return (
+    <div className="report-resource">
+      <p className="report-resource__title">存储使用</p>
+      {value == null ? (
+        <p className="report-resource__empty">暂无存储数据</p>
+      ) : (
+        <>
+          <div className="report-resource__bar">
+            <i style={{ width: `${value}%`, background: color }} />
+          </div>
+          <p className="report-resource__detail">
+            {value.toFixed(0)}%
+            {usedTb != null && totalTb != null
+              ? ` · 已用 ${usedTb.toLocaleString('en-US', { maximumFractionDigits: 1 })} TB / ${totalTb.toLocaleString(
+                  'en-US',
+                  { maximumFractionDigits: 1 },
+                )} TB`
+              : ''}
+            {storage.filesystem ? ` · ${storage.filesystem}` : ''}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
 
 /** 报告结构化数据里的工作量与工期（`basic_info.workload`） */
 export interface ReportWorkload {

@@ -84,8 +84,9 @@ export function buildNebEnergyOption(
 
   return {
     animation: true,
-    animationDuration: 520,
-    animationDurationUpdate: 200,
+    // 入场与"鼠标指示线"的出现速度（2026-10-15 用户："那个线出现的速度调快一点点"）
+    animationDuration: 320,
+    animationDurationUpdate: 80,
     animationEasing: 'cubicOut',
     grid: { ...MARGIN, containLabel: false },
     // 读数在面板头部（`.nebmd-curve__read`），画布上不出浮层

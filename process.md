@@ -302,6 +302,11 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   前端删掉 SVG 时代的 `.fe-step*` / `.fe-link` / `.fe-chart__svg` / `.nebmd-curve__svg` 样式与
   `@keyframes fe-step-in`；`useEcharts` 注册 `CustomChart`（台阶图需要）。
 
+  **⑤ 一个坑（当天补修）：custom 系列不要依赖 `markLine`** —— 台阶图的 ΔE=0 参考线原本写成
+  `custom` 系列的 `markLine`，ECharts 对 custom 系列的 markLine 支持不可靠（可能整条不画）。
+  改成**单独一条静默折线系列**（`data` 只在首末给 0、其余 null，`label.formatter='0.00'`、
+  `lineStyle` 浅灰），稳过。
+
   **验证（全部真机数据）**：台阶图/曲线 **25 项断言全过** —— 边距不变、台阶几何与 `ΔE=0` 面积对齐、
   三种状态配色、无数据灰虚线、悬停上浮 3px + 加粗、信息卡四项读数 + warn 圆点、零线、错峰延迟、
   NEB 首末贴边 / 零线 + 悬停竖线 / 鞍点标红 / 选中加粗 / 编号抽样 / 热区宽度 / 单映像不炸；

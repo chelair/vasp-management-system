@@ -56,6 +56,8 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
   const lines = (markdown || '').split('\n');
   const html: string[] = [];
   let i = 0;
+  /** 章节内 <figure> 序号（「隐藏这张图」的 key 用，渲染时即固定） */
+  let figureIndex = 0;
 
   while (i < lines.length) {
     const raw = lines[i];
@@ -133,9 +135,12 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
             : m[2];
         // 报告页一屏内会挂十几张图，用 eager + async 解码：既不会出现"滚到才加载"的空白，
         // 也不会阻塞正文渲染（lazy 在部分内嵌浏览器里会一直不加载）
+        // `data-report-figure` = **渲染时就固定**的章节内图序号 —— 「隐藏这张图」的 key 用它，
+        // 这样后面把图换成组件（自由能 / NEB / 进度 / PDOS 交互图）也不会让序号错位（v0.9.69）
         figures.push(
-          `<figure class="${figureClass}"><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="eager" decoding="async"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
+          `<figure class="${figureClass}" data-report-figure="${figureIndex}"><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="eager" decoding="async"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
         );
+        figureIndex += 1;
         i += 1;
       }
       html.push(

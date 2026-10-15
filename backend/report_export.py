@@ -787,21 +787,50 @@ def _inject_type_notes(body_html: str, notes: Dict[str, Any]) -> str:
 
 
 def _apply_hidden(section_key: str, body_html: str, hidden: set) -> str:
-    """按隐藏 key 过滤章节内的元素：task:<章节>:<标题>（整块）与 figure:<章节>:<序号>（单图）。"""
+    """按隐藏 key 过滤章节内的元素（与前端 `utils/reportHidden.ts` 同一套 key/粒度）。
+
+    - `type:<章节>:<类型标题>` → 整个类型块（导出 HTML 里是 `<h4>` 块；**兼容旧 key**
+      `task:<章节>:<类型标题>`，早期版本把类型块存成了 task）；
+    - `task:<章节>:<任务标题>` → **单个任务块**（导出里是 `<h5>` 块：一个结构优化任务 /
+      一组 NEB / 一条自由能路径 / 电子结构的一个子块）；
+    - `etask:<章节>:<任务名>` → 电子结构里**一个任务的全部子块**（`<任务> · 差分电荷` /
+      `· Bader 电荷` / `· 态密度` / `· 功函数` 一起藏）；
+    - `figure:<章节>:<序号>` → 单张图（序号 = 章节内 `<figure>` 顺序，与页面一致）。
+    """
     if not hidden:
         return body_html
-    # 1) 任务块（<h5> 起 → 下一个 h5/hr/h2 前）
-    parts = re.split(r"(?=<h5>)", body_html)
+
+    def _label(chunk: str, tag: str) -> str:
+        m = re.match(rf"<{tag}>(.*?)</{tag}>", chunk, flags=re.S)
+        if not m:
+            return ""
+        return html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+
+    # 1) 类型块（<h4> 起 → 下一个 h4 前）
     kept: List[str] = []
-    for part in parts:
-        m = re.match(r"<h5>(.*?)</h5>", part)
-        if m:
-            label = html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
+    for part in re.split(r"(?=<h4>)", body_html):
+        label = _label(part, "h4")
+        if label and (
+            f"type:{section_key}:{label}" in hidden or f"task:{section_key}:{label}" in hidden
+        ):
+            continue
+        kept.append(part)
+    body_html = "".join(kept)
+
+    # 2) 任务块（<h5> 起 → 下一个 h5/h4 前）+ 电子结构"整任务"
+    kept = []
+    for part in re.split(r"(?=<h5>)", body_html):
+        label = _label(part, "h5")
+        if label:
             if f"task:{section_key}:{label}" in hidden:
+                continue
+            name = label.split(" · ")[0].strip()
+            if name and f"etask:{section_key}:{name}" in hidden:
                 continue
         kept.append(part)
     body_html = "".join(kept)
-    # 2) 单张图（按章节内 figure 出现顺序编号，与前端一致）
+
+    # 3) 单张图（按章节内 figure 出现顺序编号，与前端一致）
     index = 0
     out: List[str] = []
     for chunk in re.split(r"(<figure>.*?</figure>)", body_html, flags=re.S):

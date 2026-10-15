@@ -45,6 +45,7 @@ import PageHeader from '../components/common/PageHeader';
 import ReportNoteDialog from '../components/reports/ReportNoteDialog';
 import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
+import { applyHiddenBlocks, collectHiddenBlocks, hiddenKeyLabel } from '../utils/reportHidden';
 import {
   BaderFullTable,
   PdosReportChart,
@@ -403,6 +404,12 @@ export default function Report() {
 
   const noteBlocks = detail?.note_blocks ?? {};
 
+  /** 章节标题（「已隐藏」列表里把 key 显示成人话用） */
+  const sectionTitles = useMemo(
+    () => Object.fromEntries((detail?.sections ?? []).map((s) => [s.key, s.title])),
+    [detail],
+  );
+
   /**
    * 能量/力收敛曲线：**用 ECharts 组件替换报告里那张 SVG 图**（v0.9.60 迁移）。
    *
@@ -674,53 +681,28 @@ export default function Report() {
         };
       });
     }
-    // 元素级隐藏：章节 / 任务块 / 图（三类），并给可隐藏元素挂「隐藏」按钮
+    // 元素级隐藏（v0.9.69 扩展）：章节 / 类型 / **单个任务** / **电子结构整任务** / 单图
+    // 粒度与 key 的完整说明见 utils/reportHidden.ts
     root.querySelectorAll('section[data-report-section]').forEach((section: Element) => {
       const sectionKey = section.getAttribute('data-report-section') ?? '';
       section.classList.toggle('report-hidden', hidden.includes(`section:${sectionKey}`));
-      const body = section.querySelector('.report-markdown');
-      if (!body) return;
-      const children = Array.from(body.children) as HTMLElement[];
-      let figureIndex = 0;
-      children.forEach((el) => {
-        if (el.tagName === 'H5') {
-          const label = headingLabel(el);
-          const key = `task:${sectionKey}:${label}`;
-          el.classList.toggle('report-hidden', hidden.includes(key));
-          if (!el.querySelector('.report-hide-btn')) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'report-hide-btn';
-            btn.textContent = '隐藏';
-            btn.title = '隐藏这个任务块（可在右上角「已隐藏」里恢复）';
-            btn.addEventListener('click', (event) => {
-              event.stopPropagation();
-              toggleHidden(key, true);
-            });
-            el.append(btn);
-          }
-        }
-        if (el.tagName === 'FIGURE' || el.querySelector(':scope > figure')) {
-          const figures = el.tagName === 'FIGURE' ? [el] : Array.from(el.querySelectorAll('figure'));
-          figures.forEach((fig) => {
-            const key = `figure:${sectionKey}:${figureIndex}`;
-            figureIndex += 1;
-            fig.classList.toggle('report-hidden', hidden.includes(key));
-            if (!fig.querySelector('.report-hide-btn')) {
-              const btn = document.createElement('button');
-              btn.type = 'button';
-              btn.className = 'report-hide-btn';
-              btn.textContent = '隐藏';
-              btn.title = '隐藏这张图（可在右上角「已隐藏」里恢复）';
-              btn.addEventListener('click', (event) => {
-                event.stopPropagation();
-                toggleHidden(key, true);
-              });
-              fig.prepend(btn);
-            }
-          });
-        }
+    });
+    const hiddenBlocks = collectHiddenBlocks(root);
+    applyHiddenBlocks(hiddenBlocks, hidden);
+    hiddenBlocks.forEach((block) => {
+      if (block.anchor.querySelector(`.report-hide-btn[data-hide-key="${block.key}"]`)) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `report-hide-btn report-hide-btn--${block.kind}`;
+      btn.dataset.hideKey = block.key;
+      btn.textContent = block.buttonText ?? '隐藏';
+      btn.title = block.buttonTitle ?? '隐藏（可在右上角「已隐藏」里恢复）';
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toggleHidden(block.key, true);
       });
+      if (block.kind === 'figure') block.anchor.prepend(btn);
+      else block.anchor.append(btn);
     });
 
     // 自由能表格里的「结构 N」行：在可点 chip 旁加一个「注」按钮（编辑该中间体的注解）
@@ -1025,7 +1007,7 @@ export default function Report() {
                           key,
                           label: (
                             <span className="report-hidden-item">
-                              {key}
+                              {hiddenKeyLabel(key, sectionTitles)}
                               <a
                                 onClick={(event) => {
                                   event.stopPropagation();

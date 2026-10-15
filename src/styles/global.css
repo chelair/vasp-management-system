@@ -5831,9 +5831,16 @@ dialog.outcar-tail-dialog .btn--primary:disabled {
 }
 
 h5:hover > .report-hide-btn,
+h6:hover > .report-hide-btn,
 .report-markdown figure:hover > .report-hide-btn,
 .notes-panel:hover > summary .report-hide-btn {
   opacity: 1;
+}
+
+/* 「隐藏整任务」按钮（电子结构里一个任务的全部子块，v0.9.69）：换色区分于「隐藏」 */
+.report-hide-btn--etask {
+  color: #b06a12;
+  border-color: #f0d9b5;
 }
 
 .report-hidden { display: none !important; }

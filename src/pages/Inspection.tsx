@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -298,6 +298,19 @@ export default function Inspection() {
     }
   });
 
+  /**
+   * 详情框里**当前显示**的任务 id（竞态守卫，2026-10-15 修）。
+   *
+   * 用户反馈："A 任务单独巡检过程中退出详情页面然后进入 B 任务，待 A 巡检完成后 B 的详情页面会被替换为 A 的"。
+   * 原因：`runSingle(row, fromDetail=true)` 巡检完无条件 `setDetailData(await fetchInspectionDetail(row.task_id))`，
+   * 这一等（巡检 75–90s）期间用户完全可以切到别的任务；同理 `openDetail` 里"点 A 又马上点 B"也会串。
+   * 现在所有"异步取回详情 → 写 state"的地方都先比一下这个 ref：**不是当前显示的那个任务就不写**。
+   */
+  const openDetailIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    openDetailIdRef.current = detailOpen ? (detail?.task_id ?? null) : null;
+  }, [detailOpen, detail]);
+
   const markRead = (taskId: string) => {
     setReadChanges((prev) => {
       if (prev.has(taskId)) return prev;
@@ -313,6 +326,7 @@ export default function Inspection() {
 
   const handleCalculateCorrection = async () => {
     if (!detailData?.frac) return;
+    const ownerId = detailData.task_id;
     setCorrecting(true);
     try {
       // 联动：frac 本地尚无已完成记录时先单独巡检，再计算矫正项
@@ -321,8 +335,8 @@ export default function Inspection() {
       }
       await calculateCorrection(detailData.frac.task_id);
       message.success('矫正项计算完成');
-      const data = await fetchInspectionDetail(detailData.task_id);
-      setDetailData(data);
+      const data = await fetchInspectionDetail(ownerId);
+      if (openDetailIdRef.current === ownerId) setDetailData(data);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '计算矫正项失败');
     } finally {
@@ -598,6 +612,7 @@ export default function Inspection() {
           ? `任务 ${detail.task_name} 已关闭（归档）${siblingNote}`
           : `任务 ${detail.task_name} 已关闭（归档，原状态 ${r.previous_status}）${siblingNote}`,
       );
+      openDetailIdRef.current = null;
       setDetailOpen(false);
       setResults(await fetchInspectionResults());
     } catch (err) {
@@ -616,7 +631,9 @@ export default function Inspection() {
       message.success(
         `任务 ${detail.task_name} 已重新打开（${r.new_status}）${siblingNote}`,
       );
-      setDetailData(await fetchInspectionDetail(detail.task_id));
+      const reopenedId = detail.task_id;
+      const data = await fetchInspectionDetail(reopenedId);
+      if (openDetailIdRef.current === reopenedId) setDetailData(data);
       setResults(await fetchInspectionResults());
     } catch (err) {
       message.error(err instanceof Error ? err.message : '重新打开任务失败');
@@ -665,9 +682,11 @@ export default function Inspection() {
       // 刷新列表（该任务 has_inspection 变为 true，按钮切换为“详情”）
       const rows = await fetchInspectionResults();
       setResults(rows);
-      if (fromDetail) {
+      // 只有"详情框里现在还是这个任务"才回填详情 —— 巡检要 75–90s，
+      // 期间用户可能已经退出详情或切到别的任务（2026-10-15 用户反馈的覆盖 bug）
+      if (fromDetail && openDetailIdRef.current === row.task_id) {
         const data = await fetchInspectionDetail(row.task_id);
-        setDetailData(data);
+        if (openDetailIdRef.current === row.task_id) setDetailData(data);
       }
     } catch (err) {
       message.error(err instanceof Error ? err.message : '单任务巡检失败');
@@ -690,13 +709,17 @@ export default function Inspection() {
     setDetailOpen(true);
     setDetailLoading(true);
     setDetailData(null);
+    // 立即标记"详情框现在属于哪个任务"（不等 effect），并防止"点 A 又马上点 B"时 A 的慢响应回填
+    openDetailIdRef.current = row.task_id;
     try {
       const data = await fetchInspectionDetail(row.task_id);
-      setDetailData(data);
+      if (openDetailIdRef.current === row.task_id) setDetailData(data);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '读取巡检详情失败');
+      if (openDetailIdRef.current === row.task_id) {
+        message.error(err instanceof Error ? err.message : '读取巡检详情失败');
+      }
     } finally {
-      setDetailLoading(false);
+      if (openDetailIdRef.current === row.task_id) setDetailLoading(false);
     }
   };
 
@@ -1035,7 +1058,10 @@ export default function Inspection() {
       <Modal
         title={detail ? `${detail.task_name} · 巡检详情` : '巡检结果详情'}
         open={detailOpen}
-        onCancel={() => setDetailOpen(false)}
+        onCancel={() => {
+          openDetailIdRef.current = null;
+          setDetailOpen(false);
+        }}
         footer={
           <div
             style={{

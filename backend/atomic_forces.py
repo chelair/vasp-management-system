@@ -129,21 +129,33 @@ def _work_dir_lines(remote_dir: str, analysis_dirs: List[str]) -> List[str]:
     候选子目录按优先级排列（`""` = 任务主目录本身）。顺序试：谁的 OUTCAR 非空（opt）
     或谁的映像子目录里有非空 OUTCAR（NEB）就用谁 —— 这样"记录里的 conN 已经被删/换过"
     时不会取到空目录（2026-10-08 用户：PAYH3_TS2 记录里还是 con8，但远端只剩 con1–con6）。
+
+    **失败原因要说清楚**（2026-10-15 修）：以前"所有候选都没有可用 OUTCAR"和"任务主目录不存在"
+    都打同一个 `@@@NODIR`，本地一律翻译成"远端结构目录不存在：<主目录>"→ 明明目录在、
+    只是 OUTCAR 正在重写（作业刚重启）时，报错把人引偏（用户 FS-1opt 反馈）。
+    现在分三种标记，并且**逐个候选上报状态**（`@@@CAND=<子目录或主目录>:<字节数|MISSING>`），
+    本地据此给出"试过哪些目录、各自什么状态"。
     """
     subs = " ".join(f'"{d}"' for d in analysis_dirs)
     return [
         "set -e",
         f'RD="{remote_dir}"',
         'WORK=""',
+        '[ -d "$RD" ] || { echo "@@@NODIR"; exit 3; }',
         f"for SUB in {subs}; do",
         '  CAND="$RD/$SUB"',
-        '  [ -d "$CAND" ] || continue',
-        '  if [ -s "$CAND/OUTCAR" ]; then WORK="$CAND"; break; fi',
-        '  for f in "$CAND"/[0-9]*/OUTCAR; do',
-        '    if [ -s "$f" ]; then WORK="$CAND"; break 2; fi',
-        "  done",
+        '  if [ -d "$CAND" ]; then',
+        '    SZ=$(stat -c %s "$CAND/OUTCAR" 2>/dev/null || echo 0)',
+        '    echo "@@@CAND=$SUB:$SZ"',
+        '    if [ "$SZ" -gt 0 ]; then WORK="$CAND"; break; fi',
+        '    for f in "$CAND"/[0-9]*/OUTCAR; do',
+        '      if [ -s "$f" ]; then WORK="$CAND"; break 2; fi',
+        "    done",
+        "  else",
+        '    echo "@@@CAND=$SUB:MISSING"',
+        "  fi",
         "done",
-        '[ -n "$WORK" ] || { echo "@@@NODIR"; exit 3; }',
+        '[ -n "$WORK" ] || { echo "@@@NODATA"; exit 3; }',
         'echo "@@@WORK"',
         'echo "$WORK"',
     ]
@@ -329,7 +341,14 @@ def _structure_dirs(task: Dict[str, Any]) -> List[str]:
     source = (task.get("input_state") or {}).get("source") or {}
     _add(source.get("con"))
     _add(task.get("last_analysis_dir"))
-    _add("")
+    # 兜底：**任务主目录本身**（`""`）。
+    # 2026-10-15 修 bug：以前这里写的是 `_add("")`，而 `_add` 里有 `if text` 过滤 ——
+    # 空串被判为假，于是"回退主目录"这个候选**从来没进过列表**。后果：记录里的 conN
+    # 一旦不可用（被清理 / OUTCAR 正在重写），就一个候选都没有 → 远端打 `@@@NODIR`
+    # → 本地报"远端结构目录不存在：<主目录>"，而主目录里其实躺着一份好好的 OUTCAR
+    # （用户 FS-1opt 反馈的就是这个）。现在显式追加，且**放在最后**当兜底。
+    if "" not in candidates:
+        candidates.append("")
     return candidates
 
 
@@ -512,6 +531,17 @@ def build_atomic_forces(
         warnings = [*warnings, "受力来自深度兜底（尾部窗口里没有力块）"]
     payload["source_dir"] = _relative_dir(remote_dir, work_dir)
     payload["source_dirs"] = structure_key
+    # 2026-10-15：受力来源与"记录里的结构来源"不一致时**明确提示**（用户 FS-1opt 反馈：
+    # 界面显示的是某个 conN 的 CONTCAR，受力却因为那份 conN 失效而回退到别处 →
+    # 两者可能不是同一份结构，不能再默默返回）。
+    recorded_source = structure_dirs[0] if structure_dirs else ""
+    if recorded_source and payload["source_dir"] != recorded_source:
+        actual = payload["source_dir"] or "主目录"
+        warnings = [
+            *warnings,
+            f"受力来源与记录的结构来源不一致（记录 {recorded_source} → 实际 {actual}）："
+            "可能与界面显示的 CONTCAR 不同源，确认后再用这组受力",
+        ]
     payload["cache_path"] = _write_cache(reports_dir, task_id, None, payload)
     if warnings:
         payload["warnings"] = warnings
@@ -525,8 +555,12 @@ def _run(server: str, script_b64: str) -> str:
         server, f"echo {script_b64} | base64 -d | bash", timeout=REMOTE_TIMEOUT
     )
     out = str(result.get("stdout") or "")
-    # 脚本主动打标记（@@@NODIR 等）退出属于"可解释失败"，交给调用方映射成 404/409
-    flagged = any(flag in out for flag in ("@@@NODIR", "@@@NOOUTCAR", "@@@NOPOSCAR"))
+    # 脚本主动打标记（@@@NODIR / @@@NODATA 等）退出属于"可解释失败"，交给调用方映射成 404/409
+    # （@@@NODATA 是 2026-10-15 新增：目录在、但没有可用的 OUTCAR —— 漏了它就会掉进 502 兜底，
+    #   把"试过哪些候选目录"的诊断全丢掉）
+    flagged = any(
+        flag in out for flag in ("@@@NODIR", "@@@NODATA", "@@@NOOUTCAR", "@@@NOPOSCAR")
+    )
     if result.get("exit_code") != 0 and "@@@END" not in out and not flagged:
         raise AtomicForceError(
             502, f"读取远端受力失败：{(result.get('stderr') or out).strip()[:200]}"
@@ -535,14 +569,48 @@ def _run(server: str, script_b64: str) -> str:
 
 
 def _raise_for_flags(out: str, remote_dir: str) -> None:
+    """把远端标记翻译成人话（`@@@NODIR` = 任务主目录不存在 / `@@@NODATA` = 目录在但没有可用 OUTCAR）。"""
     if "@@@NODIR" in out:
+        raise AtomicForceError(404, f"远端任务目录不存在：{remote_dir}")
+    if "@@@NODATA" in out:
         raise AtomicForceError(
-            404, f"远端结构目录不存在：{remote_dir}（与界面显示的 CONTCAR 来源不一致时会这样）"
+            409,
+            "候选目录里没有可用的 OUTCAR（作业可能刚刚重启、OUTCAR 正在重写；"
+            "等一会儿再点「查看原子受力」）"
+            + _candidate_note(out),
         )
     if "@@@NOOUTCAR" in out:
         raise AtomicForceError(404, "该目录还没有 OUTCAR（作业可能尚未开始或尚未产生输出）")
     if "@@@NOPOSCAR" in out:
         raise AtomicForceError(404, "该目录缺少 POSCAR，无法对应原子序号")
+
+
+def _candidate_note(out: str) -> str:
+    """把脚本上报的候选目录状态拼成一句诊断：`· 试过：con1（OUTCAR 4.4 MB）、主目录（不存在）`。"""
+    items: List[str] = []
+    for line in out.splitlines():
+        text = line.strip()
+        if not text.startswith("@@@CAND="):
+            continue
+        payload = text[len("@@@CAND=") :]
+        sub, _, size = payload.rpartition(":")
+        label = f"{sub}" if sub else "主目录"
+        if size == "MISSING":
+            items.append(f"{label}（目录不存在）")
+        else:
+            try:
+                size_int = int(size)
+            except ValueError:
+                size_int = 0
+            shown = (
+                f"{size_int / 1024 / 1024:.1f} MB"
+                if size_int >= 1024 * 1024
+                else f"{size_int} B"
+            )
+            items.append(f"{label}（OUTCAR {shown}）")
+    if not items:
+        return ""
+    return " · 试过：" + "、".join(items)
 
 
 def _fetch_all_images(

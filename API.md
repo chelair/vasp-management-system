@@ -618,9 +618,11 @@ body: {
   改「范围」（两个输入框 / 自适应）即实时重算。
 - 实现：`src/utils/bandCenter.ts`（`bandCenter` / `bandCenters` / `formatCenter`）+ `PdosPanel`。
 
-**逐曲线配色（v0.9.56）**：`tree[].curves[].color` 以前**同一元素的所有曲线共用一个颜色**
-（Fe 的 dxy/dyz/dz2/dxz/dx2 与 up/down 全同色），现在改成**每条曲线一个颜色**
-（`pdos.py::_CURVE_PALETTE`，23 色且**冷暖交替**；总态密度固定蓝色族 up `#5B8DEF` / down `#8AB4F8`）。
+**逐曲线配色（v0.9.56，v0.9.57 扩到 120 色）**：`tree[].curves[].color` 以前**同一元素的所有曲线
+共用一个颜色**（Fe 的 dxy/dyz/dz2/dxz/dx2 与 up/down 全同色），现在改成**每条曲线一个颜色**
+（`pdos.py::_CURVE_PALETTE`，**生成式 120 色**：黄金角布色（相邻色相差 ~137.5°，视觉差异最大）
++ 亮度三档循环，色相避开总态密度的蓝；总态密度固定蓝色族 up `#5B8DEF` / down `#8AB4F8`）。
+实测真机：model1 34 条曲线 / 34 色、model2 74 条曲线 / 74 色，**零重色，up/down 永不撞色**。
 按菜单遍历顺序轮转取色 → 同一次分析里颜色稳定（勾掉别的曲线不会换色），
 且 **up/down 紧挨着取色 → 必不同色**。带中心虚线再叠加两道区分：**up 长虚线 `[7,4]` / down 点线 `[2,3]`**，
 且两条带中心挨得近（< 可视范围 4.5%）时**数值标签自动错行**（`distance` 6/20/34/48 px 循环）。

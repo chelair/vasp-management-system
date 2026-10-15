@@ -289,38 +289,50 @@ _ELEMENT_COLORS = {
 _FALLBACK_COLORS = ["#5B8DEF", "#67C6B0", "#F0A020", "#B37FEB", "#EB6F8A", "#4EA1D3", "#7b61d6"]
 
 
-#: **逐曲线**调色板（v0.9.56）。为什么要单独一套：
-#: 以前同一元素的所有曲线共用一个颜色（`add_curves(color=_element_color(element))`），
-#: 于是 Fe 的 dxy/dyz/dz2/dxz/dx2 五条、以及自旋 up/down 全是同一个颜色 ——
-#: 用户 2026-10-15 反馈"不同曲线颜色都一样、带中心的 up/down 不好区分"。
-#: 这套调色板**刻意冷暖交替**：相邻两个颜色对比强烈，而曲线的遍历顺序里
-#: up/down 紧挨着（同一轨道先 up 后 down）→ 自旋一定不同色；不同方向也依次换色。
-#: 23 个颜色足够把常见一屏（几组轨道 + 全部方向）都染成互不相同的颜色。
-_CURVE_PALETTE = (
-    "#E4572E",  # 橙红
-    "#2E86DE",  # 蓝
-    "#F2B134",  # 琥珀
-    "#12A594",  # 青绿
-    "#9B5DE5",  # 紫
-    "#4CAF50",  # 绿
-    "#E1467C",  # 玫红
-    "#3D9BE9",  # 亮蓝
-    "#C77D02",  # 棕黄
-    "#0FA3A3",  # 蓝绿
-    "#7B61D6",  # 蓝紫
-    "#D9535B",  # 红
-    "#67C6B0",  # 薄荷
-    "#B37FEB",  # 淡紫
-    "#EB6F8A",  # 粉红
-    "#4EA1D3",  # 天蓝
-    "#F0A020",  # 橙
-    "#A0C814",  # 黄绿
-    "#E86A33",  # 橘
-    "#00A6A6",  # 深青
-    "#8E6BBF",  # 藕紫
-    "#D14E86",  # 洋红
-    "#2C9DA8",  # 青
-)
+def _hsl_to_hex(hue: float, sat: float, light: float) -> str:
+    """HSL(0-360, 0-100, 0-100) → `#rrggbb`（不引第三方库，十几行够用）。"""
+    s = max(0.0, min(1.0, sat / 100.0))
+    l = max(0.0, min(1.0, light / 100.0))
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs(((hue / 60.0) % 2) - 1))
+    m = l - c / 2
+    sector = int(hue // 60) % 6
+    rgb = [
+        (c, x, 0.0),
+        (x, c, 0.0),
+        (0.0, c, x),
+        (0.0, x, c),
+        (x, 0.0, c),
+        (c, 0.0, x),
+    ][sector]
+    return "#" + "".join(f"{int(round((v + m) * 255)):02x}" for v in rgb)
+
+
+def _build_curve_palette(count: int = 120) -> Tuple[str, ...]:
+    """**逐曲线**调色板（v0.9.56）。为什么要单独一套：
+
+    以前同一元素的所有曲线共用一个颜色（`add_curves(color=_element_color(element))`），
+    于是 Fe 的 dxy/dyz/dz2/dxz/dx2 五条、以及自旋 up/down 全是同一个颜色 ——
+    用户反馈"不同曲线颜色都一样、带中心的 up/down 不好区分"。
+
+    这里用**黄金角布色**（相邻色相相差 ~137.5°，视觉差异最大）+ 亮度三档循环，
+    生成 120 个互不相同的颜色：曲线遍历顺序里 up/down 紧挨着（同一轨道先 up 后 down），
+    所以**自旋一定不同色**；不同方向、不同元素也依次换色；一屏几十条曲线也不会重色。
+    色相避开总态密度那两支蓝（≈215°），免得投影曲线跟参考曲线撞色。
+    """
+    palette: List[str] = []
+    golden_angle = 137.508
+    lightness = (42.0, 56.0, 68.0)
+    for i in range(count):
+        hue = (i * golden_angle + 20.0) % 360.0
+        if abs(hue - 215.0) < 16.0:  # 让开总态密度的蓝
+            hue = (hue + 40.0) % 360.0
+        sat = 62.0 if i % 3 else 54.0
+        palette.append(_hsl_to_hex(hue, sat, lightness[i % 3]))
+    return tuple(palette)
+
+
+_CURVE_PALETTE = _build_curve_palette()
 
 
 def _element_color(element: str) -> str:

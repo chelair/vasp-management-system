@@ -1072,8 +1072,8 @@ def _sections_markdown(report, charts):
         skipped_unconverged = int(science.get("opt_skipped_unconverged") or 0)
         if skipped_unconverged:
             blocks.append(
-                f"另有 **{skipped_unconverged} 个结构优化任务尚未收敛**（或未归档），"
-                "按口径不展开结构三视图；收敛/归档后会自动出现在下一份报告里。\n\n"
+                # 只陈述事实（报告是对外文件，2026-10-15 用户："报告不出现警告和提示"）
+                f"另有 **{skipped_unconverged} 个结构优化任务未收敛**，其结构与曲线未纳入本报告。\n\n"
             )
         entries: List[str] = []
         for item in opt_items:
@@ -1130,8 +1130,7 @@ def _sections_markdown(report, charts):
             if not with_energy:
                 # 频率矫正（G(T)）还没算 → 自由能列为空、台阶图不画；但结构三视图照样能点开
                 lines.append(
-                    "_还没有频率矫正项（G(T)）：自由能与相对 ΔE 列为空、不画台阶图；"
-                    "各中间体的结构三视图仍可点「结构 N」查看。_"
+                    "_尚未做频率矫正（G(T)）：自由能与相对 ΔE 列为空。_"
                 )
             if path.get("chart"):
                 lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
@@ -1217,7 +1216,7 @@ def _sections_markdown(report, charts):
                 )
             if any(not img.get("dialog") for img in images):
                 lines.append(
-                    "_该 NEB 任务的映像三视图尚未生成（巡检/归档后自动用 VESTA 渲染）_"
+                    "_部分映像暂无三视图。_"  # 报告对外：只说事实，不写内部流程
                 )
             entries.append("\n\n".join(lines))
         blocks.append("\n\n---\n\n".join(entries) + "\n")
@@ -1280,14 +1279,10 @@ def _sections_markdown(report, charts):
                         f"耗时 {charge_diff.get('elapsed_seconds', '-')} s）。"
                     )
                 elif charge_diff:
-                    diff_state = (
-                        f"\u26a0 差分电荷计算失败：{charge_diff.get('error') or '未知原因'}。"
-                    )
+                    # 失败原因只留在结构化数据里（报告是对外文件，不放警告）
+                    diff_state = "差分电荷未完成。"
                 else:
-                    diff_state = (
-                        "差分电荷尚未生成（在巡检详情的「电子结构分析 → 差分电荷」里点击计算："
-                        "远端校验 → VTST 算差分 → 回传 → VESTA 出三视图）。"
-                    )
+                    diff_state = "差分电荷尚未生成。"
                 if item.get("charge_diff_dialog"):
                     ele_blocks.append(
                         f"{diff_state} 差分图（VESTA 三视图）见 "
@@ -1297,9 +1292,7 @@ def _sections_markdown(report, charts):
                 elif charge_diff.get("ok"):
                     # 差分算好了但本地三视图不在（被「清除三视图」删掉 / 只回了数据）
                     ele_blocks.append(
-                        f"{diff_state} 差分图（VESTA 三视图）当前不在本地："
-                        "在巡检详情「电子结构分析 → 差分电荷」点一次「计算差分电荷」即可补出图"
-                        "（远端差分文件还在，只走回传或直接出图）。\n\n"
+                        f"{diff_state} 差分图（VESTA 三视图）当前不在本地。\n\n"
                     )
                 else:
                     ele_blocks.append(
@@ -1334,9 +1327,8 @@ def _sections_markdown(report, charts):
                 else:
                     ele_blocks.append(
                         f"已算出 `ACF.dat`（{summary['n_atoms']} 个原子，Bader 电荷合计 "
-                        f"{summary['total_charge']:.4f} e），但"
-                        f"{summary.get('net_charge_reason') or '缺 ZVAL'}，"
-                        "本次报告只给这里的原始电荷。\n\n"
+                        f"{summary['total_charge']:.4f} e）；"
+                        "缺价电子数（ZVAL），未计算净电荷 Δq。\n\n"
                     )
             # PDOS（v0.9.61）：摘要 + 静态图（交互版由报告页 / 导出注入的组件接管这张图）
             for item in [x for x in with_diff if x.get("pdos_summary")]:
@@ -1356,7 +1348,7 @@ def _sections_markdown(report, charts):
                     f"E_F = {_fmt(summary.get('efermi'), 4)} eV",
                     "自旋极化" if summary.get("spin_polarized") else "非自旋",
                     f"元素 {'/'.join(summary.get('elements') or []) or '—'}",
-                    f"可勾选曲线 {summary.get('series_count')} 条",
+                    f"轨道投影 {summary.get('series_count')} 条",
                 ]
                 ele_blocks.append("· " + " · ".join(facts) + "\n\n")
                 if summary.get("default_curves"):
@@ -1375,11 +1367,6 @@ def _sections_markdown(report, charts):
                             f"含未占据态、up/down 各自算）：{centers_text}"
                         )
                     ele_blocks.append(text + "。\n\n")
-                ele_blocks.append(
-                    "> 网页版报告与导出的单文件 HTML 里这张图是**可交互**的："
-                    "勾选轨道、改能量范围、开关带中心虚线都会实时重画；"
-                    "打印 / PDF 用上面这张静态图。\n\n"
-                )
             # 功函数（v0.9.61）：数值 + 平面平均电位曲线
             for item in [x for x in with_diff if x.get("work_function_summary")]:
                 summary = item["work_function_summary"]
@@ -1401,22 +1388,11 @@ def _sections_markdown(report, charts):
                 ele_blocks.append(
                     f"真空能级 {_fmt(summary.get('vacuum_level'), 4)} eV"
                     f"（{vacuum_source}） · E_F {_fmt(summary.get('efermi'), 4)} eV"
-                    f" · **功函数 {_fmt(summary.get('work_function'), 4)} eV**"
-                    + (
-                        f" · 耗时 {summary['elapsed_seconds']} s"
-                        if summary.get("elapsed_seconds")
-                        else ""
-                    )
-                    + "\n\n"
+                    f" · **功函数 {_fmt(summary.get('work_function'), 4)} eV**\n\n"
                 )
-                for warning in summary.get("warnings") or []:
-                    ele_blocks.append(f"- ⚠ {warning}\n")
-                if summary.get("warnings"):
-                    ele_blocks.append("\n")
-            ele_blocks.append(
-                "\n> 差分电荷、Bader、PDOS、功函数都在巡检详情「电子结构分析」里，"
-                "报告只汇总结果；要重算或换参数请回巡检详情操作。\n"
-            )
+                # ⚠ 警告不进报告（2026-10-15 用户："报告不出现警告和提示，报告是给客户看的"）：
+                # 真空能级交叉校验 / 平台波动这类提示只在巡检详情面板与结构化数据里给，
+                # 客户看的报告只呈现数值与出处（VASPKIT 汇总 / 本地平台估计）。
         blocks.append("".join(ele_blocks))
     sections["science"] = "".join(blocks).strip() + "\n"
 
@@ -1877,7 +1853,8 @@ def build_report(
         # 映像结构：**不再画 Python 投影矩阵**（旧的 a-b/b-c/a-c 示意），统一用 VESTA 三视图
         # ——点表格里的「映像 N」弹窗看该映像的 a/b/c（用户口径 2026-10-07）。
         if not views_by_label:
-            item["note"] = "该 NEB 任务还没出 VESTA 三视图（巡检/归档后自动渲染）"
+            # 报告是对外文件：只陈述事实，不写"还没出/自动渲染"这类内部提示
+            item["note"] = "该 NEB 任务暂无映像三视图。"
 
     project_cores = next(
         (g["cores"] for g in (cores.get("byProject") or []) if g["project_name"] == project_name),

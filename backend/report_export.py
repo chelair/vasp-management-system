@@ -891,12 +891,12 @@ def render_html(
     dialogs_html = render_dialogs(
         doc.get("dialogs") or [], image_loader=image_loader, chart_loader=chart_loader
     )
-    risk_summary = (doc.get("risks") or {}).get("summary") or {}
+    # 页脚**只留对外信息**（报告是给客户看的，2026-10-15 用户："报告不出现警告和提示"）：
+    # 报告 ID / schema 版本 / 风险高中低计数 / 导出章节数都是内部口径，页眉已有项目名与时间。
     footer = (
-        f"报告 ID：{meta.get('report_id', '')} · 项目：{meta.get('project_name', '')} · "
-        f"生成时间：{meta.get('generated_at', '')} · schema {doc.get('schema_version', '')} · "
-        f"风险：高 {risk_summary.get('high', 0)} / 中 {risk_summary.get('medium', 0)} / "
-        f"低 {risk_summary.get('low', 0)} · 导出章节 {len(chosen)}/{len(markdown_sections)}"
+        f"项目：{meta.get('project_name', '')} · "
+        f"数据窗口：{((meta.get('time_window') or {}).get('label')) or '—'} · "
+        f"生成时间：{meta.get('generated_at', '')}"
     )
     auto = "<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),600));</script>" if auto_print else ""
     # 交互版：数据脚本 + 运行时（都在 `</body>` 前，跑的时候 DOM 已经就绪）

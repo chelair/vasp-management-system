@@ -236,9 +236,8 @@ export function WorkFunctionReportChart({
         </span>
       </div>
       <div style={{ height: 300 }} ref={containerRef} />
-      {(summary.warnings ?? []).map((warning) => (
-        <Alert key={warning} type="warning" showIcon message={warning} style={{ marginTop: 6 }} />
-      ))}
+      {/* 警告不进报告（2026-10-15 用户："报告不出现警告和提示，报告是给客户看的"）：
+          真空能级交叉校验等提示只在巡检详情面板与结构化数据（work_function_summary.warnings）里看 */}
     </div>
   );
 }

@@ -5,6 +5,7 @@
 """
 
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -268,11 +269,20 @@ def project_report_markdown(report_id: str, request: Request):
     """Markdown 全文（下载用）。"""
     try:
         _ensure_report_access(report_id, request)
-        _, markdown, _ = load_report(report_id)
+        doc, markdown, _ = load_report(report_id)
+        # 与 HTML 下载同一口径：人类可读文件名 + ASCII 回退
+        project_name = str(((doc.get("metadata") or {}).get("project_name")) or report_id)
+        generated = str((doc.get("metadata") or {}).get("generated_at") or "")[:10]
+        pretty = f"{project_name}_项目报告{f'_{generated}' if generated else ''}.md"
         return PlainTextResponse(
             markdown,
             media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{report_id}.md"'},
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename=\"{report_id}.md\"; "
+                    f"filename*=UTF-8''{quote(pretty)}"
+                )
+            },
         )
     except FileNotFoundError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
@@ -298,11 +308,17 @@ def project_report_html(
         default=True,
         description="是否内联 ECharts 运行时让 PDOS/功函数图可交互（体积 +约 0.6MB 运行时 + PDOS 数据）",
     ),
+    download: bool = Query(
+        default=False,
+        description="true 时按附件返回（浏览器直接下载成文件）；默认 inline，在标签页里打开",
+    ),
 ):
     """导出**自包含 HTML**：可按章节范围导出（如取消风险分析），图表内联 SVG。
 
     - `?sections=risks,actions` 只导出指定章节；
     - `?print=1` 打开后自动调起浏览器打印对话框 → 直接「另存为 PDF」。
+    - `?download=1` → `Content-Disposition: attachment`（**下载按钮**走这个；
+      文件名用「项目名_项目报告_日期.html」，并同时给 ASCII 回退名）。
     """
     try:
         _ensure_report_access(report_id, request)
@@ -327,11 +343,18 @@ def project_report_html(
             hidden=set(x.strip() for x in hide.split(",") if x.strip()) if hide else None,
             **interactive_kwargs(doc, interactive=interactive),
         )
-        filename = f"{report_id}.html"
+        # 文件名：优先给人类可读的「项目名_项目报告_日期.html」，同时保留 ASCII 回退
+        project_name = str(((doc.get("metadata") or {}).get("project_name")) or report_id)
+        generated = str((doc.get("metadata") or {}).get("generated_at") or "")[:10]
+        pretty = f"{project_name}_项目报告{f'_{generated}' if generated else ''}.html"
+        disposition = "attachment" if download else "inline"
+        filename = (
+            f"{disposition}; filename=\"{report_id}.html\"; filename*=UTF-8''{quote(pretty)}"
+        )
         return Response(
             content=html,
             media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": filename},
         )
     except FileNotFoundError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))

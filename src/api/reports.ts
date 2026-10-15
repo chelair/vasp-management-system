@@ -76,10 +76,13 @@ export function reportHtmlUrl(
   print = false,
   hidden?: string[],
   interactive = true,
+  download = false,
 ): string {
   const params = new URLSearchParams();
   if (sections && sections.length) params.set('sections', sections.join(','));
   if (print) params.set('print', '1');
+  // 下载（附件）而不是在标签页里打开：浏览器直接存成本地文件
+  if (download) params.set('download', '1');
   // 交互版（v0.9.62）：内联 ECharts 运行时 + PDOS 数据，报告里的 PDOS/功函数图可交互；
   // 关掉就是纯静态版（体积小、老浏览器/微信里更稳）。
   if (!interactive) params.set('interactive', '0');

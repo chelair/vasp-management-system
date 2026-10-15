@@ -16,6 +16,7 @@ import {
 } from 'antd';
 import {
   DownOutlined,
+  DownloadOutlined,
   ExportOutlined,
   FileMarkdownOutlined,
   FileTextOutlined,
@@ -242,6 +243,36 @@ export default function Report() {
     );
     window.open(url, '_blank', 'noopener');
     if (print) message.info('已打开打印视图，选择「另存为 PDF」即可导出');
+  };
+
+  /**
+   * 下载单文件 HTML（v0.9.65，用户："导出没有下载按钮"）：走 `?download=1`，
+   * 服务端给 `Content-Disposition: attachment` → 浏览器直接存文件（文件名由服务端定：
+   * `项目名_项目报告_日期.html`）。用隐藏 `<a>` 点击而不是 `window.open`，避免留下空白标签页；
+   * **不用 blob 下载**：几十 MB 的报告全读进内存不划算，让浏览器自己流式落盘。
+   */
+  const downloadHtml = () => {
+    if (!detail) return;
+    if (selectedSections.length === 0) {
+      message.warning('请至少勾选一个章节');
+      return;
+    }
+    const url = reportHtmlUrl(
+      detail.meta.report_id,
+      selectedSections,
+      false,
+      hidden,
+      interactiveExport,
+      true,
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.rel = 'noopener';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    message.success('已开始下载单文件 HTML（含选中章节）');
   };
 
   const projectsWithReports = useMemo(() => {
@@ -1056,10 +1087,18 @@ export default function Report() {
                       </Button>
                       <Button
                         size="small"
+                        type="primary"
+                        icon={<DownloadOutlined />}
+                        onClick={downloadHtml}
+                      >
+                        下载 HTML
+                      </Button>
+                      <Button
+                        size="small"
                         icon={<FileTextOutlined />}
                         onClick={() => exportHtml(false)}
                       >
-                        导出 HTML
+                        预览 HTML
                       </Button>
                       <Button
                         size="small"

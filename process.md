@@ -258,7 +258,33 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.58）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.59）
+
+- 2026-10-15（用户："先搞功函数" —— `待办.md` 里那条：选方向（默认 c，支持 a/b）→ 检查 LOCPOT/OUTCAR
+  与所选方向的偶极矫正（没开只警告）→ 远端 VASPKIT 426 → 回传解析 → 前端画图带真空能级/功函数）：
+  **功函数链路落地**（v0.9.59）。新增 `backend/work_function.py`（与 pdos/bader 同构的异步链路）+
+  4 个接口 + 前端 `WorkFunctionPanel`（占位标签换成真面板）。
+  **实测口径**（集群 VASPKIT **1.3.5**，`/data/gpfs03/mdye/vaspkit.1.3.5/bin/vaspkit` 在 PATH 里）：
+  `vaspkit -task 426 -dir <x|y|z>` —— **`-dir` 要的是笛卡尔方向**（`-dir c` 直接报
+  `Wrong Direction Selected.c`），界面 a/b/c 映射成 x/y/z；写 `PLANAR_AVERAGE.dat`（8.7 KB，
+  `#Distance(A) Planar-Average-Potential(eV)`），stdout 汇总 `Vacuum-Level (eV)` / `Work Function (eV)`；
+  **WF = 真空能级 − E_F**（实测 4.234 −(−0.9138) = 5.148 ✓）。
+  **没有 DOSCAR 时** VASPKIT 会在写完 `.dat` 之后报 `The DOSCAR File NOT Exist` 并跳过汇总
+  （退出码仍 0）→ 链路**不依赖它的汇总**：真空能级优先取 VASPKIT 值，没有汇总时退回本地
+  "两端各取 12%、挑更平一侧取平均"的平台估计（并给说明）；两者差 > 0.05 eV 时给交叉校验 warning。
+  **偶极矫正检查**：`LDIPOL=.TRUE.` 且 `IDIPOL` 覆盖所选方向（a→1、b→2、c→3、4=全方向），
+  不匹配只 warning 不阻断（用户口径）。**远端不落文件**：在 `mktemp -d` 临时目录里软链
+  LOCPOT/OUTCAR/DOSCAR/POSCAR/INCAR 跑 VASPKIT，`.dat` 内容 base64 随同一次 exec 回传（不需要 SFTP），
+  跑完删临时目录。**前端**：方向 Segmented（默认 c）+ 数值卡（功函数/真空能级/E_F）+
+  ECharts 电位曲线（真空能级与 E_F 两条水平虚线带标签）+ 告警区（偶极/交叉校验/缺 E_F）。
+  **验证**：mock（打桩 vaspkit）**8 个场景**全过 —— c 轴正常（4.234/5.1478、无 warning）、
+  缺 DOSCAR（本地估 4.234 并说明）、平台倾斜（交叉校验 warning）、a 轴 ×（IDIPOL=3 → 偶极 warning /
+  IDIPOL=1 → 无 warning）、缺 LOCPOT（400 提示补 LVHAR）、缺 vaspkit（提示 `vaspkit_exe` 覆盖）、
+  缺 E_F（功函数给不出 + 说明）；**真机 model1**（LOCPOT 188MB）整条链路约 10 s 跑通：
+  真空能级 4.234、功函数 5.1478（与 VASPKIT 汇总一致）、E_F −0.9138，并给出"真空平台波动 1.74 eV、
+  建议核对真空厚度"的物理提示；**a 轴**在真机上也验证了偶极矫正警告。jsdom 渲染真组件：
+  数值卡/两条虚线/偶极告警/切 a 轴后按钮变「重算（a 轴）」全部通过。
+  顺带补 `DEPENDENCIES.md` **§3e VASPKIT**（此前 PDOS 也在用它却没登记）。
 
 - 2026-10-15（用户："先修 bug"，指 `待办.md` 里那两条问题）：
   **修掉两条问题**（v0.9.58）。**① FS-1opt 查看原子受力报"远端结构目录不存在"** —— 排查发现报错名不副实，

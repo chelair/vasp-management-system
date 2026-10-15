@@ -19,6 +19,7 @@ import ErrorBoundary from '../common/ErrorBoundary';
 import BaderPanel from './BaderPanel';
 import DiffChargePanel from './DiffChargePanel';
 import PdosPanel from './PdosPanel';
+import WorkFunctionPanel from './WorkFunctionPanel';
 import { fetchAvailableAnalyses } from '../../api/inspections';
 import type { InspectionDetail } from '../../types';
 
@@ -39,7 +40,6 @@ interface Analyses {
 /** 预留的分析类型（除 PDOS 外都还没实现，保持原状） */
 const PLACEHOLDER_TABS = [
   { key: 'cohp', label: 'COHP', needs: 'COHPCAR（ISYM=-1 + LORBIT）', tip: '键合分析' },
-  { key: 'work_function', label: '功函数', needs: 'LOCPOT（LVHAR）', tip: '功函数 / 真空能级' },
 ] as const;
 
 export default function EleAnalysisPanel({ detail }: Props) {
@@ -139,6 +139,26 @@ export default function EleAnalysisPanel({ detail }: Props) {
                   taskId={detail.task_id}
                   taskName={detail.model_name}
                   available={aa ? Boolean(aa.bader) : null}
+                />
+              ),
+            },
+            {
+              key: 'work_function',
+              label: (
+                <span>
+                  功函数
+                  {aa && !aa.work_function ? (
+                    <span className="preview-note">（缺 LOCPOT）</span>
+                  ) : null}
+                </span>
+              ),
+              // 功函数入口（2026-10-15）：选方向（默认 c）→ 远端 VASPKIT 426 → 回传平面平均电位
+              // → 本地解析真空能级/功函数 → 出图（真空能级 + E_F 两条虚线）。
+              children: (
+                <WorkFunctionPanel
+                  taskId={detail.task_id}
+                  taskName={detail.model_name}
+                  available={aa ? Boolean(aa.work_function) : null}
                 />
               ),
             },

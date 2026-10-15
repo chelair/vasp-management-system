@@ -1055,6 +1055,83 @@ export interface PdosView {
 }
 
 /**
+ * 功函数链路（2026-10-15）：入口在巡检详情的「电子结构分析 → 功函数」标签。
+ * 远端 VASPKIT 426 提平面平均电位（`-dir x/y/z`，a↔x / b↔y / c↔z）→ 回传 8KB 的
+ * `PLANAR_AVERAGE.dat` → 本地解析；**功函数 = 真空能级 − E_F**。
+ */
+export interface WorkFunctionDipole {
+  ok: boolean;
+  reason: string;
+  ldipol?: boolean | null;
+  idipol?: number | null;
+}
+
+/** `GET /api/jobs/tasks/{id}/work-function` 的返回（本地解析结果 + 曲线） */
+export interface WorkFunctionData {
+  ok: boolean;
+  /** 界面上的晶轴 a / b / c */
+  axis: 'a' | 'b' | 'c';
+  /** 对应的笛卡尔方向 x / y / z（VASPKIT `-dir` 要的就是这个） */
+  axis_cartesian?: string;
+  efermi?: number | null;
+  vacuum_level?: number | null;
+  vacuum_level_vaspkit?: number | null;
+  vacuum_level_local?: number | null;
+  vacuum_level_source?: 'vaspkit' | 'local';
+  work_function?: number | null;
+  work_function_vaspkit?: number | null;
+  plateau?: { side: string; start: number; end: number; value: number; points: number; spread: number } | null;
+  points?: number;
+  dipole?: WorkFunctionDipole;
+  warnings?: string[];
+  elapsed_seconds?: number;
+  vaspkit_exe?: string;
+  local_path?: string;
+  /** 曲线（长度一致） */
+  z?: number[];
+  potential?: number[];
+  source?: string;
+  bytes?: number;
+  mtime?: number;
+}
+
+/** 远端探测（`status?remote=1`） */
+export interface WorkFunctionRemote {
+  state?: string;
+  reason?: string;
+  remote_dir?: string;
+  ok?: boolean;
+  sizes?: Record<string, number>;
+  has_vaspkit?: boolean;
+  dipole?: { ldipol?: boolean | null; idipol?: number | null };
+  fermi?: number | null;
+  vaspkit_exe?: string;
+  checked_at?: string;
+}
+
+/** `GET /api/jobs/tasks/{id}/work-function/status` 的返回 */
+export interface WorkFunctionStatus {
+  run_id?: string;
+  status: 'idle' | 'running' | 'done' | 'failed';
+  stage?: string;
+  stage_label?: string;
+  error?: string | null;
+  elapsed_seconds?: number;
+  finished_at?: string | null;
+  axis?: string;
+  local: {
+    has_result: boolean;
+    data_path?: string;
+    bytes?: number;
+    mtime?: number;
+    axis?: string | null;
+  };
+  remote?: WorkFunctionRemote;
+  result?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+}
+
+/**
  * Bader 电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → Bader」标签。
  * 远端算（chgsum.pl AECCAR0+AECCAR2 → CHGCAR_sum，再 bader CHGCAR -ref CHGCAR_sum）
  * → 回传 ACF.dat → 本地解析。净电荷（要 POTCAR ZVAL）/ 分组 / 图表属于下一轮分析链路。

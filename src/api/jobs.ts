@@ -9,6 +9,8 @@ import type {
   BaderData,
   BaderStatus,
   ChargeDiffStatus,
+  WorkFunctionData,
+  WorkFunctionStatus,
   ClusterSnapshot,
   IncarPreset,
   PdosStatus,
@@ -630,6 +632,50 @@ export async function createDiffCharge(
     body: JSON.stringify(payload),
   });
 }
+
+// ---------------------------------------------------------------------------
+// 功函数链路（2026-10-15）：入口在巡检详情的「电子结构分析 → 功函数」标签。
+// 远端 VASPKIT 426（-dir x/y/z）→ 回传 PLANAR_AVERAGE.dat → 本地解析（真空能级/功函数）。
+
+
+/** 触发功函数计算（异步）。`axis` = 界面晶轴 a/b/c（默认 c；内部映射成 VASPKIT 的 -dir x/y/z） */
+export async function triggerWorkFunction(
+  taskId: string,
+  axis: 'a' | 'b' | 'c' = 'c',
+): Promise<{ run_id: string; status: string; reused?: boolean }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/work-function/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ axis }),
+  });
+}
+
+/** 功函数链路状态（`remote=1` 时附带远端探测：LOCPOT/OUTCAR 大小、vaspkit、INCAR 偶极设置、E_F） */
+export async function fetchWorkFunctionStatus(
+  taskId: string,
+  options: { runId?: string; remote?: boolean } = {},
+): Promise<WorkFunctionStatus> {
+  const params = new URLSearchParams();
+  if (options.runId) params.set('run_id', options.runId);
+  if (options.remote) params.set('remote', '1');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/work-function/status${suffix}`);
+}
+
+/** 功函数解析结果（曲线 + 真空能级 + 功函数）；没算过返回 404 */
+export async function fetchWorkFunctionData(taskId: string): Promise<WorkFunctionData> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/work-function`);
+}
+
+/** 清除本地功函数结果（PLANAR_AVERAGE.dat + meta），远端文件不动 */
+export async function clearWorkFunction(
+  taskId: string,
+): Promise<{ removed: string[]; dir: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/work-function`, {
+    method: 'DELETE',
+  });
+}
+
 
 // ---------------------------------------------------------------------------
 // Bader 电荷链路（2026-10-14）：入口在巡检详情的「电子结构分析 → Bader」标签。

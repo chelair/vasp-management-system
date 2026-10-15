@@ -186,6 +186,27 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
   `bader CHGCAR -ref CHGCAR_sum_aec`；复用前会比对它与 `AECCAR0` 的**元素/计数行 + 总行数**
   （`chgsum.pl` 原样拷贝第一个输入的头部，所以这个判据可靠）。
 
+### 3e. VASPKIT（远端外部二进制 · 2026-10-15 补登记）
+
+用途：**远端**做后处理提取（本项目只调用、不修改）。集群上是 **VASPKIT 1.3.5**
+（`/data/gpfs03/mdye/vaspkit.1.3.5/bin/vaspkit`，**在 PATH 里**，`vaspkit -v` 可查版本）。
+
+| 任务号 | 用途 | 本项目调用点 |
+| --- | --- | --- |
+| `-task 111/113` | 提取总态密度 / 投影态密度（写 `dos.json` 用） | `scripts/dos_extract.py`（PDOS 链路，见 `backend/pdos.py`） |
+| `-task 426` | 提取平面平均静电势 → 功函数 / 真空能级 | `backend/work_function.py`（功函数链路，2026-10-15） |
+
+- **`-dir` 参数要的是笛卡尔方向 `x/y/z`**（不是晶轴名）：实测 `-dir c` 会直接报
+  `Error: Wrong Direction Selected.c`；界面上的 a/b/c 映射成 x/y/z（a↔x、b↔y、c↔z）后由
+  `backend/work_function.py::AXIS_TO_CARTESIAN` 传入。
+- `-task 426` 写 `PLANAR_AVERAGE.dat`（`#Distance(A) Planar-Average-Potential(eV)`，约 8 KB），
+  stdout 汇总 `Vacuum-Level (eV)` / `Work Function (eV)`；**没有 DOSCAR 时**它会在写完 `.dat`
+  之后报 `The DOSCAR File NOT Exist` 并**跳过汇总**（退出码仍为 0）→ 功函数链路因此**不依赖它的汇总**：
+  本地自己从电位平台估真空能级（没有汇总时的兜底），有汇总时以 VASPKIT 值为准并交叉校验。
+- 路径可用 `data/servers.json: vaspkit_exe` 覆盖（默认直接叫 `vaspkit`，依赖远端 PATH）。
+- 功函数链路在**临时目录**里跑（软链 LOCPOT/OUTCAR/DOSCAR/POSCAR/INCAR），**不往任务目录写文件**，
+  跑完即删；200MB 级 LOCPOT 的解析在登录节点约 3 s。
+
 ## 4. pymatgen 专项说明
 
 用途：仅未来的 POTCAR 生成等功能需要。**`scripts/vasp2cif.py` 已改为

@@ -402,6 +402,41 @@ DELETE /api/jobs/tasks/{task_id}/bader           # 清除本地 ACF.dat / meta�
   （Σq / ΣZVAL / ΣΔq / 平均 / Δq 最正与最负的原子）+ 按 |Δq| 排序前 10 个原子的表；
   缺 ZVAL 时降级说明。图片/图表本轮不加。
 
+#### ④e 功函数（巡检详情入口，v0.9.59）
+
+入口在**巡检详情 →「电子结构分析 → 功函数」标签**（前端 `WorkFunctionPanel`）。链路：
+① 前端选方向（默认 **c 轴**，支持 a/b）→ ② 远端检查 `LOCPOT`/`OUTCAR` 存在非零、**所选方向是否开了
+偶极矫正**（`LDIPOL=.TRUE.` 且 `IDIPOL` 匹配该方向；a→1、b→2、c→3、4=全方向；**没开只警告不拦**）→
+③ 远端 `vaspkit -task 426 -dir <x|y|z>` 写 `PLANAR_AVERAGE.dat`（约 8 KB）→
+④ 回传内容（base64 随同一次 exec 返回，不需要 SFTP）→ 本地解析：
+**功函数 = 真空能级 − E_F**（`E-fermi` 从 OUTCAR 读；真空能级优先取 VASPKIT 汇总值，
+没有汇总时（缺 DOSCAR）退回本地"电位平台"估计并给说明）。
+
+```
+POST   /api/jobs/tasks/{task_id}/work-function/analyze    # 触发（异步），body {"axis": "c"}
+GET    /api/jobs/tasks/{task_id}/work-function/status     # 状态；?remote=1 附带远端探测（120s 缓存）
+GET    /api/jobs/tasks/{task_id}/work-function            # 解析结果（曲线 + 真空能级 + 功函数）；没算过 404
+DELETE /api/jobs/tasks/{task_id}/work-function            # 清除本地 PLANAR_AVERAGE.dat / meta
+```
+
+- **方向口径**：界面上的晶轴 a/b/c 会被映射成 VASPKIT `-dir` 要的**笛卡尔** `x/y/z`
+  （a↔x、b↔y、c↔z）。实测 `-dir c` 会报 `Wrong Direction Selected.c`。
+- **状态返回**：`status`（`running|done|failed|idle`）、`stage` + `stage_label`
+  （`checking` 校验 / `extracting` VASPKIT / `parsing` 解析 / `done`）、`elapsed_seconds`、`error`、
+  `local`（`{has_result, data_path, bytes, axis}`）、
+  `remote`（`remote=1`：`{state, reason, sizes, has_vaspkit, dipole{ldipol,idipol}, fermi, vaspkit_exe}`）。
+  远端 `state`：`ready` / `no_locpot`（缺 LOCPOT，提示补 `LVHAR=.TRUE.`）/ `no_outcar` / `no_vaspkit`。
+- **结果**（`GET .../work-function`）：`{ok, axis, axis_cartesian, efermi, vacuum_level,
+  vacuum_level_vaspkit, vacuum_level_local, vacuum_level_source, work_function,
+  work_function_vaspkit, plateau{side,start,end,value,points,spread}, points, dipole, warnings[],
+  elapsed_seconds, local_path, z[], potential[]}` —— `z/potential` 直接喂图表。
+- **图上元素**：电位-距离曲线 + **真空能级**与 **E_F** 两条水平虚线（带数值标签）；
+  关键数值卡给功函数 / 真空能级 / E_F。
+- **告警（不阻断）**：所选方向没开偶极矫正；本地估的真空能级与 VASPKIT 汇总差 > 0.05 eV
+  （真空平台不平，提示"真空可能不够厚/没收敛"）；缺 E_F 时功函数给不出。
+- **耗时**：200MB 级 LOCPOT 约 3 s（登录节点实测）；远端在 `mktemp -d` 临时目录里跑，
+  **不往任务目录写任何文件**。**审计**：`work-function-analyze` / `work-function-clear`。
+
 #### ⑤ NEB 创建计算文件
 
 ```
@@ -447,6 +482,7 @@ body: {
 | 分析 | `POST /jobs/tasks/{id}/pdos/analyze` · `GET /jobs/tasks/{id}/pdos/status` · `GET /jobs/tasks/{id}/pdos` · `DELETE /jobs/tasks/{id}/pdos` | **PDOS 分析（v0.9.45 重建）**：异步触发（返回 `run_id`）→ 轮询 → 取解析数据 → 清除重跑；见 §4.5 |
 | 分析 | `POST /jobs/tasks/{id}/charge-diff/analyze` · `GET .../charge-diff/status` · `GET .../charge-diff/images/{axis}` · `DELETE .../charge-diff` | **差分电荷（v0.9.46）**：巡检详情入口；远端校验（三份 CHGCAR 大小差 < 1%）→ VTST 算差分 → 回传 → VESTA 三视图；异步 + 阶梯缓存；见 §4.2 ④c |
 | 分析 | `POST /jobs/tasks/{id}/bader/analyze` · `GET .../bader/status` · `GET .../bader` · `DELETE .../bader` | **Bader 电荷（v0.9.51，处理链路）**：巡检详情入口；远端校验 AECCAR 完整性 → `chgsum.pl` → `bader CHGCAR -ref CHGCAR_sum` → 回传解析 `ACF.dat`；净电荷/图表属分析链路；见 §4.2 ④d |
+| 分析 | `POST /jobs/tasks/{id}/work-function/analyze` · `GET .../work-function/status` · `GET .../work-function` · `DELETE .../work-function` | **功函数（v0.9.59）**：巡检详情入口；选方向（a/b/c，默认 c）→ 校验 LOCPOT/OUTCAR/偶极矫正 → 远端 VASPKIT `-task 426 -dir x/y/z` → 回传解析平面平均电位（真空能级 + 功函数 = 真空 − E_F）；见 §4.2 ④e |
 | 分析 | `POST /jobs/tasks/{id}/calculate-correction` | 自由能矫正项（vaspkit 501） |
 | 结构转换 | `POST /tools/cif-to-poscar` | CIF → POSCAR（`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；纯文本不落盘，页面「导入 POSCAR」选 .cif 走的就是它；解析失败 400 带中文原因） |
 

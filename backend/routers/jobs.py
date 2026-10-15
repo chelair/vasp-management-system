@@ -56,6 +56,7 @@ from envelope import fail, ok
 from incar import modify_incar
 import charge_diff
 import bader
+import work_function
 import permissions
 import pdos
 from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remote_rel
@@ -2692,6 +2693,102 @@ def charge_diff_clear(task_id: str, images_only: bool = Query(default=False)):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"清除差分电荷结果失败：{e}"))
+
+
+# ---------------------------------------------------------------------------
+# 功函数链路（2026-10-15）：入口在巡检详情的「电子结构分析 → 功函数」标签。
+# 选方向（默认 c）→ 远端 VASPKIT 426（-dir x/y/z）→ 回传 PLANAR_AVERAGE.dat → 本地解析
+# （真空能级 / 功函数 = 真空能级 − E_F）；图中给真空能级与 E_F 两条虚线。
+
+
+@router.post("/tasks/{task_id}/work-function/analyze")
+def work_function_analyze(task_id: str, payload: dict = Body(default={})):
+    """触发**功函数计算**（异步）：检查 LOCPOT/OUTCAR/偶极矫正 → VASPKIT 426 → 回传解析。
+
+    body: `{"axis": "c"}` —— 界面晶轴 a / b / c（默认 c；内部映射成 VASPKIT 的 `-dir x/y/z`）。
+    返回 `{run_id, status, reused}`；前端用 `GET .../work-function/status` 轮询。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+        if str(task.get("task_type") or "") != "ele":
+            return JSONResponse(status_code=400, content=fail("仅电子结构任务支持功函数计算"))
+        axis = str((payload or {}).get("axis") or "c").lower()
+        started = work_function.start(project, task, axis=axis)
+        _audit_log(
+            project["name"],
+            task_id,
+            str(task.get("remote_dir") or ""),
+            "work-function-analyze",
+            f"OK axis={axis} run={started['run_id']} reused={started.get('reused')}",
+        )
+        return ok("已开始计算功函数", started)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except work_function.WorkFunctionError as e:
+        return JSONResponse(status_code=e.status, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"触发功函数计算失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/work-function/status")
+def work_function_status(
+    task_id: str,
+    run_id: str = Query(default=""),
+    remote: bool = Query(default=False),
+):
+    """功函数链路状态（本地 + run 进度；`remote=1` 时附带远端探测）。"""
+    try:
+        project, task = _resolve_task(task_id)
+        data = work_function.status(
+            str(project.get("name") or ""), task, run_id, remote=bool(remote), project=project
+        )
+        return ok("查询成功", data)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"查询功函数状态失败：{e}"))
+
+
+@router.get("/tasks/{task_id}/work-function")
+def work_function_data(task_id: str):
+    """功函数解析结果（曲线 + 真空能级 + 功函数 + E_F）；没算过返回 404。"""
+    try:
+        project, task = _resolve_task(task_id)
+        return ok("查询成功", work_function.load_data(str(project.get("name") or ""), task))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except work_function.WorkFunctionError as e:
+        return JSONResponse(status_code=e.status, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"读取功函数数据失败：{e}"))
+
+
+@router.delete("/tasks/{task_id}/work-function")
+def work_function_clear(task_id: str):
+    """清除本地功函数结果（PLANAR_AVERAGE.dat + meta），远端文件不动。"""
+    try:
+        project, task = _resolve_task(task_id)
+        result = work_function.clear(str(project.get("name") or ""), task)
+        _audit_log(
+            project["name"],
+            task_id,
+            str(task.get("remote_dir") or ""),
+            "work-function-clear",
+            f"OK removed={','.join(result.get('removed') or []) or '-'}",
+        )
+        return ok("已清除功函数结果", result)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except permissions.PermissionDenied:
+        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"清除功函数结果失败：{e}"))
 
 
 # ---------------------------------------------------------------------------

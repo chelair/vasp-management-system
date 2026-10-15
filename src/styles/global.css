@@ -2820,6 +2820,20 @@ body.is-atom-selecting * {
   color: var(--color-text-secondary);
 }
 
+/* 功函数：方向选择工具条 + 电位曲线（v0.9.59） */
+.wf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.wf-chart {
+  width: 100%;
+  height: 380px;
+}
+
 /* Bader 电荷：结构预览 + 选中原子统计卡片（v0.9.55） */
 .bader-select-bar {
   display: flex;

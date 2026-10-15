@@ -381,6 +381,305 @@ def _tick(value: float) -> str:
     return f"{value:.4g}"
 
 
+# ------------------------------------------------------- 电子结构（PDOS / 功函数）
+
+
+def _fmt_label(value: float, digits: int = 3) -> str:
+    text = f"{value:.{digits}f}"
+    return "0.000" if text in ("-0.000", "0.000") else text
+
+
+def clip_polyline(
+    points: Sequence[Tuple[float, float]], lo: float, hi: float
+) -> List[Tuple[float, float]]:
+    """把折线按 x ∈ [lo, hi] 裁剪（边界处线性插值补点）。
+
+    态密度的能量网格比展示窗口宽（例如 -21 ~ +8 eV 而窗口取 -10 ~ 10），
+    不裁剪会把线画到坐标框外面（2026-10-15 实测踩到）。
+    """
+    out: List[Tuple[float, float]] = []
+    for index in range(1, len(points)):
+        x0, y0 = points[index - 1]
+        x1, y1 = points[index]
+        if x1 == x0:
+            continue
+        left = max(min(x0, x1), lo)
+        right = min(max(x0, x1), hi)
+        if right < left:
+            continue
+
+        def y_at(x: float) -> float:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+
+        if not out:
+            out.append((left, y_at(left)))
+        out.append((right, y_at(right)))
+    return out
+
+
+def dos_lines_chart(
+    lines: Sequence[Dict[str, Any]],
+    *,
+    title: str,
+    x_min: float,
+    x_max: float,
+    width: int = 760,
+    height: int = 320,
+    x_label: str = "E − E_F (eV)",
+    y_label: str = "Intensity",
+    show_fermi: bool = True,
+    bands: Sequence[Dict[str, Any]] = (),
+    legend_max: int = 8,
+) -> str:
+    """态密度折线图（PDOS 静态图，2026-10-15）。
+
+    用于报告正文的单文件导出与打印：**交互版**（报告页 / 导出内嵌 ECharts）用
+    `interactive/pdosWidget.ts`；这里是同一份数据渲染出的静态兜底，
+    老浏览器 / 关闭 JS / 打印成 PDF 时看这张。
+
+    `lines` = `[{name, color, points: [(x, y), ...], dashed}]`（x 已相对 E_F）；
+    `bands` = 竖直虚线 `[{x, color, label, dashed}]`（带中心）。
+    """
+    M = {"left": 70, "right": 22, "top": 52, "bottom": 44}
+    plot_w = width - M["left"] - M["right"]
+    plot_h = height - M["top"] - M["bottom"]
+    body: List[str] = [
+        f'<text x="{M["left"]}" y="18" font-size="13" fill="#374151" {FONT}>{_escape(title)}</text>'
+    ]
+    if x_max <= x_min:
+        x_max = x_min + 1
+    ys = [y for line in lines for _, y in line.get("points") or []]
+    if not ys:
+        body.append(
+            f'<text x="{width / 2}" y="{height / 2}" font-size="12" fill="{COLOR_MUTED}" '
+            f'text-anchor="middle" {FONT}>暂无数据</text>'
+        )
+        return _svg(width, height, "".join(body), title)
+    y_lo, y_hi = min(ys), max(ys)
+    if y_hi - y_lo < 1e-9:
+        y_hi = y_lo + 1.0
+    pad = (y_hi - y_lo) * 0.06
+    y_lo -= pad
+    y_hi += pad
+
+    def px(x: float) -> float:
+        return M["left"] + (x - x_min) / (x_max - x_min) * plot_w
+
+    def py(y: float) -> float:
+        return M["top"] + (1 - (y - y_lo) / (y_hi - y_lo)) * plot_h
+
+    # 网格 + 刻度（横向 4 档、纵向 5 档，与其它报告图同款浅灰）
+    for k in range(5):
+        y = M["top"] + plot_h * k / 4
+        body.append(
+            f'<line x1="{M["left"]}" y1="{y:.1f}" x2="{width - M["right"]}" y2="{y:.1f}" '
+            f'stroke="{COLOR_GRID}" stroke-width="1"/>'
+        )
+        value = y_hi - (y_hi - y_lo) * k / 4
+        body.append(
+            f'<text x="{M["left"] - 8}" y="{y + 3:.1f}" font-size="10.5" fill="{COLOR_MUTED}" '
+            f'text-anchor="end" {FONT}>{_tick(value)}</text>'
+        )
+    for k in range(5):
+        x = M["left"] + plot_w * k / 4
+        value = x_min + (x_max - x_min) * k / 4
+        body.append(
+            f'<text x="{x:.1f}" y="{height - 24}" font-size="10.5" fill="{COLOR_MUTED}" '
+            f'text-anchor="middle" {FONT}>{_tick(value)}</text>'
+        )
+    body.append(
+        f'<line x1="{M["left"]}" y1="{M["top"]}" x2="{M["left"]}" y2="{M["top"] + plot_h}" '
+        f'stroke="{COLOR_AXIS}" stroke-width="1"/>'
+    )
+    body.append(
+        f'<line x1="{M["left"]}" y1="{M["top"] + plot_h}" x2="{width - M["right"]}" '
+        f'y2="{M["top"] + plot_h}" stroke="{COLOR_AXIS}" stroke-width="1"/>'
+    )
+    body.append(
+        f'<text x="{M["left"] + plot_w / 2:.1f}" y="{height - 8}" font-size="11" '
+        f'fill="{COLOR_TEXT}" text-anchor="middle" {FONT}>{_escape(x_label)}</text>'
+    )
+    body.append(
+        f'<text x="14" y="{M["top"] + plot_h / 2:.1f}" font-size="11" fill="{COLOR_TEXT}" '
+        f'text-anchor="middle" transform="rotate(-90 14 {M["top"] + plot_h / 2:.1f})" {FONT}>'
+        f"{_escape(y_label)}</text>"
+    )
+
+    # 纵轴 0 基线（镜像布局的正负分界）
+    if y_lo < 0 < y_hi:
+        y0 = py(0)
+        body.append(
+            f'<line x1="{M["left"]}" y1="{y0:.1f}" x2="{width - M["right"]}" y2="{y0:.1f}" '
+            f'stroke="#c8d2e0" stroke-width="1"/>'
+        )
+    # 费米能级（x=0）
+    if show_fermi and x_min < 0 < x_max:
+        x0 = px(0)
+        body.append(
+            f'<line x1="{x0:.1f}" y1="{M["top"]}" x2="{x0:.1f}" y2="{M["top"] + plot_h}" '
+            f'stroke="#98a6bd" stroke-width="1" stroke-dasharray="5 4"/>'
+        )
+    # 带中心（同色竖直虚线 + 数值）
+    for band in bands:
+        bx = float(band.get("x") or 0)
+        if not (x_min <= bx <= x_max):
+            continue
+        xb = px(bx)
+        band_color = _escape(band.get("color") or COLOR_PRIMARY)
+        band_dash = "2 3" if band.get("dashed") else "7 4"
+        body.append(
+            f'<line x1="{xb:.1f}" y1="{M["top"]}" x2="{xb:.1f}" y2="{M["top"] + plot_h}" '
+            f'stroke="{band_color}" stroke-width="1.2" '
+            f'stroke-dasharray="{band_dash}"/>'
+        )
+        if band.get("label"):
+            body.append(
+                f'<text x="{xb + 3:.1f}" y="{M["top"] + 11}" font-size="10" '
+                f'fill="{band_color}" {FONT}>'
+                f"{_escape(band['label'])}</text>"
+            )
+
+    for line in lines:
+        # 再裁一次（调用方可能已经把整条曲线递进来；越界的线段会画到坐标框外）
+        points = clip_polyline(line.get("points") or [], x_min, x_max)
+        if not points:
+            continue
+        path = " ".join(
+            f'{"M" if index == 0 else "L"}{px(x):.2f},{py(y):.2f}'
+            for index, (x, y) in enumerate(points)
+        )
+        dash = ' stroke-dasharray="4 3"' if line.get("dashed") else ""
+        body.append(
+            f'<path d="{path}" fill="none" stroke="{_escape(line.get("color") or COLOR_PRIMARY)}" '
+            f'stroke-width="{line.get("width") or 1.4}" stroke-linejoin="round"{dash}/>'
+        )
+
+    # 图例：标题下方一行芯片（曲线多时只列前几条 + "等 N 条"）
+    lx = M["left"]
+    shown = 0
+    for line in lines:
+        if shown >= legend_max:
+            break
+        name = str(line.get("name") or "")
+        text_w = 10 + 7 * len(name)
+        if lx + text_w > width - M["right"]:
+            break
+        color = _escape(line.get("color") or COLOR_PRIMARY)
+        legend_dash = ' stroke-dasharray="4 3"' if line.get("dashed") else ""
+        body.append(
+            f'<line x1="{lx}" y1="33" x2="{lx + 12}" y2="33" stroke="{color}" '
+            f'stroke-width="2.4"{legend_dash}/>'
+        )
+        body.append(
+            f'<text x="{lx + 16}" y="36.5" font-size="10.5" fill="{COLOR_TEXT}" {FONT}>'
+            f"{_escape(name)}</text>"
+        )
+        lx += text_w + 12
+        shown += 1
+    if len(lines) > shown:
+        body.append(
+            f'<text x="{lx}" y="36.5" font-size="10.5" fill="{COLOR_MUTED}" {FONT}>'
+            f"等 {len(lines)} 条</text>"
+        )
+    return _svg(width, height, "".join(body), title)
+
+
+def planar_average_chart(
+    points: Sequence[Tuple[float, float]],
+    *,
+    title: str,
+    vacuum: Optional[float] = None,
+    fermi: Optional[float] = None,
+    width: int = 760,
+    height: int = 300,
+    x_label: str = "z (Å)",
+    y_label: str = "静电势 (eV)",
+) -> str:
+    """平面平均静电势（功函数静态图，2026-10-15）：曲线 + 真空能级 / E_F 两条水平虚线。"""
+    M = {"left": 70, "right": 78, "top": 46, "bottom": 44}
+    plot_w = width - M["left"] - M["right"]
+    plot_h = height - M["top"] - M["bottom"]
+    body: List[str] = [
+        f'<text x="{M["left"]}" y="18" font-size="13" fill="#374151" {FONT}>{_escape(title)}</text>'
+    ]
+    data = [(float(z), float(v)) for z, v in points]
+    if len(data) < 2:
+        body.append(
+            f'<text x="{width / 2}" y="{height / 2}" font-size="12" fill="{COLOR_MUTED}" '
+            f'text-anchor="middle" {FONT}>暂无数据</text>'
+        )
+        return _svg(width, height, "".join(body), title)
+    z_min, z_max = data[0][0], data[-1][0]
+    if z_max <= z_min:
+        z_max = z_min + 1
+    values = [v for _, v in data]
+    marks = [v for v in (vacuum, fermi) if v is not None]
+    y_lo, y_hi = min(values + marks), max(values + marks)
+    if y_hi - y_lo < 1e-9:
+        y_hi = y_lo + 1.0
+    pad = (y_hi - y_lo) * 0.08
+    y_lo -= pad
+    y_hi += pad
+
+    def px(z: float) -> float:
+        return M["left"] + (z - z_min) / (z_max - z_min) * plot_w
+
+    def py(v: float) -> float:
+        return M["top"] + (1 - (v - y_lo) / (y_hi - y_lo)) * plot_h
+
+    for k in range(5):
+        y = M["top"] + plot_h * k / 4
+        body.append(
+            f'<line x1="{M["left"]}" y1="{y:.1f}" x2="{width - M["right"]}" y2="{y:.1f}" '
+            f'stroke="{COLOR_GRID}" stroke-width="1"/>'
+        )
+        body.append(
+            f'<text x="{M["left"] - 8}" y="{y + 3:.1f}" font-size="10.5" fill="{COLOR_MUTED}" '
+            f'text-anchor="end" {FONT}>{_tick(y_hi - (y_hi - y_lo) * k / 4)}</text>'
+        )
+    for k in range(5):
+        z = z_min + (z_max - z_min) * k / 4
+        body.append(
+            f'<text x="{px(z):.1f}" y="{height - 24}" font-size="10.5" fill="{COLOR_MUTED}" '
+            f'text-anchor="middle" {FONT}>{_tick(z)}</text>'
+        )
+    body.append(
+        f'<line x1="{M["left"]}" y1="{M["top"]}" x2="{M["left"]}" y2="{M["top"] + plot_h}" '
+        f'stroke="{COLOR_AXIS}" stroke-width="1"/>'
+    )
+    body.append(
+        f'<line x1="{M["left"]}" y1="{M["top"] + plot_h}" x2="{width - M["right"]}" '
+        f'y2="{M["top"] + plot_h}" stroke="{COLOR_AXIS}" stroke-width="1"/>'
+    )
+    body.append(
+        f'<text x="{M["left"] + plot_w / 2:.1f}" y="{height - 8}" font-size="11" '
+        f'fill="{COLOR_TEXT}" text-anchor="middle" {FONT}>{_escape(x_label)}</text>'
+    )
+    body.append(
+        f'<text x="14" y="{M["top"] + plot_h / 2:.1f}" font-size="11" fill="{COLOR_TEXT}" '
+        f'text-anchor="middle" transform="rotate(-90 14 {M["top"] + plot_h / 2:.1f})" {FONT}>'
+        f"{_escape(y_label)}</text>"
+    )
+    for value, color, label in (
+        (vacuum, COLOR_SECONDARY, "真空能级"),
+        (fermi, COLOR_WARN, "E_F"),
+    ):
+        if value is None:
+            continue
+        y = py(float(value))
+        body.append(
+            f'<line x1="{M["left"]}" y1="{y:.1f}" x2="{width - M["right"]}" y2="{y:.1f}" '
+            f'stroke="{color}" stroke-width="1.2" stroke-dasharray="6 4"/>'
+        )
+        body.append(
+            f'<text x="{width - M["right"] + 4}" y="{y + 3.5:.1f}" font-size="10.5" '
+            f'fill="{color}" {FONT}>{_escape(f"{label} {_fmt_label(float(value))}")}</text>'
+        )
+    path = " ".join(f'{"M" if i == 0 else "L"}{px(z):.2f},{py(v):.2f}' for i, (z, v) in enumerate(data))
+    body.append(f'<path d="{path}" fill="none" stroke="{COLOR_PRIMARY}" stroke-width="1.6"/>')
+    return _svg(width, height, "".join(body), title)
+
+
 # ------------------------------------------------------------ 结构三视图
 
 
@@ -389,4 +688,3 @@ def _tick(value: float) -> str:
 # task_panel / _parse_cif_atoms）已在 2026-10-07 废除 —— 结构图统一由 VESTA 渲染成
 # PNG（见 backend/structure_images.py、backend/vesta_render.py），报告里 base64 内联。
 # ---------------------------------------------------------------------------
-

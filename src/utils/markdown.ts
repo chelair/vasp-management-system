@@ -65,6 +65,19 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
       continue;
     }
 
+    // 挂点行（后端 report_builder 生成）：`@[pdos-chart:task_123]` 等 —— 渲染成宿主 div，
+    // 由 Report 页用 portal 挂交互组件（Bader 折叠表 / PDOS 交互图 / 功函数曲线）。
+    const hook = /^@\[([a-z-]+):([^\]\s]+)\]$/.exec(line);
+    if (hook) {
+      html.push(
+        `<div class="report-widget" data-report-widget="${hook[1]}" data-task-id="${escapeHtml(
+          hook[2],
+        )}"></div>`,
+      );
+      i += 1;
+      continue;
+    }
+
     // 表格
     if (line.startsWith('|')) {
       const block: string[] = [];

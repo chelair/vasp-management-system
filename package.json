@@ -1,14 +1,15 @@
 {
   "name": "vasp-management-system",
   "private": true,
-  "version": "0.9.60",
+  "version": "0.9.61",
   "type": "module",
   "description": "VASP 第一性原理计算项目管理系统 - 前端框架（Mock 数据演示）",
   "scripts": {
     "dev": "vite",
     "server": ".venv/bin/python backend/run.py",
     "server:watch": "python -m uvicorn main:app --reload --host 0.0.0.0 --port 3001 --app-dir backend",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/build-report-interactive.mjs",
+    "build:report-runtime": "node scripts/build-report-interactive.mjs",
     "preview": "vite preview --host",
     "typecheck": "tsc -b --noEmit"
   },
@@ -25,6 +26,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^5.2.0",
+    "esbuild": "^0.28.2",
     "typescript": "~5.6.3",
     "vite": "^7.3.6"
   }

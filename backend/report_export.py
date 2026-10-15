@@ -9,6 +9,7 @@
 """
 
 import html as html_lib
+import json
 import re
 from typing import Any, Callable, Dict, List, Optional
 
@@ -67,6 +68,23 @@ img { max-width: 100%; }
 a { color: #3F68B8; text-decoration: none; }
 .footer { margin-top: 28px; padding-top: 10px; border-top: 1px dashed #E3E9F2;
   color: #8A98AC; font-size: 11.5px; }
+
+/* ---------------- 电子结构挂点（Bader 折叠表 / PDOS · 功函数交互组件） ---------------- */
+.bader-table {
+  border: 1px solid #E3E9F2; border-radius: 8px; padding: 6px 12px; margin: 8px 0 14px;
+  background: #FBFCFE;
+}
+.bader-table > summary { cursor: pointer; color: #3F68B8; font-size: 13px; padding: 4px 0; }
+.bader-table[open] > summary { margin-bottom: 6px; }
+.bader-table .hint { margin: 2px 0 8px; color: #8A98AC; font-size: 11.5px; }
+.bader-table table { margin-top: 4px; font-size: 12px; }
+.report-widget { margin: 10px 0 16px; }
+.report-widget__loading, .report-widget__error {
+  border: 1px dashed #DCE3EC; border-radius: 8px; padding: 12px 14px;
+  color: #8A98AC; font-size: 12.5px; text-align: center;
+}
+.report-widget__error { color: #C0392B; border-color: #F0C4C0; }
+.report-widget button { font: inherit; }
 @page { size: A4; margin: 14mm; }
 @media print {
   body { padding: 0; font-size: 12px; }
@@ -209,12 +227,17 @@ def markdown_to_html(
     chart_loader: Optional[Callable[[str], Optional[str]]] = None,
     image_loader: Optional[Callable[[str], Optional[str]]] = None,
     inline_charts: bool = True,
+    widget_renderer: Optional[Callable[[str, str], Optional[str]]] = None,
 ) -> str:
     """把报告 Markdown 子集转为 HTML（表格 / 列表 / 图片 / 加粗 / 代码）。
 
     - `charts/xxx.svg` → 内联 SVG（原行为）；
     - `images/xxx.png` → `image_loader` 给的 base64 data URI（结构三视图，**拿不到就整块跳过**）；
     - 连续的图片行（a/b/c 三视图）合并成一行 `.img-row`，等宽紧凑。
+
+    **挂点行**（2026-10-15，电子结构接报告）：`@[kind:task_id]` 交给 `widget_renderer` ——
+    Bader 完整表渲染成原生 `<details>`（折叠报表）；PDOS / 功函数的交互组件渲染成宿主
+    `<div>`，由注入的 ECharts 运行时接管（拿不到运行时就看前面的静态 SVG 兜底）。
     """
     lines = (markdown or "").split("\n")
     out: List[str] = []
@@ -224,6 +247,15 @@ def markdown_to_html(
         stripped = line.strip()
 
         if not stripped:
+            i += 1
+            continue
+
+        # 挂点行：@[bader-table:xxx] / @[pdos-chart:xxx] / @[work-function-chart:xxx]
+        hook = re.fullmatch(r"@\[([a-z-]+):([^\]\s]+)\]", stripped)
+        if hook and widget_renderer is not None:
+            rendered = widget_renderer(hook.group(1), hook.group(2))
+            if rendered:
+                out.append(rendered)
             i += 1
             continue
 
@@ -327,6 +359,82 @@ def markdown_to_html(
             i += 1
         out.append(f"<p>{_inline(' '.join(paragraph))}</p>")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------- 电子结构挂点
+
+#: 单张 Bader 完整表最多渲染多少行（正常算例 100~300 个原子；异常大算例给个上限）
+BADER_TABLE_MAX_ROWS = 2000
+
+
+def _ele_tasks_by_id(doc: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    tasks = ((doc.get("science") or {}).get("ele") or {}).get("tasks") or []
+    return {str(item.get("task_id")): item for item in tasks}
+
+
+def _bader_table_html(item: Dict[str, Any]) -> Optional[str]:
+    """Bader 完整表（原生 `<details>` 折叠，用户口径 2026-10-15："数据报表，滑动折叠"）。"""
+    summary = item.get("bader_summary") or {}
+    atoms = summary.get("atoms") or []
+    if not atoms:
+        return None
+    rows = atoms[:BADER_TABLE_MAX_ROWS]
+    head = (
+        "<table><thead><tr>"
+        "<th>原子</th><th>元素</th><th>Bader 电荷 (e)</th>"
+        "<th>ZVAL (e)</th><th>净电荷 Δq (e)</th></tr></thead><tbody>"
+    )
+    body = []
+    for atom in rows:
+        label = f"{atom.get('element') or ''}{atom.get('index')}"
+        net = atom.get("net_charge")
+        charge = atom.get("charge")
+        zval = atom.get("zval")
+        charge_text = "—" if charge is None else f"{float(charge):.4f}"
+        zval_text = "—" if zval is None else f"{float(zval):.2f}"
+        net_text = "—" if net is None else f"{float(net):+.4f}"
+        body.append(
+            "<tr>"
+            f"<td>{html_lib.escape(label)}</td>"
+            f"<td>{html_lib.escape(str(atom.get('element') or '—'))}</td>"
+            f"<td>{charge_text}</td><td>{zval_text}</td><td>{net_text}</td>"
+            "</tr>"
+        )
+    note = (
+        f"<p class='hint'>共 {len(atoms)} 个原子"
+        + (f"，表中只列前 {len(rows)} 个" if len(atoms) > len(rows) else "")
+        + "（按原子序号排列）。</p>"
+    )
+    return (
+        f"<details class=\"bader-table\"><summary>完整表（{len(atoms)} 个原子）</summary>"
+        + note
+        + head
+        + "".join(body)
+        + "</tbody></table></details>"
+    )
+
+
+def widget_renderer_for(doc: Dict[str, Any]) -> Callable[[str, str], Optional[str]]:
+    """把 Markdown 里的挂点行渲染成 HTML。
+
+    - `bader-table` → 服务端直接出折叠表（静态 HTML，无需 JS）；
+    - `pdos-chart` / `work-function-chart` → 只给宿主 `<div>`，由注入的 ECharts 运行时接管；
+      运行时不可用（老浏览器 / 关闭 JS / 打印）时，前面的静态 SVG 就是它的兜底。
+    """
+    by_id = _ele_tasks_by_id(doc)
+
+    def render(kind: str, task_id: str) -> Optional[str]:
+        item = by_id.get(str(task_id)) or {}
+        if kind == "bader-table":
+            return _bader_table_html(item)
+        if kind in ("pdos-chart", "work-function-chart"):
+            return (
+                f'<div class="report-widget" data-report-widget="{html_lib.escape(kind)}" '
+                f'data-task-id="{html_lib.escape(str(task_id))}"></div>'
+            )
+        return None
+
+    return render
 
 
 VIEWER_SCRIPT = """
@@ -691,10 +799,16 @@ def render_html(
     image_loader: Optional[Callable[[str], Optional[str]]] = None,
     auto_print: bool = False,
     hidden: Optional[set] = None,
+    interactive_js: str = "",
+    interactive_data: Optional[Dict[str, Any]] = None,
 ) -> str:
     """生成自包含 HTML（单文件：CSS/JS 内联、SVG 内联、PNG 走 base64）。
 
     `sections` 为空表示导出全部章节；`image_loader("images/x.png")` 返回 data URI。
+
+    **交互版**（2026-10-15）：`interactive_js` = 前端打包的运行时（含 ECharts），
+    `interactive_data` = `{pdos: {...}, work_function: {...}}`；两者都给了才会注入，
+    页面加载后由运行时接管 `@[...]` 挂点（静态 SVG 保留作兜底）。
     """
     meta = doc.get("metadata") or {}
     chosen = set(sections) if sections else {s["key"] for s in markdown_sections}
@@ -712,6 +826,7 @@ def render_html(
             chart_loader=chart_loader,
             image_loader=image_loader,
             inline_charts=True,
+            widget_renderer=widget_renderer_for(doc),
         )
         # 任务级注解：插在每个任务块尾（标签 = markdown 里的 #### 标题）
         section_html = _apply_hidden(section["key"], section_html, hidden)
@@ -729,6 +844,17 @@ def render_html(
         f"低 {risk_summary.get('low', 0)} · 导出章节 {len(chosen)}/{len(markdown_sections)}"
     )
     auto = "<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),600));</script>" if auto_print else ""
+    # 交互版：数据脚本 + 运行时（都在 `</body>` 前，跑的时候 DOM 已经就绪）
+    interactive = ""
+    if interactive_js and interactive_data:
+        payload = json.dumps(interactive_data, ensure_ascii=False, separators=(",", ":")).replace(
+            "<", "\\u003c"
+        )
+        interactive = (
+            f"<script>window.__VASP_REPORT_DATA__={payload};</script>"
+            f"<script>{interactive_js}</script>"
+        )
+        footer += " · 图表可交互（ECharts 内联）"
     return (
         "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/>"
         f'<meta name="viewport" content="width=device-width, initial-scale=1"/>'
@@ -741,6 +867,7 @@ def render_html(
         + f'<div class="footer">{html_lib.escape(footer)}</div>'
         + dialogs_html
         + f"<script>{VIEWER_SCRIPT}</script>"
+        + interactive
         + auto
         + "</body></html>"
     )

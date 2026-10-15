@@ -44,6 +44,13 @@ import PageHeader from '../components/common/PageHeader';
 import ReportNoteDialog from '../components/reports/ReportNoteDialog';
 import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
+import {
+  BaderFullTable,
+  PdosReportChart,
+  WorkFunctionReportChart,
+  type BaderAtom,
+  type WorkFunctionSummary,
+} from '../components/reports/ReportScienceWidgets';
 import PageTransition from '../components/common/PageTransition';
 import type { Project, ProjectReportDetail, ProjectReportMeta, ReportNote } from '../types';
 import { renderMarkdown } from '../utils/markdown';
@@ -122,6 +129,12 @@ export default function Report() {
   const [generating, setGenerating] = useState<string | null>(null);
   const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
+  /**
+   * 导出**交互版**（v0.9.62，默认开）：把 ECharts 运行时 + PDOS 数据内联进单文件 HTML，
+   * 于是报告里的 PDOS / 功函数图能勾轨道、改范围、算带中心；关掉则只出静态 SVG
+   * （体积小、老浏览器与微信内置浏览器更稳，打印效果一样）。
+   */
+  const [interactiveExport, setInteractiveExport] = useState(true);
   const [keyword, setKeyword] = useState('');
   /** 报告注解（结果分析 / 论文参考）：key = type_* / task_id / path:<组>（2026-10-13） */
   const [notes, setNotes] = useState<Record<string, ReportNote>>({});
@@ -212,7 +225,13 @@ export default function Report() {
       message.warning('请至少勾选一个章节');
       return;
     }
-    const url = reportHtmlUrl(detail.meta.report_id, selectedSections, print, hidden);
+    const url = reportHtmlUrl(
+      detail.meta.report_id,
+      selectedSections,
+      print,
+      hidden,
+      interactiveExport,
+    );
     window.open(url, '_blank', 'noopener');
     if (print) message.info('已打开打印视图，选择「另存为 PDF」即可导出');
   };
@@ -396,6 +415,61 @@ export default function Report() {
       setEfHosts([]);
     };
   }, [renderedSections, detail]);
+
+  /**
+   * 电子结构挂点（2026-10-15，v0.9.61）：后端 Markdown 里的 `@[kind:task_id]` 渲染成
+   * `<div data-report-widget="...">`，这里就地 portal 挂交互组件 ——
+   * Bader 折叠表 / PDOS 交互图（点击加载）/ 功函数曲线。
+   * 与导出的单文件 HTML 同源：那边的 `widget_renderer` 出的是同一套宿主 div。
+   */
+  const [widgetHosts, setWidgetHosts] = useState<
+    { kind: string; taskId: string; el: HTMLElement; figure: HTMLElement | null }[]
+  >([]);
+
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root) return;
+    const hosts: {
+      kind: string;
+      taskId: string;
+      el: HTMLElement;
+      figure: HTMLElement | null;
+    }[] = [];
+    root.querySelectorAll<HTMLElement>('[data-report-widget]').forEach((el) => {
+      const kind = el.getAttribute('data-report-widget') || '';
+      const taskId = el.getAttribute('data-task-id') || '';
+      if (!kind || !taskId) return;
+      const prev = el.previousElementSibling;
+      const figure = prev && prev.tagName === 'FIGURE' ? (prev as HTMLElement) : null;
+      // 功函数曲线挂上就是交互版（曲线数值内联在报告里），静态图直接收起来
+      if (kind === 'work-function-chart' && figure) figure.style.display = 'none';
+      hosts.push({ kind, taskId, el, figure });
+    });
+    setWidgetHosts(hosts);
+    return () => {
+      hosts.forEach((h) => h.el.replaceChildren());
+      setWidgetHosts([]);
+    };
+  }, [renderedSections, detail]);
+
+  /** 报告里的电子结构结果（PDOS / Bader / 功函数）：结构化数据里取，按 task_id 索引 */
+  const eleTasks = useMemo(() => {
+    const structured = detail?.structured as
+      | {
+          science?: {
+            ele?: {
+              tasks?: {
+                task_id?: string;
+                task_name?: string;
+                bader_summary?: { atoms?: BaderAtom[] };
+                work_function_summary?: WorkFunctionSummary;
+              }[];
+            };
+          };
+        }
+      | undefined;
+    return structured?.science?.ele?.tasks ?? [];
+  }, [detail]);
 
   /** 渲染后给注解找挂载点：**只在「重点科学结果分析」章节内**
    *  - 类型标题（### → <h5>）：挂载点插在标题正下方（该类型"总的"一条）；
@@ -881,6 +955,18 @@ export default function Report() {
                         </Checkbox>
                       ))}
                     </div>
+                    <div className="report-export-pop__interactive">
+                      <Checkbox
+                        checked={interactiveExport}
+                        onChange={(e) => setInteractiveExport(e.target.checked)}
+                      >
+                        交互图表（PDOS / 功函数可勾选、改范围、算带中心）
+                      </Checkbox>
+                      <span className="report-export-pop__hint">
+                        内联 ECharts 运行时（约 0.6 MB）与 PDOS 数据（每个算例 1–3 MB）；
+                        取消勾选导出纯静态版，体积更小、老设备更稳
+                      </span>
+                    </div>
                     <div className="report-export-pop__actions">
                       <Button
                         size="small"
@@ -1009,6 +1095,45 @@ export default function Report() {
                         host.el,
                         host.key,
                       );
+                    })}
+
+                    {/* 电子结构挂点（v0.9.61）：Bader 折叠表 / PDOS 交互图 / 功函数曲线 */}
+                    {widgetHosts.map((host) => {
+                      const item = eleTasks.find(
+                        (x) => String(x?.task_id ?? '') === host.taskId,
+                      );
+                      if (host.kind === 'bader-table') {
+                        const atoms = item?.bader_summary?.atoms ?? [];
+                        if (!atoms.length) return null;
+                        return createPortal(
+                          <BaderFullTable atoms={atoms} taskName={item?.task_name} />,
+                          host.el,
+                          `${host.kind}:${host.taskId}`,
+                        );
+                      }
+                      if (host.kind === 'work-function-chart') {
+                        const summary = item?.work_function_summary;
+                        if (!summary?.z?.length) return null;
+                        return createPortal(
+                          <WorkFunctionReportChart summary={summary} taskName={item?.task_name} />,
+                          host.el,
+                          `${host.kind}:${host.taskId}`,
+                        );
+                      }
+                      if (host.kind === 'pdos-chart') {
+                        return createPortal(
+                          <PdosReportChart
+                            taskId={host.taskId}
+                            taskName={item?.task_name}
+                            onLoaded={() => {
+                              if (host.figure) host.figure.style.display = 'none';
+                            }}
+                          />,
+                          host.el,
+                          `${host.kind}:${host.taskId}`,
+                        );
+                      }
+                      return null;
                     })}
 
                     {/* 注解面板（结果分析 / 论文参考）：只在「重点科学结果分析」章节内的挂载点上 */}

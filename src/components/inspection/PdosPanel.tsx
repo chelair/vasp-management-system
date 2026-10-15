@@ -7,6 +7,9 @@
  *   · 没有：给「开始分析」按钮 → 后端异步跑远端 vaspkit（整合数据回传本地）→ 轮询 → 出图。
  * 图表：三级轨道菜单（悬浮卡片）/ ECharts 折线；横轴相对费米能级、零点竖直虚线；
  * 自旋默认镜像布局（up 上 / down 下）、up 实线 down 虚线；底部 E_F + 范围 + 重置 + 导出 + 重新分析。
+ *
+ * **v0.9.61**：曲线展开、范围裁剪、带中心、ECharts option 全部搬到框架无关内核
+ * `interactive/pdosChart.ts`（报告页与单文件导出复用同一份），本文件只剩控件与异步链路。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -23,29 +26,18 @@ import {
 import { clearPdos, fetchPdosData, fetchPdosStatus, triggerPdos } from '../../api/jobs';
 import type { PdosTreeNode, PdosView } from '../../types';
 import useEcharts from '../dashboard/useEcharts';
-import { bandCenters, formatCenter } from '../../utils/bandCenter';
+import { formatCenter } from '../../utils/bandCenter';
+import {
+  defaultPdosState,
+  pdosChartModel,
+  pdosSpin,
+  type PdosChartState,
+} from '../../interactive/pdosChart';
 
 interface Props {
   taskId: string;
   taskName?: string;
 }
-
-/** 每条可见曲线的绘图信息（由菜单选中项展开而来） */
-interface CurveEntry {
-  id: string;
-  /** 曲线所属的菜单节点 key（点图例芯片 = 取消勾选它） */
-  nodeKey: string;
-  name: string;
-  spin: 'up' | 'down' | 'total';
-  color: string;
-  level: 1 | 2 | 3;
-  grid: 'total' | 'partial';
-  values: number[];
-  dashed: boolean;
-}
-
-const LEVEL_WIDTH: Record<number, number> = { 1: 3, 2: 1.8, 3: 1.2 };
-const SPIN_LABEL: Record<string, string> = { up: '↑', down: '↓', total: '' };
 
 export default function PdosPanel({ taskId, taskName }: Props) {
   const { message } = App.useApp();
@@ -93,8 +85,10 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     setHasData(true);
     setShowChart(true);
     setError('');
-    setMirror(data.meta.spin_polarized !== false);
-    setCheckedKeys(['total']);
+    const fresh = defaultPdosState(data.meta.spin_polarized !== false);
+    setMirror(fresh.mirror);
+    setCheckedKeys(fresh.checkedKeys);
+    setIsolated(null);
     return data;
   }, [taskId]);
 
@@ -170,7 +164,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   }, [taskId]);
 
   const meta = view?.meta;
-  const spin = Boolean(meta?.spin_polarized);
+  const spin = pdosSpin(view);
 
   /** 菜单树（antd Tree：父节点勾选带动子节点，半选由 antd 处理） */
   const treeData = useMemo<DataNode[]>(() => {
@@ -203,314 +197,13 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     return keys;
   }, [view]);
 
-  /** 选中项 → 要画的曲线（父节点勾选后其自身曲线也被选中） */
-  const curves = useMemo<CurveEntry[]>(() => {
-    if (!view) return [];
-    const picked = new Set(checkedKeys);
-    const out: CurveEntry[] = [];
-    /** 菜单节点是不是"元素"那一行（`el:Fe`；`el:Fe:d` 是轨道，不算） */
-    const isElementNode = (node: PdosTreeNode) =>
-      node.key.startsWith('el:') && !node.key.slice(3).includes(':');
-    const walk = (node: PdosTreeNode, elementLabel = '') => {
-      const element = isElementNode(node) ? node.label : elementLabel;
-      if (picked.has(node.key)) {
-        for (const curve of node.curves ?? []) {
-          const seriesRef = view.series[curve.id];
-          if (!seriesRef) continue;
-          // 图例/提示里带上元素，例如 `Al p`（方向投影用方向名：`Fe dxy`）
-          const head = element && !isElementNode(node) ? `${element} ${node.label}` : node.label;
-          out.push({
-            id: curve.id,
-            nodeKey: node.key,
-            name: `${head}${spin ? ` ${SPIN_LABEL[curve.spin] ?? ''}` : ''}`,
-            spin: curve.spin,
-            color: curve.color || '#5B8DEF',
-            level: node.level,
-            grid: seriesRef.grid,
-            values: seriesRef.values,
-            dashed: curve.spin === 'down',
-          });
-        }
-      }
-      (node.children ?? []).forEach((child) => walk(child, element));
-    };
-    (view.tree ?? []).forEach((node) => walk(node));
-    return out;
-  }, [view, checkedKeys, spin]);
-
-  /**
-   * 统一的 x 轴：**所有曲线都用「总态密度」那条能量网格**。
-   *
-   * 为什么：总态密度的能量来自 DOSCAR，投影态密度来自 VASPKIT 的 PDOS_*.dat（脚本已把
-   * `E−Efermi` 加回来），两边四舍五入后能差 ~1e-3 eV —— ECharts 的 axis tooltip 是按 x
-   * **精确匹配**取点的，差这一点就会导致"某些点只有部分曲线显示"（2026-10-13 用户反馈）。
-   * 投影网格 = 总网格去掉 EMIN 首行，所以这里按"起点偏移"对齐（容差 2e-3 自动探测，默认 1）。
-   */
-  const partialOffset = useMemo(() => {
-    const total = view?.energy.total ?? [];
-    const partial = view?.energy.partial ?? [];
-    if (!total.length || !partial.length) return 0;
-    const target = partial[0];
-    const index = total.findIndex((x) => Math.abs(x - target) < 0.002);
-    return index >= 0 ? index : 1;
-  }, [view]);
-
-  /** 第 i 个点该落在哪个 x（绝对能量）：统一用总态密度的网格，投影按偏移对齐 */
-  const xAt = useCallback(
-    (curve: CurveEntry, index: number) => {
-      const total = view?.energy.total ?? [];
-      const own = view?.energy[curve.grid] ?? [];
-      if (curve.grid === 'partial') {
-        return total[index + partialOffset] ?? own[index] ?? index;
-      }
-      return total[index] ?? own[index] ?? index;
-    },
-    [view, partialOffset],
+  /** 界面状态 → 计算内核（曲线 / 带中心 / 范围 / ECharts option 全在内核里，见 interactive/pdosChart.ts） */
+  const state = useMemo<PdosChartState>(
+    () => ({ checkedKeys, mirror, showZero, showCenter, autoRange, xMin, xMax, isolated }),
+    [checkedKeys, mirror, showZero, showCenter, autoRange, xMin, xMax, isolated],
   );
-
-  const range = useMemo(() => {
-    if (!autoRange || curves.length === 0) return { min: xMin, max: xMax };
-    let min = Infinity;
-    let max = -Infinity;
-    curves.forEach((curve) => {
-      const n = curve.values.length;
-      for (let i = 0; i < n; i += 1) {
-        const x = xAt(curve, i) - (meta?.efermi ?? 0);
-        if (x < min) min = x;
-        if (x > max) max = x;
-      }
-    });
-    if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
-      return { min: xMin, max: xMax };
-    }
-    const pad = (max - min) * 0.02;
-    return { min: min - pad, max: max + pad };
-  }, [autoRange, curves, view, meta, xMin, xMax, xAt]);
-
-  /**
-   * 各条曲线的带中心（相对 E_F，含未占据态 —— 用户 2026-10-15 口径）。
-   * 纯本地计算：`range` 由「范围」两个输入框 / 自适应驱动，所以改范围就**实时**重算。
-   */
-  const centers = useMemo(() => {
-    const efermi = meta?.efermi ?? 0;
-    const items = curves.map((curve) => {
-      const n = curve.values.length;
-      const xs = new Array<number>(n);
-      for (let i = 0; i < n; i += 1) xs[i] = xAt(curve, i) - efermi;
-      return { id: curve.id, xs, values: curve.values };
-    });
-    return bandCenters(items, range.min, range.max);
-  }, [curves, range, meta, xAt]);
-
-  /**
-   * 图上画哪几条带中心虚线：显示 ≤4 条时全画（常见的"选一组轨道 = up/down 两条"），
-   * 更多时只画「只看这条」选中的那条 —— 否则 40 多条虚线叠在一起没法看。
-   * 顺带算一个**标签错行号**：两条带中心挨得近（< 可视范围的 ~4.5%）时标签上下错开，
-   * 不然数值标签会叠在一起看不清（用户 2026-10-15 反馈）。
-   */
-  const centerLines = useMemo(() => {
-    if (!showCenter) return [];
-    const picked = curves
-      .filter((curve) => curves.length <= 4 || curve.id === isolated)
-      .map((curve) => ({ curve, value: centers[curve.id] }))
-      .filter((item): item is { curve: CurveEntry; value: number } => item.value != null)
-      .sort((a, b) => b.value - a.value);
-    const span = Math.max(range.max - range.min, 1e-6);
-    const rowGap = span * 0.045;
-    let row = 0;
-    let prev: number | null = null;
-    return picked.map((item) => {
-      row = prev !== null && Math.abs(item.value - prev) < rowGap ? (row + 1) % 4 : 0;
-      prev = item.value;
-      return { ...item, row };
-    });
-  }, [showCenter, curves, isolated, centers, range]);
-
-  const option = useMemo(() => {
-    const efermi = meta?.efermi ?? 0;
-    /** 每条曲线的 x 序列（相对 E_F），tooltip 自己找最近点要用 */
-    const xsOf = (curve: CurveEntry) => {
-      const n = curve.values.length;
-      const xs = new Array<number>(n);
-      for (let i = 0; i < n; i += 1) xs[i] = xAt(curve, i) - efermi;
-      return xs;
-    };
-    /** 指针 x 上该曲线最近的点（曲线 x 单调，二分即可） */
-    const nearestIndex = (xs: number[], x: number) => {
-      if (!xs.length) return -1;
-      let lo = 0;
-      let hi = xs.length - 1;
-      while (hi - lo > 1) {
-        const mid = (lo + hi) >> 1;
-        if (xs[mid] < x) lo = mid;
-        else hi = mid;
-      }
-      return Math.abs(xs[lo] - x) <= Math.abs(xs[hi] - x) ? lo : hi;
-    };
-    // tooltip 仍然列**全部**曲线（隔离只是压暗，不隐藏数据），聚焦的那条排最前
-    const tooltipRows = [...curves]
-      .sort((a, b) => (a.id === isolated ? -1 : b.id === isolated ? 1 : 0))
-      .map((curve) => ({ curve, xs: xsOf(curve) }));
-    /** 参考线该挂哪条曲线（挂聚焦的那条，或第一条） */
-    const focusIndex = Math.max(0, curves.findIndex((curve) => curve.id === isolated));
-    const series = curves.map((curve) => {
-      const n = curve.values.length;
-      const data: [number, number][] = [];
-      let maxAbs = 0;
-      for (let i = 0; i < n; i += 1) {
-        const value = curve.values[i];
-        maxAbs = Math.max(maxAbs, Math.abs(value));
-        data.push([xAt(curve, i) - efermi, mirror && curve.spin === 'down' ? -value : value]);
-      }
-      const dimmed = isolated !== null && curve.id !== isolated;
-      return {
-        name: curve.name,
-        type: 'line' as const,
-        showSymbol: false,
-        sampling: 'lttb' as const,
-        // 点图例"只看这条"时，其它曲线**压暗**（保留颜色、降低不透明度）而不是隐藏
-        lineStyle: {
-          width: LEVEL_WIDTH[curve.level] ?? 1.5,
-          type: curve.dashed ? ('dashed' as const) : ('solid' as const),
-          opacity: dimmed ? 0.18 : 1,
-        },
-        itemStyle: { color: curve.color, opacity: dimmed ? 0.18 : 1 },
-        z: dimmed ? 1 : 3,
-        // 不再用 ECharts 的 focus:'series'（hover 会把其它曲线压暗/隐藏，用户明确不要）；
-        // "只看一条"改由点击图例芯片实现（见 isolated）
-        data,
-        // 镜像布局时纵轴上下对称，这里把最大值带出来给 yAxis 用
-        __maxAbs: maxAbs,
-      };
-    });
-    const maxAbs = series.reduce((acc, item) => Math.max(acc, item.__maxAbs), 0) || 1;
-    const yAxis = mirror && spin
-      ? {
-          min: -maxAbs * 1.05,
-          max: maxAbs * 1.05,
-          axisLabel: { formatter: (v: number) => Math.abs(v).toFixed(0) },
-        }
-      : { min: undefined, max: undefined };
-    return {
-      animation: false,
-      // 顶部不留图例空间（图例改成工具条上的芯片，避免与轴名重叠）
-      // 左边留出竖排 "Intensity" 轴名的位置
-      grid: { left: 66, right: 20, top: 18, bottom: 46 },
-      tooltip: {
-        trigger: 'axis' as const,
-        axisPointer: { type: 'cross' as const },
-        // 卡片**不能被画布裁掉**（勾选多条曲线时卡片很长，指针在底部时原来会露出画面外，
-        // 看起来像"只有部分曲线"）：限制在画布内 + 卡片自己滚动 + 数值多的排前面
-        confine: true,
-        order: 'valueDesc' as const,
-        transitionDuration: 0,
-        extraCssText: 'max-height: 260px; overflow: auto; max-width: 340px;',
-        // 自定义卡片：**不依赖 ECharts 的"按 x 精确匹配取点"**（实测同一轨道 ↑/↓ 两条
-        // 也会因为浮点/网格差异只列出一条）—— 这里拿指针的 x，自己对**每条可见曲线**
-        // 找最近点再列出来，所以一定列全；镜像布局下自旋向下显示回绝对值。
-        formatter: (params: unknown) => {
-          const list = (Array.isArray(params) ? params : [params]) as { axisValue?: number }[];
-          const x = list[0]?.axisValue;
-          if (x == null) return '';
-          const head =
-            `<div style="font-weight:600;margin-bottom:4px">E − E_F = ${Number(x).toFixed(3)} eV</div>`;
-          const rows = tooltipRows.map(({ curve, xs }) => {
-            const index = nearestIndex(xs, Number(x));
-            // 指针落在该曲线能量范围之外（例如投影少了 EMIN 首行）就显示 ——，别硬取端点值
-            const inRange =
-              index >= 0 && Math.abs((xs[index] ?? 0) - Number(x)) <= 0.05;
-            const raw = inRange ? curve.values[index] : NaN;
-            const shown = mirror && curve.spin === 'down' ? Math.abs(raw) : raw;
-            const dot =
-              `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;` +
-              `background:${curve.color};margin-right:6px"></span>`;
-            return `${dot}${curve.name}: ${Number.isFinite(shown) ? shown.toFixed(4) : '—'}`;
-          });
-          return head + rows.join('<br/>');
-        },
-      },
-      // 不用 ECharts 自带图例：曲线多时它会和轴名/彼此重叠（用户截图反馈），
-      // 改用工具条上的芯片做图例（点一下取消该条曲线）。
-      legend: { show: false },
-      xAxis: {
-        type: 'value' as const,
-        name: 'E − E_F (eV)',
-        nameLocation: 'middle' as const,
-        nameGap: 26,
-        min: range.min,
-        max: range.max,
-        position: 'bottom' as const,
-        // 同上：默认会把 x 轴轴线画在 y=0 处（横穿图表中间）；轴线与刻度统一放到底部
-        axisLine: { show: true, onZero: false },
-        axisTick: { show: true, onZero: false },
-        axisLabel: { onZero: false },
-      },
-      yAxis: {
-        type: 'value' as const,
-        name: 'Intensity',
-        // 轴名竖排在**最左端**（默认 nameLocation='end' 会跑到轴顶端，用户要求放左边）
-        nameLocation: 'middle' as const,
-        nameRotate: 90,
-        nameGap: 42,
-        position: 'left' as const,
-        // ⚠️ 镜像布局下 y 轴跨正负，默认 `onZero` 会把**轴线画到 x=0 处**（图表正中间，
-        // 看起来像"0 eV 处多了一条坐标轴"）—— 关掉 onZero，轴线固定在最左端
-        axisLine: { show: true, onZero: false },
-        axisTick: { show: true, onZero: false },
-        axisLabel: { onZero: false },
-        ...yAxis,
-      },
-      // 参考线只挂第一条曲线上（挂多条会叠着画一堆同样的线）：
-      //   · 费米能级：x=0 的竖直虚线（可按底部开关关掉）
-      //   · 纵轴 0：一条水平基线（镜像布局的正负分界，固定画）
-      series: series.map(({ __maxAbs, ...rest }, index) =>
-        index === focusIndex
-          ? {
-              ...rest,
-              markLine: {
-                silent: true,
-                symbol: 'none',
-                label: { show: false },
-                data: [
-                  ...(showZero
-                    ? [
-                        {
-                          xAxis: 0,
-                          lineStyle: { type: 'dashed' as const, color: '#98a6bd' },
-                        },
-                      ]
-                    : []),
-                  {
-                    yAxis: 0,
-                    lineStyle: { type: 'solid' as const, color: '#b9c4d4', width: 1 },
-                  },
-                  // 带中心：每条显示曲线的加权平均能量（同色垂直虚线 + 数值标签）
-                  ...centerLines.map(({ curve, value, row }) => ({
-                    xAxis: value,
-                    lineStyle: {
-                      // up / down 除了颜色不同，虚线样式也不同（长虚线 vs 点线）：
-                      // 两条带中心挨得近时也能分清哪条是哪个自旋（2026-10-15 用户反馈）
-                      type: (curve.spin === 'down' ? [2, 3] : [7, 4]) as number[],
-                      color: curve.color,
-                      width: 1.2,
-                      opacity: 0.95,
-                    },
-                    label: {
-                      show: true,
-                      formatter: `${curve.name} 带中心 ${formatCenter(value)} eV`,
-                      position: 'insideEndTop' as const,
-                      distance: [0, 6 + row * 14],
-                      color: curve.color,
-                      fontSize: 11,
-                    },
-                  })),
-                ],
-              },
-            }
-          : rest,
-      ),
-    };
-  }, [curves, isolated, view, meta, mirror, spin, range, showZero, xAt, centerLines]);
+  const model = useMemo(() => pdosChartModel(view, state), [view, state]);
+  const { curves, centers, range, option } = model;
 
   const containerRef = useEcharts(option, [option], (instance) => {
     // 只保留实例（导出 PNG 用）；卸载时的 null 不回写 state，避免卸载后 setState
@@ -520,12 +213,14 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   });
 
   const reset = () => {
-    setCheckedKeys(['total']);
-    setMirror(spin);
-    setShowZero(true);
-    setAutoRange(false);
-    setXMin(-10);
-    setXMax(10);
+    const fresh = defaultPdosState(spin);
+    setCheckedKeys(fresh.checkedKeys);
+    setMirror(fresh.mirror);
+    setShowZero(fresh.showZero);
+    setAutoRange(fresh.autoRange);
+    setXMin(fresh.xMin);
+    setXMax(fresh.xMax);
+    setIsolated(null);
   };
 
   const exportImage = () => {

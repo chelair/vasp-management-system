@@ -2826,6 +2826,71 @@ body.is-atom-selecting * {
   margin: 10px 0 4px;
 }
 
+/* 报告页：电子结构挂点（Bader 折叠表 / PDOS 交互图 / 功函数曲线，v0.9.61） */
+.report-widget {
+  margin: 10px 0 14px;
+}
+
+.report-bader-collapse {
+  margin: 6px 0 14px;
+}
+
+.report-pdos__cta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.report-pdos__hint {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.report-pdos__host {
+  width: 100%;
+}
+
+.report-wf {
+  margin: 6px 0 14px;
+}
+
+.report-wf__cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.report-wf__card {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: #fbfcfe;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.report-wf__card strong {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.report-wf__card em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+.report-wf__card--key {
+  border-color: #b9d0f5;
+  background: #eef4ff;
+}
+
 /* 功函数：方向选择工具条 + 电位曲线（v0.9.59） */
 .wf-toolbar {
   display: flex;
@@ -5043,6 +5108,28 @@ button.report-chip {
 .report-export-pop__sections .ant-checkbox-wrapper {
   font-size: 12px;
   margin-inline-start: 0;
+}
+
+/* 交互版导出开关（v0.9.62） */
+.report-export-pop__interactive {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0 0;
+  margin-top: 2px;
+  border-top: 1px dashed var(--color-border-soft);
+}
+
+.report-export-pop__interactive .ant-checkbox-wrapper {
+  font-size: 12px;
+  margin-inline-start: 0;
+}
+
+.report-export-pop__hint {
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-width: 300px;
 }
 
 .report-export-pop__actions {

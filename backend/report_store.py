@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from config import DATA_DIR
 from report_export import render_html
+from report_interactive import interactive_kwargs
 
 
 def image_data_uri(path: Path) -> Optional[str]:
@@ -253,6 +254,7 @@ def save_report(
             if (target / "charts" / name).is_file()
             else None,
             image_loader=lambda rel: image_data_uri(target / rel),
+            **interactive_kwargs(doc, interactive=True),
         )
         html_path = target.parent / f"report_{date.today().isoformat()}.html"
         html_path.write_text(html_text, encoding="utf-8")

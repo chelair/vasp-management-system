@@ -13,6 +13,7 @@ from envelope import fail, ok
 import permissions
 from report_builder import build_report
 from report_export import render_html
+from report_interactive import interactive_kwargs
 from report_schema import schema_manifest
 from report_store import (
     delete_report,
@@ -293,6 +294,10 @@ def project_report_html(
     hide: str | None = Query(
         default=None, description="逗号分隔的隐藏元素 key（section:x / task:<章节>:<标题> / figure:<章节>:<序号>）"
     ),
+    interactive: bool = Query(
+        default=True,
+        description="是否内联 ECharts 运行时让 PDOS/功函数图可交互（体积 +约 0.6MB 运行时 + PDOS 数据）",
+    ),
 ):
     """导出**自包含 HTML**：可按章节范围导出（如取消风险分析），图表内联 SVG。
 
@@ -320,6 +325,7 @@ def project_report_html(
             image_loader=(lambda rel: read_image_data_uri(report_id, rel)) if inline else None,
             auto_print=print,
             hidden=set(x.strip() for x in hide.split(",") if x.strip()) if hide else None,
+            **interactive_kwargs(doc, interactive=interactive),
         )
         filename = f"{report_id}.html"
         return Response(

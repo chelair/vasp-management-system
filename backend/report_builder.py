@@ -21,8 +21,11 @@ from config import DATA_DIR, load_servers, load_settings, load_task_registry
 from dashboard import build_cluster_health, build_cores_usage, cluster_snapshot
 from dates import now_iso
 from report_charts import (
+    clip_polyline,
+    dos_lines_chart,
     donut_chart,
     energy_force_chart,
+    planar_average_chart,
     progress_bar,
 )
 from report_panels import (
@@ -45,6 +48,8 @@ from structure_analysis import analyze as analyze_structure
 import structure_images
 import charge_diff
 import bader
+import pdos
+import work_function
 from ele_diff import diff_charge_blocks
 from task_paths import is_auxiliary_task, is_continuation_task, task_dir
 
@@ -742,6 +747,249 @@ def _frac_details(
 # ------------------------------------------------------------------ Markdown
 
 
+# ------------------------------------------------- 电子结构（PDOS / 功函数，v0.9.61）
+
+#: 报告里 PDOS 静态图的默认坐标范围与带中心积分区间（与前端面板默认值一致：-10 ~ 10 eV）
+PDOS_REPORT_RANGE = (-10.0, 10.0)
+#: 静态图每条约多少点（交互版用全量 3000 点；静态图只求"看得清"，控制 SVG 体积）
+PDOS_REPORT_POINTS = 600
+#: 静态图默认画几条曲线：总态密度 + 各元素的 d 轨道（催化里最常看的一组）
+PDOS_REPORT_MAX_CURVES = 16
+
+
+def _downsample(xs: List[float], ys: List[float], limit: int) -> List[tuple]:
+    """等距抽点（首尾保留）—— 静态图不需要 3000 个点，抽到 600 点肉眼看不出差别。"""
+    n = min(len(xs), len(ys))
+    if n <= limit:
+        return [(xs[i], ys[i]) for i in range(n)]
+    step = n / float(limit)
+    out = [(xs[int(i * step)], ys[int(i * step)]) for i in range(limit)]
+    out.append((xs[n - 1], ys[n - 1]))
+    return out
+
+
+def _band_center(xs: List[float], ys: List[float], lo: float, hi: float) -> Optional[float]:
+    """带中心 ∫E·DOS dE / ∫DOS dE（梯形积分 + 边界线性插值裁剪）。
+
+    与前端 `src/utils/bandCenter.ts`、报告页内核 `interactive/pdosChart.ts` **同口径**：
+    含未占据态、边界裁剪、区间内没有态返回 None。
+    """
+    n = min(len(xs), len(ys))
+    if n < 2 or not (hi > lo):
+        return None
+    num = 0.0
+    den = 0.0
+    for i in range(1, n):
+        x0, x1 = xs[i - 1], xs[i]
+        v0, v1 = ys[i - 1], ys[i]
+        if x1 == x0:
+            continue
+        left = max(x0, lo)
+        right = min(x1, hi)
+        if right <= left:
+            continue
+        span = x1 - x0
+        v_left = v0 + (v1 - v0) * (left - x0) / span
+        v_right = v0 + (v1 - v0) * (right - x0) / span
+        weight = (v_left + v_right) / 2.0 * (right - left)
+        num += (left + right) / 2.0 * weight
+        den += weight
+    if abs(den) < 1e-12:
+        return None
+    return num / den
+
+
+def _pdos_walk(node: Dict[str, Any]):
+    yield node
+    for child in node.get("children") or []:
+        yield from _pdos_walk(child)
+
+
+def _pdos_report_data(
+    project_name: str,
+    ele_obj: Dict[str, Any],
+    charts: Dict[str, str],
+    errors: List[str],
+) -> Optional[Dict[str, Any]]:
+    """PDOS 本地整合数据 → 报告摘要 + 静态兜底图；没有结果返回 None。
+
+    静态图 = **总态密度 + 各元素 d 轨道**（默认视角，自旋镜像布局），带中心按
+    `PDOS_REPORT_RANGE` 积分后画在同色竖直虚线上。交互版（勾轨道 / 改范围 / 实时算带中心）
+    由报告页与导出的单文件 HTML 注入的 ECharts 组件提供，用的是同一份数据。
+    """
+    path = pdos.data_path(project_name, ele_obj)
+    if not (path.is_file() and path.stat().st_size > 0):
+        return None
+    try:
+        view = pdos.load_view(project_name, ele_obj)
+    except Exception as exc:  # noqa: BLE001 - 报告不因 PDOS 失败
+        errors.append(f"{ele_obj.get('task_name')} PDOS 结果读取失败：{exc}")
+        return None
+
+    total_xs = list(view.get("energy", {}).get("total") or [])
+    partial_xs = list(view.get("energy", {}).get("partial") or [])
+    if not total_xs:
+        return None
+    # 投影网格 = 总网格去掉 EMIN 首行，按"起点偏移"对齐（与前端 partialOffsetOf 同口径）
+    offset = 1
+    if partial_xs:
+        found = next(
+            (i for i, x in enumerate(total_xs) if abs(x - partial_xs[0]) < 0.002), None
+        )
+        if found is not None:
+            offset = found
+    efermi = float(view.get("meta", {}).get("efermi") or 0.0)
+    spin = bool(view.get("meta", {}).get("spin_polarized"))
+    series = view.get("series") or {}
+
+    def curve_points(curve: Dict[str, Any]):
+        ref = series.get(curve.get("id") or "")
+        if not ref:
+            return None
+        values = list(ref.get("values") or [])
+        if not values:
+            return None
+        if ref.get("grid") == "partial":
+            xs = [total_xs[i + offset] for i in range(len(values)) if i + offset < len(total_xs)]
+        else:
+            xs = total_xs[: len(values)]
+        if len(xs) != len(values):
+            values = values[: len(xs)]
+        return xs, values
+
+    # 默认视角：总态密度 + 各元素 d 轨道
+    picked: List[tuple] = []  # (节点标题, 元素, 曲线)
+    for node in _pdos_walk({"children": view.get("tree") or []}):
+        if not node.get("key"):
+            continue
+        if node["key"] == "total":
+            for curve in node.get("curves") or []:
+                picked.append(("总态密度", "", curve))
+        elif str(node["key"]).endswith(":d") and not str(node["key"]).endswith(":d:d"):
+            # 节点 key = `el:<元素>:d`（节点自身 label 只是轨道名 "d"）
+            parts = str(node["key"]).split(":")
+            element = parts[1] if len(parts) > 1 else ""
+            for curve in node.get("curves") or []:
+                picked.append(("d", element, curve))
+    picked = picked[:PDOS_REPORT_MAX_CURVES]
+
+    lo, hi = PDOS_REPORT_RANGE
+    spin_label = {"up": "↑", "down": "↓", "total": ""}
+    lines: List[Dict[str, Any]] = []
+    bands: List[Dict[str, Any]] = []
+    centers: List[Dict[str, Any]] = []
+    for title_text, element, curve in picked:
+        got = curve_points(curve)
+        if not got or not got[1]:
+            continue
+        xs, values = got
+        rel_x = [x - efermi for x in xs]
+        name = (
+            f"{title_text}{' ' + element if element else ''} "
+            f"{spin_label.get(str(curve.get('spin')), '')}"
+        ).strip()
+        sign = -1.0 if (spin and curve.get("spin") == "down") else 1.0
+        # **先按展示窗口裁剪再抽点** —— 否则 600 个点里绝大部分落在窗口外，窗口内变得很稀疏
+        clipped = clip_polyline(list(zip(rel_x, [v * sign for v in values])), lo, hi)
+        points = _downsample(
+            [p[0] for p in clipped], [p[1] for p in clipped], PDOS_REPORT_POINTS
+        )
+        lines.append(
+            {
+                "name": name,
+                "color": curve.get("color") or "#5B8DEF",
+                "points": points,
+                "dashed": curve.get("spin") == "down",
+                "width": 2.2 if title_text == "总态密度" else 1.3,
+            }
+        )
+        center = _band_center(rel_x, values, lo, hi)
+        if center is not None:
+            centers.append({"name": name, "value": round(center, 4), "color": curve.get("color")})
+            bands.append(
+                {
+                    "x": center,
+                    "color": curve.get("color") or "#5B8DEF",
+                    "label": f"{name} 带中心 {center:.2f} eV",
+                    "dashed": curve.get("spin") == "down",
+                }
+            )
+
+    task_id = str(ele_obj.get("task_id") or "")
+    chart_name = f"pdos_{task_id}.svg"
+    if lines:
+        charts[chart_name] = dos_lines_chart(
+            lines,
+            title=f"{ele_obj.get('task_name') or task_id} 态密度（PDOS）",
+            x_min=lo,
+            x_max=hi,
+            bands=bands,
+        )
+    return {
+        "available": True,
+        "task_id": task_id,
+        "elements": view.get("meta", {}).get("elements") or [],
+        "efermi": view.get("meta", {}).get("efermi"),
+        "spin_polarized": spin,
+        "points": view.get("meta", {}).get("points"),
+        "partial_points": view.get("meta", {}).get("partial_points"),
+        "has_projection": view.get("meta", {}).get("has_projection"),
+        "has_fine_orbitals": view.get("meta", {}).get("has_fine_orbitals"),
+        "series_count": len(series),
+        "generated_at": view.get("meta", {}).get("generated_at"),
+        "source": view.get("meta", {}).get("source"),
+        "range": list(PDOS_REPORT_RANGE),
+        "default_curves": [line["name"] for line in lines],
+        "band_centers": centers,
+        "chart": f"charts/{chart_name}" if lines else None,
+    }
+
+
+def _work_function_report_data(
+    project_name: str,
+    ele_obj: Dict[str, Any],
+    charts: Dict[str, str],
+    errors: List[str],
+) -> Optional[Dict[str, Any]]:
+    """功函数本地结果（PLANAR_AVERAGE.dat + meta）→ 报告摘要 + 静态兜底图；没有返回 None。"""
+    path = work_function.data_path(project_name, ele_obj)
+    if not (path.is_file() and path.stat().st_size > 0):
+        return None
+    try:
+        data = work_function.load_data(project_name, ele_obj)
+    except Exception as exc:  # noqa: BLE001 - 报告不因功函数失败
+        errors.append(f"{ele_obj.get('task_name')} 功函数结果读取失败：{exc}")
+        return None
+    task_id = str(ele_obj.get("task_id") or "")
+    chart_name = f"wf_{task_id}.svg"
+    axis = str(data.get("axis") or "c")
+    charts[chart_name] = planar_average_chart(
+        list(zip(data.get("z") or [], data.get("potential") or [])),
+        title=f"{ele_obj.get('task_name') or task_id} 平面平均静电势（{axis} 方向）",
+        vacuum=data.get("vacuum_level"),
+        fermi=data.get("efermi"),
+    )
+    return {
+        "available": True,
+        "task_id": task_id,
+        "axis": axis,
+        "axis_cartesian": data.get("axis_cartesian"),
+        "efermi": data.get("efermi"),
+        "vacuum_level": data.get("vacuum_level"),
+        "vacuum_level_source": data.get("vacuum_level_source"),
+        "work_function": data.get("work_function"),
+        "work_function_vaspkit": data.get("work_function_vaspkit"),
+        "points": data.get("points"),
+        "warnings": data.get("warnings") or [],
+        "dipole": data.get("dipole"),
+        "elapsed_seconds": data.get("elapsed_seconds"),
+        "elapsed": data.get("elapsed_seconds"),
+        "z": data.get("z"),
+        "potential": data.get("potential"),
+        "chart": f"charts/{chart_name}",
+    }
+
+
 def _md_table(headers: List[str], rows: List[List[Any]]) -> str:
     if not rows:
         return "_无数据_\n"
@@ -971,9 +1219,16 @@ def _sections_markdown(report, charts):
         blocks.append("_本项目暂无可展示的科学结果（需任务产出 OUTCAR/CONTCAR 后自动生成）_\n")
     ele_note = science.get("ele") or {}
     ele_tasks = ele_note.get("tasks") or []
-    # 「电子结构」章节：有差分电荷分块 / Bader 结果时**一定**出（哪怕项目里还没有别的科学结果），
-    # 否则跟其它类型一样只留一句占位说明。
-    with_diff = [item for item in ele_tasks if item.get("diff_charge") or item.get("bader")]
+    # 「电子结构」章节：有差分电荷分块 / Bader / PDOS / 功函数结果时**一定**出
+    # （哪怕项目里还没有别的科学结果），否则跟其它类型一样只留一句占位说明。
+    with_diff = [
+        item
+        for item in ele_tasks
+        if item.get("diff_charge")
+        or item.get("bader")
+        or item.get("pdos_summary")
+        or item.get("work_function_summary")
+    ]
     if with_diff or not empty_project:
         ele_blocks: List[str] = ["### 电子结构\n"]
         if with_diff:
@@ -1085,6 +1340,8 @@ def _sections_markdown(report, charts):
                             f"（按 |\u0394q| 列最大的 {len(summary['top'])} 个原子；"
                             f"完整表见巡检详情「电子结构分析 → Bader」。）\n\n"
                         )
+                        # 完整表：报告页 / 导出渲染成折叠报表（滑动展开），不铺在正文里
+                        ele_blocks.append(f"@[bader-table:{item['task_id']}]\n\n")
                 else:
                     ele_blocks.append(
                         f"已算出 `ACF.dat`（{summary['n_atoms']} 个原子，Bader 电荷合计 "
@@ -1092,9 +1349,85 @@ def _sections_markdown(report, charts):
                         f"{summary.get('net_charge_reason') or '缺 ZVAL'}，"
                         "本次报告只给这里的原始电荷。\n\n"
                     )
-        ele_blocks.append(
-            f"\n待接入：{ele_note.get('note', '电子结构分析（PDOS / Bader / 功函数）尚未接入报告')}\n"
-        )
+            # PDOS（v0.9.61）：摘要 + 静态图（交互版由报告页 / 导出注入的组件接管这张图）
+            for item in [x for x in with_diff if x.get("pdos_summary")]:
+                summary = item["pdos_summary"]
+                ele_blocks.append(f"\n#### {item['task_name']} · 态密度（PDOS）\n")
+                ele_blocks.append(
+                    "在**远端**用 vaspkit（task 111 + 113）提取态密度，只回传整合数据"
+                    "（`dos.json`）；费米能级按 OUTCAR 的 E-fermi，横轴相对 E_F。\n\n"
+                )
+                if summary.get("chart"):
+                    ele_blocks.append(
+                        f"![{item['task_name']} 态密度]({summary['chart']})\n\n"
+                    )
+                    # 交互挂点：报告页点「加载交互图」后接管；导出的单文件 HTML 直接注入运行时
+                    ele_blocks.append(f"@[pdos-chart:{item['task_id']}]\n\n")
+                facts = [
+                    f"E_F = {_fmt(summary.get('efermi'), 4)} eV",
+                    "自旋极化" if summary.get("spin_polarized") else "非自旋",
+                    f"元素 {'/'.join(summary.get('elements') or []) or '—'}",
+                    f"可勾选曲线 {summary.get('series_count')} 条",
+                ]
+                ele_blocks.append("· " + " · ".join(facts) + "\n\n")
+                if summary.get("default_curves"):
+                    lo, hi = (summary.get("range") or [None, None])[:2]
+                    text = (
+                        f"图上默认画**总态密度 + 各元素 d 轨道**共 "
+                        f"{len(summary['default_curves'])} 条"
+                    )
+                    if summary.get("band_centers"):
+                        centers_text = "；".join(
+                            "{name} {value:+.2f} eV".format(**center)
+                            for center in summary["band_centers"]
+                        )
+                        text += (
+                            f"（带中心按区间 {_fmt(lo, 1)} ~ {_fmt(hi, 1)} eV 积分，"
+                            f"含未占据态、up/down 各自算）：{centers_text}"
+                        )
+                    ele_blocks.append(text + "。\n\n")
+                ele_blocks.append(
+                    "> 网页版报告与导出的单文件 HTML 里这张图是**可交互**的："
+                    "勾选轨道、改能量范围、开关带中心虚线都会实时重画；"
+                    "打印 / PDF 用上面这张静态图。\n\n"
+                )
+            # 功函数（v0.9.61）：数值 + 平面平均电位曲线
+            for item in [x for x in with_diff if x.get("work_function_summary")]:
+                summary = item["work_function_summary"]
+                ele_blocks.append(f"\n#### {item['task_name']} · 功函数\n")
+                ele_blocks.append(
+                    f"在**远端**用 VASPKIT 的 426 功能提平面平均静电势"
+                    f"（方向 {summary.get('axis')} ↗ {summary.get('axis_cartesian')}），"
+                    "**功函数 = 真空能级 − E_F**。\n\n"
+                )
+                if summary.get("chart"):
+                    ele_blocks.append(
+                        f"![{item['task_name']} 平面平均静电势]({summary['chart']})\n\n"
+                    )
+                    ele_blocks.append(f"@[work-function-chart:{item['task_id']}]\n\n")
+                vacuum_source = (
+                    "VASPKIT 汇总" if summary.get("vacuum_level_source") == "vaspkit"
+                    else "本地平台估计"
+                )
+                ele_blocks.append(
+                    f"真空能级 {_fmt(summary.get('vacuum_level'), 4)} eV"
+                    f"（{vacuum_source}） · E_F {_fmt(summary.get('efermi'), 4)} eV"
+                    f" · **功函数 {_fmt(summary.get('work_function'), 4)} eV**"
+                    + (
+                        f" · 耗时 {summary['elapsed_seconds']} s"
+                        if summary.get("elapsed_seconds")
+                        else ""
+                    )
+                    + "\n\n"
+                )
+                for warning in summary.get("warnings") or []:
+                    ele_blocks.append(f"- ⚠ {warning}\n")
+                if summary.get("warnings"):
+                    ele_blocks.append("\n")
+            ele_blocks.append(
+                "\n> 差分电荷、Bader、PDOS、功函数都在巡检详情「电子结构分析」里，"
+                "报告只汇总结果；要重算或换参数请回巡检详情操作。\n"
+            )
         blocks.append("".join(ele_blocks))
     sections["science"] = "".join(blocks).strip() + "\n"
 
@@ -1921,8 +2254,9 @@ def build_report(
             "neb": neb_science,
             "ele": {
                 "note": (
-                    "电子结构分析：差分电荷（结果 + VESTA 三视图弹窗）与 Bader 电荷"
-                    "（ACF.dat + 逐原子净电荷统计）已接入报告；PDOS / COHP / 功函数待接入"
+                    "电子结构分析：差分电荷（结果 + VESTA 三视图弹窗）、Bader 电荷"
+                    "（ACF.dat + 逐原子净电荷统计）、PDOS（可交互图 + 带中心）、"
+                    "功函数（真空能级 − E_F）均已接入报告；COHP 待接入"
                 ),
                 "tasks": _ele_details(project, facts, merged),
             },
@@ -2039,18 +2373,18 @@ def build_report(
     # 差分电荷三视图（v0.9.47）：算好了就在「电子结构」章节给一个 a/b/c 弹窗，
     # 图片复用同一个 images/ 内联通道（口径与结构/映像三视图完全一致）
     for item in ((report.get("science") or {}).get("ele") or {}).get("tasks") or []:
+        ele_obj = next(
+            (
+                x
+                for x in project.get("tasks", [])
+                if str(x.get("task_id")) == str(item.get("task_id"))
+            ),
+            None,
+        )
         # Bader（v0.9.54）：把逐原子净电荷/统计一次性算好挂到 item 上，供章节渲染。
         # 纯本地读文件（ACF.dat + meta 里的 ZVAL + 本地 POSCAR），不连远端。
         bader_record = item.get("bader") or {}
         if bader_record.get("ok"):
-            ele_obj = next(
-                (
-                    x
-                    for x in project.get("tasks", [])
-                    if str(x.get("task_id")) == str(item.get("task_id"))
-                ),
-                None,
-            )
             if ele_obj is not None:
                 try:
                     parsed = bader.load_data(project_name, ele_obj)
@@ -2079,9 +2413,32 @@ def build_report(
                             key=lambda a: abs(a["net_charge"]),
                             reverse=True,
                         )[:10],
+                        # 完整表（v0.9.61）：报告正文里默认折叠（原生 <details>），
+                        # 报告页 / 导出都渲染成"滑动折叠"的报表，不把 100+ 行铺在正文里
+                        "atoms": [
+                            {
+                                "index": atom["index"],
+                                "element": atom.get("element"),
+                                "charge": atom["charge"],
+                                "zval": atom.get("zval"),
+                                "net_charge": atom.get("net_charge"),
+                            }
+                            for atom in parsed["atoms"]
+                        ],
                     }
                 except Exception as exc:  # noqa: BLE001 - 报告不因 Bader 失败
                     collection_errors.append(f"{item.get('task_name')} Bader 结果读取失败：{exc}")
+
+        # PDOS / 功函数（v0.9.61）：本地有结果就出摘要 + 静态图，交互版由报告页与导出注入。
+        # **必须放在下面 charge_diff 的 `continue` 之前** —— 只有 PDOS/功函数、
+        # 没有差分电荷的 ele 任务也要能进报告。
+        if ele_obj is not None:
+            pdos_record = _pdos_report_data(project_name, ele_obj, charts, collection_errors)
+            if pdos_record:
+                item["pdos_summary"] = pdos_record
+            wf_record = _work_function_report_data(project_name, ele_obj, charts, collection_errors)
+            if wf_record:
+                item["work_function_summary"] = wf_record
 
         record = item.get("charge_diff") or {}
         if not record.get("ok"):

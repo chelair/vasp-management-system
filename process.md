@@ -154,6 +154,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `pdos.py` | **PDOS 分析链路（v0.9.45）**：`start()` 起后台线程（上传 `scripts/dos_extract.py` → 远端 `--quiet` 跑 → 回传 `dos.json`）返回 run_id、`status()` 轮询、`load_view()` 解析成三级菜单树 + 曲线（文件指纹内存缓存）、`clear()` 清除；产物 `<任务>/pdos/{dos.json,meta.json}`；`build_view()` 只对 **p、d** 生成方向投影子级 |
 | `charge_diff.py` | **差分电荷链路（v0.9.46）**：入口在巡检详情；完整性校验（各 CHGCAR 大小差 < 1%）→ 远端 VTST 算差 → 回传 `CHGCAR_diff` → VESTA 三视图；阶梯缓存 + 中断补偿 + 全局串行 |
 | `bader.py` | **Bader 电荷链路（v0.9.51，**只到处理链路**）**：`probe_remote()` 一次 exec 查 `AECCAR0/1/2` 完整性（大小差 < 1%）+ `bader`/`chgsum.pl` 可用性 + 远端 `ACF.dat`；`start()`/`status()` 异步跑「chgsum → bader → 回传 → 解析」；`parse_acf()` 认集群那个 Fortran 版（含 `ATOMIC VOL` 列 + `VACUUM CHARGE/VOLUME`、`NUMBER OF ELECTRONS` 页脚）**和老 C 版的数字页脚**；产物 `<任务>/bader/{ACF.dat,meta.json}`，结果记 `task["bader"]`。**净电荷（ZVAL − 电荷）/分组/图表/报告属分析链路，尚未做** |
+| `work_function.py` | **功函数链路（v0.9.59）**：`probe_remote()` 查 LOCPOT/OUTCAR/DOSCAR/INCAR + `vaspkit` 可用性 + 偶极矫正（`LDIPOL/IDIPOL` 与所选方向是否匹配，不匹配只 warning）；`start(axis)`/`status()` 异步在**远端 `mktemp -d` 临时目录**里跑 `vaspkit -task 426 -dir <x|y|z>`（**界面 a/b/c → 笛卡尔 x/y/z**，`-dir c` 会报错），回传 8 KB 的 `PLANAR_AVERAGE.dat`，本地解析出真空能级（优先 VASPKIT 汇总，缺 DOSCAR 时退回"电位平台"估计并说明）与**功函数 = 真空能级 − E_F**；产物 `<任务>/workfunction/{PLANAR_AVERAGE.dat,meta.json}`，结果记 `task["work_function"]` |
+| `report_interactive.py` | **报告交互版导出（v0.9.61）**：读打包好的运行时 `dist/report/report-interactive.js`（缺失即降级为静态）、按报告文档收集交互数据（PDOS 从本地 `dos.json` 走 `pdos.load_view`，功函数直接取文档里的 `work_function_summary`）、`interactive_kwargs(doc, interactive=)` 给 `report_export.render_html` 用（内联 `<script>window.__VASP_REPORT_DATA__=…</script>` + 运行时） |
 | `potcar.py` | **pos2pot 运行器（v0.9.44 抽出）**：把原 `/generate-potcar` 里的单次 exec 脚本（定位最新 conN → 跑 pos2pot → 解析 POTCAR 摘要）抽成 `run_pos2pot()`，支持 `use_latest_con=False`（差分电荷在主目录递归生成）；`PotcarError(kind=no_dir/not_found)` |
 | `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
 | `paths.py` | 相对路径 ↔ 绝对路径解析（local_root / remote_root） |
@@ -199,6 +201,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `hooks/useCountUp.ts`：统计卡片数字滚动动画。
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`：分项目报告页——按项目生成 / 一键生成所有项目、**项目报告列表（每项目一份，同项目重生成直接覆盖）**、章节导航、Markdown 渲染（自写轻量渲染器，无第三方依赖，`chartResolver` 把 `charts/x.svg` 映射到 `/api/reports/project/{id}/files/x.svg`）；**正文只渲染图片，没有任何交互式组件或结构化数据视图**（v0.7.2 起"所见即所得"——前端看到的排版与导出 HTML/PDF 一致）；**导出按钮挂在「报告内容」标题行**，点击才展开章节勾选 Popover（下载 Markdown / 导出 HTML / 导出 PDF）。图里的看板版式（自由能 / NEB / 项目进度）由后端 `report_panels.py` 生成，与巡检详情页保持一致。
+  - **v0.9.60 / v0.9.61 起报告页重新有了交互组件**（口径从"只渲染图片"演化为"图片 + 就地 portal 挂组件，导出的 HTML 同样能交互"）：能量/力曲线把 `charts/<task_id>_energy_force.svg` 换成 `EnergyForceCharts`（v0.9.60）；**v0.9.61** 按 Markdown 里的**挂点行** `@[kind:task_id]` 挂 `components/reports/ReportScienceWidgets.tsx` —— Bader 折叠报表（完整逐原子表，分页）/ PDOS 交互图（**点击加载**，1~3 MB 不自动拉）/ 功函数曲线（数值卡 + 真空能级/E_F 标记线），交互图挂好后把上面那张静态 SVG 收起来；**导出 Popover 新增「交互图表」开关（默认开）**，取消勾选走纯静态导出。
+- `interactive/`（**v0.9.61 新增**）：**框架无关的图表内核与原生控件**——`pdosChart.ts`（纯函数：勾选展开曲线 / 投影网格对齐 / 范围裁剪 / 带中心 / ECharts option）、`pdosWidget.ts`（原生 DOM 控件：轨道勾选 + 镜像 + E_F 虚线 + 带中心 + 范围 + 只看一条 + 重置 + 导出 PNG，样式随 JS 注入）、`workFunctionWidget.ts`（功函数数值卡 + 电位曲线）、`reportRuntime.ts`（导出运行时入口：扫挂点 → 按数据挂组件 → 收起静态图）。巡检详情 React 面板、报告页、单文件导出**三处共用这一份口径**；导出运行时由 `npm run build` 的末步（`scripts/build-report-interactive.mjs`）打成 `dist/report/report-interactive.js`（548 KB IIFE）。
 - `components/jobs/`：**JobsTree（v0.8.8：自由能结构/组节点、NEB 组节点显示"成员最高优先级状态"`StatusTag`；带巡检告警的任务/组带 ⚠/⛔ 图标，**只有悬停图标本身**才弹出 `check.message`，行 tooltip 不含巡检文案）、TaskOverview（v0.8.8：「最近巡检」行显示 `检查状态标签 + 完整告警文案 + 时间`，与数据库状态并列）**、SelectiveDynamicsModal（固定原子：选中/元素/高度三规则 + 编号方式 + 可选同步远端）**、IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、**SubmitScriptPanel（vasp.lsf 生成：三组参数表单 + 8 段模板预览 + 写入远端）**、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
 - `components/jobs/`（v0.8.9 补充）：**TaskPickerList / TaskPickerModal**（项目分组折叠 + 搜索 + 已关闭项目折到最后；INCAR 复制用多选、POSCAR 复制用单选，取代原 `CopyParamsModal`）；`IncarEditor` 支持**逐项撤销**待生效修改、偶极矩卡片新增单值 `EFIELD`；`PoscarPanel` 的「从其他任务复制」改为弹窗，结构图左上角显示**选中原子分数坐标**（`Structure3DFrame.showSelectedCoords`）。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
@@ -258,7 +262,57 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.60）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.61）
+
+- 2026-10-15（用户："后面嵌入报告要支持调整范围、带中心计算、选择轨道等复杂操作，你确定不嵌入可以实现吗" →
+  助手确认**不嵌入做不到**并给出量化 → 用户："可以，按照你想的来"）：
+  **电子结构（PDOS / Bader / 功函数）接入报告 + 报告交互版导出**（v0.9.61）。三件事一起做：
+  ① 数据进报告、② 站内报告页嵌入交互组件、③ 单文件 HTML 导出注入运行时（含静态兜底）。
+
+  **量化结论（为什么必须嵌入）**：调整范围 / 带中心 / 选轨道都是**运行时**交互，静态 SVG 只是"画完的图"，
+  只能预渲染固定组合（组合爆炸）。实测体积：ECharts 最小交互包 **591 KB（gzip 195 KB）**、
+  PDOS 整合数据 model1 **1.20 MB** / model2 **3.10 MB**（`build_view` 后的视图 JSON：0.71 / 1.46 MB）、
+  而**现有的静态单文件报告本身就有 45.8 MB**（其中 234 张结构三视图 PNG = 30.5 MB，base64 后 41 MB）——
+  也就是说交互版只增加 1~3 MB（<6%），"体积/手机端卡"在这个报告上并不是问题。
+
+  **① 后端接报告（`report_builder.py` / `report_charts.py`）**：
+  `science.ele.tasks[]` 新增 `pdos_summary`（元素 / E_F / 点数 / 可勾选曲线数 / 默认曲线 / 带中心 / 静态图路径）
+  与 `work_function_summary`（真空能级 + 来源 + E_F + 功函数 + 告警 + **z/potential 曲线内联**，几百个点）；
+  `bader_summary` 新增 `atoms`（**逐原子完整表**，原来只有 top10）。Markdown「电子结构」章节补
+  PDOS / 功函数小节，并去掉"待接入"那句；`with_diff` 判定扩到"有 PDOS/功函数也算"。
+  新增两个纯 Python 静态图：`report_charts.dos_lines_chart`（多条 DOS 曲线 + E_F 虚线 + 带中心竖直虚线 +
+  图例，**先按坐标窗口裁剪再抽点**——不裁剪会把线画到框外，实测踩到）、`planar_average_chart`
+  （平面平均电位 + 真空能级/E_F 两条水平虚线），另加 `clip_polyline()` 工具。
+  带中心用 `_band_center()`（梯形积分 + 边界插值裁剪），与前端口径一致。实测 model1/model2：
+  静态图 40 KB / 7.5 KB；带中心 Fe d↑ −3.0036 eV、Fe d↓ −1.0631 eV 与前端**逐位吻合**。
+
+  **② 交互内核抽成框架无关模块（`src/interactive/`，新增目录）**：
+  - `pdosChart.ts`：**纯函数内核** —— 勾选展开曲线、投影网格对齐、范围裁剪、带中心、ECharts option
+    全在这里；`pdosChartModel(view, state)` 一次给出 curves / centers / centerLines / range / option。
+    `PdosPanel.tsx` 改成薄壳（只剩 AntD 控件 + 异步链路，体积从 798 行降到 ~430 行），
+    **曲线口径只有一份实现**（巡检详情 / 报告页 / 导出文件三处共用）。
+  - `pdosWidget.ts`：**原生 DOM 控件组件**（轨道勾选 + 镜像 + E_F 虚线 + 带中心 + 范围 + 只看一条 +
+    重置 + 导出 PNG），样式随 JS 注入 → 导出时不用额外内联 CSS。报告页与导出的单文件 HTML 都用它。
+  - `workFunctionWidget.ts`：功函数原生组件（数值卡 + 电位曲线 + 真空能级/E_F 标记线 + 告警）。
+  - `reportRuntime.ts`：导出运行时入口，页面加载后扫 `[data-report-widget]` 挂组件，**挂不上就保留静态图**。
+
+  **③ 导出交互版（`backend/report_interactive.py` 新增 + `report_export.py`）**：
+  Markdown 里新增**挂点行** `@[kind:task_id]`（`bader-table` / `pdos-chart` / `work-function-chart`），
+  前端 `utils/markdown.ts` 与后端 `report_export.markdown_to_html` 都识别：前者渲染成宿主 `div` 由 React
+  portal 挂 `components/reports/ReportScienceWidgets.tsx`（Bader 折叠报表 / PDOS 图 / 功函数图），
+  后者由 `widget_renderer_for(doc)` 直接出 HTML（Bader 出**原生 `<details>` 折叠表**；PDOS/功函数出宿主 div）。
+  导出时 `interactive_kwargs(doc, interactive=…)` 把**运行时 JS（548 KB，`dist/report/report-interactive.js`，
+  `npm run build` 的最后一步用 esbuild 打 IIFE）** + **数据（PDOS 视图 2.18 MB + 功函数曲线）** 内联进 HTML，
+  运行时按宿主挂组件并收起静态图；README 口径：**运行时文件缺失 / `interactive=0` / 报告里没有
+  PDOS-功函数挂点 → 自动降级为纯静态导出**。报告页导出面板新增「交互图表」开关（**默认开**）。
+  实测：FS_Kaolin 交互版 2.76 MB（静态 0.04 MB，不含结构图）；`interactive=0` 时无数据脚本、无运行时。
+
+  **验证（全部用真机数据）**：① 内核数值与**独立 Python 复算**逐位一致（4 条带中心 × 2 个区间、自适应范围）；
+  ② jsdom + 桩 ECharts 跑原生控件 18 项断言全过（默认两条曲线、勾 Fe d → 4 条、带中心出数值与 6 条 markLine、
+  改范围实时重算 −2.44→−0.87、自适应 −22.082、点图例压暗、点 × 取消轨道、重置、dispose）；
+  ③ jsdom 跑导出运行时 11 项断言全过（4 个宿主全部挂上、静态图收起、重复调用幂等、**缺数据时保留静态图**）；
+  ④ HTTP 层：报告路由函数直调（真文档）`interactive=1` 出数据脚本 + 运行时、`interactive=0` 只有静态；
+  ⑤ 后端已 `systemctl restart`，`/api/health` 200。
 
 - 2026-10-15（用户："先迁移" —— `待办.md` 里那条：能量/力收敛曲线从 SVG 迁到 ECharts，
   图风格统一，方便以后把组件嵌进单文件报告；**暂时只迁这个曲线**，自由能/NEB 先不动）：
@@ -1422,6 +1476,9 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
    按电荷上色、写进报告）**已完成**（用户口径：不做元素分组）；**功函数**待做
    （`data/projects/待办.md` 第 4 条：vaspkit 426 + LOCPOT 链路）；COHP 仍为占位（功函数已于 v0.9.59 落地）
    （`available-analyses` 会探测远端对应文件是否具备）。
+   - **v0.9.61：四类分析全部接进报告**（`待办.md` 最后一条已交付）：差分电荷（结果 + 三视图弹窗）、
+     Bader（top10 摘要 + **完整逐原子折叠表**）、PDOS（静态图 + **可交互**：勾轨道/改范围/带中心）、
+     功函数（数值 + 电位曲线，站内报告与导出 HTML 都可交互）。**COHP 仍是占位**。
 4. **POTCAR 生成**：后端按 POSCAR 元素拼接伪势（pymatgen）仍为占位
 5. ~~后端定时巡检未真正调度~~ → v0.6.2 已用自建后台线程实现（未引入 APScheduler），见 §6.8。
 6. 提交/巡检路径的进一步合并 exec 优化（提交已 3 次调用，可压到 1 次）。
@@ -1444,7 +1501,10 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.60**，最新提交 `d019d82`（能量/力收敛曲线
+> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.61**（`待办.md` 的最后一条"电子结构接报告"已交付，
+> 报告里的 PDOS/功函数图可交互、单文件导出默认注入 ECharts 运行时；**后端改过 → 已 `systemctl restart`**，
+> 前端 `dist/` 已重建含 `dist/report/report-interactive.js`）。
+> v0.9.60 = `d019d82`（能量/力收敛曲线
 > 迁到 ECharts：详情页与报告页共用同一套配置、删掉自研 SVG LineChart；v0.9.59 = `b9ba14f` 功函数链路：
 > 选方向 → 校验 LOCPOT/偶极矫正 → 远端 VASPKIT 426 → 解析真空能级/功函数 → 前端出图；
 > v0.9.58 = `d52dc16` 修掉 `待办.md` 两条问题：受力目录判定/报错口径 + 详情竞态；v0.9.57 = `c684847` PDOS 逐曲线调色板
@@ -1462,20 +1522,24 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 > v0.9.50 = `4e4bd64` 「文件结构」状态口径统一；v0.9.49 = `b302388` 巡检详情两个分区默认展开；
 > v0.9.48 = `aad95f3` 修差分电荷三视图等值面；v0.9.47 = `066c582` 专用连接 + 报告三视图；
 > v0.9.46 = `72faea8` 差分电荷入口搬到巡检详情。
-> **已推送**：v0.9.45→v0.9.60 的全部提交都已 push，**`origin/main` 与本地 `main` 一致**
+> **已推送**：v0.9.45→v0.9.61 的全部提交都已 push，**`origin/main` 与本地 `main` 一致**
 > （2026-10-15 推送，push 后 `git fetch` 核对无差异；本节自身若再有 docs 提交，推送后同样成立）。
-> 生产机 systemd 服务 `vasp-manager` 正在运行（后端在 v0.9.54 那次重启后没再改，
-> **v0.9.55 只有前端改动**，`dist/` 已重建），访问 `http://192.168.1.20:3001`，
-> **无需重启**。
-> **v0.9.45 的 package.json 版本号当时漏改**，v0.9.46 起已订正，现为 `0.9.60`。
-> **工作区不干净，交接时需先处理**：`问题.md` 是「已删除未提交」，`待办.md` 是未跟踪文件
-> （内容是 DOS 提取脚本的任务书，脚本已落在 `scripts/dos_extract.py` / `dos_extract_test.py` / `dos_json_summary.py`）；
-> 下个版本提交前先决定这两个文件保留、改名还是删除。`data/` 现有 6 个项目：Ag_20260830 / Co_260902 / TMDZYX /
+> **v0.9.61 改了后端**（report_builder / report_charts / report_export / report_interactive / 两个路由），
+> 已 `sudo systemctl restart vasp-manager`（`/api/health` 200）；前端 `dist/` 已重建，
+> 且 `npm run build` 末步会打 `dist/report/report-interactive.js`（报告交互版运行时，**换机部署别漏这一步**）。
+> 服务访问 `http://192.168.1.20:3001`；`package.json` 现为 `0.9.61`。
+> **工作区状态**：`待办.md` 已入库（受版本控制）；`问题.md` 仍是**「已删除未提交」**（用户自己删的，
+> 助手每版都刻意不动它 —— 要清掉就 `git rm 问题.md` 单独提交一次）。`data/` 现有 6 个项目：Ag_20260830 / Co_260902 / TMDZYX /
 > FS_Kaolin / In_LMR_test / LiMR_InO（owner 均为 zouyuxi）。
+> **报告交互版的经验（下个窗口要做类似"把前端组件放进导出文件"时直接抄）**：不要在导出 HTML 里塞 React
+> （体积 +180 KB 且要配套 CSS）；把**计算内核**抽成纯 TS（`src/interactive/pdosChart.ts`）、UI 用原生 DOM 写一份
+> （`pdosWidget.ts`），站内 React 只复用内核 → 三处口径一致；导出的运行时用 esbuild 打 IIFE 后**整段内联**，
+> 数据内联进 `window.__VASP_REPORT_DATA__`（JSON 里 `<` 转义成 `\u003c`）；**静态图永远留在 HTML 里当兜底**，
+> JS 挂上组件后再 `display:none`，于是老浏览器/微信/打印都不受影响。
 > **已知不一致**：`package.json` 仍是 `0.9.44`（v0.9.45 那次提交漏改版本号），下一个版本提交时一并订正到当前版本。
 
-1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 最新应为 `a7c25ea feat(差分电荷): 改为远端 VTST 算好只回传 CHGCAR_diff`；
-   `git status` 目前有 `问题.md`（删除未提交）与 `待办.md`（未跟踪）两处待处理（见上方速览）。
+1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 最新应为 v0.9.61 那条；
+   `git status` 目前只剩 `问题.md`（删除未提交，用户自己删的，助手不动）一处待处理（见上方速览）。
    → 下一版开发完成后：按 §10.5 的写法提交为 `v0.x.y: …`，再补一个 `docs: process.md 补 v0.x.y commit 号` 的小提交。
 2. 读 `TODO.md`（§11 巡检异常规则引擎、§12 自动执行/大模型动作接口 —— 两项都已设计但**用户明确要求先搁置**）+ `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时（生产机 Linux）：`sudo systemctl restart vasp-manager` → 打开 `http://192.168.1.20:3001`（前端已构建在 `dist/`）与 `http://192.168.1.20:3001/docs`；改前端记得先 `npm run build`，需要热更新时才另开 `npm run dev`（5173）。部署细节见 §11。

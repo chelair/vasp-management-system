@@ -75,10 +75,14 @@ export function reportHtmlUrl(
   sections?: string[],
   print = false,
   hidden?: string[],
+  interactive = true,
 ): string {
   const params = new URLSearchParams();
   if (sections && sections.length) params.set('sections', sections.join(','));
   if (print) params.set('print', '1');
+  // 交互版（v0.9.62）：内联 ECharts 运行时 + PDOS 数据，报告里的 PDOS/功函数图可交互；
+  // 关掉就是纯静态版（体积小、老浏览器/微信里更稳）。
+  if (!interactive) params.set('interactive', '0');
   // 前端隐藏的章节/元素：导出时一并排除（section:x / task:<章节>:<标题> / figure:<章节>:<序号>）
   if (hidden && hidden.length) params.set('hide', hidden.join(','));
   const query = params.toString();

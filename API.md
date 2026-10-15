@@ -196,7 +196,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 | `GET /api/jobs/tasks/{task_id}/context` | `?n_checks=&n_actions=&refresh=1` | 任务上下文（AI 决策唯一入口，见 §3.1；只读、按需、指纹缓存 `<任务>/reports/task_context.json`） |
 | `PUT /api/reports/project/{report_id}/notes` | `{key, analysis_note, paper_note}`（两条都空 = **删除**该条） | 写「结果分析描述 / 论文写作参考」（落 `data/reports/notes/<report_id>.json`）。**只在报告的「重点科学结果分析」章节里呈现**，key 有四种（2026-10-13 用户口径）：`type_opt` / `type_free_energy` / `type_neb` / `type_ele`（该类型一条总的）、`task_id`（结构优化每个子项、NEB 每个组）、`path:<group_id>`（自由能路径每个组）。电子结构目前是占位区块，**只有类型级的 `type_ele`、没有子项级**（子任务未完成） |
 | `PUT /api/reports/project/{report_id}/edits` | `{hidden_sections: [...], hidden_elements: [...]}` | 保存报告页的隐藏状态（落 `data/reports/edits/<report_id>.json`） |
-| `GET /api/reports/project/{report_id}/export.html` | `?sections=…&hide=section:x,task:<章节>:<标题>,figure:<章节>:<序号>&print=1` | 自包含 HTML：`sections` 选章节、`hide` 排除被隐藏的元素 |
+| `GET /api/reports/project/{report_id}/export.html` | `?sections=…&hide=section:x,task:<章节>:<标题>,figure:<章节>:<序号>&print=1&interactive=0` | 自包含 HTML：`sections` 选章节、`hide` 排除被隐藏的元素、`print=1` 打开即调起打印；**`interactive=0` 导出纯静态版**（不加 ECharts 运行时与 PDOS 数据，体积更小；默认 `1` = PDOS/功函数图可交互） |
 
 ### 4.1 五个核心动作（智能体闭环会用到）
 

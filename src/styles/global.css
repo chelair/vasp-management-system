@@ -5956,6 +5956,15 @@ h5:hover > .report-hide-btn,
   color: var(--color-text-muted);
 }
 
+/* 图例芯片里的"带中心"数值（2026-10-15）：等宽小字，跟曲线同色不额外抢眼 */
+.pdos-legend__center {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 /* 轨道选择：**悬浮卡片**（挂在弹窗内部，原生 <dialog> 的 top layer 里才点得到） */
 .pdos-menu-card {
   width: 268px;

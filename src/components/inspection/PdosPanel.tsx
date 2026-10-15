@@ -23,6 +23,7 @@ import {
 import { clearPdos, fetchPdosData, fetchPdosStatus, triggerPdos } from '../../api/jobs';
 import type { PdosTreeNode, PdosView } from '../../types';
 import useEcharts from '../dashboard/useEcharts';
+import { bandCenters, formatCenter } from '../../utils/bandCenter';
 
 interface Props {
   taskId: string;
@@ -60,6 +61,12 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   const [checkedKeys, setCheckedKeys] = useState<string[]>(['total']);
   const [mirror, setMirror] = useState(true);
   const [showZero, setShowZero] = useState(true);
+  /**
+   * 带中心（band center，2026-10-15 用户口径）：对**当前显示的每条曲线**在「范围」内做
+   * 加权平均 E（含未占据态、up/down 各自算、相对 E_F）。勾上后：图例芯片里出数值，
+   * 并在曲线图上画一条同色垂直虚线 + 标签。
+   */
+  const [showCenter, setShowCenter] = useState(false);
   const [autoRange, setAutoRange] = useState(false);
   const [xMin, setXMin] = useState(-10);
   const [xMax, setXMax] = useState(10);
@@ -280,6 +287,33 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     return { min: min - pad, max: max + pad };
   }, [autoRange, curves, view, meta, xMin, xMax, xAt]);
 
+  /**
+   * 各条曲线的带中心（相对 E_F，含未占据态 —— 用户 2026-10-15 口径）。
+   * 纯本地计算：`range` 由「范围」两个输入框 / 自适应驱动，所以改范围就**实时**重算。
+   */
+  const centers = useMemo(() => {
+    const efermi = meta?.efermi ?? 0;
+    const items = curves.map((curve) => {
+      const n = curve.values.length;
+      const xs = new Array<number>(n);
+      for (let i = 0; i < n; i += 1) xs[i] = xAt(curve, i) - efermi;
+      return { id: curve.id, xs, values: curve.values };
+    });
+    return bandCenters(items, range.min, range.max);
+  }, [curves, range, meta, xAt]);
+
+  /**
+   * 图上画哪几条带中心虚线：显示 ≤4 条时全画（常见的"选一组轨道 = up/down 两条"），
+   * 更多时只画「只看这条」选中的那条 —— 否则 40 多条虚线叠在一起没法看。
+   */
+  const centerLines = useMemo(() => {
+    if (!showCenter) return [];
+    return curves
+      .filter((curve) => curves.length <= 4 || curve.id === isolated)
+      .map((curve) => ({ curve, value: centers[curve.id] }))
+      .filter((item): item is { curve: CurveEntry; value: number } => item.value != null);
+  }, [showCenter, curves, isolated, centers]);
+
   const option = useMemo(() => {
     const efermi = meta?.efermi ?? 0;
     /** 每条曲线的 x 序列（相对 E_F），tooltip 自己找最近点要用 */
@@ -438,13 +472,30 @@ export default function PdosPanel({ taskId, taskName }: Props) {
                     yAxis: 0,
                     lineStyle: { type: 'solid' as const, color: '#b9c4d4', width: 1 },
                   },
+                  // 带中心：每条显示曲线的加权平均能量（同色垂直虚线 + 数值标签）
+                  ...centerLines.map(({ curve, value }) => ({
+                    xAxis: value,
+                    lineStyle: {
+                      type: 'dashed' as const,
+                      color: curve.color,
+                      width: 1.2,
+                      opacity: 0.95,
+                    },
+                    label: {
+                      show: true,
+                      formatter: `${curve.name} 带中心 ${formatCenter(value)} eV`,
+                      position: 'insideEndTop' as const,
+                      color: curve.color,
+                      fontSize: 11,
+                    },
+                  })),
                 ],
               },
             }
           : rest,
       ),
     };
-  }, [curves, isolated, view, meta, mirror, spin, range, showZero, xAt]);
+  }, [curves, isolated, view, meta, mirror, spin, range, showZero, xAt, centerLines]);
 
   const containerRef = useEcharts(option, [option], (instance) => {
     // 只保留实例（导出 PNG 用）；卸载时的 null 不回写 state，避免卸载后 setState
@@ -596,6 +647,14 @@ export default function PdosPanel({ taskId, taskName }: Props) {
                     >
                       <span className="pdos-legend__dot" style={{ background: curve.color }} />
                       {curve.name}
+                      {showCenter && (
+                        <span
+                          className="pdos-legend__center"
+                          title={`带中心 ${formatCenter(centers[curve.id])} eV（相对 E_F，区间 ${range.min}~${range.max}）`}
+                        >
+                          {formatCenter(centers[curve.id])} eV
+                        </span>
+                      )}
                     </button>
                     <button
                       type="button"
@@ -668,6 +727,17 @@ export default function PdosPanel({ taskId, taskName }: Props) {
         <Checkbox checked={showZero} onChange={(e) => setShowZero(e.target.checked)}>
           E_F 虚线
         </Checkbox>
+        <Tooltip
+          title={
+            '带中心 = 对当前显示的每条曲线在下面「范围」内做加权平均能量 ' +
+            '∫E·DOS dE / ∫DOS dE；含未占据态（跨过 E_F 也照算），up/down 各自算，数值相对 E_F。' +
+            '改「范围」实时重算；虚线画在选择的那组轨道上（显示很多条时只画「只看这条」的那条）。'
+          }
+        >
+          <Checkbox checked={showCenter} onChange={(e) => setShowCenter(e.target.checked)}>
+            带中心
+          </Checkbox>
+        </Tooltip>
         <span className="pdos-footer__range">
           范围
           <InputNumber

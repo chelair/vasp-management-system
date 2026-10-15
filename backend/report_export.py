@@ -82,6 +82,14 @@ a { color: #3F68B8; text-decoration: none; }
 .bader-table__scroll table { margin: 0; font-size: 12px; }
 .bader-table__scroll thead th { position: sticky; top: 0; z-index: 1; }
 .report-widget { margin: 10px 0 16px; }
+/* 结构 3D 视图（v0.9.72）：正文里取代三视图 PNG，PNG 转"仅打印" */
+.report-widget--3d { margin: 10px 0 14px; }
+/* Bader：3D 结构视图 + 完整表 左右一行（窄屏自动上下） */
+.report-bader-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0 16px; }
+.report-bader-row__view { flex: 1 1 420px; min-width: 320px; }
+.report-bader-row__table { flex: 1 1 380px; min-width: 300px; }
+.report-bader-row__table .bader-table { margin: 0; }
+
 .report-widget__loading, .report-widget__error {
   border: 1px dashed #DCE3EC; border-radius: 8px; padding: 12px 14px;
   color: #8A98AC; font-size: 12.5px; text-align: center;
@@ -98,6 +106,9 @@ a { color: #3F68B8; text-decoration: none; }
      这样 PDF 不会既出现交互图又出现静态图。 */
   .report-widget { display: none !important; }
   .report-static-taken-over { display: block !important; }
+  /* 3D 视图不打印（canvas 打印不可靠），用三视图 PNG 兜底 */
+  .report-widget--3d,
+  .report-bader-row__view { display: none !important; }
   .img-row { page-break-inside: avoid; }
 }
 
@@ -259,7 +270,7 @@ def markdown_to_html(
             continue
 
         # 挂点行：@[bader-table:xxx] / @[pdos-chart:xxx] / @[work-function-chart:xxx]
-        hook = re.fullmatch(r"@\[([a-z-]+):([^\]\s]+)\]", stripped)
+        hook = re.fullmatch(r"@\[([a-z0-9-]+):([^\]\s]+)\]", stripped)
         if hook and widget_renderer is not None:
             rendered = widget_renderer(hook.group(1), hook.group(2))
             if rendered:
@@ -432,20 +443,40 @@ def _bader_table_html(item: Dict[str, Any]) -> Optional[str]:
 def widget_renderer_for(doc: Dict[str, Any]) -> Callable[[str, str], Optional[str]]:
     """把 Markdown 里的挂点行渲染成 HTML。
 
-    - `bader-table` → 服务端直接出折叠表（静态 HTML，无需 JS）；
+    - `structure-3d` → 结构 3D 视图宿主（v0.9.72，正文里直接挂，不在弹窗里）；
+    - `bader-table` → **3D 结构视图 + 完整表**左右一行（表服务端直出，3D 由运行时挂）；
     - `pdos-chart` / `work-function-chart` → 只给宿主 `<div>`，由注入的 ECharts 运行时接管；
-      运行时不可用（老浏览器 / 关闭 JS / 打印）时，前面的静态 SVG 就是它的兜底。
+      运行时不可用（老浏览器 / 关闭 JS / 打印）时，前面的静态 SVG / 三视图 PNG 就是它的兜底。
     """
     by_id = _ele_tasks_by_id(doc)
 
     def render(kind: str, task_id: str) -> Optional[str]:
         item = by_id.get(str(task_id)) or {}
-        if kind == "bader-table":
-            return _bader_table_html(item)
         if kind in ("pdos-chart", "work-function-chart"):
             return (
                 f'<div class="report-widget" data-report-widget="{html_lib.escape(kind)}" '
                 f'data-task-id="{html_lib.escape(str(task_id))}"></div>'
+            )
+        if kind == "structure-3d":
+            # 结构 3D 视图（v0.9.72）：正文里**直接**挂；后面那几行三视图 PNG 由运行时
+            # 标成"仅打印"（屏幕看 3D、打印/PDF 用 PNG）
+            return (
+                f'<div class="report-widget report-widget--3d" '
+                f'data-report-widget="structure-3d" data-task-id="{html_lib.escape(str(task_id))}"></div>'
+            )
+        if kind == "bader-table":
+            # Bader：3D 结构视图 + 完整表 左右一行
+            table = _bader_table_html(item)
+            if not table:
+                return None
+            return (
+                '<div class="report-bader-row">'
+                f'<div class="report-bader-row__view">'
+                f'<div class="report-widget report-widget--3d" data-report-widget="structure-3d" '
+                f'data-task-id="{html_lib.escape(str(task_id))}" data-source="bader"></div>'
+                f"</div>"
+                f'<div class="report-bader-row__table">{table}</div>'
+                "</div>"
             )
         return None
 
@@ -859,6 +890,7 @@ def render_html(
     hidden: Optional[set] = None,
     interactive_js: str = "",
     interactive_data: Optional[Dict[str, Any]] = None,
+    mol_js: str = "",
 ) -> str:
     """生成自包含 HTML（单文件：CSS/JS 内联、SVG 内联、PNG 走 base64）。
 
@@ -910,8 +942,11 @@ def render_html(
         payload = json.dumps(interactive_data, ensure_ascii=False, separators=(",", ":")).replace(
             "<", "\\u003c"
         )
+        # 3Dmol 先加载（全局 `$3Dmol`），再跑运行时 —— 与站内 index.html 同一顺序
+        mol = f"<script>{mol_js}</script>" if mol_js else ""
         interactive = (
             f"<script>window.__VASP_REPORT_DATA__={payload};</script>"
+            f"{mol}"
             f"<script>{interactive_js}</script>"
         )
     return (

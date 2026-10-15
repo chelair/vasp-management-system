@@ -14,10 +14,15 @@
 
 import { mountPdosWidget } from './pdosWidget';
 import { mountWorkFunctionWidget, type WorkFunctionWidgetData } from './workFunctionWidget';
+import { mountStructure3D, type Structure3DPayload } from './structure3dWidget';
 
 interface ReportData {
   pdos?: Record<string, unknown>;
   work_function?: Record<string, unknown>;
+  /** 结构 3D（结构优化任务的 POSCAR/CONTCAR CIF），v0.9.72 */
+  structure?: Record<string, Structure3DPayload>;
+  /** Bader 的 3D 结构 + 逐原子读数 */
+  bader?: Record<string, Structure3DPayload>;
 }
 
 function reportData(): ReportData {
@@ -66,6 +71,29 @@ function mountOne(host: HTMLElement, data: ReportData): boolean {
     } catch {
       return false;
     }
+  }
+  if (kind === 'structure-3d') {
+    // 结构优化：任务的结构；Bader：host 上带 data-source="bader"
+    const fromBader = host.getAttribute('data-source') === 'bader';
+    const payload = (fromBader ? data.bader : data.structure)?.[taskId];
+    if (!payload) return false;
+    const handle = mountStructure3D(host, payload, { bader: fromBader, height: 420 });
+    if (!handle) return false; // 没有 3Dmol / WebGL 失败 → 保留静态三视图 PNG
+    // 正文里紧跟其后的三视图 PNG：屏幕隐藏、打印/PDF 显示（导出器只给结构 3D 用）
+    if (!fromBader) {
+      let node = host.nextElementSibling as HTMLElement | null;
+      while (node) {
+        const isImages =
+          node.classList.contains('img-row') ||
+          node.classList.contains('report-img-row') ||
+          node.tagName === 'FIGURE';
+        if (!isImages) break;
+        node.classList.add('report-static-taken-over');
+        node.style.display = 'none';
+        node = node.nextElementSibling as HTMLElement | null;
+      }
+    }
+    return true;
   }
   return false;
 }

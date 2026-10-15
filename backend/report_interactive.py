@@ -31,6 +31,9 @@ LOGGER = logging.getLogger(__name__)
 RUNTIME_PATH = PROJECT_ROOT / "dist" / "report" / "report-interactive.js"
 #: 运行时合理上限（防止误读了别的文件把报告撑爆）
 RUNTIME_MAX_BYTES = 4 * 1024 * 1024
+#: 结构 3D 用的 3Dmol（本地已有一份，报告导出时原样内联 —— 全局脚本，离线可用）
+MOL_PATH = PROJECT_ROOT / "public" / "3dmol" / "3Dmol-min.js"
+MOL_MAX_BYTES = 4 * 1024 * 1024
 
 _RUNTIME_CACHE: Dict[str, Any] = {"stamp": None, "text": ""}
 
@@ -53,6 +56,18 @@ def runtime_js() -> str:
         return ""
     _RUNTIME_CACHE.update({"stamp": stamp, "text": text})
     return text
+
+
+def mol_js() -> str:
+    """读本地 3Dmol 源码（结构 3D 视图用）。读不到返回空串 → 导出里 3D 挂点自动跳过。"""
+    try:
+        stat = MOL_PATH.stat()
+        if stat.st_size <= 0 or stat.st_size > MOL_MAX_BYTES:
+            return ""
+        return MOL_PATH.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        LOGGER.warning("读取 3Dmol 失败：%s", exc)
+        return ""
 
 
 def _find_task(project_name: str, task_id: str) -> Optional[Dict[str, Any]]:
@@ -92,8 +107,20 @@ def interactive_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     只收报告里**已有挂点**的任务（有 `pdos_summary` / `work_function_summary` 的那些）。
     """
-    payload: Dict[str, Any] = {"pdos": {}, "work_function": {}}
+    payload: Dict[str, Any] = {"pdos": {}, "work_function": {}, "structure": {}, "bader": {}}
     project_name = str(((doc.get("metadata") or {}).get("project_name")) or "")
+    # 结构 3D（v0.9.72）：结构优化任务的 POSCAR/CONTCAR CIF 就在结构化数据里（无需读盘）
+    for opt in ((doc.get("science") or {}).get("opt") or []):
+        if not isinstance(opt, dict):
+            continue
+        task_id = str(opt.get("task_id") or "")
+        structure = opt.get("structure") or {}
+        if task_id and (structure.get("poscar_cif") or structure.get("contcar_cif")):
+            payload["structure"][task_id] = {
+                "task_name": opt.get("task_name"),
+                "poscar_cif": structure.get("poscar_cif"),
+                "contcar_cif": structure.get("contcar_cif"),
+            }
     tasks = (((doc.get("science") or {}).get("ele") or {}).get("tasks")) or []
     for item in tasks:
         if not isinstance(item, dict):
@@ -107,13 +134,26 @@ def interactive_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
                 payload["pdos"][task_id] = view
         if item.get("work_function_summary"):
             payload["work_function"][task_id] = item["work_function_summary"]
+        # Bader：3D 结构（CIF）+ 逐原子读数（着色/读数在前端算）
+        summary = item.get("bader_summary") or {}
+        if summary.get("cif") and summary.get("atoms"):
+            payload["bader"][task_id] = {
+                "task_name": item.get("task_name"),
+                "cif": summary.get("cif"),
+                "atoms": summary.get("atoms"),
+            }
     return payload
 
 
 def has_payload(payload: Optional[Dict[str, Any]]) -> bool:
     if not payload:
         return False
-    return bool((payload.get("pdos") or {}) or (payload.get("work_function") or {}))
+    return bool(
+        (payload.get("pdos") or {})
+        or (payload.get("work_function") or {})
+        or (payload.get("structure") or {})
+        or (payload.get("bader") or {})
+    )
 
 
 def data_script(payload: Dict[str, Any]) -> str:
@@ -138,9 +178,13 @@ def interactive_kwargs(doc: Dict[str, Any], *, interactive: bool) -> Dict[str, A
     if not has_payload(payload):
         return {}
     LOGGER.info(
-        "报告交互版：运行时 %.0f KB · PDOS %d 个任务 · 功函数 %d 个任务",
+        "报告交互版：运行时 %.0f KB · PDOS %d · 功函数 %d · 结构 3D %d · Bader 3D %d",
         len(runtime) / 1024,
         len(payload.get("pdos") or {}),
         len(payload.get("work_function") or {}),
+        len(payload.get("structure") or {}),
+        len(payload.get("bader") or {}),
     )
-    return {"interactive_js": runtime, "interactive_data": payload}
+    # 结构 3D 需要 3Dmol：有结构/Bader 3D 挂点时才内联（约 512 KB）
+    mol = mol_js() if ((payload.get("structure") or {}) or (payload.get("bader") or {})) else ""
+    return {"interactive_js": runtime, "interactive_data": payload, "mol_js": mol}

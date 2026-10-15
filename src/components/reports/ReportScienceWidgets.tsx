@@ -4,11 +4,13 @@
  * 后端在 Markdown 里留**挂点行** `@[kind:task_id]`（见 report_builder 的电子结构章节），
  * 报告页把挂点 div 用 portal 挂上这里的三个组件 —— 与导出的单文件 HTML 一一对应：
  *
- *   @[bader-table:xxx]         → BaderFullTable（折叠报表，完整逐原子表）
+ *   @[bader-table:xxx]         → BaderChargePanel（**3D 结构视图 + 完整表** 左右一行，v0.9.72）
  *   @[pdos-chart:xxx]          → PdosReportChart（点击加载 → 复用巡检同款原生控件 + 内核）
  *   @[work-function-chart:xxx] → WorkFunctionReportChart（平面平均电位曲线，数值内联在报告里）
  *
- * PDOS 走"点击加载"：整合数据 1~3 MB，进报告就自动拉会拖慢打开（与巡检详情同一取舍）。
+ *   @[structure-3d:xxx]        → ReportStructure3D（结构 3D 视图，直接内联；三视图 PNG 留给打印/PDF）
+ *
+ * PDOS 挂载即加载（进报告就拉，不用点按钮、不用滚动）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -17,7 +19,9 @@ import { Alert, Button, Table, Tag } from 'antd';
 import { fetchPdosData } from '../../api/jobs';
 import { mountPdosWidget, type PdosWidgetHandle } from '../../interactive/pdosWidget';
 import { downloadWorkFunctionData } from '../../interactive/workFunctionWidget';
+import { buildChargeColors } from '../../utils/chargeColor';
 import useEcharts from '../dashboard/useEcharts';
+import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 
 /** 逐原子 Bader 数据（后端 `bader_summary.atoms`） */
 export interface BaderAtom {
@@ -109,6 +113,96 @@ export function BaderFullTable({ atoms, taskName }: { atoms: BaderAtom[]; taskNa
           pagination={false}
           scroll={{ x: 620 }}
         />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Bader 电荷面板（2026-10-16 用户："bader 电荷弄成 3D 结构窗口 + 表格的形式，左右排列在一行"）：
+ * 左边是**结构 3D 视图**（按净电荷 Δq 着色：红=失电子、蓝=得电子，与巡检详情同一套口径；
+ * 点原子/"选中原子"面板显示该原子的 Δq 与 Bader 电荷），右边是完整表格（可滑动、不分页）。
+ *
+ * 结构 CIF 由后端从该任务的 CONTCAR/POSCAR 转好放进 `bader_summary.cif`；
+ * ACF 的原子序号是 **1 起**，CIF 是 **0 起**，所以着色/读数的键统一用 `index - 1`。
+ */
+export function BaderChargePanel({
+  atoms,
+  cif,
+  taskName,
+}: {
+  atoms: BaderAtom[];
+  cif?: string | null;
+  taskName?: string;
+}) {
+  const [selected, setSelected] = useState<AtomRef[]>([]);
+  const chargeInfo = useMemo(() => {
+    const values: (number | null)[] = [];
+    atoms.forEach((atom) => {
+      values[atom.index - 1] = atom.net_charge ?? null;
+    });
+    return buildChargeColors(values);
+  }, [atoms]);
+  const readouts = useMemo(() => {
+    const map: Record<number, string> = {};
+    atoms.forEach((atom) => {
+      const parts: string[] = [];
+      if (atom.net_charge != null) parts.push(`Δq ${atom.net_charge >= 0 ? '+' : ''}${atom.net_charge.toFixed(4)} e`);
+      if (atom.charge != null) parts.push(`Bader ${atom.charge.toFixed(4)} e`);
+      if (atom.zval != null) parts.push(`ZVAL ${atom.zval.toFixed(2)}`);
+      if (parts.length) map[atom.index - 1] = parts.join(' · ');
+    });
+    return map;
+  }, [atoms]);
+
+  return (
+    <div className="report-bader-row">
+      <div className="report-bader-row__view">
+        {cif ? (
+          <>
+            <div className="report-3d__head">
+              <span className="report-3d__title">结构 3D 视图</span>
+              <span className="report-3d__hint">
+                {chargeInfo.scale?.note ?? '按元素配色'}
+                {' · 点击原子看该原子读数'}
+              </span>
+            </div>
+            <Structure3DFrame
+              cif={cif}
+              height={420}
+              selected={selected}
+              atomColors={chargeInfo.colors}
+              atomReadouts={readouts}
+              atomReadoutTitle="选中原子（Δq / Bader）"
+              showSelectedCoords
+              onClickAtom={(atom, additive) =>
+                setSelected((prev) => {
+                  if (!additive) return [atom];
+                  const exists = prev.some((x) => x.index === atom.index);
+                  return exists ? prev.filter((x) => x.index !== atom.index) : [...prev, atom];
+                })
+              }
+              onBoxSelect={(list, additive) =>
+                setSelected((prev) => {
+                  if (!additive) return list;
+                  const map = new Map(prev.map((x) => [x.index, x]));
+                  list.forEach((a) => map.set(a.index, a));
+                  return [...map.values()];
+                })
+              }
+              onClearSelection={() => setSelected([])}
+            />
+          </>
+        ) : (
+          <Alert
+            type="info"
+            showIcon
+            message="该任务的结构文件缺失，只展示下方的 Bader 表。"
+          />
+        )}
+      </div>
+      <div className="report-bader-row__table">
+        <BaderFullTable atoms={atoms} taskName={taskName} />
       </div>
     </div>
   );

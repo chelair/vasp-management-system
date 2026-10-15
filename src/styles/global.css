@@ -2910,6 +2910,62 @@ body.is-atom-selecting * {
   margin-left: auto;
 }
 
+/* 结构 3D 视图（报告页，v0.9.72）：正文里取代原来的三视图 PNG（PNG 转"仅打印"） */
+.report-3d {
+  margin: 10px 0 14px;
+}
+
+.report-3d__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.report-3d__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.report-3d__task {
+  font-size: 12px;
+  color: #3f6fe0;
+}
+
+.report-3d__hint {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+/* Bader：3D 结构视图 + 完整表 左右一行（窄屏自动上下） */
+.report-bader-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin: 8px 0 16px;
+}
+
+.report-bader-row__view {
+  flex: 1 1 420px;
+  min-width: 320px;
+}
+
+.report-bader-row__table {
+  flex: 1 1 380px;
+  min-width: 300px;
+}
+
+@media print {
+  /* 打印 / PDF：3D 视图不打印（画布打印不可靠），用后面的三视图 PNG 兜底 */
+  .report-3d,
+  .report-bader-row__view {
+    display: none !important;
+  }
+}
+
 /* 项目进度看板（v0.9.62，替代 charts/progress.svg） */
 .report-progress {
   width: 100%;

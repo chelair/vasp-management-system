@@ -1097,6 +1097,12 @@ def _sections_markdown(report, charts):
             # VESTA 三视图（a/b/c，横向排列；报告生成时按用户口径优先用 images/ 里的图）
             # 同一行（初始 / 优化后）的 3 张图必须**连着写**（中间不留空行），
             # 导出器与前端才会把它们合成一行 .img-row；空行会把一行拆成三张竖排。
+            # ⚠ 2026-10-16 起：屏幕上看 **3D 视图**（`@[structure-3d:...]`），这堆 PNG
+            # **只留给打印 / PDF**（前端与导出运行时会把它们标记成"仅打印"，屏幕隐藏）。
+            # 图片链路本身保留（生成、复制、内联都照旧）。
+            structure = item.get("structure") or {}
+            if structure.get("poscar_cif") or structure.get("contcar_cif"):
+                lines.append(f"@[structure-3d:{item['task_id']}]")
             for row in item.get("structure_views") or []:
                 row_lines = [
                     f"![{row['label']} · {axis} 视图]({(row.get('views') or {}).get(axis)})"
@@ -2411,6 +2417,19 @@ def build_report(
                     }
                 except Exception as exc:  # noqa: BLE001 - 报告不因 Bader 失败
                     collection_errors.append(f"{item.get('task_name')} Bader 结果读取失败：{exc}")
+                # Bader 的 3D 结构（v0.9.72）：报告里要「3D 结构窗口 + 表格」并排，
+                # 结构用该任务的 CONTCAR（没有就 POSCAR）转 CIF —— 与结构优化同一套转换，
+                # 本地读、失败就退化成只有表格。
+                try:
+                    summary = item.get("bader_summary") or {}
+                    if summary and not summary.get("cif"):
+                        cif_text = read_or_convert_cif(project, ele_obj, "CONTCAR") or read_or_convert_cif(
+                            project, ele_obj, "POSCAR"
+                        )
+                        summary["cif"] = cif_text
+                        item["bader_summary"] = summary
+                except Exception as exc:  # noqa: BLE001 - 报告不因 CIF 失败
+                    collection_errors.append(f"{item.get('task_name')} Bader 结构 CIF 读取失败：{exc}")
 
         # PDOS / 功函数（v0.9.61）：本地有结果就出摘要 + 静态图，交互版由报告页与导出注入。
         # **必须放在下面 charge_diff 的 `continue` 之前** —— 只有 PDOS/功函数、

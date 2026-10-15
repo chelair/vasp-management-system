@@ -44,12 +44,13 @@ import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
 import { applyHiddenBlocks, collectHiddenBlocks, hiddenKeyLabel } from '../utils/reportHidden';
 import {
-  BaderFullTable,
+  BaderChargePanel,
   PdosReportChart,
   WorkFunctionReportChart,
   type BaderAtom,
   type WorkFunctionSummary,
 } from '../components/reports/ReportScienceWidgets';
+import ReportStructure3D from '../components/reports/ReportStructure3D';
 import {
   FreeEnergyReportPanel,
   NebReportPanel,
@@ -115,6 +116,25 @@ function headingLabel(el: HTMLElement): string {
   const clone = el.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('.report-hide-btn').forEach((btn) => btn.remove());
   return (clone.textContent ?? '').trim();
+}
+
+/**
+ * 把紧随挂点之后的**图片行**标成"仅打印"（v0.9.72）：
+ * 结构 3D 视图挂在正文里之后，紧跟的就是原来那 2 行 a/b/c 三视图 PNG ——
+ * 屏幕上看 3D，打印 / PDF 才显示这些 PNG（`.report-static-fallback` 的打印反向规则）。
+ * 只吃 `.report-img-row` / `<figure>` 这两种相邻块，遇到标题/分隔线/别的挂点就停。
+ */
+function markFollowingImagesPrintOnly(anchor: HTMLElement): void {
+  let node: Element | null = anchor.nextElementSibling;
+  while (node) {
+    const isImages =
+      node.classList.contains('report-img-row') ||
+      node.tagName === 'FIGURE' ||
+      node.classList.contains('img-row');
+    if (!isImages) break;
+    node.classList.add('report-static-fallback');
+    node = node.nextElementSibling;
+  }
 }
 
 /**
@@ -483,6 +503,8 @@ export default function Report() {
       // PDOS：屏幕上一律显示交互图，**静态兜底图只在打印/PDF 里出现**
       //（否则会"先闪一张静态图，滚到了才换成交互图" —— 用户 2026-10-15 反馈）
       if (kind === 'pdos-chart' && figure) figure.classList.add('report-static-fallback');
+      // 结构 3D（2026-10-16）：3D 视图后面那几行三视图 PNG 是**仅打印**的（屏幕上看 3D）
+      if (kind === 'structure-3d') markFollowingImagesPrintOnly(el);
       hosts.push({ kind, taskId, el, figure });
     });
     setWidgetHosts(hosts);
@@ -1205,9 +1227,34 @@ export default function Report() {
                         const atoms = item?.bader_summary?.atoms ?? [];
                         if (!atoms.length) return null;
                         return createPortal(
-                          <BaderFullTable atoms={atoms} taskName={item?.task_name} />,
+                          <BaderChargePanel
+                            atoms={atoms}
+                            cif={(item?.bader_summary as { cif?: string } | undefined)?.cif}
+                            taskName={item?.task_name}
+                          />,
                           host.el,
                           `${host.kind}:${host.taskId}`,
+                        );
+                      }
+                      if (host.kind === 'structure-3d') {
+                        const opt = (
+                          ((detail?.structured as { science?: { opt?: unknown[] } } | undefined)
+                            ?.science?.opt ?? []) as {
+                            task_id?: string;
+                            task_name?: string;
+                            structure?: { poscar_cif?: string | null; contcar_cif?: string | null };
+                          }[]
+                        ).find((x) => String(x?.task_id ?? '') === host.taskId);
+                        const structure = opt?.structure;
+                        if (!structure?.poscar_cif && !structure?.contcar_cif) return null;
+                        return createPortal(
+                          <ReportStructure3D
+                            poscarCif={structure.poscar_cif}
+                            contcarCif={structure.contcar_cif}
+                            taskName={opt?.task_name}
+                          />,
+                          host.el,
+                          `structure-3d:${host.taskId}`,
                         );
                       }
                       if (host.kind === 'work-function-chart') {

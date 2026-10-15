@@ -25,10 +25,20 @@ function reportData(): ReportData {
   return raw && typeof raw === 'object' ? raw : {};
 }
 
-/** 挂好后把紧邻的静态图收起来（导出 HTML 里静态图在前、宿主在后） */
+/**
+ * 挂好后把紧邻的静态图收起来（导出 HTML 里静态图在前、宿主在后）。
+ *
+ * 只加 class + 内联隐藏，**不删节点**：打印 / PDF 时 CSS 会把 `.report-static-taken-over`
+ * 重新显示出来（`.report-widget` 在打印时隐藏），于是 PDF 用静态图兜底、屏幕上用交互图
+ * —— 用户口径（2026-10-15）："HTML 只导出可交互的，不可交互的图留给 PDF 兜底"。
+ */
 function hideStaticFigure(host: HTMLElement): void {
   const prev = host.previousElementSibling;
-  if (prev && prev.tagName === 'FIGURE') (prev as HTMLElement).style.display = 'none';
+  if (prev && prev.tagName === 'FIGURE') {
+    const figure = prev as HTMLElement;
+    figure.classList.add('report-static-taken-over');
+    figure.style.display = 'none';
+  }
 }
 
 function mountOne(host: HTMLElement, data: ReportData): boolean {

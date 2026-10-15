@@ -5,7 +5,6 @@ import {
   Dropdown,
   message as antdMessage,
   Card,
-  Checkbox,
   Empty,
   Input,
   Popconfirm,
@@ -18,7 +17,6 @@ import {
   DownOutlined,
   DownloadOutlined,
   ExportOutlined,
-  FileMarkdownOutlined,
   FileTextOutlined,
   PrinterOutlined,
   ReloadOutlined,
@@ -33,7 +31,6 @@ import {
   reportChartUrl,
   reportImageUrl,
   reportHtmlUrl,
-  reportMarkdownUrl,
   saveReportEdits,
 } from '../api/reports';
 import { fetchProjects } from '../api/projects';
@@ -137,14 +134,7 @@ export default function Report() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [generating, setGenerating] = useState<string | null>(null);
-  const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
-  /**
-   * 导出**交互版**（v0.9.62，默认开）：把 ECharts 运行时 + PDOS 数据内联进单文件 HTML，
-   * 于是报告里的 PDOS / 功函数图能勾轨道、改范围、算带中心；关掉则只出静态 SVG
-   * （体积小、老浏览器与微信内置浏览器更稳，打印效果一样）。
-   */
-  const [interactiveExport, setInteractiveExport] = useState(true);
   const [keyword, setKeyword] = useState('');
   /** 报告注解（结果分析 / 论文参考）：key = type_* / task_id / path:<组>（2026-10-13） */
   const [notes, setNotes] = useState<Record<string, ReportNote>>({});
@@ -189,7 +179,6 @@ export default function Report() {
     fetchProjectReport(selectedReportId)
       .then((data) => {
         setDetail(data);
-        setSelectedSections((data.sections ?? []).map((s) => s.key));
       })
       .catch((err) => message.error(err instanceof Error ? err.message : '读取报告失败'))
       .finally(() => setDetailLoading(false));
@@ -231,17 +220,8 @@ export default function Report() {
   /** 导出 HTML / PDF（PDF 走浏览器打印，按勾选章节导出） */
   const exportHtml = (print: boolean) => {
     if (!detail) return;
-    if (selectedSections.length === 0) {
-      message.warning('请至少勾选一个章节');
-      return;
-    }
-    const url = reportHtmlUrl(
-      detail.meta.report_id,
-      selectedSections,
-      print,
-      hidden,
-      interactiveExport,
-    );
+    // 导出范围 = 当前**未隐藏**的章节（隐藏的章节在导出/打印里直接不出现，v0.9.71）
+    const url = reportHtmlUrl(detail.meta.report_id, undefined, print, hidden, true);
     window.open(url, '_blank', 'noopener');
     if (print) message.info('已打开打印视图，选择「另存为 PDF」即可导出');
   };
@@ -254,18 +234,7 @@ export default function Report() {
    */
   const downloadHtml = () => {
     if (!detail) return;
-    if (selectedSections.length === 0) {
-      message.warning('请至少勾选一个章节');
-      return;
-    }
-    const url = reportHtmlUrl(
-      detail.meta.report_id,
-      selectedSections,
-      false,
-      hidden,
-      interactiveExport,
-      true,
-    );
+    const url = reportHtmlUrl(detail.meta.report_id, undefined, false, hidden, true, true);
     const link = document.createElement('a');
     link.href = url;
     link.rel = 'noopener';
@@ -273,7 +242,7 @@ export default function Report() {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    message.success('已开始下载单文件 HTML（含选中章节）');
+    message.success('已开始下载单文件 HTML（不含隐藏章节）');
   };
 
   const projectsWithReports = useMemo(() => {
@@ -343,10 +312,8 @@ export default function Report() {
     if (selectedIsClosed) setShowClosedReports(true);
   }, [selectedIsClosed]);
 
-  const visibleSections = useMemo(
-    () => (detail?.markdown_sections ?? []).filter((s) => selectedSections.includes(s.key)),
-    [detail, selectedSections],
-  );
+  /** 页面显示所有章节；要"去掉某一章"用标题行的「隐藏本章」（隐藏状态导出/打印同样生效） */
+  const visibleSections = useMemo(() => detail?.markdown_sections ?? [], [detail]);
 
   useEffect(() => {
     setNotes(detail?.notes ?? {});
@@ -509,7 +476,10 @@ export default function Report() {
       const prev = el.previousElementSibling;
       const figure = prev && prev.tagName === 'FIGURE' ? (prev as HTMLElement) : null;
       // 功函数曲线挂上就是交互版（曲线数值内联在报告里），静态图直接收起来
-      if (kind === 'work-function-chart' && figure) figure.style.display = 'none';
+      // （用 class 而不是纯 inline 隐藏：打印/PDF 时 CSS 会把它重新显示出来，见 global.css）
+      if (kind === 'work-function-chart' && figure) {
+        figure.classList.add('report-static-fallback');
+      }
       // PDOS：屏幕上一律显示交互图，**静态兜底图只在打印/PDF 里出现**
       //（否则会"先闪一张静态图，滚到了才换成交互图" —— 用户 2026-10-15 反馈）
       if (kind === 'pdos-chart' && figure) figure.classList.add('report-static-fallback');
@@ -1032,65 +1002,11 @@ export default function Report() {
                 onOpenChange={setExportOpen}
                 content={
                   <div className="report-export-pop">
-                    <div className="report-export-pop__head">
-                      <span>导出范围</span>
-                      <Checkbox
-                        checked={selectedSections.length === (detail.sections?.length ?? 0)}
-                        indeterminate={
-                          selectedSections.length > 0 &&
-                          selectedSections.length < (detail.sections?.length ?? 0)
-                        }
-                        onChange={(e) =>
-                          setSelectedSections(
-                            e.target.checked
-                              ? (detail.sections ?? []).map((s) => s.key)
-                              : [],
-                          )
-                        }
-                      >
-                        全选
-                      </Checkbox>
-                    </div>
-                    <div className="report-export-pop__sections">
-                      {(detail.sections ?? []).map((s) => (
-                        <Checkbox
-                          key={s.key}
-                          checked={selectedSections.includes(s.key)}
-                          onChange={(e) =>
-                            setSelectedSections((prev) =>
-                              e.target.checked
-                                ? [...prev, s.key]
-                                : prev.filter((k) => k !== s.key),
-                            )
-                          }
-                        >
-                          {s.title}
-                        </Checkbox>
-                      ))}
-                    </div>
-                    <div className="report-export-pop__interactive">
-                      <Checkbox
-                        checked={interactiveExport}
-                        onChange={(e) => setInteractiveExport(e.target.checked)}
-                      >
-                        交互图表（PDOS / 功函数可勾选、改范围、算带中心）
-                      </Checkbox>
-                      <span className="report-export-pop__hint">
-                        内联 ECharts 运行时（约 0.6 MB）与 PDOS 数据（每个算例 1–3 MB）；
-                        取消勾选导出纯静态版，体积更小、老设备更稳
-                      </span>
-                    </div>
+                    <p className="report-export-pop__hint">
+                      导出范围 = 当前**未隐藏**的章节；要整章去掉就在章节标题行点「隐藏本章」
+                      （HTML 里图表都是可交互版，静态图留作打印 / PDF 兜底）
+                    </p>
                     <div className="report-export-pop__actions">
-                      <Button
-                        size="small"
-                        icon={<FileMarkdownOutlined />}
-                        onClick={() => {
-                          window.open(reportMarkdownUrl(detail.meta.report_id), '_blank');
-                          setExportOpen(false);
-                        }}
-                      >
-                        下载 Markdown
-                      </Button>
                       <Button
                         size="small"
                         type="primary"

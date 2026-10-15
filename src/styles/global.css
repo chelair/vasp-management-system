@@ -3072,6 +3072,12 @@ body.is-atom-selecting * {
   .report-static-fallback {
     display: block !important;
   }
+  /* 打印 / PDF 用静态图兜底（用户口径 2026-10-15"不可交互的图留给 PDF"）：
+     屏幕上的交互组件不打印，被它们顶掉的静态图在打印时显示 */
+  .report-pdos,
+  .report-wf {
+    display: none !important;
+  }
 }
 
 .report-wf {
@@ -5296,51 +5302,13 @@ button.report-chip {
   width: 320px;
 }
 
-.report-export-pop__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.report-export-pop__sections {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 220px;
-  overflow-y: auto;
-  padding-bottom: 8px;
-  border-bottom: 1px dashed var(--color-border-soft);
-}
-
-.report-export-pop__sections .ant-checkbox-wrapper {
-  font-size: 12px;
-  margin-inline-start: 0;
-}
-
-/* 交互版导出开关（v0.9.62） */
-.report-export-pop__interactive {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 0 0;
-  margin-top: 2px;
-  border-top: 1px dashed var(--color-border-soft);
-}
-
-.report-export-pop__interactive .ant-checkbox-wrapper {
-  font-size: 12px;
-  margin-inline-start: 0;
-}
-
+/* 导出面板顶部说明（v0.9.71：导出范围统一走「隐藏本章」） */
 .report-export-pop__hint {
+  display: block;
+  margin: 0 0 4px;
   color: var(--color-text-muted);
   font-size: 11.5px;
-  line-height: 1.5;
-  max-width: 300px;
+  line-height: 1.6;
 }
 
 .report-export-pop__actions {
@@ -5832,6 +5800,7 @@ dialog.outcar-tail-dialog .btn--primary:disabled {
 
 h5:hover > .report-hide-btn,
 h6:hover > .report-hide-btn,
+.report-section-title:hover > .report-hide-btn,
 .report-markdown figure:hover > .report-hide-btn,
 .notes-panel:hover > summary .report-hide-btn {
   opacity: 1;

@@ -6,7 +6,7 @@
  *
  * | key | 含义 | 页面里的元素 | 导出 HTML 里的元素 |
  * | --- | --- | --- | --- |
- * | `section:<章节>` | 整章 | `<section>` | 整章（导出时直接不渲染） |
+ * | `section:<章节>` | 整章（**导出范围就靠它**：隐藏的章节导出/打印都不含，v0.9.71 起取代"导出范围"勾选） | `<section>` | 整章不渲染 |
  * | `type:<章节>:<类型标题>` | 整个类型块（结构优化 / 自由能路径 / NEB 过渡态 / 电子结构） | `### → h5` + 其后同门内容 | `### → h4` 块 |
  * | `task:<章节>:<任务标题>` | **单个任务块**（一个结构优化任务 / 一组 NEB / 一条自由能路径 / 电子结构的一个子块） | `#### → h6` + 其后同门内容 | `#### → h5` 块 |
  * | `etask:<章节>:<任务名>` | **电子结构里一个任务的全部子块**（差分电荷 + Bader + PDOS + 功函数…） | 该任务名开头的所有 `h6` 块 | 同左（h5 前缀匹配） |
@@ -22,7 +22,7 @@
 
 export interface HiddenBlock {
   key: string;
-  kind: 'type' | 'task' | 'etask' | 'figure';
+  kind: 'section' | 'type' | 'task' | 'etask' | 'figure';
   /** 人类可读标签（按钮 tooltip / 「已隐藏」列表用） */
   label: string;
   /** 这个 key 控制的全部元素（隐藏时逐个加 class） */
@@ -46,6 +46,17 @@ export function collectHiddenBlocks(root: HTMLElement): HiddenBlock[] {
   const blocks: HiddenBlock[] = [];
   root.querySelectorAll('section[data-report-section]').forEach((section) => {
     const sectionKey = section.getAttribute('data-report-section') ?? '';
+    // ⓪ 整章（v0.9.71）：导出时"隐藏的章节不包含" —— 取代原来的「导出范围」勾选
+    const titleEl = (section.querySelector('.report-section-title') ?? section) as HTMLElement;
+    blocks.push({
+      key: `section:${sectionKey}`,
+      kind: 'section',
+      label: (titleEl.textContent ?? '').trim() || sectionKey,
+      elements: [section as HTMLElement],
+      anchor: titleEl,
+      buttonText: '隐藏本章',
+      buttonTitle: '隐藏整章（导出的 HTML / PDF 也不包含；可在右上角「已隐藏」里恢复）',
+    });
     const body = section.querySelector('.report-markdown') as HTMLElement | null;
     if (!body || !sectionKey) return;
     const children = Array.from(body.children) as HTMLElement[];

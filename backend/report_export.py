@@ -93,6 +93,11 @@ a { color: #3F68B8; text-decoration: none; }
   body { padding: 0; font-size: 12px; }
   h2 { page-break-before: auto; }
   .no-print { display: none !important; }
+  /* 打印 / PDF 走**静态图**兜底（用户口径 2026-10-15：HTML 只给可交互的，静态图留给 PDF）：
+     屏幕上的交互组件（ECharts canvas）不打印，被运行时收起来的静态图在打印时恢复显示。
+     这样 PDF 不会既出现交互图又出现静态图。 */
+  .report-widget { display: none !important; }
+  .report-static-taken-over { display: block !important; }
   .img-row { page-break-inside: avoid; }
 }
 
@@ -909,7 +914,6 @@ def render_html(
             f"<script>window.__VASP_REPORT_DATA__={payload};</script>"
             f"<script>{interactive_js}</script>"
         )
-        footer += " · 图表可交互（ECharts 内联）"
     return (
         "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/>"
         f'<meta name="viewport" content="width=device-width, initial-scale=1"/>'

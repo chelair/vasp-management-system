@@ -27,10 +27,12 @@ import { formatCenter } from '../utils/bandCenter';
 import {
   defaultPdosState,
   flatMenuNodes,
+  buildPdosTable,
   pdosChartModel,
   pdosSpin,
   type PdosChartState,
 } from './pdosChart';
+import { downloadTextFile, safeName, stamp, tableToCsv, tableToTxt } from './exportData';
 
 // 按需注册（与巡检详情的 useEcharts 同一套组件；多注册几个组件不会互相影响）
 echarts.use([
@@ -94,6 +96,8 @@ export interface PdosWidgetHandle {
   getState(): PdosChartState;
   reset(): void;
   exportPng(name?: string): void;
+  /** 导出当前勾选曲线的数据（csv / txt），2026-10-15 用户要求 */
+  exportData(format: 'csv' | 'txt'): void;
   dispose(): void;
 }
 
@@ -249,6 +253,45 @@ export function mountPdosWidget(
   });
   foot.appendChild(resetBtn);
 
+  // 导出数据（csv / txt）：与「导出图片」并列，导的是**当前勾选的曲线**（图上看到的那些）
+  const csvBtn = doc.createElement('button');
+  csvBtn.type = 'button';
+  csvBtn.className = 'pdosw__btn';
+  csvBtn.textContent = '导出 CSV';
+  csvBtn.title = '导出当前显示的曲线数据（能量 × 各曲线），Excel / Origin 可直接打开';
+  foot.appendChild(csvBtn);
+
+  const txtBtn = doc.createElement('button');
+  txtBtn.type = 'button';
+  txtBtn.className = 'pdosw__btn';
+  txtBtn.textContent = '导出 TXT';
+  txtBtn.title = '导出当前显示的曲线数据（带 # 注释头，gnuplot / xmgrace 友好）';
+  foot.appendChild(txtBtn);
+
+  function exportData(format: 'csv' | 'txt'): void {
+    const table = buildPdosTable(view, state);
+    if (!table) return;
+    const base = `PDOS_${safeName(view.meta?.task_id || view.meta?.source || 'task')}_${stamp()}`;
+    const meta = view.meta || {};
+    const comments = [
+      `# PDOS 数据导出（${meta.task_id || '—'}）`,
+      `# 来源：${meta.source || 'vaspkit 111+113'}`,
+      `# 能量口径：E - E_F（费米能级 E_F = ${meta.efermi ?? '—'} eV）`,
+      `# 自旋：${meta.spin_polarized ? '极化（↑/↓ 各一列，均为原始正值，未做镜像取负）' : '非自旋'}`,
+      `# 元素：${(meta.elements || []).join('/') || '—'}`,
+      `# 勾选曲线：${table.header.slice(1).join(' / ')}`,
+      `# 点数：${table.rows.length}（完整能量网格）`,
+      `# 导出时间：${new Date().toLocaleString()}`,
+    ];
+    if (format === 'csv') {
+      downloadTextFile(`${base}.csv`, tableToCsv(table), 'text/csv;charset=utf-8');
+    } else {
+      downloadTextFile(`${base}.txt`, tableToTxt(table, comments), 'text/plain;charset=utf-8');
+    }
+  }
+  csvBtn.addEventListener('click', () => exportData('csv'));
+  txtBtn.addEventListener('click', () => exportData('txt'));
+
   function renderLegend(): void {
     legend.innerHTML = '';
     for (const curve of model.curves) {
@@ -372,6 +415,7 @@ export function mountPdosWidget(
       link.download = `${name || 'PDOS'}.png`;
       link.click();
     },
+    exportData,
     dispose: () => {
       observer?.disconnect();
       window.removeEventListener('resize', onResize);

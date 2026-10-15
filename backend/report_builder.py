@@ -1320,28 +1320,10 @@ def _sections_markdown(report, charts):
                         f"（{stats['net_min']['value']:+.4f} e）。"
                         f"（净电荷 \u0394q = ZVAL \u2212 Bader 电荷，正值表示该原子失电子。）\n\n"
                     )
-                    if summary.get("top"):
-                        ele_blocks.append(
-                            _md_table(
-                                ["原子", "元素", "Bader 电荷 (e)", "ZVAL (e)", "净电荷 Δq (e)"],
-                                [
-                                    [
-                                        f"{atom['element']}{atom['index']}",
-                                        atom["element"],
-                                        _fmt(atom["charge"], 4),
-                                        _fmt(atom["zval"], 2),
-                                        f"{atom['net_charge']:+.4f}",
-                                    ]
-                                    for atom in summary["top"]
-                                ],
-                            )
-                        )
-                        ele_blocks.append(
-                            f"（按 |\u0394q| 列最大的 {len(summary['top'])} 个原子；"
-                            f"完整表见巡检详情「电子结构分析 → Bader」。）\n\n"
-                        )
-                        # 完整表：报告页 / 导出渲染成折叠报表（滑动展开），不铺在正文里
-                        ele_blocks.append(f"@[bader-table:{item['task_id']}]\n\n")
+                    # 逐原子数据**只给完整表**（用户 2026-10-15："|Δq| 列最大的 10 个原子不需要"）：
+                    # 上面那段统计已经给了关键数值（合计 / 均值 / Δq 最大最小），明细走下面的完整表。
+                    # 完整表在页面/导出里是"直接展示 + 可滑动容器"（不是折叠）。
+                    ele_blocks.append(f"@[bader-table:{item['task_id']}]\n\n")
                 else:
                     ele_blocks.append(
                         f"已算出 `ACF.dat`（{summary['n_atoms']} 个原子，Bader 电荷合计 "

@@ -29,10 +29,12 @@ import useEcharts from '../dashboard/useEcharts';
 import { formatCenter } from '../../utils/bandCenter';
 import {
   defaultPdosState,
+  buildPdosTable,
   pdosChartModel,
   pdosSpin,
   type PdosChartState,
 } from '../../interactive/pdosChart';
+import { downloadTextFile, safeName, stamp, tableToCsv, tableToTxt } from '../../interactive/exportData';
 
 interface Props {
   taskId: string;
@@ -237,6 +239,32 @@ export default function PdosPanel({ taskId, taskName }: Props) {
     } catch (e) {
       message.error(e instanceof Error ? e.message : '导出图片失败');
     }
+  };
+
+  /** 导出数据（csv / txt）：与报告页/导出 HTML 里的控件同一实现（`buildPdosTable`） */
+  const exportData = (format: 'csv' | 'txt') => {
+    const table = buildPdosTable(view, state);
+    if (!table || !view) {
+      message.warning('没有可导出的曲线（至少勾选一条）');
+      return;
+    }
+    const base = `PDOS_${safeName(meta?.task_id || taskName || taskId)}_${stamp()}`;
+    const comments = [
+      `# PDOS 数据导出（${meta?.task_id || taskId}）`,
+      `# 来源：${meta?.source || 'vaspkit 111+113'}`,
+      `# 能量口径：E - E_F（费米能级 E_F = ${meta?.efermi ?? '—'} eV）`,
+      `# 自旋：${meta?.spin_polarized ? '极化（↑/↓ 各一列，均为原始正值，未做镜像取负）' : '非自旋'}`,
+      `# 元素：${(meta?.elements || []).join('/') || '—'}`,
+      `# 勾选曲线：${table.header.slice(1).join(' / ')}`,
+      `# 点数：${table.rows.length}（完整能量网格）`,
+      `# 导出时间：${new Date().toLocaleString()}`,
+    ];
+    if (format === 'csv') {
+      downloadTextFile(`${base}.csv`, tableToCsv(table), 'text/csv;charset=utf-8');
+    } else {
+      downloadTextFile(`${base}.txt`, tableToTxt(table, comments), 'text/plain;charset=utf-8');
+    }
+    message.success(`已导出 ${format.toUpperCase()}（${table.header.length - 1} 条曲线 × ${table.rows.length} 点）`);
   };
 
   const running = status === 'running';
@@ -480,6 +508,16 @@ export default function PdosPanel({ taskId, taskName }: Props) {
           <Button size="small" icon={<SaveOutlined />} onClick={exportImage}>
             导出图片
           </Button>
+          <Tooltip title="导出当前显示的曲线数据（能量 × 各曲线）">
+            <Button size="small" onClick={() => exportData('csv')}>
+              导出 CSV
+            </Button>
+          </Tooltip>
+          <Tooltip title="同上数据，带 # 注释头（来源 / 费米能级 / 自旋），gnuplot 友好">
+            <Button size="small" onClick={() => exportData('txt')}>
+              导出 TXT
+            </Button>
+          </Tooltip>
           <Tooltip title="清除本地缓存并重新跑一次远端分析">
             <Button size="small" danger onClick={() => void runAnalysis(true)} loading={running}>
               重新分析

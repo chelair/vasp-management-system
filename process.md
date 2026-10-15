@@ -206,7 +206,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 - `api/dashboard.ts`：总览接口封装（overview / cores-usage / cluster-health / risk-alerts / trend）。
 - `pages/Report.tsx` + `api/reports.ts` + `utils/markdown.ts`：分项目报告页——按项目生成 / 一键生成所有项目、**项目报告列表（每项目一份，同项目重生成直接覆盖）**、章节导航、Markdown 渲染（自写轻量渲染器，无第三方依赖，`chartResolver` 把 `charts/x.svg` 映射到 `/api/reports/project/{id}/files/x.svg`）；**正文只渲染图片，没有任何交互式组件或结构化数据视图**（v0.7.2 起"所见即所得"——前端看到的排版与导出 HTML/PDF 一致）；**导出按钮挂在「报告内容」标题行**，点击才展开章节勾选 Popover（下载 Markdown / 导出 HTML / 导出 PDF）。图里的看板版式（自由能 / NEB / 项目进度）由后端 `report_panels.py` 生成，与巡检详情页保持一致。
   - **v0.9.60 / v0.9.61 起报告页重新有了交互组件**（口径从"只渲染图片"演化为"图片 + 就地 portal 挂组件，导出的 HTML 同样能交互"）：能量/力曲线把 `charts/<task_id>_energy_force.svg` 换成 `EnergyForceCharts`（v0.9.60）；**v0.9.61** 按 Markdown 里的**挂点行** `@[kind:task_id]` 挂 `components/reports/ReportScienceWidgets.tsx` —— Bader 折叠报表（完整逐原子表，分页）/ PDOS 交互图（**点击加载**，1~3 MB 不自动拉）/ 功函数曲线（数值卡 + 真空能级/E_F 标记线），交互图挂好后把上面那张静态 SVG 收起来；**导出 Popover 新增「交互图表」开关（默认开）**，取消勾选走纯静态导出。
-- `interactive/`（**v0.9.61 新增**）：**框架无关的图表内核与原生控件**——`pdosChart.ts`（纯函数：勾选展开曲线 / 投影网格对齐 / 范围裁剪 / 带中心 / ECharts option）、`pdosWidget.ts`（原生 DOM 控件：轨道勾选 + 镜像 + E_F 虚线 + 带中心 + 范围 + 只看一条 + 重置 + 导出 PNG，样式随 JS 注入）、`workFunctionWidget.ts`（功函数数值卡 + 电位曲线）、`reportRuntime.ts`（导出运行时入口：扫挂点 → 按数据挂组件 → 收起静态图）。巡检详情 React 面板、报告页、单文件导出**三处共用这一份口径**；导出运行时由 `npm run build` 的末步（`scripts/build-report-interactive.mjs`）打成 `dist/report/report-interactive.js`（548 KB IIFE）。
+- `interactive/`（**v0.9.61 新增**）：**框架无关的图表内核与原生控件**——`pdosChart.ts`（纯函数：勾选展开曲线 / 投影网格对齐 / 范围裁剪 / 带中心 / ECharts option / **`buildPdosTable` 导出宽表**）、`pdosWidget.ts`（原生 DOM 控件：轨道勾选 + 镜像 + E_F 虚线 + 带中心 + 范围 + 只看一条 + 重置 + 导出 PNG + **导出 CSV/TXT**，样式随 JS 注入）、`workFunctionWidget.ts`（功函数数值卡 + 电位曲线 + **导出 CSV/TXT**）、`exportData.ts`（**导出工具**：`tableToCsv` / `tableToTxt` / `downloadTextFile`，纯前端、带 BOM）、`reportRuntime.ts`（导出运行时入口：扫挂点 → 按数据挂组件 → 收起静态图）。巡检详情 React 面板、报告页、单文件导出**三处共用这一份口径**；导出运行时由 `npm run build` 的末步（`scripts/build-report-interactive.mjs`）打成 `dist/report/report-interactive.js`（约 553 KB IIFE）。
 - `components/jobs/`：**JobsTree（v0.8.8：自由能结构/组节点、NEB 组节点显示"成员最高优先级状态"`StatusTag`；带巡检告警的任务/组带 ⚠/⛔ 图标，**只有悬停图标本身**才弹出 `check.message`，行 tooltip 不含巡检文案）、TaskOverview（v0.8.8：「最近巡检」行显示 `检查状态标签 + 完整告警文案 + 时间`，与数据库状态并列）**、SelectiveDynamicsModal（固定原子：选中/元素/高度三规则 + 编号方式 + 可选同步远端）**、IncarEditor（INCAR 编辑器：分类表单 + 自定义参数框 + 生成到本地 + 上传远端）、KpointsPanel（KPOINTS 生成）、PoscarPanel、**SubmitScriptPanel（vasp.lsf 生成：三组参数表单 + 8 段模板预览 + 写入远端）**、ContinuationModal、NebFilesModal、EleInputModal、GroupWizardModal、NewTaskModal、TaskOverview、StructureDetail、NebGroupDetail、CopyParamsModal、JobsTree。
 - `components/jobs/`（v0.8.9 补充）：**TaskPickerList / TaskPickerModal**（项目分组折叠 + 搜索 + 已关闭项目折到最后；INCAR 复制用多选、POSCAR 复制用单选，取代原 `CopyParamsModal`）；`IncarEditor` 支持**逐项撤销**待生效修改、偶极矩卡片新增单值 `EFIELD`；`PoscarPanel` 的「从其他任务复制」改为弹窗，结构图左上角显示**选中原子分数坐标**（`Structure3DFrame.showSelectedCoords`）。
 - `components/inspection/`：ForceHistoryCharts / LineChart（能量-力曲线，悬停竖线）、**NebImages3DViewer**（NEB 映像结构分析 v0.6.9：IS → 中间态 → FS 横向 3D 对比，视角联动/球棍·空间填充/自动旋转/缩放/重置/元素图例，鞍点面板高亮）、**NebBarrierPanel**（NEB 能垒看板 v0.6.8：统计卡（映像数 / Ea / 最大受力 / 末态相对能）+ 相对能垒曲线（直线连接不插值、鞍点标注、渐变面积、悬停按映像出信息卡）+ 映像明细列表（角色徽标），曲线绘制 / 数据点弹出 / 列表错峰入场动画，样式复用 `.fe-*`）、**PathSummaryModal + PathStepChart**（自由能路径看板 v0.6.7：顶部统计卡（中间体数/矫正完成度/收敛情况/最高相对能）→ 相对能台阶图 → 中间体明细列表；台阶带渐变柱体与面积、状态点、跟随鼠标的 HTML 信息卡（自由能/相对 ΔE/DFT/矫正项/收敛矫正状态）、悬停上浮 + 发光、点击台阶或行打开该结构巡检详情；入场动画为台阶从左依次滑入 + 连接线淡入 + 标签依次出现，列表行错峰上浮，`prefers-reduced-motion` 下全部关闭）、StructurePanel（结构分析表 + Structure3DViewer）、**Structure3DViewer**（3Dmol：并排/叠加/单侧、球棍/空间填充、缩放/自动旋转/a-b-c 视角、双侧相机同步、点击原子金色高亮联动、空白取消、左下角 abc 方向图例、右下角元素配色图例）、EleAnalysisPanel、PdosModal。
@@ -266,7 +266,32 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.65）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.66）
+
+- 2026-10-15（用户："|Δq| 列最大的 10 个原子不需要；html 中态密度、功函数要支持导出 txt/csv 格式数据"）：
+  **Bader 去掉 top10 + PDOS/功函数数据导出**（v0.9.66）。
+
+  **① Bader 只留「统计 + 完整表」**：正文里那段 top10 表格与"（按 |Δq| 列最大的 10 个原子…）"一并删掉，
+  只保留统计段（合计 / 均值 / Δq 最大最小）与下面的完整表（页面/导出都是"直接展示 + 可滑动容器"）。
+  结构化数据里的 `bader_summary.top` **保留**（10 个原子，给大模型消费用），只是不再渲染成 Markdown 表。
+
+  **② PDOS / 功函数支持导出 CSV / TXT**（新增 `src/interactive/exportData.ts`：**造表（纯函数）与下载分离**）：
+  - `tableToCsv`：只有表头 + 数据（Excel / Origin 直接认）；`tableToTxt`：`#` 注释块 + 空格分隔
+    （gnuplot / xmgrace / VASP 习惯）；`downloadTextFile`：UTF-8 **BOM** + Blob + `<a download>`，
+    纯前端完成 —— **导出的单文件 HTML 离线也能导出数据**。
+  - **PDOS**：`pdosChart.buildPdosTable(view, state)` 把**当前勾选的曲线**摊成宽表
+    （第一列 `E - E_F (eV)`，后面每条曲线一列，列名就是图例名）；投影曲线按"总网格 + 偏移"对齐，
+    没覆盖到的点留空（CSV）/`NaN`（TXT）；**自旋向下保持原始正值**（不做镜像取负 —— 镜像只是显示口径）。
+    原生控件（报告页 + 导出 HTML 共用）与巡检详情面板都加了「导出 CSV / 导出 TXT」。
+  - **功函数**：`buildWorkFunctionTable` / `workFunctionExportComments` / `downloadWorkFunctionData`
+    （`z (Å)` + `静电势 (eV)`；注释里带方向、真空能级、E_F、功函数）。报告页 React 组件与导出运行时
+    的原生组件都加了按钮。
+  - **实测（真机 model2）**：PDOS CSV = 1 表头 + **3000 行 × 5 列**（E−E_F · 总态密度↑/↓ · Fe d↑/↓），
+    逐点与 `dos.json` 相等、投影列按 offset 对齐、第 0 行按预期留空；文件名
+    `PDOS_task_1789455573013_11_20261015-2227.csv`；TXT = 7 行 `#` 注释 + 3000 行数据。
+  - **验证**：`export_data_test`（15 项：表头/行数/列值/偏移对齐/空值/BOM/数字格式化/功函数注释）+
+    `widget_export_test`（7 项：控件出现导出按钮 → 点击 → 捕获 Blob → 读内容与字节）全过；
+    其余七套回归（PDOS 控件 18 / 导出运行时 11 / 台阶图·曲线 30 / 报告看板 22 / Bader 7 / 白屏 / 挂点）全过。
 
 - 2026-10-15（用户："导出没有下载按钮"）：**报告导出补「下载」**（v0.9.65）。
   现状问题：报告页的「导出 HTML」只是 `window.open(?sections=…)`，而服务端给的是
@@ -1641,7 +1666,8 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.65**（commit `1832259`；报告导出补「下载 HTML」按钮 + 中文文件名，
+> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.66**（Bader 去掉 top10 + PDOS/功函数支持导出 CSV/TXT，
+> 见 §7 顶端条目）。**v0.9.65** = `1832259`（报告导出补「下载 HTML」按钮 + 中文文件名，
 > 见 §7 顶端条目）。**v0.9.64** = `9813ad4`（修报告页 PDOS 白屏 + PDOS 免点击直接可交互 +
 > 撤回集群资源 + Bader 完整表直接展示可滑动，详见 §7 顶端条目）。上一版 **v0.9.63** = `43eca9a`（动画提速 + 集群资源接进报告，
 > 报告里的图表至此齐了）。本次会话的版本链：**v0.9.61 = `477f82a`**（待办表最后一条"电子结构接报告"交付：

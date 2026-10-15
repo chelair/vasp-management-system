@@ -3101,6 +3101,13 @@ body.is-atom-selecting * {
   background: #eef4ff;
 }
 
+/* 功函数数据导出按钮（csv / txt，v0.9.66） */
+.report-wf__actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
 /* 功函数：方向选择工具条 + 电位曲线（v0.9.59） */
 .wf-toolbar {
   display: flex;

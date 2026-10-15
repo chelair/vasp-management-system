@@ -18,6 +18,7 @@ import type { EChartsCoreOption } from 'echarts/core';
 
 import type { PdosTreeNode, PdosView } from '../types';
 import { bandCenters, formatCenter } from '../utils/bandCenter';
+import type { ExportTable } from './exportData';
 
 export type PdosSpin = 'up' | 'down' | 'total';
 
@@ -473,5 +474,46 @@ function buildOption(
           }
         : rest,
     ),
+  };
+}
+
+/**
+ * 导出用的数据表（2026-10-15）：把**当前勾选的曲线**摊成"能量 × 各曲线"的宽表。
+ *
+ * - 第一列是 `E - E_F (eV)`（与图上的横轴同一套网格，用总态密度网格 + 投影偏移对齐）；
+ * - 后面每条曲线一列，列名就是图例上的名字（`总态密度 ↑` / `Fe d ↓` …）；
+ * - 值是**原始态密度**（自旋向下的曲线也保持正值，不做镜像取负 —— 导出给数据用，
+ *   镜像只是显示口径），与 `dos.json` 里的一致；
+ * - 行按**能量网格**走：曲线没覆盖到的点写 null（导出时空着 / `NaN`）。
+ *
+ * 返回 null 表示没有可导出的曲线。
+ */
+export function buildPdosTable(
+  view: PdosView | null | undefined,
+  state: PdosChartState,
+): ExportTable | null {
+  if (!view) return null;
+  const curves = flattenCurves(view, state.checkedKeys, pdosSpin(view));
+  if (!curves.length) return null;
+  const offset = partialOffsetOf(view);
+  const efermi = view?.meta?.efermi ?? 0;
+  const grid = view.energy?.total ?? [];
+  // 每一列：总网格下标 → 该曲线的取值（没覆盖到的点留空）
+  const columns = curves.map((curve) => {
+    const values = new Array<number | null>(grid.length).fill(null);
+    const n = curve.values.length;
+    for (let i = 0; i < n; i += 1) {
+      const target = curve.grid === 'partial' ? i + offset : i;
+      if (target >= 0 && target < values.length) values[target] = curve.values[i];
+    }
+    return { name: curve.name, values };
+  });
+  const rows: (number | null)[][] = grid.map((x, index) => [
+    x - efermi,
+    ...columns.map((column) => column.values[index]),
+  ]);
+  return {
+    header: ['E - E_F (eV)', ...columns.map((column) => column.name)],
+    rows,
   };
 }

@@ -12,10 +12,11 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Table, Tag } from 'antd';
+import { Alert, Button, Table, Tag } from 'antd';
 
 import { fetchPdosData } from '../../api/jobs';
 import { mountPdosWidget, type PdosWidgetHandle } from '../../interactive/pdosWidget';
+import { downloadWorkFunctionData } from '../../interactive/workFunctionWidget';
 import useEcharts from '../dashboard/useEcharts';
 
 /** 逐原子 Bader 数据（后端 `bader_summary.atoms`） */
@@ -224,6 +225,15 @@ export function WorkFunctionReportChart({
           方向 <strong>{summary.axis ?? '—'}</strong> ↗ {summary.axis_cartesian ?? '—'}
         </span>
         {taskName ? <span className="report-wf__card">{taskName}</span> : null}
+        {/* 数据导出（csv / txt）：与原生版（导出 HTML 里用的那份）共用同一实现 */}
+        <span className="report-wf__actions">
+          <Button size="small" onClick={() => downloadWorkFunctionData(summary, 'csv')}>
+            导出 CSV
+          </Button>
+          <Button size="small" onClick={() => downloadWorkFunctionData(summary, 'txt')}>
+            导出 TXT
+          </Button>
+        </span>
       </div>
       <div style={{ height: 300 }} ref={containerRef} />
       {(summary.warnings ?? []).map((warning) => (

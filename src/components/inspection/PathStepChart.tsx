@@ -295,20 +295,33 @@ export function buildFreeEnergyStepOption(
     },
     series: [
       {
+        // ΔE = 0 参考线（与旧图一致：浅灰实线 + 左侧 0.00 标注）。
+        // ⚠️ 不用 `custom` 系列的 markLine —— ECharts 对 custom 系列的 markLine 支持不可靠
+        // （实测可能整条不画），这里用一条静默的空折线专门承载它。
+        type: 'line',
+        name: 'ΔE = 0',
+        silent: true,
+        showSymbol: false,
+        data: structures.map((_, index) => (index === 0 || index === n - 1 ? 0 : null)),
+        lineStyle: { color: '#C3CEDA', width: 1 },
+        label: {
+          show: true,
+          formatter: '0.00',
+          position: 'left',
+          color: '#5A6A80',
+          fontSize: 10,
+          fontWeight: 600,
+        },
+        z: 1,
+        tooltip: { show: false },
+      },
+      {
         type: 'custom',
         name: '自由能台阶',
         renderItem: renderItem as never,
         // 数据本身不画，交给 renderItem；保留 value 以便 tooltip/事件拿到 dataIndex
         data: structures.map((s) => [s.structure_label, relOf(s)]),
         encode: { x: 0, y: 1 },
-        // 参考线 ΔE = 0（与旧图一致：浅灰实线）
-        markLine: {
-          silent: true,
-          symbol: 'none',
-          label: { show: false },
-          lineStyle: { color: '#C3CEDA', width: 1 },
-          data: [{ yAxis: 0 }],
-        },
         z: 3,
       },
     ],

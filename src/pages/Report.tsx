@@ -411,7 +411,9 @@ export default function Report() {
    * （`components/common/EnergyForceCharts.tsx`）。做法与注解面板一致：渲染后按
    * `<task_id>_energy_force.svg` 找到那张图，就地换成 host div，再用 portal 挂组件。
    */
-  const [efHosts, setEfHosts] = useState<{ key: string; taskId: string; el: HTMLElement }[]>([]);
+  const [efHosts, setEfHosts] = useState<
+    { key: string; taskId: string; el: HTMLElement; dialogId: string | null }[]
+  >([]);
 
   const renderedSections = useMemo(
     () =>
@@ -434,7 +436,7 @@ export default function Report() {
   useEffect(() => {
     const root = contentRef.current;
     if (!root) return;
-    const hosts: { key: string; taskId: string; el: HTMLElement }[] = [];
+    const hosts: { key: string; taskId: string; el: HTMLElement; dialogId: string | null }[] = [];
     root.querySelectorAll('img').forEach((img) => {
       const src = img.getAttribute('src') || '';
       const matched = /([^/\\]+)_energy_force\.svg/.exec(src);
@@ -443,16 +445,35 @@ export default function Report() {
       const host = document.createElement('div');
       host.className = 'report-ef-chart';
       host.setAttribute('data-ef-task', taskId);
+      // 收敛历史弹窗里那张图（2026-10-15）：记下所属 dialog，**弹窗打开时才挂 ECharts**
+      // —— 关闭的 <dialog> 是 display:none，容器尺寸为 0，直接 init 会画不出来
+      const dialogEl = img.closest('dialog');
       const figure = img.closest('figure');
       if (figure) figure.replaceWith(host);
       else img.replaceWith(host);
-      hosts.push({ key: taskId, taskId, el: host });
+      hosts.push({ key: taskId, taskId, el: host, dialogId: dialogEl?.id ?? null });
     });
     setEfHosts(hosts);
     return () => {
       hosts.forEach((h) => h.el.remove());
       setEfHosts([]);
     };
+  }, [renderedSections, detail]);
+
+  /** 哪些弹窗是打开的（`toggle` 事件）：弹窗里的图表只在打开时挂载（见上） */
+  const [openDialogs, setOpenDialogs] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root) return;
+    const dialogs = Array.from(root.querySelectorAll('dialog'));
+    const onToggle = (event: Event) => {
+      const el = event.currentTarget as HTMLDialogElement;
+      setOpenDialogs((prev) =>
+        prev[el.id] === el.open ? prev : { ...prev, [el.id]: el.open },
+      );
+    };
+    dialogs.forEach((dialog) => dialog.addEventListener('toggle', onToggle));
+    return () => dialogs.forEach((dialog) => dialog.removeEventListener('toggle', onToggle));
   }, [renderedSections, detail]);
 
   /**
@@ -1195,6 +1216,8 @@ export default function Report() {
                     ))}
                     {/* 能量/力收敛曲线：ECharts 组件（替代报告里那张 SVG 图，v0.9.60） */}
                     {efHosts.map((host) => {
+                      // 弹窗里的图：等弹窗打开再挂（关闭时容器 0 尺寸，ECharts 画不出来）
+                      if (host.dialogId && !openDialogs[host.dialogId]) return null;
                       const item = (
                         ((detail?.structured as { science?: { opt?: unknown[] } } | undefined)
                           ?.science?.opt ?? []) as {
@@ -1369,7 +1392,20 @@ export default function Report() {
                           </button>
                         </header>
                         <div className="body">
-                          {dialog.rows.map((row) => (
+                          {/* 图表弹窗（收敛历史，v0.9.67）：正文页里这张 SVG 会被换成可交互 ECharts */}
+                          {dialog.chart ? (
+                            <>
+                              {dialog.note ? <p className="row-label">{dialog.note}</p> : null}
+                              <figure className="report-figure">
+                                <img
+                                  src={reportChartUrl(detail.meta.report_id, dialog.chart)}
+                                  alt={dialog.title}
+                                  decoding="async"
+                                />
+                              </figure>
+                            </>
+                          ) : null}
+                          {(dialog.rows ?? []).map((row) => (
                             <div key={row.label}>
                               <p className="row-label">{row.label}</p>
                               <div className="report-img-row">

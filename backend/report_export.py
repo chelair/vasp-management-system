@@ -626,14 +626,28 @@ def render_dialogs(
     dialogs: List[Dict[str, Any]],
     *,
     image_loader: Optional[Callable[[str], Optional[str]]] = None,
+    chart_loader: Optional[Callable[[str], Optional[str]]] = None,
 ) -> str:
-    """结构三视图弹窗（原生 `<dialog>`）：标题 + 每行 a/b/c 三视图（base64 内联）。"""
+    """弹窗（原生 `<dialog>`）：两种形态 ——
+
+    - **三视图弹窗**：每行 a/b/c 三视图（base64 内联）；
+    - **图表弹窗**（`chart: charts/xxx.svg`，2026-10-15 起的「收敛历史」）：内联那张 SVG，
+      报告页里同一张图会被换成可交互 ECharts（见 Report.tsx）。
+    """
     parts: List[str] = []
     for dialog in dialogs or []:
         dialog_id = html_lib.escape(str(dialog.get("id") or ""), quote=True)
         if not dialog_id:
             continue
         rows_html: List[str] = []
+        # 图表弹窗（收敛历史）：chart 走 chart_loader 内联 SVG
+        chart = str(dialog.get("chart") or "")
+        if chart and chart_loader is not None:
+            svg = chart_loader(chart.split("/", 1)[1]) if chart.startswith("charts/") else None
+            if svg:
+                if dialog.get("note"):
+                    rows_html.append(f'<p class="row-label">{_inline(str(dialog["note"]))}</p>')
+                rows_html.append(f"<figure>{svg}</figure>")
         for row in dialog.get("rows") or []:
             views = row.get("views") or {}
             figures: List[str] = []
@@ -845,7 +859,9 @@ def render_html(
         if section["key"] == "science":
             section_html = _inject_type_notes(section_html, doc.get("notes") or {})
         body_parts.append(section_html)
-    dialogs_html = render_dialogs(doc.get("dialogs") or [], image_loader=image_loader)
+    dialogs_html = render_dialogs(
+        doc.get("dialogs") or [], image_loader=image_loader, chart_loader=chart_loader
+    )
     risk_summary = (doc.get("risks") or {}).get("summary") or {}
     footer = (
         f"报告 ID：{meta.get('report_id', '')} · 项目：{meta.get('project_name', '')} · "

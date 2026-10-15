@@ -432,7 +432,12 @@ export interface ProjectReportDialogRow {
 export interface ProjectReportDialog {
   id: string;
   title: string;
-  rows: ProjectReportDialogRow[];
+  /** 三视图行（结构 / NEB 映像 / 差分电荷）—— 图表弹窗（收敛历史）没有 rows */
+  rows?: ProjectReportDialogRow[];
+  /** 图表弹窗：报告目录下的相对路径（`charts/xxx.svg`） */
+  chart?: string;
+  /** 图表弹窗的说明行（如"共 15 个离子步 · 力阈值 0.02 eV/Å"） */
+  note?: string;
 }
 
 export interface ProjectReportGenerateResult {

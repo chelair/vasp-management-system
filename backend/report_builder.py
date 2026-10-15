@@ -1085,7 +1085,14 @@ def _sections_markdown(report, charts):
                 f"离子步 {_fmt(item['ionic_steps'], 0)}",
             ]
             panel = item["charts"].get("panel") or item["charts"].get("energy_force")
-            if panel:
+            if item.get("conv_dialog"):
+                # 能量/力曲线收进「收敛历史」弹窗（用户口径 2026-10-15）：正文只留一行入口，
+                # 点开在弹窗里看曲线（报告页是可交互 ECharts，导出/打印是内联的那张 SVG）。
+                lines.append(
+                    f"**收敛历史**：[能量 / 最大力曲线"
+                    f"（{_fmt(item['ionic_steps'], 0)} 个离子步）](#{item['conv_dialog']})"
+                )
+            elif panel:
                 lines.append(f"![{item['task_name']} 结构三视图与能量/力曲线]({panel})")
             # VESTA 三视图（a/b/c，横向排列；报告生成时按用户口径优先用 images/ 里的图）
             # 同一行（初始 / 优化后）的 3 张图必须**连着写**（中间不留空行），
@@ -1768,6 +1775,21 @@ def build_report(
         ename = f"{fact['task_id']}_energy_force.svg"
         charts[ename] = curve_svg
         chart_refs["energy_force"] = f"charts/{ename}"
+        # 收敛历史弹窗（2026-10-15 用户："报告中能量、力曲线放到收敛历史中折叠，点击弹窗展示"）：
+        # 曲线不再铺在正文里，正文只留一个「收敛历史」chip，点开在弹窗里看
+        # （弹窗内容 = 同一张 energy_force 图：导出时内联 SVG，报告页里换成可交互 ECharts）。
+        conv_dialog_id = f"dlg_conv_{fact['task_id']}"
+        dialogs.append(
+            {
+                "id": conv_dialog_id,
+                "title": f"{fact['task_name']} · 收敛历史（能量 / 最大力）",
+                "chart": f"charts/{ename}",
+                "note": (
+                    f"共 {len(points)} 个离子步 · 能量（蓝，左轴）与最大力（橙，右轴）同图 · "
+                    "红色虚线为力收敛阈值 0.020 eV/Å（EDIFFG）"
+                ),
+            }
+        )
         opt_science.append(
             {
                 "task_id": fact["task_id"],
@@ -1786,6 +1808,8 @@ def build_report(
                 "structure_dialog": dialog["id"] if dialog else None,
                 "structure_views": dialog["rows"] if dialog else [],
                 "charts": chart_refs,
+                # 收敛历史弹窗 id（正文里那个 chip 指向它）
+                "conv_dialog": conv_dialog_id,
             }
         )
 

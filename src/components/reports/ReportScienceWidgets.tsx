@@ -244,8 +244,13 @@ export function WorkFunctionReportChart({
 }
 
 /**
- * PDOS 交互图：**进报告就能直接交互**（不用点按钮）—— 数据 1~3 MB，所以进入视口
- * （提前 300px）就自动拉取并挂载，不必等用户点"加载"。
+ * PDOS 交互图：**进报告就直接显示交互图**（不用点按钮、也不等滚动）——
+ * 组件一挂载就拉数据并挂载组件（数据 1~3 MB，局域网里很快）。
+ *
+ * 页面上**看不到后端那张静态兜底图**：它在报告页里被标了 `.report-static-fallback`
+ * （屏幕隐藏、打印/PDF 才显示），所以不会出现"先闪一张静态图、滚到了才换成交互图"
+ * （2026-10-15 用户反馈的正是这个）。导出的单文件 HTML 仍按老办法：
+ * 静态图先显示，运行时挂上组件后再收起（那边没有 JS 保证，必须留兜底）。
  *
  * ⚠️ **宿主 div 里不能渲染任何 React 子节点**：`mountPdosWidget()` 会 `container.innerHTML = ''`
  * 再写自己的 DOM，而 React 如果也往同一节点渲染过内容（例如 loading 的 Spin），
@@ -269,6 +274,8 @@ export function PdosReportChart({
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
+  /** 只自动加载一次（失败后不再进入"失败→重试→失败"的循环，交给用户点「重试」） */
+  const startedRef = useRef(false);
 
   useEffect(
     () => () => {
@@ -296,37 +303,32 @@ export function PdosReportChart({
     }
   }, [taskId, loading, onLoaded]);
 
-  /** 进入视口就自动加载（不需要用户点按钮）；没有 IntersectionObserver 就直接加载 */
+  /** 挂载即加载（不等滚动、不用点按钮） */
   useEffect(() => {
-    if (loaded || loading) return;
-    const el = wrapRef.current;
-    if (!el || typeof IntersectionObserver === 'undefined') {
-      void load();
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          observer.disconnect();
-          void load();
-        }
-      },
-      { rootMargin: '300px 0px' },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [load, loaded, loading]);
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void load();
+  }, [load]);
 
   return (
     <div className="report-pdos" ref={wrapRef}>
-      {!loaded && (
+      {!loaded && !error && (
         <p className="report-pdos__hint">
-          {loading
-            ? `正在加载交互图${taskName ? `（${taskName}）` : ''}…（整合数据约 1–3 MB）`
-            : '进入视口即自动加载交互图；勾轨道、改范围、开关带中心虚线都会实时重画'}
+          正在加载交互图{taskName ? `（${taskName}）` : ''}…（整合数据约 1–3 MB）
         </p>
       )}
-      {error && <Alert type="error" showIcon message={error} />}
+      {error && (
+        <Alert
+          type="error"
+          showIcon
+          message={error}
+          action={
+            <Button size="small" onClick={() => void load()} loading={loading}>
+              重试
+            </Button>
+          }
+        />
+      )}
       {/* 宿主：只由 mountPdosWidget 写 DOM，React 不往里渲染任何子节点（见上方警告） */}
       <div ref={hostRef} className="report-pdos__host" />
     </div>

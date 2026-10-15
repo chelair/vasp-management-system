@@ -503,6 +503,9 @@ export default function Report() {
       const figure = prev && prev.tagName === 'FIGURE' ? (prev as HTMLElement) : null;
       // 功函数曲线挂上就是交互版（曲线数值内联在报告里），静态图直接收起来
       if (kind === 'work-function-chart' && figure) figure.style.display = 'none';
+      // PDOS：屏幕上一律显示交互图，**静态兜底图只在打印/PDF 里出现**
+      //（否则会"先闪一张静态图，滚到了才换成交互图" —— 用户 2026-10-15 反馈）
+      if (kind === 'pdos-chart' && figure) figure.classList.add('report-static-fallback');
       hosts.push({ kind, taskId, el, figure });
     });
     setWidgetHosts(hosts);
@@ -1323,9 +1326,6 @@ export default function Report() {
                           <PdosReportChart
                             taskId={host.taskId}
                             taskName={item?.task_name}
-                            onLoaded={() => {
-                              if (host.figure) host.figure.style.display = 'none';
-                            }}
                           />,
                           host.el,
                           `${host.kind}:${host.taskId}`,

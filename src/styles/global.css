@@ -3062,6 +3062,18 @@ body.is-atom-selecting * {
   width: 100%;
 }
 
+/* PDOS 静态兜底图（后端生成的那张 SVG）：屏幕上看交互图，静态图只在打印/PDF 里出现
+   —— 避免"先闪一张静态图、滚到了才换成交互图"（v0.9.68） */
+.report-static-fallback {
+  display: none !important;
+}
+
+@media print {
+  .report-static-fallback {
+    display: block !important;
+  }
+}
+
 .report-wf {
   margin: 6px 0 14px;
 }

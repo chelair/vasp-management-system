@@ -426,11 +426,19 @@ def dos_lines_chart(
             f'<line x1="{x0:.1f}" y1="{M["top"]}" x2="{x0:.1f}" y2="{M["top"] + plot_h}" '
             f'stroke="#98a6bd" stroke-width="1" stroke-dasharray="5 4"/>'
         )
-    # 带中心（同色竖直虚线 + 数值）
-    for band in bands:
+    # 带中心（同色竖直虚线 + 数值）。标签**错行**：两条带中心挨得近（< 可视范围的 ~4.5%）时
+    # 上下错开，否则文字会叠成一团（2026-10-15 用户截图反馈"标注挤在一起"；
+    # 前端 interactive/pdosChart.ts 的 buildCenterLines 同一口径）。
+    visible_bands = [
+        band
+        for band in bands
+        if x_min <= float(band.get("x") or 0) <= x_max
+    ]
+    row_gap = (x_max - x_min) * 0.045
+    label_row = 0
+    prev_x: Optional[float] = None
+    for band in visible_bands:
         bx = float(band.get("x") or 0)
-        if not (x_min <= bx <= x_max):
-            continue
         xb = px(bx)
         band_color = _escape(band.get("color") or COLOR_PRIMARY)
         band_dash = "2 3" if band.get("dashed") else "7 4"
@@ -440,8 +448,10 @@ def dos_lines_chart(
             f'stroke-dasharray="{band_dash}"/>'
         )
         if band.get("label"):
+            label_row = label_row + 1 if (prev_x is not None and bx - prev_x < row_gap) else 0
+            prev_x = bx
             body.append(
-                f'<text x="{xb + 3:.1f}" y="{M["top"] + 11}" font-size="10" '
+                f'<text x="{xb + 3:.1f}" y="{M["top"] + 11 + label_row * 13}" font-size="10" '
                 f'fill="{band_color}" {FONT}>'
                 f"{_escape(band['label'])}</text>"
             )

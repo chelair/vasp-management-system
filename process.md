@@ -302,10 +302,20 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   前端删掉 SVG 时代的 `.fe-step*` / `.fe-link` / `.fe-chart__svg` / `.nebmd-curve__svg` 样式与
   `@keyframes fe-step-in`；`useEcharts` 注册 `CustomChart`（台阶图需要）。
 
-  **⑤ 一个坑（当天补修）：custom 系列不要依赖 `markLine`** —— 台阶图的 ΔE=0 参考线原本写成
-  `custom` 系列的 `markLine`，ECharts 对 custom 系列的 markLine 支持不可靠（可能整条不画）。
-  改成**单独一条静默折线系列**（`data` 只在首末给 0、其余 null，`label.formatter='0.00'`、
-  `lineStyle` 浅灰），稳过。
+  **⑤ 补修（用户反馈："neb 图的那两个鼠标指向的虚线有点不对"）**：量下来**两条虚线的位置都是对的**
+  （ECharts SSR 渲出坐标：悬停竖线 x=388.5 vs 数据点 x=388.0；用户截图的 1.75 倍缩放让人看着像偏了），
+  真正的问题是 **ΔE=0 参考线**：
+  1. 它的标注 `0.00` 被画在**图内**（`insideStartTop`），正好压在曲线上、和 00 那个数据点重叠；
+     y 轴自己又有一个 `+0.00` → 同一个值标两遍，看起来就像一条乱入的十字准星横线。
+     修法：标注挪到**轴线外**（`label.position:'start'` → 右对齐贴在 y 轴刻度那一列，与旧 SVG 图一致），
+     同时 y 轴 formatter 把 0 那一档留空（`|v| < 1e-9 → ''`，台阶图同样处理）。
+  2. 参考线与鼠标指示线的样式区分开：参考线 = 浅色细点线 `#CBD5E3 [3,4]`，
+     鼠标指示线 = 深一点虚线 `#9CA3AF [4,3]`（两条都跟旧图同色系，但一眼能分清谁是谁）。
+  **弯路（要记住的坑）**：我一度以为 ECharts 不支持 `custom` 系列的 `markLine`，把台阶图的参考线改成
+  "被 null 隔开的折线系列"——**那是错的**：ECharts 对孤立点不画线，参考线整条消失（SSR 渲染才发现）。
+  事后实测 ECharts 6.1 的 `line` / `custom` / `scatter` 三种系列 `markLine` 都正常，
+  台阶图已改回 `custom` + `markLine`。
+  **新增验证手段（很值钱，见 §10）**：**ECharts SSR 渲染成 SVG** + 坐标量测 + `sharp` 转 PNG 肉眼复核。
 
   **验证（全部真机数据）**：台阶图/曲线 **25 项断言全过** —— 边距不变、台阶几何与 `ΔE=0` 面积对齐、
   三种状态配色、无数据灰虚线、悬停上浮 3px + 加粗、信息卡四项读数 + warn 圆点、零线、错峰延迟、
@@ -1598,6 +1608,12 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 2. 读 `TODO.md`（§11 巡检异常规则引擎、§12 自动执行/大模型动作接口 —— 两项都已设计但**用户明确要求先搁置**）+ `README.md`（SSH 约定章节）+ 本文件。
 3. 需要联调时（生产机 Linux）：`sudo systemctl restart vasp-manager` → 打开 `http://192.168.1.20:3001`（前端已构建在 `dist/`）与 `http://192.168.1.20:3001/docs`；改前端记得先 `npm run build`，需要热更新时才另开 `npm run dev`（5173）。部署细节见 §11。
 4. 用户对"默认参数 / 目录结构 / 作业号同步 / 巡检状态"等改动很敏感，动手前先确认范围；禁止用运行中的任务做破坏性测试（可用项目树外的临时目录，测完删除）。**验证习惯**：本轮开发都用「隔离数据目录 + `VASP_SSH_MOCK=1` 的 mock 远端」或「服务器 `/tmp` 临时目录」做端到端验证（`/tmp/sd_test`、`/tmp/vm_*` 之类），前端用 jsdom 渲染断言（`/tmp/cnbtest` 下装了 jsdom，临时测试文件用完即删）。
+   - **看图/量图三件套（v0.9.62 起，强烈建议沿用）**：① **ECharts SSR**：`echarts.setPlatformAPI({measureText})`
+     + `echarts.init(null, null, {renderer:'svg', ssr:true, width, height})` → `chart.renderToSVGString()`，
+     在 Node 里就能拿到真实 SVG（**不需要浏览器**），可以逐条量坐标（"这条竖线画在 x=388.5，数据点在 388.0"）；
+     ② `sharp`（装在 `/tmp/cnbtest`，不进项目依赖）把 SVG 转 PNG，再用看图工具肉眼复核；
+     ③ 用户给的截图可以用 Pillow 裁切放大 + 逐列统计像素颜色来量（本轮就是靠它确认"1.75 倍缩放"这个误导因素）。
+     注意：SSR 用 `--alias:echarts/*=<桩>` 打包测试件时，桩里必须有 `on/off/dispatchAction/getWidth/getHeight`。
 5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 `package.json` version 后 `git add -A && git commit && git push origin main`（本机 `git push` 走 `~/.ssh/config` 里的 `github.com → ssh.github.com:443` + `~/.ssh/id_github`，无需额外配置）。
 6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
 7. **待用户拍板 / 排期中**（都已写进 TODO，等指令再动）：

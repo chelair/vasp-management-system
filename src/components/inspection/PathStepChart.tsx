@@ -289,32 +289,12 @@ export function buildFreeEnergyStepOption(
       axisLabel: {
         color: '#8A98AC',
         fontSize: 10,
-        formatter: (value: number) => signed(value, 2),
+        // 0 这档由参考线自己标注（见下面的零线系列），这里不出，避免同一个值标两遍
+        formatter: (value: number) => (Math.abs(value) < 1e-9 ? '' : signed(value, 2)),
       },
       splitLine: { lineStyle: { color: '#EDF1F7', type: [3, 5] } },
     },
     series: [
-      {
-        // ΔE = 0 参考线（与旧图一致：浅灰实线 + 左侧 0.00 标注）。
-        // ⚠️ 不用 `custom` 系列的 markLine —— ECharts 对 custom 系列的 markLine 支持不可靠
-        // （实测可能整条不画），这里用一条静默的空折线专门承载它。
-        type: 'line',
-        name: 'ΔE = 0',
-        silent: true,
-        showSymbol: false,
-        data: structures.map((_, index) => (index === 0 || index === n - 1 ? 0 : null)),
-        lineStyle: { color: '#C3CEDA', width: 1 },
-        label: {
-          show: true,
-          formatter: '0.00',
-          position: 'left',
-          color: '#5A6A80',
-          fontSize: 10,
-          fontWeight: 600,
-        },
-        z: 1,
-        tooltip: { show: false },
-      },
       {
         type: 'custom',
         name: '自由能台阶',
@@ -322,6 +302,30 @@ export function buildFreeEnergyStepOption(
         // 数据本身不画，交给 renderItem；保留 value 以便 tooltip/事件拿到 dataIndex
         data: structures.map((s) => [s.structure_label, relOf(s)]),
         encode: { x: 0, y: 1 },
+        // ΔE = 0 参考线（与旧图一致：浅灰实线 + 轴线外的 0.00 标注）。
+        // 实测 ECharts 6.1 的 custom 系列 **支持** markLine（line/custom/scatter 都正常）；
+        // 反过来"用一条被 null 隔开的折线代替"是错的——孤立点 ECharts 不画线，整条会消失。
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          label: { show: false },
+          lineStyle: { color: '#C3CEDA', width: 1 },
+          data: [
+            {
+              yAxis: 0,
+              // 标注放到**轴线外**（右对齐贴在 y 轴刻度那一列）——放图内会压住曲线与第一个点
+              label: {
+                show: true,
+                formatter: '0.00',
+                position: 'start',
+                distance: 6,
+                color: '#5A6A80',
+                fontSize: 10,
+                fontWeight: 600,
+              },
+            },
+          ],
+        },
         z: 3,
       },
     ],

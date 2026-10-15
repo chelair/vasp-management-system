@@ -122,7 +122,9 @@ export function buildNebEnergyOption(
       axisLabel: {
         fontSize: 10,
         color: '#8A98AC',
-        formatter: (value: number) => signed(value, 2),
+        // 0 这一档的刻度文字**不在这里出**：ΔE=0 由参考线自己的标注给（与旧图一致，
+        // 否则同一个 0.00 会标两遍 —— 2026-10-15 用户反馈"那两条虚线有点不对"就是这个）
+        formatter: (value: number) => (Math.abs(value) < 1e-9 ? '' : signed(value, 2)),
       },
       splitLine: { lineStyle: { color: '#EDF1F7', type: [3, 5] } },
     },
@@ -167,15 +169,17 @@ export function buildNebEnergyOption(
           silent: true,
           symbol: 'none',
           label: { show: false },
-          lineStyle: { color: '#B9C6D6', type: [5, 4], width: 1 },
+          lineStyle: { color: '#CBD5E3', type: [3, 4], width: 1 },
           data: [
             {
               yAxis: 0,
+              // 标注放到**轴线外**（右对齐贴在 y 轴刻度那一列，与旧图一致）：
+              // 放图内会压住曲线和第一个数据点
               label: {
                 show: true,
                 formatter: '0.00',
-                position: 'insideStartTop',
-                distance: 4,
+                position: 'start',
+                distance: 6,
                 color: '#5A6A80',
                 fontSize: 10,
                 fontWeight: 600,

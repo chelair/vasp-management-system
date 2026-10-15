@@ -623,6 +623,12 @@ body: {
 - 两种模式都支持「立即触发」：`POST /api/automation/rules/{id}/run`。全局开关在 `data/config/automation.json`：
 `{enabled, dry_run, schedules_enabled, disabled_rules, failure_threshold}`。
 
+> **报告里的能量/力曲线（v0.9.60 迁移）**：后端仍生成 `charts/<task_id>_energy_force.svg`
+> （**导出单文件 HTML 用这张静态图**），但**报告页**会把这张 `<img>` 就地换成 ECharts 组件
+> （`components/common/EnergyForceCharts.tsx`，与巡检详情同一套配置 → 悬停十字线 + 两图联动），
+> 数据取结构化载荷里的 `science.opt[].energy_force_series`（[`{step, energy, max_force}`]）。
+> 即"同一份数据，页面交互渲染、导出静态渲染"；要不要在导出里也内联 ECharts 运行时见 §10 待办。
+
 ## 4.4b PDOS 分析链路（v0.9.45 重建，仅电子结构任务）
 
 > 入口：**巡检详情 → 电子结构分析章节的一级标签页 `[PDOS] [Bader] [COHP] [功函数]`**

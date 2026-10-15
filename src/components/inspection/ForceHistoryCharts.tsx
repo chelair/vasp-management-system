@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import LineChart from './LineChart';
+import EnergyForceCharts from '../common/EnergyForceCharts';
 import type { ForceHistoryPoint } from '../../types';
 
 interface Props {
@@ -11,16 +10,15 @@ interface Props {
 }
 
 /**
- * 能量/力双图组：悬停状态只在组件内部管理，
- * 避免 mousemove 触发整个详情弹窗重渲染导致卡顿。
+ * 能量/力双图组（2026-10-15 从自研 SVG 迁到 ECharts，v0.9.60）：
+ * 实现全部在 `components/common/EnergyForceCharts.tsx`（与报告页共用同一套 ECharts 配置），
+ * 这里只把巡检详情的 props 映射过去。
  */
 export default function ForceHistoryCharts({
   history,
   forceThreshold,
   forceThresholdSource,
 }: Props) {
-  const [hovered, setHovered] = useState<number | null>(null);
-  const threshold = forceThreshold ?? 0.02;
   const thresholdNote =
     forceThresholdSource === 'incar:EDIFFG'
       ? 'EDIFFG'
@@ -28,27 +26,10 @@ export default function ForceHistoryCharts({
         ? '默认值'
         : undefined;
   return (
-    <div className="analysis-charts">
-      <LineChart
-        title="能量 随离子步"
-        series={history.map((p) => p.energy)}
-        color="#2C6FBB"
-        unit="能量 (eV)"
-        points={history}
-        hovered={hovered}
-        onHover={setHovered}
-      />
-      <LineChart
-        title="最大力 随离子步"
-        series={history.map((p) => p.max_force)}
-        color="#C0392B"
-        unit="最大力 (eV/Å)"
-        threshold={threshold}
-        thresholdNote={thresholdNote}
-        points={history}
-        hovered={hovered}
-        onHover={setHovered}
-      />
-    </div>
+    <EnergyForceCharts
+      points={history}
+      forceThreshold={forceThreshold}
+      forceThresholdNote={thresholdNote}
+    />
   );
 }

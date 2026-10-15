@@ -37,6 +37,7 @@ import {
 } from '../api/reports';
 import { fetchProjects } from '../api/projects';
 import { createPortal } from 'react-dom';
+import EnergyForceCharts, { type EnergyForcePoint } from '../components/common/EnergyForceCharts';
 
 import { getToken } from '../api/client';
 import PageHeader from '../components/common/PageHeader';
@@ -344,6 +345,16 @@ export default function Report() {
 
   const noteBlocks = detail?.note_blocks ?? {};
 
+  /**
+   * 能量/力收敛曲线：**用 ECharts 组件替换报告里那张 SVG 图**（v0.9.60 迁移）。
+   *
+   * 后端仍会生成 `<task_id>_energy_force.svg`（导出单文件 HTML 时用它当静态图），
+   * 但页面上更希望是**可交互的组件**（悬停十字线 + 两图联动）——与巡检详情同一套配置
+   * （`components/common/EnergyForceCharts.tsx`）。做法与注解面板一致：渲染后按
+   * `<task_id>_energy_force.svg` 找到那张图，就地换成 host div，再用 portal 挂组件。
+   */
+  const [efHosts, setEfHosts] = useState<{ key: string; taskId: string; el: HTMLElement }[]>([]);
+
   const renderedSections = useMemo(
     () =>
       visibleSections.map((section) => ({
@@ -360,6 +371,31 @@ export default function Report() {
       })),
     [visibleSections, detail],
   );
+
+  /** 把报告里那张能量/力 SVG 图换成 ECharts 组件（渲染后按文件名找图，就地替换 + portal 挂载） */
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!root) return;
+    const hosts: { key: string; taskId: string; el: HTMLElement }[] = [];
+    root.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') || '';
+      const matched = /([^/\\]+)_energy_force\.svg/.exec(src);
+      if (!matched) return;
+      const taskId = matched[1];
+      const host = document.createElement('div');
+      host.className = 'report-ef-chart';
+      host.setAttribute('data-ef-task', taskId);
+      const figure = img.closest('figure');
+      if (figure) figure.replaceWith(host);
+      else img.replaceWith(host);
+      hosts.push({ key: taskId, taskId, el: host });
+    });
+    setEfHosts(hosts);
+    return () => {
+      hosts.forEach((h) => h.el.remove());
+      setEfHosts([]);
+    };
+  }, [renderedSections, detail]);
 
   /** 渲染后给注解找挂载点：**只在「重点科学结果分析」章节内**
    *  - 类型标题（### → <h5>）：挂载点插在标题正下方（该类型"总的"一条）；
@@ -956,6 +992,25 @@ export default function Report() {
                         />
                       </section>
                     ))}
+                    {/* 能量/力收敛曲线：ECharts 组件（替代报告里那张 SVG 图，v0.9.60） */}
+                    {efHosts.map((host) => {
+                      const item = (
+                        ((detail?.structured as { science?: { opt?: unknown[] } } | undefined)
+                          ?.science?.opt ?? []) as {
+                          task_id?: string;
+                          task_name?: string;
+                          energy_force_series?: EnergyForcePoint[];
+                        }[]
+                      ).find((x) => String(x?.task_id ?? '') === host.taskId);
+                      const points = item?.energy_force_series ?? [];
+                      if (!points.length) return null;
+                      return createPortal(
+                        <EnergyForceCharts points={points} height={260} />,
+                        host.el,
+                        host.key,
+                      );
+                    })}
+
                     {/* 注解面板（结果分析 / 论文参考）：只在「重点科学结果分析」章节内的挂载点上 */}
                     {Object.entries(noteTargets).map(([anchorKey, target]) => {
                       const note = notes[target.noteKey] ?? { analysis_note: '', paper_note: '' };

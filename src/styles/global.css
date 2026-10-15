@@ -2820,6 +2820,12 @@ body.is-atom-selecting * {
   color: var(--color-text-secondary);
 }
 
+/* 报告页：能量/力曲线用 ECharts 组件替换原 SVG 图后的容器（v0.9.60） */
+.report-ef-chart {
+  width: 100%;
+  margin: 10px 0 4px;
+}
+
 /* 功函数：方向选择工具条 + 电位曲线（v0.9.59） */
 .wf-toolbar {
   display: flex;

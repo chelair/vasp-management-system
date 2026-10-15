@@ -258,7 +258,31 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.59）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.60）
+
+- 2026-10-15（用户："先迁移" —— `待办.md` 里那条：能量/力收敛曲线从 SVG 迁到 ECharts，
+  图风格统一，方便以后把组件嵌进单文件报告；**暂时只迁这个曲线**，自由能/NEB 先不动）：
+  **能量/力收敛曲线迁到 ECharts**（v0.9.60）。新增共享组件
+  `src/components/common/EnergyForceCharts.tsx`：
+  - 图配置是**纯函数** `buildEnergyForceOption(kind, points, {threshold, thresholdNote})`
+    （详情页 React 组件与报告页直接挂载**共用同一套配置** → 风格统一、也便于后续内联进报告 HTML）；
+  - 1:1 保留旧 SVG 的信息：标题、单位轴名、4 档 y 刻度（`splitNumber: 3`）、首/末步号、
+    **力收敛阈值虚线 + 标注**（`阈值 0.020（EDIFFG）`，颜色/位置与旧图一致）、
+    悬停**十字线 + 提示卡（同时给能量与最大力）**、无数据时的空状态；
+    y 轴范围按"数据 + 阈值"真实贴合（与旧 SVG 一致，不做默认留白）；
+  - 双图（能量 / 最大力）**悬停联动**：在一张图上移动，另一张 `dispatchAction('showTip')` 同步高亮同一步
+    （旧实现的手感，靠 `updateAxisPointer` 上报 + 来源标记避免回灌抖动）。
+  **详情页**：`ForceHistoryCharts` 改成薄封装（props 不变，`Inspection.tsx` 零改动）；
+  旧的 `src/components/inspection/LineChart.tsx`（自研 SVG）**已删除**（全仓库唯一引用就是它）。
+  **报告页**：markdown 里那张 `charts/<task_id>_energy_force.svg` 会被**就地换成 ECharts 组件**
+  （做法与注解面板一致：渲染后按文件名找 `<img>`，换成 host div 再 portal 挂
+  `EnergyForceCharts`，数据取 `structured.science.opt[].energy_force_series`）。
+  **单文件 HTML 导出仍用后端生成的静态 SVG**（`report_builder.energy_force_chart` 保留）——
+  要不要在导出里内联 ECharts 运行时（体积 +数百 KB~1MB、手机端可能卡）属于 `待办.md` 第 6 条
+  （报告接入 PDOS/Bader/功函数）要一起定的口径，见 §10 状态速览。
+  **验证**：jsdom（桩 ECharts 抓 option）—— 双图两张配置：标题/阈值线只有力图有（0.02 + 标 EDIFFG）、
+  提示卡两行（能量 + 最大力）、y 轴含阈值、无数据出"暂无数据"；报告页：那张 SVG `<img>` **被替换**
+  （宿主 div 出现、两张图挂上、页面里不再有 `_energy_force.svg`）。
 
 - 2026-10-15（用户："先搞功函数" —— `待办.md` 里那条：选方向（默认 c，支持 a/b）→ 检查 LOCPOT/OUTCAR
   与所选方向的偶极矫正（没开只警告）→ 远端 VASPKIT 426 → 回传解析 → 前端画图带真空能级/功函数）：

@@ -51,6 +51,7 @@ import {
   type WorkFunctionSummary,
 } from '../components/reports/ReportScienceWidgets';
 import ReportStructure3D from '../components/reports/ReportStructure3D';
+import ReportFreeEnergy3D from '../components/reports/ReportFreeEnergy3D';
 import {
   FreeEnergyReportPanel,
   NebReportPanel,
@@ -582,6 +583,21 @@ export default function Report() {
     return structured?.science?.neb ?? [];
   }, [detail]);
 
+  /**
+   * 自由能中间体 3D 视图的「切到第 N 个中间体」回调（v0.9.73）：
+   * 组件挂载时把 setter 注册进来，表格里的「结构 N」芯片点击时从这里取。
+   */
+  const feSelectRef = useRef<Map<string, (index: number) => void>>(new Map());
+  const registerFeSelect = useCallback(
+    (group: string) => (select: (index: number) => void) => {
+      feSelectRef.current.set(group, select);
+      return () => {
+        feSelectRef.current.delete(group);
+      };
+    },
+    [],
+  );
+
   /** 报告里的电子结构结果（PDOS / Bader / 功函数）：结构化数据里取，按 task_id 索引 */
   const eleTasks = useMemo(() => {
     const structured = detail?.structured as
@@ -697,14 +713,21 @@ export default function Report() {
       else block.anchor.append(btn);
     });
 
-    // 自由能表格里的「结构 N」行：在可点 chip 旁加一个「注」按钮（编辑该中间体的注解）
-    root.querySelectorAll('section[data-report-section] .report-markdown button.chip[data-dialog]').forEach(
-      (chip: Element) => {
+    // 自由能表格里的「结构 N」行：在可点 chip 旁加一个「注」按钮（编辑该中间体的注解）。
+    // v0.9.73 起自由能中间体的芯片改成"切换 3D 视图"（`data-note-task` 带任务 id），
+    // 老的三视图弹窗芯片（`data-dialog="dlg_..."`）也一并支持。
+    root
+      .querySelectorAll(
+        'section[data-report-section] .report-markdown button.chip[data-note-task],' +
+          ' section[data-report-section] .report-markdown button.chip[data-dialog]',
+      )
+      .forEach((chip: Element) => {
         const label = (chip.textContent ?? '').trim();
         if (!label.startsWith('结构 ')) return; // 只处理自由能表格（NEB 用映像块面板）
         const dialogId = chip.getAttribute('data-dialog') ?? '';
-        if (!dialogId.startsWith('dlg_')) return;
-        const taskId = dialogId.slice(4);
+        const taskId =
+          chip.getAttribute('data-note-task') ||
+          (dialogId.startsWith('dlg_') ? dialogId.slice(4) : '');
         if (!taskId || chip.nextElementSibling?.classList.contains('report-note-btn')) return;
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -715,8 +738,7 @@ export default function Report() {
           setTableNote({ key: taskId, title: `${label} · 结果分析与论文参考` }),
         );
         chip.after(btn);
-      },
-    );
+      });
     setNoteTargets(targets);
   }, [renderedSections, notes, hidden, toggleHidden, notePlan]);
 
@@ -737,6 +759,22 @@ export default function Report() {
         caption,
       });
       return;
+    }
+    // 自由能中间体：点「结构 N」→ 切换上面那个 3D 视图（v0.9.73，不再开三视图弹窗）
+    const feChip = target.closest('[data-fe-3d]') as HTMLElement | null;
+    if (feChip) {
+      const group = feChip.dataset.fe3d ?? '';
+      const index = Number(feChip.dataset.feIndex ?? '0');
+      const select = feSelectRef.current.get(group);
+      if (select) {
+        select(Number.isFinite(index) ? index : 0);
+        feChip
+          .closest('table')
+          ?.querySelectorAll('.report-chip.is-on')
+          .forEach((el) => el.classList.remove('is-on'));
+        feChip.classList.add('is-on');
+        return;
+      }
     }
     const trigger = target.closest('[data-dialog]') as HTMLElement | null;
     if (trigger) {
@@ -1255,6 +1293,23 @@ export default function Report() {
                           />,
                           host.el,
                           `structure-3d:${host.taskId}`,
+                        );
+                      }
+                      if (host.kind === 'free-energy-3d') {
+                        const path = freeEnergyPaths.find(
+                          (p) =>
+                            String(p.group_id ?? '') === host.taskId ||
+                            String(p.group_name ?? '') === host.taskId,
+                        );
+                        if (!path?.structures?.length) return null;
+                        return createPortal(
+                          <ReportFreeEnergy3D
+                            groupName={path.group_name}
+                            structures={path.structures}
+                            register={registerFeSelect(String(path.group_id ?? host.taskId))}
+                          />,
+                          host.el,
+                          `free-energy-3d:${host.taskId}`,
                         );
                       }
                       if (host.kind === 'work-function-chart') {

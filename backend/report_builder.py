@@ -1140,16 +1140,30 @@ def _sections_markdown(report, charts):
                 )
             if path.get("chart"):
                 lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
+            # 中间体结构：**3D 视图**（v0.9.73）—— 点表格里的「结构 N」切换显示哪个中间体；
+            # 原来那个"点结构 N 看 PNG 三视图"的弹窗不再用（PNG 仍生成，留给打印/PDF）
+            if any(s.get("cif") for s in structures):
+                lines.append(f"@[free-energy-3d:{path['group_id']}]")
+
+            def _structure_cell(index: int, structure: Dict[str, Any]) -> str:
+                """中间体那一格：有 CIF → 点它切换上面的 3D 视图（`#fe-3d:<组>:<下标>:<任务 id>`，
+                任务 id 供报告页在芯片旁挂「注」按钮用）；否则退回旧的 PNG 三视图弹窗链接。"""
+                label = structure["structure_label"]
+                if structure.get("cif"):
+                    return (
+                        f"[结构 {label}](#fe-3d:{path['group_id']}:{index}:"
+                        f"{structure.get('opt_task_id') or ''})"
+                    )
+                if structure.get("dialog"):
+                    return f"[结构 {label}](#{structure['dialog']})"
+                return f"结构 {label}"
+
             lines.append(
                 _md_table(
                     ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
                     [
                         [
-                            (
-                                f"[结构 {s['structure_label']}](#{s['dialog']})"
-                                if s.get("dialog")
-                                else f"结构 {s['structure_label']}"
-                            ),
+                            _structure_cell(index, s),
                             _fmt(s["dft_energy_ev"]),
                             ("—" if s["correction_ev"] is None else f"{float(s['correction_ev']):+.4f}"),
                             _fmt(s["free_energy_ev"]),
@@ -1161,7 +1175,7 @@ def _sections_markdown(report, charts):
                             f"{'已收敛' if s['converged'] else '未收敛'} · "
                             f"{'已矫正' if s['corrected'] else '未矫正'}",
                         ]
-                        for s in structures
+                        for index, s in enumerate(structures)
                     ],
                 )
             )
@@ -1819,6 +1833,14 @@ def build_report(
                 dialogs.append(dialog)
                 dialog_images.update(pngs)
                 s["dialog"] = dialog["id"]
+            # 自由能中间体的结构：报告里用 **3D 视图**（v0.9.73），CIF 本地转好带上
+            # （三视图 PNG 仍生成，留着打印/PDF 兜底）
+            try:
+                s["cif"] = read_or_convert_cif(project, opt_obj, "CONTCAR") or read_or_convert_cif(
+                    project, opt_obj, "POSCAR"
+                )
+            except Exception as exc:  # noqa: BLE001 - 报告不因 CIF 失败
+                collection_errors.append(f"自由能结构 {s['structure_label']} CIF 读取失败：{exc}")
         # 台阶图要自由能数值（没有频率矫正就没有）→ 仍然只在有值时画
         if not any(s.get("free_energy_ev") is not None for s in path["structures"]):
             continue

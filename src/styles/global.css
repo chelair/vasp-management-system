@@ -2939,6 +2939,43 @@ body.is-atom-selecting * {
   color: var(--color-text-muted);
 }
 
+/* 自由能中间体 3D 视图（v0.9.73）：一排「结构 N」切换按钮 */
+.report-fe3d__switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.report-fe3d__btn {
+  border: 1px solid #d9e1ee;
+  background: #fff;
+  color: #3f68b8;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.report-fe3d__btn:hover {
+  border-color: #9ab4e4;
+  background: #f7faff;
+}
+
+.report-fe3d__btn.is-on {
+  border-color: #5b8def;
+  background: #eef4ff;
+  color: #2f5bd0;
+}
+
+/* 表格里的「结构 N」芯片：点它切换上面的 3D 视图（选中态高亮） */
+.report-chip--fe.is-on,
+.report-chip.is-on {
+  border-color: #5b8def !important;
+  background: #eef4ff !important;
+  color: #2f5bd0 !important;
+}
+
 /* Bader：3D 结构视图 + 完整表 左右一行（窄屏自动上下） */
 .report-bader-row {
   display: flex;

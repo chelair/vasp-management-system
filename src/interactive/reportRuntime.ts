@@ -15,6 +15,7 @@
 import { mountPdosWidget } from './pdosWidget';
 import { mountWorkFunctionWidget, type WorkFunctionWidgetData } from './workFunctionWidget';
 import { mountStructure3D, type Structure3DPayload } from './structure3dWidget';
+import { mountFreeEnergy3D, type FreeEnergyStructure3D } from './structure3dWidget';
 
 interface ReportData {
   pdos?: Record<string, unknown>;
@@ -23,6 +24,8 @@ interface ReportData {
   structure?: Record<string, Structure3DPayload>;
   /** Bader 的 3D 结构 + 逐原子读数 */
   bader?: Record<string, Structure3DPayload>;
+  /** 自由能路径的中间体结构（3D 切换用），v0.9.73 */
+  free_energy?: Record<string, FreeEnergyStructure3D[]>;
 }
 
 function reportData(): ReportData {
@@ -93,6 +96,13 @@ function mountOne(host: HTMLElement, data: ReportData): boolean {
         node = node.nextElementSibling as HTMLElement | null;
       }
     }
+    return true;
+  }
+  if (kind === 'free-energy-3d') {
+    const structures = data.free_energy?.[taskId];
+    if (!structures?.length) return false;
+    const handle = mountFreeEnergy3D(host, structures, { group: taskId, height: 420 });
+    if (!handle) return false;
     return true;
   }
   return false;

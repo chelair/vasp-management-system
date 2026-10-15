@@ -107,7 +107,13 @@ def interactive_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     只收报告里**已有挂点**的任务（有 `pdos_summary` / `work_function_summary` 的那些）。
     """
-    payload: Dict[str, Any] = {"pdos": {}, "work_function": {}, "structure": {}, "bader": {}}
+    payload: Dict[str, Any] = {
+        "pdos": {},
+        "work_function": {},
+        "structure": {},
+        "bader": {},
+        "free_energy": {},
+    }
     project_name = str(((doc.get("metadata") or {}).get("project_name")) or "")
     # 结构 3D（v0.9.72）：结构优化任务的 POSCAR/CONTCAR CIF 就在结构化数据里（无需读盘）
     for opt in ((doc.get("science") or {}).get("opt") or []):
@@ -121,6 +127,18 @@ def interactive_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
                 "poscar_cif": structure.get("poscar_cif"),
                 "contcar_cif": structure.get("contcar_cif"),
             }
+    # 自由能路径的中间体（v0.9.73）：正文里 3D 视图 + 表格「结构 N」切换
+    for path in ((doc.get("science") or {}).get("free_energy") or []):
+        if not isinstance(path, dict):
+            continue
+        group_id = str(path.get("group_id") or "")
+        items = [
+            {"structure_label": s.get("structure_label"), "cif": s.get("cif")}
+            for s in (path.get("structures") or [])
+            if s.get("cif")
+        ]
+        if group_id and items:
+            payload["free_energy"][group_id] = items
     tasks = (((doc.get("science") or {}).get("ele") or {}).get("tasks")) or []
     for item in tasks:
         if not isinstance(item, dict):
@@ -153,6 +171,7 @@ def has_payload(payload: Optional[Dict[str, Any]]) -> bool:
         or (payload.get("work_function") or {})
         or (payload.get("structure") or {})
         or (payload.get("bader") or {})
+        or (payload.get("free_energy") or {})
     )
 
 
@@ -186,5 +205,10 @@ def interactive_kwargs(doc: Dict[str, Any], *, interactive: bool) -> Dict[str, A
         len(payload.get("bader") or {}),
     )
     # 结构 3D 需要 3Dmol：有结构/Bader 3D 挂点时才内联（约 512 KB）
-    mol = mol_js() if ((payload.get("structure") or {}) or (payload.get("bader") or {})) else ""
+    need_mol = bool(
+        (payload.get("structure") or {})
+        or (payload.get("bader") or {})
+        or (payload.get("free_energy") or {})
+    )
+    mol = mol_js() if need_mol else ""
     return {"interactive_js": runtime, "interactive_data": payload, "mol_js": mol}

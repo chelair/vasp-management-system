@@ -35,6 +35,12 @@ export interface Structure3DHandle {
   dispose(): void;
 }
 
+/** 自由能路径的一个中间体 */
+export interface FreeEnergyStructure3D {
+  structure_label?: string;
+  cif?: string | null;
+}
+
 /** 3Dmol viewer 的**最小接口**（只列我们用到的；3Dmol 本身没有类型声明） */
 interface MolViewer {
   setProjection: (p: string) => void;
@@ -66,6 +72,12 @@ const STYLE = `
 .r3d__stage { position: relative; background: #f7f9fc; }
 .r3d__canvas { width: 100%; }
 .r3d__empty { padding: 24px 16px; text-align: center; color: #8a98ac; font-size: 12.5px; }
+.r3d__switch { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 0; }
+.r3d__chip { border: 1px solid #d9e1ee; background: #fff; color: #3f68b8; border-radius: 999px;
+  padding: 2px 10px; font-size: 12px; cursor: pointer; }
+.r3d__chip.is-on { border-color: #5b8def; background: #eef4ff; color: #2f5bd0; }
+mark.chip.is-on, button.chip.is-on { border-color: #5b8def !important; background: #eef4ff !important;
+  color: #2f5bd0 !important; }
 `;
 
 function ensureStyle(doc: Document): void {
@@ -351,6 +363,98 @@ export function mountStructure3D(
       } catch {
         /* 忽略 */
       }
+      host.innerHTML = '';
+    },
+  };
+}
+
+/**
+ * 自由能路径的**中间体 3D 视图**（2026-10-16 用户："自由能的结构还是之前的三视图"）：
+ * 一排「结构 N」切换按钮 + 一个 3D 窗口；**表格里的「结构 N」芯片也切换它**
+ * （导出的 HTML 里用文档级监听 `[data-fe-3d]` 芯片实现，与站内报告页同一交互）。
+ *
+ * 返回 null = 环境不支持（无 3Dmol / 没结构），调用方保留静态内容。
+ */
+export function mountFreeEnergy3D(
+  host: HTMLElement,
+  structures: FreeEnergyStructure3D[],
+  options: { group?: string; height?: number } = {},
+): Structure3DHandle | null {
+  const doc = host.ownerDocument || document;
+  const available = (structures || [])
+    .map((item, index) => ({ ...item, index }))
+    .filter((item) => Boolean(item.cif));
+  if (!available.length) return null;
+  const group = options.group || host.getAttribute('data-task-id') || '';
+  ensureStyle(doc);
+
+  const root = doc.createElement('div');
+  root.className = 'r3d';
+  const switcher = doc.createElement('div');
+  switcher.className = 'r3d__switch';
+  root.appendChild(switcher);
+  const stage = doc.createElement('div');
+  stage.className = 'r3d__stage';
+  const canvas = doc.createElement('div');
+  stage.appendChild(canvas);
+  root.appendChild(stage);
+  host.appendChild(root);
+
+  let current = available[0].index;
+  let handle: Structure3DHandle | null = null;
+  const buttons = new Map<number, HTMLButtonElement>();
+
+  function paintSwitch(): void {
+    buttons.forEach((btn, index) => btn.classList.toggle('is-on', index === current));
+    // 不用 CSS.escape（老浏览器/测试环境可能没有）：遍历后按属性值比对
+    doc.querySelectorAll<HTMLElement>('[data-fe-3d]').forEach((chip) => {
+      if ((chip.getAttribute('data-fe-3d') || '') !== group) return;
+      chip.classList.toggle('is-on', Number(chip.dataset.feIndex) === current);
+    });
+  }
+
+  function show(index: number): void {
+    const item = available.find((x) => x.index === index) ?? available[0];
+    if (!item || item.index === current) return;
+    current = item.index;
+    handle?.dispose();
+    handle = mountStructure3D(canvas, { cif: item.cif }, { height: options.height ?? 420 });
+    paintSwitch();
+  }
+
+  available.forEach((item) => {
+    const btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.className = 'r3d__chip';
+    btn.textContent = `结构 ${item.structure_label ?? item.index + 1}`;
+    btn.addEventListener('click', () => show(item.index));
+    switcher.appendChild(btn);
+    buttons.set(item.index, btn);
+  });
+
+  handle = mountStructure3D(canvas, { cif: available[0].cif }, { height: options.height ?? 420 });
+  if (!handle) {
+    // eslint-disable-next-line no-console
+    console.warn('[structure3d] 自由能中间体 3D 挂载失败（无 3Dmol / WebGL？），保留原内容');
+    host.innerHTML = '';
+    return null;
+  }
+  paintSwitch();
+
+  // 表格里的「结构 N」芯片 → 切换这个 3D（文档级监听；只认本组的芯片）
+  const onChip = (event: Event) => {
+    const target = event.target as HTMLElement | null;
+    const chip = target?.closest?.('[data-fe-3d]') as HTMLElement | null;
+    if (!chip || (chip.getAttribute('data-fe-3d') || '') !== group) return;
+    const index = Number(chip.dataset.feIndex ?? '');
+    if (Number.isFinite(index)) show(index);
+  };
+  doc.addEventListener('click', onChip);
+
+  return {
+    dispose: () => {
+      doc.removeEventListener('click', onChip);
+      handle?.dispose();
       host.innerHTML = '';
     },
   };

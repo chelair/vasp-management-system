@@ -35,6 +35,14 @@ function inline(text: string, chartResolver?: (path: string) => string): string 
     if (href.startsWith('#dlg_')) {
       return `<button type="button" class="report-chip" data-dialog="${escapeHtml(href.slice(1))}">${label}</button>`;
     }
+    // 自由能中间体：点「结构 N」切换上面的 3D 视图（`#fe-3d:<组>:<下标>:<任务 id>`）
+    if (href.startsWith('#fe-3d:')) {
+      const [, group = '', index = '', taskId = ''] = href.split(':');
+      return (
+        `<button type="button" class="report-chip report-chip--fe" data-fe-3d="${escapeHtml(group)}"` +
+        ` data-fe-index="${escapeHtml(index)}" data-note-task="${escapeHtml(taskId)}">${label}</button>`
+      );
+    }
     const url = chartResolver && !/^(https?:|mailto:|#|\/)/i.test(href) &&
       (href.startsWith('charts/') || href.startsWith('images/'))
       ? chartResolver(href)

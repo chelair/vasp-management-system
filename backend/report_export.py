@@ -234,6 +234,17 @@ def _inline(text: str) -> str:
                 f'<button type="button" class="chip" data-dialog="{html_lib.escape(href[1:])}">'
                 f"{label}</button>"
             )
+        # 自由能中间体：点「结构 N」切换上面的 3D 视图（与前端 renderMarkdown 同口径）
+        if href.startswith("#fe-3d:"):
+            parts = href.split(":")
+            group = parts[1] if len(parts) > 1 else ""
+            index = parts[2] if len(parts) > 2 else ""
+            task_id = parts[3] if len(parts) > 3 else ""
+            return (
+                f'<button type="button" class="chip chip--fe" data-fe-3d="{html_lib.escape(group, quote=True)}" '
+                f'data-fe-index="{html_lib.escape(index, quote=True)}" '
+                f'data-note-task="{html_lib.escape(task_id, quote=True)}">{label}</button>'
+            )
         safe = href if not href.lower().startswith(("javascript:", "data:")) else "#"
         return f'<a href="{safe}">{label}</a>'
 
@@ -463,6 +474,12 @@ def widget_renderer_for(doc: Dict[str, Any]) -> Callable[[str, str], Optional[st
             return (
                 f'<div class="report-widget report-widget--3d" '
                 f'data-report-widget="structure-3d" data-task-id="{html_lib.escape(str(task_id))}"></div>'
+            )
+        if kind == "free-energy-3d":
+            # 自由能中间体的 3D 视图（v0.9.73）：正文里直接挂；表格里的「结构 N」芯片切换它
+            return (
+                f'<div class="report-widget report-widget--3d" '
+                f'data-report-widget="free-energy-3d" data-task-id="{html_lib.escape(str(task_id))}"></div>'
             )
         if kind == "bader-table":
             # Bader：3D 结构视图 + 完整表 左右一行

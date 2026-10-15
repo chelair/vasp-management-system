@@ -69,15 +69,18 @@ a { color: #3F68B8; text-decoration: none; }
 .footer { margin-top: 28px; padding-top: 10px; border-top: 1px dashed #E3E9F2;
   color: #8A98AC; font-size: 11.5px; }
 
-/* ---------------- 电子结构挂点（Bader 折叠表 / PDOS · 功函数交互组件） ---------------- */
+/* ---------------- 电子结构挂点（Bader 完整表 / PDOS · 功函数交互组件） ---------------- */
 .bader-table {
-  border: 1px solid #E3E9F2; border-radius: 8px; padding: 6px 12px; margin: 8px 0 14px;
-  background: #FBFCFE;
+  border: 1px solid #E9EEF6; border-radius: 10px; padding: 12px 14px 14px; margin: 8px 0 16px;
+  background: #fff;
 }
-.bader-table > summary { cursor: pointer; color: #3F68B8; font-size: 13px; padding: 4px 0; }
-.bader-table[open] > summary { margin-bottom: 6px; }
-.bader-table .hint { margin: 2px 0 8px; color: #8A98AC; font-size: 11.5px; }
-.bader-table table { margin-top: 4px; font-size: 12px; }
+.bader-table__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.bader-table__title { font-size: 13px; font-weight: 600; color: #374151; }
+.bader-table__meta { font-size: 11.5px; color: #8A98AC; }
+/* 可滑动容器：整张表在容器内滚动，表头固定；窄屏横向可滑动 */
+.bader-table__scroll { max-height: 420px; overflow: auto; border: 1px solid #F0F3F8; border-radius: 8px; }
+.bader-table__scroll table { margin: 0; font-size: 12px; }
+.bader-table__scroll thead th { position: sticky; top: 0; z-index: 1; }
 .report-widget { margin: 10px 0 16px; }
 .report-widget__loading, .report-widget__error {
   border: 1px dashed #DCE3EC; border-radius: 8px; padding: 12px 14px;
@@ -373,7 +376,12 @@ def _ele_tasks_by_id(doc: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _bader_table_html(item: Dict[str, Any]) -> Optional[str]:
-    """Bader 完整表（原生 `<details>` 折叠，用户口径 2026-10-15："数据报表，滑动折叠"）。"""
+    """Bader 完整表（**直接展示 + 可滑动容器**）。
+
+    用户口径（2026-10-15）："Bader 直接展示完整表格，但是放在一个容器中可滑动查看" ——
+    所以不再用 `<details>` 折叠，改成"标题 + 固定高度的滚动容器（表头 sticky）+ 全部行"，
+    页面版（`components/reports/ReportScienceWidgets.tsx::BaderFullTable`）同口径。
+    """
     summary = item.get("bader_summary") or {}
     atoms = summary.get("atoms") or []
     if not atoms:
@@ -400,17 +408,19 @@ def _bader_table_html(item: Dict[str, Any]) -> Optional[str]:
             f"<td>{charge_text}</td><td>{zval_text}</td><td>{net_text}</td>"
             "</tr>"
         )
-    note = (
-        f"<p class='hint'>共 {len(atoms)} 个原子"
+    meta = (
+        f"共 {len(atoms)} 个原子"
         + (f"，表中只列前 {len(rows)} 个" if len(atoms) > len(rows) else "")
-        + "（按原子序号排列）。</p>"
+        + "（按原子序号排列）"
     )
     return (
-        f"<details class=\"bader-table\"><summary>完整表（{len(atoms)} 个原子）</summary>"
-        + note
+        '<div class="bader-table">'
+        '<div class="bader-table__head"><span class="bader-table__title">逐原子 Bader 电荷（完整表）</span>'
+        f'<span class="bader-table__meta">{html_lib.escape(meta)}</span></div>'
+        '<div class="bader-table__scroll">'
         + head
         + "".join(body)
-        + "</tbody></table></details>"
+        + "</tbody></table></div></div>"
     )
 
 

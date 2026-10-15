@@ -266,7 +266,40 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.63）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.64）
+
+- 2026-10-15（用户："我要直接在报告中就可交互，不是加载；而且加载后页面空白一片；报告中不要集群资源；
+  Bader 直接展示完整表格，但是放在一个容器中可滑动查看"）：**修白屏 + PDOS 免点击 + 撤集群资源 + Bader 全表可滑**（v0.9.64）。
+
+  **① 修「加载后白屏」（真 bug，已用 jsdom 精确复现）**：根因是 **React 与"侵入式挂载"抢同一个宿主节点**——
+  `PdosReportChart` 把 loading 的 `<Spin>` 渲染在 `.report-pdos__host` 里，而 `mountPdosWidget()` 挂载时会
+  `container.innerHTML = ''` 清空这个宿主；随后 React 要移除它**自己渲染过的**那个节点时抛
+  `NotFoundError: The node to be removed is not a child of this node`，React 整棵树卸载 → **白屏**。
+  复现脚本 `/tmp/cnbtest/pdos_blank_test.js`（修复前红、修复后绿）。
+  **修法**：宿主 div **只允许组件内部写 DOM，React 不往里渲染任何子节点**（loading / 错误提示一律放兄弟节点）；
+  这条约束写进 `ReportScienceWidgets.tsx` 顶部注释 + §10。**同一类坑**：任何"命令式挂载"的组件
+  （ECharts 也算）都不要和 React 共享会渲染子节点的容器 —— `useEcharts` 的容器一直是 React 渲染但"无子节点"，
+  所以能量/力、PDOS、功函数这些图之前没炸。
+
+  **② PDOS「直接可交互」**：去掉「加载交互图」按钮，改成**进入视口（提前 300px）自动拉数据并挂载**；
+  没有 `IntersectionObserver` 的浏览器直接加载。仍给一行"正在加载交互图…（约 1–3 MB）"提示，
+  但它只是提示、不挡操作。报告页打开后滚动到哪张图，哪张图就是可交互的（勾轨道 / 改范围 / 带中心 / 只看一条）。
+
+  **③ 撤回「集群资源」**（用户明确"报告中不要集群资源"）：v0.9.63 加的三块全部撤掉 ——
+  后端基本信息里的摘要行 + 两张图引用、报告页的 `CoresDonutPanel` / `StorageBarPanel` 与接线、
+  对应 CSS（`_resources_line()` 也删了）。`charts/cores_donut.svg` / `storage_bar.svg` 回到
+  **只生成、不在正文展示**的原状；新增回归守卫 `no_resources_test.js`（正文里不得再出现"集群资源/cores_donut"）。
+
+  **④ Bader 完整表：直接展示 + 可滑动容器**：前端 `BaderFullTable` 由 AntD `Collapse` 折叠改成
+  **直接展开**——全部原子行一次性渲染（**不分页**）、放进 `max-height: 420px; overflow: auto` 的容器里
+  （表头 sticky、窄屏横向可滑、按 |Δq| 默认降序）；导出 HTML 同步改造
+  （`report_export._bader_table_html` 去掉 `<details>`，改成"标题 + 滚动容器 + 全表"）。
+  实测两处都是 **124 行全部在 DOM 里**（真机 FS_Kaolin model2）。
+
+  **验证**：白屏复现测试转绿（无按钮 / 自动挂上 `.pdosw` / 页面不再卸载）、Bader 7 项断言
+  （不折叠、124 行全在、滚动容器、无分页、表头文案、|Δq| 排序）、资源守卫 3 项、
+  其余五套回归（PDOS 控件 18 / 导出运行时 11 / 台阶图·曲线 30 / 报告看板 22 / 挂点渲染）全过；
+  后端已重启、`dist/` 已重建。
 
 - 2026-10-15（用户："那个线出现的速度调快一点点；现在做最后一项，就是把这些都接入报告中"）：
   **动画提速 + 集群资源接入报告**（v0.9.63）。
@@ -275,7 +308,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   `animationDurationUpdate 200 → 80`（鼠标指示线跟手）；自由能台阶图 `480 → 300`、
   错峰延迟 `index*80 → index*45`、`animationDurationUpdate 180 → 80`。**只改速度，不动布局与交互**。
 
-  **② 集群资源接进报告**（这是 v0.9.62 里唯一没有展示位的两张图：`charts/cores_donut.svg`
+  **② 集群资源接进报告**（**⚠️ 当天即被用户撤回，见 v0.9.64：报告中不要集群资源**）：
+  这是 v0.9.62 里唯一没有展示位的两张图：`charts/cores_donut.svg`
   与 `charts/storage_bar.svg` 后端一直在生成，但自 v0.7.2 精简章节后正文里没有引用）：
   - **后端**（`report_builder.py`）：基本信息章节在「项目进度」图后面加一行摘要
     `**集群资源**：核数 140 / 200（70%，本项目 72 核） · 存储 gpfs03 已用 56%（285.0 TB / 514.0 TB）`
@@ -1592,7 +1626,8 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.63**（commit `43eca9a`；动画提速 + **集群资源接进报告**，
+> **当前状态速览（2026-10-15 整理）**：代码在 **v0.9.64**（修报告页 PDOS 白屏 + PDOS 免点击直接可交互 +
+> 撤回集群资源 + Bader 完整表直接展示可滑动，详见 §7 顶端条目）。上一版 **v0.9.63** = `43eca9a`（动画提速 + 集群资源接进报告，
 > 报告里的图表至此齐了）。本次会话的版本链：**v0.9.61 = `477f82a`**（待办表最后一条"电子结构接报告"交付：
 > PDOS/Bader/功函数进报告 + 报告交互版导出）→ **v0.9.62 = `2238a38`** + 补修 `e5b631a` / `9fef4ea`
 > （剩下的 SVG 图全迁 ECharts：自由能台阶图 / NEB 能量曲线 / 报告里的自由能·NEB 看板 / 项目进度条；
@@ -1646,6 +1681,12 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
      ② `sharp`（装在 `/tmp/cnbtest`，不进项目依赖）把 SVG 转 PNG，再用看图工具肉眼复核；
      ③ 用户给的截图可以用 Pillow 裁切放大 + 逐列统计像素颜色来量（本轮就是靠它确认"1.75 倍缩放"这个误导因素）。
      注意：SSR 用 `--alias:echarts/*=<桩>` 打包测试件时，桩里必须有 `on/off/dispatchAction/getWidth/getHeight`。
+   - **React + 命令式 DOM 的铁律（v0.9.64 白屏事故）**：任何 `container.innerHTML = ''` 式的命令式挂载
+     （ECharts init、PDOS 原生控件都算），**宿主节点里不能有 React 渲染的子节点**——否则 React 之后
+     移除它自己渲染过的节点时会抛 `NotFoundError: The node to be removed is not a child of this node`，
+     **整棵 React 树卸载 = 白屏**。loading/错误提示一律放兄弟节点。复现脚本：`/tmp/cnbtest/pdos_blank_test.js`。
+     给 React 组件里的浏览器全局桩要备齐：`getComputedStyle / ShadowRoot / SVGElement / matchMedia /
+     requestAnimationFrame / Node / Event`，否则 antd 会在 jsdom 里报一堆无关错误。
 5. 提交版本时沿用 commit message 前缀 `v0.x.y: ...`（无 git tag 习惯），改 `package.json` version 后 `git add -A && git commit && git push origin main`（本机 `git push` 走 `~/.ssh/config` 里的 `github.com → ssh.github.com:443` + `~/.ssh/id_github`，无需额外配置）。
 6. 提交完成后：更新本文档 §7（新增版本条目）+ §2（数据现状）+ §9（待办），保持「版本号 / 改动记录 / 待办」三处同步。
 7. **待用户拍板 / 排期中**（都已写进 TODO，等指令再动）：

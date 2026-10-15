@@ -52,16 +52,12 @@ import {
   type WorkFunctionSummary,
 } from '../components/reports/ReportScienceWidgets';
 import {
-  CoresDonutPanel,
   FreeEnergyReportPanel,
   NebReportPanel,
   ProjectProgressPanel,
-  StorageBarPanel,
-  type ReportCores,
   type ReportFreeEnergyPath,
   type ReportNebItem,
   type ReportProgressSegment,
-  type ReportStorage,
 } from '../components/reports/ReportPanels';
 import PageTransition from '../components/common/PageTransition';
 import type { Project, ProjectReportDetail, ProjectReportMeta, ReportNote } from '../types';
@@ -471,33 +467,19 @@ export default function Report() {
    * 图注（figcaption）保留，图的版式与读数对齐原静态图。
    */
   const [panelHosts, setPanelHosts] = useState<
-    { kind: 'fe' | 'neb' | 'progress' | 'cores' | 'storage'; key: string; el: HTMLElement }[]
+    { kind: 'fe' | 'neb' | 'progress'; key: string; el: HTMLElement }[]
   >([]);
 
   useEffect(() => {
     const root = contentRef.current;
     if (!root) return;
     const hosts: {
-      kind: 'fe' | 'neb' | 'progress' | 'cores' | 'storage';
+      kind: 'fe' | 'neb' | 'progress';
       key: string;
       el: HTMLElement;
     }[] = [];
     root.querySelectorAll('img').forEach((img) => {
       const src = img.getAttribute('src') || '';
-      // 集群资源两张图（`charts/cores_donut.svg` / `charts/storage_bar.svg`，v0.9.63）：
-      // 换成 DOM 组件，并把两张并排放进一个 .report-resources 容器
-      const resource = /(cores_donut|storage_bar)\.svg$/.exec(src);
-      if (resource) {
-        const kind = resource[1] === 'cores_donut' ? 'cores' : 'storage';
-        const host = document.createElement('div');
-        host.className = 'report-panel-host report-resource-host';
-        host.setAttribute('data-panel', kind);
-        const figure = img.closest('figure');
-        if (figure) figure.replaceWith(host);
-        else img.replaceWith(host);
-        hosts.push({ kind, key: kind, el: host });
-        return;
-      }
       // 项目进度条（`charts/progress.svg`）：换成 DOM 版进度看板
       if (/(^|\/)progress\.svg$/.test(src)) {
         const host = document.createElement('div');
@@ -519,15 +501,6 @@ export default function Report() {
       img.replaceWith(host);
       hosts.push({ kind: fe ? 'fe' : 'neb', key: matched[1], el: host });
     });
-    // 核数 + 存储：并排放进一个容器（窄屏自动换行）
-    const coresHost = hosts.find((h) => h.kind === 'cores');
-    const storageHost = hosts.find((h) => h.kind === 'storage');
-    if (coresHost && storageHost) {
-      const wrap = document.createElement('div');
-      wrap.className = 'report-resources';
-      coresHost.el.parentElement?.insertBefore(wrap, coresHost.el);
-      wrap.append(coresHost.el, storageHost.el);
-    }
     setPanelHosts(hosts);
     return () => {
       hosts.forEach((h) => h.el.replaceChildren());
@@ -1202,25 +1175,6 @@ export default function Report() {
 
                     {/* 自由能台阶图 / NEB 能垒曲线（v0.9.62）：换成就地挂载的 ECharts 看板 */}
                     {panelHosts.map((host) => {
-                      if (host.kind === 'cores' || host.kind === 'storage') {
-                        const res = (detail?.structured as
-                          | { resources?: { cores?: ReportCores; storage?: ReportStorage } }
-                          | undefined)?.resources;
-                        if (host.kind === 'cores') {
-                          if (!res?.cores) return null;
-                          return createPortal(
-                            <CoresDonutPanel cores={res.cores} />,
-                            host.el,
-                            'cores',
-                          );
-                        }
-                        if (!res?.storage) return null;
-                        return createPortal(
-                          <StorageBarPanel storage={res.storage} />,
-                          host.el,
-                          'storage',
-                        );
-                      }
                       if (host.kind === 'progress') {
                         const basic = (detail?.structured as
                           | {

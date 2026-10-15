@@ -1022,33 +1022,6 @@ def _one_line_summary(facts, stats, stage):
     )
 
 
-def _resources_line(resources: Dict[str, Any]) -> str:
-    """集群资源一行摘要（核数占用 + 存储使用），接在项目进度后面（v0.9.63）。"""
-    cores = resources.get("cores") or {}
-    storage = resources.get("storage") or {}
-    parts: List[str] = []
-    if cores.get("used") is not None and cores.get("total"):
-        text = f"核数 {cores['used']:.0f} / {cores['total']:.0f}"
-        if cores.get("used_percent") is not None:
-            text += f"（{float(cores['used_percent']):.0f}%"
-            if cores.get("project_used"):
-                text += f"，本项目 {float(cores['project_used']):.0f} 核"
-            text += "）"
-        elif cores.get("project_used"):
-            text += f"（本项目 {float(cores['project_used']):.0f} 核）"
-        parts.append(text)
-    else:
-        parts.append("核数 暂无配额数据")
-    if storage.get("used_percent") is not None:
-        text = f"存储 {storage.get('filesystem') or ''} 已用 {float(storage['used_percent']):.0f}%"
-        if storage.get("used_gb") is not None and storage.get("total_gb"):
-            text += f"（{storage['used_gb'] / 1024:,.1f} TB / {storage['total_gb'] / 1024:,.1f} TB）"
-        parts.append(text.strip())
-    else:
-        parts.append("存储 暂无数据")
-    return " · ".join(parts)
-
-
 def _sections_markdown(report, charts):
     """把结构化字段渲染为各章 Markdown（以总结为核心，不堆砌字段）。"""
     sections = {}
@@ -1083,14 +1056,6 @@ def _sections_markdown(report, charts):
             f"**预期结果**：{info.get('expected_results') or '未填写'}",
             "",
             f"![项目进度](charts/progress.svg)",
-            "",
-            # 集群资源（v0.9.63）：核数占用 + 存储使用。两张图后端一直有生成
-            # （charts/cores_donut.svg、charts/storage_bar.svg），但自 v0.7.2 精简章节后
-            # 正文里没有引用位 —— 用户 2026-10-15 要求接进报告。
-            f"**集群资源**：{_resources_line(report.get('resources') or {})}",
-            "",
-            "![集群核数占用](charts/cores_donut.svg)",
-            "![存储使用](charts/storage_bar.svg)",
         ]
     ).strip() + "\n"
 

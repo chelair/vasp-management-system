@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Collapse, Spin, Table, Tag } from 'antd';
+import { Alert, Table, Tag } from 'antd';
 
 import { fetchPdosData } from '../../api/jobs';
 import { mountPdosWidget, type PdosWidgetHandle } from '../../interactive/pdosWidget';
@@ -27,7 +27,13 @@ export interface BaderAtom {
   net_charge?: number | null;
 }
 
-/** Bader 完整表：默认折叠（用户口径"数据报表，滑动折叠"），展开后分页浏览 */
+/**
+ * Bader 完整表：**直接展示全部原子**，放在一个可滚动的容器里
+ * （2026-10-15 用户口径："Bader 直接展示完整表格，但是放在一个容器中可滑动查看"）。
+ *
+ * 实现：不分页（全部行都在 DOM 里）+ 表格表体自己滚动（表头固定），
+ * 窄屏时横向可滑动；外层卡片只负责边框与标题。
+ */
 export function BaderFullTable({ atoms, taskName }: { atoms: BaderAtom[]; taskName?: string }) {
   const columns = useMemo(
     () => [
@@ -84,31 +90,26 @@ export function BaderFullTable({ atoms, taskName }: { atoms: BaderAtom[]; taskNa
   );
   if (!atoms.length) return null;
   return (
-    <Collapse
-      className="report-bader-collapse"
-      size="small"
-      items={[
-        {
-          key: 'atoms',
-          label: (
-            <span>
-              完整表（{atoms.length} 个原子）
-              {taskName ? <Tag style={{ marginLeft: 8 }}>{taskName}</Tag> : null}
-            </span>
-          ),
-          children: (
-            <Table
-              size="small"
-              rowKey="key"
-              columns={columns as never}
-              dataSource={data as never}
-              scroll={{ x: 560, y: 320 }}
-              pagination={{ pageSize: 50, size: 'small', showSizeChanger: false }}
-            />
-          ),
-        },
-      ]}
-    />
+    <div className="report-bader">
+      <div className="report-bader__head">
+        <span className="report-bader__title">逐原子 Bader 电荷（完整表）</span>
+        <span className="report-bader__meta">
+          共 {atoms.length} 个原子
+          {taskName ? <Tag style={{ marginLeft: 8 }}>{taskName}</Tag> : null}
+        </span>
+      </div>
+      {/* 可滑动容器：表体在容器内滚动（表头固定），窄屏横向可滑动 */}
+      <div className="report-bader__scroll">
+        <Table
+          size="small"
+          rowKey="key"
+          columns={columns as never}
+          dataSource={data as never}
+          pagination={false}
+          scroll={{ x: 620 }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -233,9 +234,14 @@ export function WorkFunctionReportChart({
 }
 
 /**
- * PDOS 交互图：**点击才加载**（整合数据 1~3 MB）。加载后挂的是巡检详情同款的
- * 原生控件组件（`interactive/pdosWidget.ts`），交互能力完全一致：勾轨道、改范围、
- * 带中心、只看一条曲线、镜像/叠加。
+ * PDOS 交互图：**进报告就能直接交互**（不用点按钮）—— 数据 1~3 MB，所以进入视口
+ * （提前 300px）就自动拉取并挂载，不必等用户点"加载"。
+ *
+ * ⚠️ **宿主 div 里不能渲染任何 React 子节点**：`mountPdosWidget()` 会 `container.innerHTML = ''`
+ * 再写自己的 DOM，而 React 如果也往同一节点渲染过内容（例如 loading 的 Spin），
+ * 之后 React 要移除它时就会抛 `NotFoundError: The node to be removed is not a child of this node`
+ * → **整棵 React 树卸载 = 白屏**（2026-10-15 用户报的"加载后页面空白一片"，已用 jsdom 复现并修掉）。
+ * 所以：loading / 错误提示一律放在宿主 **外面**（兄弟节点）。
  */
 export function PdosReportChart({
   taskId,
@@ -248,6 +254,7 @@ export function PdosReportChart({
   onLoaded?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
   const widgetRef = useRef<PdosWidgetHandle | null>(null);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -279,23 +286,39 @@ export function PdosReportChart({
     }
   }, [taskId, loading, onLoaded]);
 
+  /** 进入视口就自动加载（不需要用户点按钮）；没有 IntersectionObserver 就直接加载 */
+  useEffect(() => {
+    if (loaded || loading) return;
+    const el = wrapRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      void load();
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          observer.disconnect();
+          void load();
+        }
+      },
+      { rootMargin: '300px 0px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [load, loaded, loading]);
+
   return (
-    <div className="report-pdos">
+    <div className="report-pdos" ref={wrapRef}>
       {!loaded && (
-        <div className="report-pdos__cta">
-          <Button type="primary" size="small" onClick={() => void load()} loading={loading}>
-            加载交互图{taskName ? `（${taskName}）` : ''}
-          </Button>
-          <span className="report-pdos__hint">
-            勾选轨道、改能量范围、开关带中心虚线都会实时重画（整合数据约 1–3 MB，点一下才加载；
-            上面那张静态图是同一份数据）
-          </span>
-        </div>
+        <p className="report-pdos__hint">
+          {loading
+            ? `正在加载交互图${taskName ? `（${taskName}）` : ''}…（整合数据约 1–3 MB）`
+            : '进入视口即自动加载交互图；勾轨道、改范围、开关带中心虚线都会实时重画'}
+        </p>
       )}
       {error && <Alert type="error" showIcon message={error} />}
-      <div ref={hostRef} className="report-pdos__host">
-        {loading && <Spin size="small" />}
-      </div>
+      {/* 宿主：只由 mountPdosWidget 写 DOM，React 不往里渲染任何子节点（见上方警告） */}
+      <div ref={hostRef} className="report-pdos__host" />
     </div>
   );
 }

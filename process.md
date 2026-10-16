@@ -271,7 +271,32 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.74）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.75）
+
+- 2026-10-16（用户："PMS@model1 的 bader、POSCAR 为 Fe S O H，报告中为 Fe S H O 排查下原因"）：
+  **Bader 元素顺序错位的根因与修复**（v0.9.75）。
+  - **排查结论（实测数据）**：`ACF.dat` 的原子行序 = **那次分析用的电荷密度**（`bader` 拿 `CHGCAR` 算的）。
+    查远端：`CHGCAR` / `AECCAR0` / `AECCAR2` 头部、`OUTCAR` 的 `ions per type`、`POTCAR` 的 TITEL
+    全是 `Fe S H O`（24 33 1 5）—— 但那次 Bader 分析是 **10-15 23:09** 跑的，用的是**当时**的密度；
+    而本地 `files/POSCAR` 在 **10-16 10:59** 被后续运行覆盖成 `Fe S H O`，`files/CONTCAR` 还停在
+    10-12 的 `Fe S O H`（分析时的结构）。`bader.load_data()` 却**每次都拿当前本地 POSCAR** 去给 ACF 行
+    贴元素 → H/O 两段整排错位（报告里就成了 Fe S H O）。`meta.zval` 里留着的分析时 POTCAR 顺序
+    是 `Fe, S, O, H`，正好证明这次分析确实是 Fe S O H 那套。
+  - **修法**：
+    ① 探测时多读一次 **`CHGCAR` 头两行**（`head -7 | tail -2`，不会把 188MB 整个读一遍）→
+    记进 `meta["charge_header"]`（元素 + 计数），**分析时冻结**；
+    ② `_elements_for_acf()` 按优先级取元素顺序：**分析时冻的 CHGCAR 头** > **分析时的 POTCAR 顺序
+    （zval 键顺序）+ 本地计数**（老数据靠这条救回来）> 本地 POSCAR（老行为）；三条都带
+    `element_source`，本地镜像与分析时顺序不一致时给 `element_note`（只进面板/结构化数据，**不进报告**）；
+    ③ **冻结结构**：分析时把远端 `CONTCAR`（缺则 `POSCAR`）拷到 `<任务>/bader/CONTCAR` 并转
+    `<任务>/bader/structure.cif`，报告的 Bader 3D/表格以后一律用它（`cif_source=frozen`）；
+    老数据在本地镜像顺序一致时**自动补冻结**；
+    ④ 顺手把探测脚本里 `sed -n '6,7p' AECCAR0`（会读满 94MB）改成 `head -7 | tail -2`。
+  - **实测**：PMS@model1 现在标注为 **Fe S O H**（24/33/5/1，来源 `potcar-order`，附说明），
+    冻结 CIF 63 原子同样 Fe S O H；另两个 Bader 任务（model2 / PMS@model2）顺序不变，均 `cif_source=frozen`。
+  - **验证**：新增 `bader_order_test.py` 5 项（冻结头优先 / 老数据退 POTCAR 顺序 / 都没有退本地 POSCAR /
+    原子数不符不硬套 / 顺序一致不给多余说明）+ 其余十五套回归全过。
+
 
 - 2026-10-16（用户："bader 和功函数要回传 ACF.dat 和 LOCPOT，LOCPOT 比较大，可以放在归档时后台回传"）：
   **归档后台回传原始文件**（v0.9.74）。新增 `backend/archive_files.py`：
@@ -1838,7 +1863,8 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-10-16 整理）**：代码在 **v0.9.74**（commit `17a90cd`；归档时后台回传 LOCPOT + ACF.dat，功函数面板可看进度/手动补拉）。
+> **当前状态速览（2026-10-16 整理）**：代码在 **v0.9.75**（修 Bader 元素顺序错位：ACF 行序以分析时的电荷密度为准，并冻结那次分析的结构）。
+> **v0.9.74** = `17a90cd`（归档时后台回传 LOCPOT + ACF.dat，功函数面板可看进度/手动补拉）。
 > **v0.9.73** = `6d1845d`（自由能中间体也换成 3D 视图，点表格「结构 N」切换）。
 > **v0.9.72** = `ab57fc1`（报告正文的结构三视图 → **3D 视图**（正文内联，
 > 三视图 PNG 转"仅打印"留给 PDF）；Bader 改成 3D + 表格左右一行；导出内联 3Dmol —— 见 §7 顶端条目）。

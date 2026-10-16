@@ -69,6 +69,12 @@ CHG_SUM_AEC_NAME = "CHGCAR_sum_aec"
 SUM_WORK_DIR = ".bader_sum"
 #: 远端伪势文件（只 grep TITEL/ZVAL 两行拿每种元素的 ZVAL；**不下载、不用 pymatgen**）
 POTCAR_NAME = "POTCAR"
+#: 电荷密度文件（bader 的输入；**它的头部元素顺序 = ACF.dat 的原子行序**，v0.9.75 起在探测时记下来）
+CHGCAR_NAME = "CHGCAR"
+#: 分析时冻结的结构文件（v0.9.75）：远端 CONTCAR（缺则 POSCAR）拷进 `<任务>/bader/`，
+#: 之后本地镜像被后续运行覆盖，Bader 的表/3D 仍与这次分析的电荷一致
+FROZEN_STRUCTURE = "CONTCAR"
+FROZEN_CIF = "structure.cif"
 
 #: 阶段名 → 前端展示文案
 STAGE_LABELS = {
@@ -140,25 +146,37 @@ def read_meta(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _remember_zval(
-    project_name: str, task: Dict[str, Any], zval: Dict[str, float]
+    project_name: str,
+    task: Dict[str, Any],
+    zval: Dict[str, float],
+    charge_header: Optional[Dict[str, Any]] = None,
 ) -> None:
     """把探测到的 ZVAL 合并进本地 `meta.json`（不动其它字段）。
 
     为什么要缓存：`load_data()` 是**纯本地**接口（不连远端），净电荷要用 ZVAL；
     对"ACF.dat 早就下载好、但 meta 里还没有 ZVAL"的任务（升级前算的），
     前端探一次远端状态就能把 ZVAL 补进 meta，之后一直可用。
+
+    `charge_header`（v0.9.75）：远端 `CHGCAR` 头部记下的元素/计数顺序 —— 同样合并进 meta，
+    以后标注 `ACF.dat` 原子元素就以它为准（**但只在"本地还没有该次分析记录"时写**，
+    避免后续运行的头部覆盖掉分析时的顺序：meta 里已有 charge_header 就不动）。
     """
-    if not zval:
-        return
     meta = read_meta(project_name, task)
-    if meta.get("zval") == zval:
+    changed = False
+    if zval and meta.get("zval") != zval:
+        meta["zval"] = zval
+        meta["zval_at"] = now_iso()
+        changed = True
+    if charge_header and not meta.get("charge_header"):
+        meta["charge_header"] = charge_header
+        meta["charge_header_at"] = now_iso()
+        changed = True
+    if not changed:
         return
-    meta["zval"] = zval
-    meta["zval_at"] = now_iso()
     try:
         _write_json(meta_path(project_name, task), meta)
     except Exception as e:  # noqa: BLE001 - 缓存失败不影响链路
-        _log_line(f"[warn] 缓存 ZVAL 失败：{e}")
+        _log_line(f"[warn] 缓存 ZVAL / 电荷密度头部失败：{e}")
 
 
 def bader_exe(server: str) -> str:
@@ -172,6 +190,116 @@ def bader_exe(server: str) -> str:
 def has_local(project_name: str, task: Dict[str, Any]) -> bool:
     path = acf_path(project_name, task)
     return path.is_file() and path.stat().st_size > 0
+
+
+def frozen_cif_path(project_name: str, task: Dict[str, Any]) -> Path:
+    """分析时冻结的结构 CIF（`<任务>/bader/structure.cif`）：Bader 的表/3D 用它，避免错配。"""
+    return local_dir(project_name, task) / FROZEN_CIF
+
+
+def report_cif(project_name: str, task: Dict[str, Any]) -> Optional[str]:
+    """报告用 CIF：**优先分析时冻结的那份**（与 ACF.dat 同一次分析）。
+
+    老数据（v0.9.75 之前分析的）没有冻结文件 → 若本地 `CONTCAR`/`POSCAR` 的**元素顺序与
+    分析时记录的一致**，就地补一份冻结（转 CIF 缓存）；顺序不一致（镜像已被新运行覆盖）
+    则返回 None，让调用方退回本地镜像（并在数据里留 `cif_source`）。
+    """
+    path = frozen_cif_path(project_name, task)
+    if path.is_file() and path.stat().st_size > 0:
+        return path.read_text(encoding="utf-8", errors="replace")
+    if _backfill_frozen(project_name, task):
+        if path.is_file() and path.stat().st_size > 0:
+            return path.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _analysis_element_order(meta: Dict[str, Any]) -> List[str]:
+    """分析时的元素顺序：优先 CHGCAR 头部，其次 POTCAR（zval 键顺序）。"""
+    header = meta.get("charge_header") or {}
+    elements = [str(el) for el in (header.get("elements") or [])]
+    if elements:
+        return elements
+    return [str(el) for el in (meta.get("zval") or {})]
+
+
+def _backfill_frozen(project_name: str, task: Dict[str, Any]) -> bool:
+    """老数据补冻结结构：本地 CONTCAR/POSCAR 与分析时元素顺序一致时才认。"""
+    meta = read_meta(project_name, task)
+    order = _analysis_element_order(meta)
+    if not order:
+        return False
+    from task_paths import task_files_dir
+
+    files_dir = task_files_dir(project_name, task)
+    for name in ("CONTCAR", "POSCAR"):
+        src = files_dir / name
+        if not (src.is_file() and src.stat().st_size > 0):
+            continue
+        local_order: List[str] = []
+        for element in poscar_atom_elements(src):
+            if not local_order or local_order[-1] != element:
+                local_order.append(element)
+        if local_order != order:
+            continue
+        target = local_dir(project_name, task) / FROZEN_STRUCTURE
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+
+            shutil.copy2(src, target)
+            import cif_convert
+
+            return bool(
+                cif_convert.convert_structure_to_cif(
+                    target, frozen_cif_path(project_name, task), overwrite=True
+                )
+            )
+        except Exception as e:  # noqa: BLE001 - 补冻结失败就退回本地镜像
+            _log_line(f"[warn] 补冻结结构失败：{e}")
+            return False
+    return False
+
+
+def _freeze_structure(
+    server: str, ele_remote: str, project_name: str, task: Dict[str, Any]
+) -> Optional[str]:
+    """把**这次分析用的结构**（远端 CONTCAR，缺则 POSCAR）拷进 `<任务>/bader/` 并转 CIF。
+
+    为什么：`ACF.dat` 属于"那一次"电荷密度/结构；本地 `files/CONTCAR` 之后可能被新运行覆盖，
+    那样表格里的元素顺序、3D 结构都会对不上（2026-10-16 PMS@model1 就是这个坑）。
+    失败不影响分析结果，只返回 None（报告那边退回本地镜像的 CIF）。
+    """
+    target_dir = local_dir(project_name, task)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    src = target_dir / FROZEN_STRUCTURE
+    for name in ("CONTCAR", "POSCAR"):
+        tmp = src.with_name(src.name + ".tmp")
+        try:
+            ok = ssh.download_file(server, f"{ele_remote}/{name}", str(tmp))
+            if ok and tmp.is_file() and tmp.stat().st_size > 0:
+                tmp.replace(src)
+                break
+        except Exception as e:  # noqa: BLE001 - 冻结失败不影响分析
+            _log_line(f"[warn] 冻结结构失败（{name}）：{e}")
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+        src = src  # 继续试下一个来源
+    if not (src.is_file() and src.stat().st_size > 0):
+        return None
+    out = frozen_cif_path(project_name, task)
+    try:
+        import cif_convert
+
+        if not cif_convert.convert_structure_to_cif(src, out, overwrite=True):
+            return None
+    except Exception as e:  # noqa: BLE001 - 转换失败不影响分析
+        _log_line(f"[warn] 冻结结构转 CIF 失败：{e}")
+        return None
+    return str(out)
 
 
 # ------------------------------------------------------------------ 元素 / ZVAL
@@ -206,6 +334,30 @@ def poscar_atom_elements(path: Path) -> List[str]:
     for symbol, count in zip(symbols, nums):
         out.extend([symbol] * count)
     return out
+
+
+def parse_charge_header(text: str) -> Dict[str, Any]:
+    """解析 `CHGCAR` 前 7 行里的**元素行 + 计数行**（VASP5）。
+
+    这两行决定 `ACF.dat` 的原子行序 —— 分析时记进 `meta["charge_header"]`，
+    之后标注原子元素就以它为准（v0.9.75）。拿不到（VASP4 或文件缺失）返回 `{}`。
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return {}
+    symbols = lines[0].split()
+    counts = lines[1].split()
+    if not symbols or not counts:
+        return {}
+    if all(re.fullmatch(r"\d+", s) for s in symbols):  # VASP4：元素行缺失
+        return {}
+    if len(symbols) != len(counts):
+        return {}
+    try:
+        nums = [int(c) for c in counts]
+    except ValueError:
+        return {}
+    return {"elements": symbols, "counts": nums, "source": CHGCAR_NAME}
 
 
 def parse_potcar_zval(text: str) -> Dict[str, float]:
@@ -348,6 +500,70 @@ def parse_acf(text: str) -> Dict[str, Any]:
     }
 
 
+def _elements_for_acf(
+    meta: Dict[str, Any], local_elements: List[str], n_atoms: int
+) -> Tuple[List[str], str, str]:
+    """决定 `ACF.dat` 各原子行的元素顺序（v0.9.75）。
+
+    优先级（越靠前越权威）：
+
+    1. **`meta["charge_header"]`** —— 分析时从远端 `CHGCAR` 头部记下的元素/计数行
+       （`bader` 就是拿 CHGCAR 算的，**它的行序就是 ACF.dat 的行序**）；
+    2. **`meta["zval"]` 的键顺序** —— 分析时 grep 到的 `POTCAR` 顺序（pos2pot 按 POSCAR 拼的，
+       所以顺序 = 当时结构的元素顺序）→ 老数据（没有 charge_header）靠这条救回来；
+       每种元素的原子数从**本地 POSCAR** 的计数里按元素取（组成必须一致）；
+    3. **本地 `files/POSCAR` 的元素行顺序** —— 老行为；本地镜像被后续运行覆盖后会错位，
+       所以只在 1、2 都拿不到时使用。
+
+    返回 `(逐原子元素列表, 来源标记, 说明)`；拿不到返回 `([], 来源, 原因)`。
+    """
+    n_poscar = len(local_elements)
+    # 本地 POSCAR 的"元素 → 原子数"（第 1..N 次出现都算同元素）
+    counts: Dict[str, int] = {}
+    for element in local_elements:
+        counts[element] = counts.get(element, 0) + 1
+
+    header = meta.get("charge_header") or {}
+    elements = list(header.get("elements") or [])
+    numbers = list(header.get("counts") or [])
+    if elements and len(elements) == len(numbers) and sum(numbers) == n_atoms:
+        out: List[str] = []
+        for element, count in zip(elements, numbers):
+            out.extend([element] * count)
+        note = ""
+        if n_poscar and n_poscar == n_atoms and local_elements != out:
+            note = (
+                "本地 POSCAR 的元素顺序与该次分析的电荷密度（CHGCAR）不同 —— "
+                "按分析时记录的顺序标注（本地镜像可能已被后续运行覆盖）"
+            )
+        return out, "charge-header", note
+
+    zval_order = [str(el) for el in (meta.get("zval") or {})]
+    if zval_order and counts and set(zval_order) == set(counts):
+        out = []
+        for element in zval_order:
+            out.extend([element] * counts[element])
+        if len(out) == n_atoms:
+            note = ""
+            if n_poscar == n_atoms and local_elements != out:
+                note = (
+                    "按分析时 POTCAR 的元素顺序标注（本地 POSCAR 已被后续运行覆盖，顺序不同）"
+                )
+            return out, "potcar-order", note
+
+    if n_poscar == n_atoms:
+        return local_elements, "local-poscar", ""
+    if n_poscar:
+        return [], "none", (
+            f"POSCAR 原子数（{n_poscar}）与 ACF.dat（{n_atoms}）不一致，"
+            "不挂净电荷（先确认两边是同一份结构）"
+        )
+    return [], "none", (
+        "本地没有可解析的 POSCAR（VASP5 元素行），算不出逐原子净电荷；"
+        "点「同步最新参数」把 POSCAR 取回本地后再看"
+    )
+
+
 def _attach_net_charges(
     parsed: Dict[str, Any],
     project_name: str,
@@ -356,8 +572,9 @@ def _attach_net_charges(
 ) -> None:
     """给每个原子补 `element` / `zval` / `net_charge = ZVAL − Bader 电荷`，并算整体统计。
 
-    口径：`ACF.dat` 的行序 = POSCAR 原子序 → 元素序列取**本地 POSCAR**（`files/POSCAR`），
-    每种元素的 ZVAL 取**远端 POTCAR 的 TITEL/ZVAL 两行**（在探测/计算那一次 exec 里顺手 grep，
+    口径：`ACF.dat` 的行序 = 那次分析的电荷密度（CHGCAR）原子序 → 元素序列按
+    `_elements_for_acf()` 的优先级取（分析时冻结的 CHGCAR 头 > 分析时的 POTCAR 顺序 > 本地 POSCAR），
+    每种元素的 ZVAL 取**远端 POTCAR 的 TITEL/ZVAL 两行**（探测那一次 exec 里顺手 grep，
     不下载 POTCAR、不用 pymatgen）。任一份缺了就标记 `net_charge_available=false` 并写明原因，
     前端只显示原始 Bader 电荷（不猜）。
     """
@@ -365,19 +582,19 @@ def _attach_net_charges(
     parsed["zval"] = meta.get("zval") or {}
     parsed["net_charge_available"] = False
     poscar = local_files_dir(project_name, task) / "POSCAR"
-    elements = poscar_atom_elements(poscar)
+    local_elements = poscar_atom_elements(poscar)
+    elements, element_source, element_note = _elements_for_acf(
+        meta, local_elements, int(parsed["n_atoms"])
+    )
+    parsed["element_source"] = element_source
+    if element_note:
+        parsed["element_note"] = element_note
     zval: Dict[str, float] = parsed["zval"] or {}
     if not elements:
-        parsed["net_charge_reason"] = (
-            "本地没有可解析的 POSCAR（VASP5 元素行），算不出逐原子净电荷；"
-            "点「同步最新参数」把 POSCAR 取回本地后再看"
-        )
+        parsed["net_charge_reason"] = element_note or "拿不到元素顺序，算不出净电荷"
         return
     if len(elements) != parsed["n_atoms"]:
-        parsed["net_charge_reason"] = (
-            f"POSCAR 原子数（{len(elements)}）与 ACF.dat（{parsed['n_atoms']}）不一致，"
-            "不挂净电荷（先确认两边是同一份结构）"
-        )
+        parsed["net_charge_reason"] = element_note or "元素顺序长度与 ACF.dat 不一致"
         parsed["elements"] = elements
         return
     if not zval or any(el not in zval for el in set(elements)):
@@ -461,13 +678,21 @@ def _remote_probe_script(ele_remote: str, exe: str, vtst: str) -> str:
             # （差分电荷留下的分块和头是分块元素，一定对不上）。
             'echo "@@@SUMAEC"',
             f'if [ -s "{CHG_SUM_AEC_NAME}" ]; then',
-            f'  _h1=$(sed -n \'6,7p\' AECCAR0 | tr -s \' \\t\' \' \')',
-            f'  _h2=$(sed -n \'6,7p\' "{CHG_SUM_AEC_NAME}" | tr -s \' \\t\' \' \')',
+            # 只读前 7 行（head 会提前退出）——`sed -n '6,7p'` 会把 94MB 整个读一遍
+            f'  _h1=$(head -7 AECCAR0 | tail -2 | tr -s \' \\t\' \' \')',
+            f'  _h2=$(head -7 "{CHG_SUM_AEC_NAME}" | tail -2 | tr -s \' \\t\' \' \')',
             f'  _l1=$(wc -l < AECCAR0 | tr -d \' \')',
             f'  _l2=$(wc -l < "{CHG_SUM_AEC_NAME}" | tr -d \' \')',
             '  if [ -n "$_h2" ] && [ "$_h1" = "$_h2" ] && [ "$_l1" = "$_l2" ]; then',
             '    echo "V aec ok"; else echo "V aec mismatch"; fi',
             'else echo "V aec absent"; fi',
+            # **电荷密度的元素顺序**（v0.9.75）：bader 拿 CHGCAR 算，ACF.dat 的原子行序 = CHGCAR 头部的
+            # 元素/计数顺序。这里把它记下来（只读前 7 行），分析时就冻结在 meta 里 ——
+            # 否则本地 `files/POSCAR` 被后续运行覆盖后，元素标注会整排错位
+            # （2026-10-16 用户报的 PMS@model1 Fe S H O / Fe S O H 就是这个）。
+            'echo "@@@CHGHDR"',
+            f'[ -s "{CHGCAR_NAME}" ] && head -7 "{CHGCAR_NAME}" | tail -2 | tr -s \' \\t\' \' \'',
+            'echo "@@@CHGHDR_END"',
             # 元素价电子数 ZVAL：只 grep POTCAR 两行（几百字节），不下载 POTCAR、不引依赖
             'echo "@@@POTCAR"',
             f'[ -s "{POTCAR_NAME}" ] && echo "P potcar ok" || echo "P potcar missing"',
@@ -570,8 +795,19 @@ def probe_remote(
     sum_aec_state = "absent"
     potcar_text: List[str] = []
     in_potcar = False
+    charge_header_text: List[str] = []
+    in_charge_header = False
     for line in raw.splitlines():
         stripped = line.strip()
+        if stripped == "@@@CHGHDR":
+            in_charge_header = True
+            continue
+        if stripped == "@@@CHGHDR_END":
+            in_charge_header = False
+            continue
+        if in_charge_header:
+            charge_header_text.append(line)
+            continue
         if stripped == "@@@POTCAR":
             in_potcar = True
             continue
@@ -601,6 +837,8 @@ def probe_remote(
     result["has_remote_acf"] = bool(sizes.get(ACF_NAME))
     result["integrity"] = _integrity(sizes)
     result["zval"] = parse_potcar_zval("\n".join(potcar_text))
+    # 电荷密度的元素/计数顺序（ACF.dat 的行序）——分析时冻结，供元素标注用
+    result["charge_header"] = parse_charge_header("\n".join(charge_header_text))
     result["has_potcar"] = any(
         ln.strip().startswith("P potcar ok") for ln in potcar_text
     )
@@ -638,7 +876,12 @@ def probe_remote(
     with _LOCK:
         _PROBE_CACHE[task_id] = (time.time(), result)
     # 顺手把 ZVAL 缓进本地 meta（给纯本地的 load_data 用；探测一次就够）
-    _remember_zval(str(project.get("name") or ""), task, result.get("zval") or {})
+    _remember_zval(
+        str(project.get("name") or ""),
+        task,
+        result.get("zval") or {},
+        result.get("charge_header") or {},
+    )
     return result
 
 
@@ -959,6 +1202,10 @@ def _background(
                 "has_potcar": bool(probe.get("has_potcar")),
                 "bader_tail": compute.get("bader_tail") or "",
             }
+            # 冻结"这次分析用的结构"（v0.9.75）：与 ACF.dat 同源，之后本地镜像被覆盖也不影响
+            frozen = _freeze_structure(server, ele_remote, project_name, task)
+            if frozen:
+                payload["structure_cif"] = to_local_rel(frozen)
             meta = {
                 "task_id": task_id,
                 "project_name": project_name,
@@ -975,6 +1222,9 @@ def _background(
                 },
                 # 元素价电子数（远端 POTCAR 两行 grep 的结果）——load_data 用它算净电荷
                 "zval": probe.get("zval") or {},
+                # **这次分析**用的电荷密度头部（元素/计数顺序 = ACF.dat 的行序，v0.9.75）：
+                # 与 zval 一起冻结，之后本地 POSCAR 被后续运行覆盖也不会标错元素
+                "charge_header": probe.get("charge_header") or {},
                 "result": payload,
             }
             _write_json(meta_path(project_name, task), meta)

@@ -2445,10 +2445,15 @@ def build_report(
                 try:
                     summary = item.get("bader_summary") or {}
                     if summary and not summary.get("cif"):
-                        cif_text = read_or_convert_cif(project, ele_obj, "CONTCAR") or read_or_convert_cif(
-                            project, ele_obj, "POSCAR"
-                        )
+                        # 优先用**分析时冻结的结构 CIF**（<任务>/bader/structure.cif）：
+                        # 与 ACF.dat 同一次分析；本地 files/CONTCAR 之后可能被新运行覆盖（v0.9.75）
+                        cif_text = bader.report_cif(project_name, ele_obj) or read_or_convert_cif(
+                            project, ele_obj, "CONTCAR"
+                        ) or read_or_convert_cif(project, ele_obj, "POSCAR")
                         summary["cif"] = cif_text
+                        summary["cif_source"] = (
+                            "frozen" if bader.report_cif(project_name, ele_obj) else "mirror"
+                        )
                         item["bader_summary"] = summary
                 except Exception as exc:  # noqa: BLE001 - 报告不因 CIF 失败
                     collection_errors.append(f"{item.get('task_name')} Bader 结构 CIF 读取失败：{exc}")

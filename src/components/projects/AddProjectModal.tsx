@@ -36,9 +36,12 @@ const CATEGORY_ORDER: CategoryDef[] = [
   {
     kind: 'neb',
     label: 'NEB',
-    hint: '按组创建：自动登记初态/末态优化 + NEB 计算任务',
+    // 2026-10-16 用户："几个映像数改成中间体，更直观而且和作业管理那里一样" ——
+    // 这个数就是 INCAR 的 `IMAGES`，也就是**中间体个数**（端点 00 / 末态另计），
+    // 与作业管理里"中间态数量"、巡检详情"中间体"的说法对齐
+    hint: '按组创建：自动登记初态/末态优化 + NEB 计算任务（数量 = 中间体个数，写进 INCAR 的 IMAGES，端点另计）',
     countDefault: 6,
-    countLabel: '映像数',
+    countLabel: '中间体',
   },
   { kind: 'ele', label: '电子结构', hint: '单个电子结构任务，一行一个任务' },
 ];
@@ -98,6 +101,9 @@ export default function AddProjectModal({ open, onCancel, onCreated }: Props) {
         server: values.server,
         tasks: plainTasks,
         description: values.description || '',
+        // 报告里「计算内容描述 / 预期结果」两栏（v0.9.76）：新增时就能填，报告不再是"未填写"
+        calc_description: values.calc_description || '',
+        expected_results: values.expected_results || '',
         estimated_hours: values.estimated_hours ?? null,
       };
       const result = await createProject(payload);
@@ -316,6 +322,24 @@ export default function AddProjectModal({ open, onCancel, onCreated }: Props) {
             <Input placeholder="研究内容简述" />
           </Form.Item>
         </div>
+        {/* 报告辅助字段（v0.9.76）：报告「基本信息」里的『计算内容描述 / 预期结果』
+            以前只能建完项目再去编辑弹窗补；新增时一起填，报告开箱即完整 */}
+        <Form.Item label="计算内容（可选）" name="calc_description">
+          <Input.TextArea
+            rows={2}
+            maxLength={500}
+            placeholder="如：计算 Ag 在 Al2O3 表面的吸附能与电子结构（PDOS / Bader / 差分电荷）"
+            autoSize={{ minRows: 2, maxRows: 4 }}
+          />
+        </Form.Item>
+        <Form.Item label="预期结果（可选）" name="expected_results">
+          <Input.TextArea
+            rows={2}
+            maxLength={500}
+            placeholder="如：给出稳定吸附构型、吸附能排序、界面电荷转移量"
+            autoSize={{ minRows: 2, maxRows: 4 }}
+          />
+        </Form.Item>
       </Form>
     </Modal>
   );

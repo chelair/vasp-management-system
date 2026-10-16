@@ -160,17 +160,22 @@ export default function Automation() {
     fetchProjects()
       .then((list) =>
         setTaskRefs(
-          list.flatMap((project) =>
-            (project.tasks ?? []).map((task) => ({
-              task_id: task.task_id,
-              model_name: task.model_name,
-              task_type: task.task_type,
-              project: project.name,
-              group_id: task.group?.group_id ?? null,
-              group_name: task.group?.name ?? null,
-              group_type: task.group?.group_type ?? null,
-            })),
-          ),
+          // 已关闭项目不进规则候选（v0.9.76 用户口径："选择任务时已关闭项目不出现在选项中"）——
+          // 规则弹窗的项目/组/任务选项都从这份 refs 派生，这里过滤一次三处都干净；
+          // 而且自动巡检/自动执行本来就不该往已关闭项目上派活（后端规则里也有 closed 闸门）
+          list
+            .filter((project) => !project.closed)
+            .flatMap((project) =>
+              (project.tasks ?? []).map((task) => ({
+                task_id: task.task_id,
+                model_name: task.model_name,
+                task_type: task.task_type,
+                project: project.name,
+                group_id: task.group?.group_id ?? null,
+                group_name: task.group?.name ?? null,
+                group_type: task.group?.group_type ?? null,
+              })),
+            ),
         ),
       )
       .catch(() => setTaskRefs([]));

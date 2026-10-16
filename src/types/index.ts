@@ -938,6 +938,9 @@ export interface CreateProjectPayload {
   server: string;
   tasks: { task_type: TaskType; model_name: string }[];
   description?: string;
+  /** 报告「基本信息」里的两栏（v0.9.76 起新增项目时就能填） */
+  calc_description?: string;
+  expected_results?: string;
   estimated_hours?: number | null;
 }
 

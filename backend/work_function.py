@@ -412,6 +412,13 @@ def local_status(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
     path = data_path(project_name, task)
     has = path.is_file() and path.stat().st_size > 0
     meta = read_meta(project_name, task)
+    # 归档大文件回传状态（v0.9.74）：LOCPOT 本地有没有 / ACF.dat 有没有 / 最近一次回传记录
+    try:
+        import archive_files
+
+        files = archive_files.status(project_name, task)
+    except Exception:  # noqa: BLE001 - 状态读不到不影响功函数本身
+        files = {}
     return {
         "has_result": has,
         "data_path": str(path) if has else "",
@@ -419,6 +426,7 @@ def local_status(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
         "mtime": int(path.stat().st_mtime) if has else 0,
         "axis": (meta.get("result") or {}).get("axis"),
         "meta": meta,
+        "files": files,
     }
 
 

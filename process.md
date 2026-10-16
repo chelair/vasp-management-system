@@ -155,6 +155,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `charge_diff.py` | **差分电荷链路（v0.9.46）**：入口在巡检详情；完整性校验（各 CHGCAR 大小差 < 1%）→ 远端 VTST 算差 → 回传 `CHGCAR_diff` → VESTA 三视图；阶梯缓存 + 中断补偿 + 全局串行 |
 | `bader.py` | **Bader 电荷链路（v0.9.51，**只到处理链路**）**：`probe_remote()` 一次 exec 查 `AECCAR0/1/2` 完整性（大小差 < 1%）+ `bader`/`chgsum.pl` 可用性 + 远端 `ACF.dat`；`start()`/`status()` 异步跑「chgsum → bader → 回传 → 解析」；`parse_acf()` 认集群那个 Fortran 版（含 `ATOMIC VOL` 列 + `VACUUM CHARGE/VOLUME`、`NUMBER OF ELECTRONS` 页脚）**和老 C 版的数字页脚**；产物 `<任务>/bader/{ACF.dat,meta.json}`，结果记 `task["bader"]`。**净电荷（ZVAL − 电荷）/分组/图表/报告属分析链路，尚未做** |
 | `work_function.py` | **功函数链路（v0.9.59）**：`probe_remote()` 查 LOCPOT/OUTCAR/DOSCAR/INCAR + `vaspkit` 可用性 + 偶极矫正（`LDIPOL/IDIPOL` 与所选方向是否匹配，不匹配只 warning）；`start(axis)`/`status()` 异步在**远端 `mktemp -d` 临时目录**里跑 `vaspkit -task 426 -dir <x|y|z>`（**界面 a/b/c → 笛卡尔 x/y/z**，`-dir c` 会报错），回传 8 KB 的 `PLANAR_AVERAGE.dat`，本地解析出真空能级（优先 VASPKIT 汇总，缺 DOSCAR 时退回"电位平台"估计并说明）与**功函数 = 真空能级 − E_F**；产物 `<任务>/workfunction/{PLANAR_AVERAGE.dat,meta.json}`，结果记 `task["work_function"]` |
+| `archive_files.py` | **归档后台回传原始文件（v0.9.74）**：`start(project, task)` 起后台线程，把远端 `LOCPOT`（几百 MB，走专用连接 + 进度回调、全局串行、原子落盘）回传到 `<任务>/files/LOCPOT`、`ACF.dat` 回传到 `<任务>/bader/ACF.dat`（兜底：本地没有且远端任务目录/`.bader_sum/` 里有才拉）；幂等（大小一致就跳过）、状态写 `task["archive_files"]`、`probe()` 一次 exec 拿远端大小 |
 | `report_interactive.py` | **报告交互版导出（v0.9.61）**：读打包好的运行时 `dist/report/report-interactive.js`（缺失即降级为静态）、按报告文档收集交互数据（PDOS 从本地 `dos.json` 走 `pdos.load_view`，功函数直接取文档里的 `work_function_summary`）、`interactive_kwargs(doc, interactive=)` 给 `report_export.render_html` 用（内联 `<script>window.__VASP_REPORT_DATA__=…</script>` + 运行时） |
 | `potcar.py` | **pos2pot 运行器（v0.9.44 抽出）**：把原 `/generate-potcar` 里的单次 exec 脚本（定位最新 conN → 跑 pos2pot → 解析 POTCAR 摘要）抽成 `run_pos2pot()`，支持 `use_latest_con=False`（差分电荷在主目录递归生成）；`PotcarError(kind=no_dir/not_found)` |
 | `routers/ai.py` | **AI 专用入口（v0.9.42）**：`GET /api/ai`（入口清单 + 自身 role/delegate_to/scope）、`/api/ai/contract`、`/api/ai/tasks/{id}/context`、`/api/ai/tasks/{id}/outcar-tail`、`/api/ai/pending-actions` —— **全是既有能力的别名，不复制业务逻辑** |
@@ -270,7 +271,30 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.73）
+## 7. 近期重要改动记录（v0.4.1 → v0.9.74）
+
+- 2026-10-16（用户："bader 和功函数要回传 ACF.dat 和 LOCPOT，LOCPOT 比较大，可以放在归档时后台回传"）：
+  **归档后台回传原始文件**（v0.9.74）。新增 `backend/archive_files.py`：
+  - **ACF.dat**（几十 KB）：Bader 链路本来就会回传（`<任务>/bader/ACF.dat`）；这里做**兜底** ——
+    本地没有、远端任务目录或 `.bader_sum/` 里有就拉回来（历史任务 / 用户自己跑过 bader 的情况）。
+  - **LOCPOT**（**可能几百 MB**）：以前只回传 8 KB 的 `PLANAR_AVERAGE.dat`，LOCPOT 一直留在集群；
+    现在归档时后台回传到本地镜像 **`<任务>/files/LOCPOT`**（与 POSCAR/CONTCAR/OUTCAR 同一目录约定）。
+  - 设计：**不阻塞归档**（归档接口只起线程；挂进既有的 `_schedule_archive_outputs` 后台 worker，
+    顺序在结构图/摘要刷新之后）；**全局串行**（同一时间只传一个大文件，链路别打满）；
+    **幂等**（本地大小 == 远端大小 → skipped，远端重算过则覆盖）；**原子落盘**（`.tmp` → `os.replace`，
+    失败保留旧文件）；**状态可读**（`task["archive_files"]`，每个文件带
+    `state / bytes / elapsed_seconds / error / at`）。
+  - 新接口 **`POST /api/jobs/tasks/{id}/archive-files`**：给**已归档的历史任务**手动补拉
+    （归档时自动跑一次；历史任务不会再触发）。
+  - **功函数面板**新增状态条：`LOCPOT 已回传 188.0 MB · ACF.dat 已回传` /
+    `正在后台回传 LOCPOT… 45%（88.5 / 188.0 MB）`（回传中每 5 秒刷新）/
+    `LOCPOT 回传失败：<原因>` —— 右侧「立即回传 / 重新回传」按钮。
+    `work_function.local_status()` 里带上 `files`（LOCPOT/ACF.dat 本地状态 + 最近记录 + 进行中的 run）。
+  - **验证**：`archive_files_test.py`（隔离数据目录 + 桩 SSH）12 项全过 —— 首次两个文件都回传
+    （ACF.dat 走 `.bader_sum/` 分支）、第二次同大小跳过且不重复下载、远端只有 ACF.dat 时 LOCPOT 记
+    "远端没有该文件"、下载失败记 failed 且不破坏旧文件、无 `.tmp` 残留；手动接口直调真路由
+    （`_resolve_task` 打桩）返回 `started/run_id` 并落地文件、记录 state=done；
+    其余十四套回归全过。
 
 - 2026-10-16（用户："自由能的结构还是之前的三视图"）：**自由能中间体也换 3D**（v0.9.73）。
   - 自由能路径下面新增 `@[free-energy-3d:<组>]`（正文内联，不在弹窗）：一个 3D 窗口 +
@@ -1814,7 +1838,8 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-10-16 整理）**：代码在 **v0.9.73**（commit `6d1845d`；自由能中间体也换成 3D 视图，点表格「结构 N」切换）。
+> **当前状态速览（2026-10-16 整理）**：代码在 **v0.9.74**（归档时后台回传 LOCPOT + ACF.dat，功函数面板可看进度/手动补拉）。
+> **v0.9.73** = `6d1845d`（自由能中间体也换成 3D 视图，点表格「结构 N」切换）。
 > **v0.9.72** = `ab57fc1`（报告正文的结构三视图 → **3D 视图**（正文内联，
 > 三视图 PNG 转"仅打印"留给 PDF）；Bader 改成 3D + 表格左右一行；导出内联 3Dmol —— 见 §7 顶端条目）。
 > **v0.9.71** = `f63134c`（导出弹层精简：导出范围合并进「隐藏本章」、

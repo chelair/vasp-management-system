@@ -1130,6 +1130,23 @@ export interface WorkFunctionStatus {
     bytes?: number;
     mtime?: number;
     axis?: string | null;
+    /**
+     * 归档大文件回传（v0.9.74）：LOCPOT / ACF.dat 本地有没有 + 最近一次记录
+     * （LOCPOT 较大，归档时后台回传；面板据此显示状态与「立即回传」按钮）。
+     */
+    files?: {
+      locpot?: { path?: string; present?: boolean; bytes?: number; mtime?: number };
+      acf?: { path?: string; present?: boolean; bytes?: number; mtime?: number };
+      record?: Record<string, unknown>;
+      running?: boolean;
+      run?: {
+        file?: string;
+        bytes_done?: number;
+        bytes_total?: number;
+        started_at?: string;
+        error?: string;
+      };
+    };
   };
   remote?: WorkFunctionRemote;
   result?: Record<string, unknown>;

@@ -3219,6 +3219,37 @@ body.is-atom-selecting * {
   align-items: center;
 }
 
+/* 原始文件本地镜像状态条（v0.9.74）：LOCPOT / ACF.dat 的归档回传 */
+.archive-files-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: #fbfcfe;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.archive-files-bar.is-ok {
+  border-color: #cbe6df;
+  background: #f4fbf9;
+}
+
+.archive-files-bar.is-warn {
+  border-color: #f0d9b5;
+  background: #fff9ee;
+  color: #9a6a18;
+}
+
+.archive-files-bar__text {
+  min-width: 0;
+}
+
 /* 功函数：方向选择工具条 + 电位曲线（v0.9.59） */
 .wf-toolbar {
   display: flex;

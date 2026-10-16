@@ -1351,6 +1351,39 @@ def archive_task(task_id: str):
     )
 
 
+@router.post("/tasks/{task_id}/archive-files")
+def archive_files_sync(task_id: str):
+    """**手动**触发"归档大文件回传"（LOCPOT + ACF.dat），后台跑、立刻返回。
+
+    归档时会自动触发一次；这个接口是给**已经归档过**的历史任务补拉的
+    （2026-10-16 用户口径：LOCPOT 比较大，放在归档时后台回传）。
+    """
+    try:
+        project, task = _resolve_task(task_id)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    try:
+        import archive_files
+
+        result = archive_files.start(project, task)
+        if not result.get("started") and not result.get("reused"):
+            return JSONResponse(
+                status_code=409, content=fail(str(result.get("reason") or "无法开始回传"))
+            )
+        _audit_log(
+            project["name"],
+            task_id,
+            str(task.get("remote_dir") or ""),
+            "archive-files-manual",
+            f"{'OK' if result.get('started') else 'REUSE'} run={result.get('run_id') or '-'}",
+        )
+        return ok("已开始后台回传（LOCPOT / ACF.dat）", result)
+    except permissions.PermissionDenied:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content=fail(f"触发回传失败：{e}"))
+
+
 @router.post("/tasks/{task_id}/unarchive")
 def unarchive_task(task_id: str):
     """重新打开已归档任务：恢复到归档前的状态（默认 pending）。
@@ -1802,6 +1835,33 @@ def _schedule_archive_outputs(
                     refresh_task_file_summaries(project3, task3)
             except Exception as e:  # noqa: BLE001 - 摘要失败不影响归档
                 _audit_log(project_name, task_id, "", "file-summaries", f"FAILED: {e}")
+            # 原始大文件后台回传（v0.9.74 用户口径："bader 和功函数要回传 ACF.dat 和 LOCPOT，
+            # LOCPOT 比较大，可以放在归档时后台回传"）：
+            # LOCPOT（可能几百 MB）→ `<任务>/files/LOCPOT`；ACF.dat（本地还没有时）→ `<任务>/bader/ACF.dat`。
+            # 同样只起后台线程，失败只记审计 + 任务里的 archive_files 记录。
+            try:
+                import archive_files
+
+                db4 = load_db()
+                project4 = next(
+                    (p for p in db4.get("projects", []) if p.get("name") == project_name), None
+                )
+                task4 = next(
+                    (t for t in (project4 or {}).get("tasks", []) if t.get("task_id") == task_id),
+                    None,
+                )
+                if project4 is not None and task4 is not None:
+                    started = archive_files.start(project4, task4)
+                    _audit_log(
+                        project_name,
+                        task_id,
+                        "",
+                        "archive-files",
+                        f"{'OK' if started.get('started') else 'SKIP'} "
+                        f"run={started.get('run_id') or '-'} reason={started.get('reason') or '-'}",
+                    )
+            except Exception as e:  # noqa: BLE001 - 回传调度失败不影响归档
+                _audit_log(project_name, task_id, "", "archive-files", f"FAILED: {e}")
         except permissions.PermissionDenied:
             raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
         except Exception as e:  # noqa: BLE001 - 后台下载失败只记审计

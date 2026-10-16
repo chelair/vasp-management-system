@@ -667,6 +667,16 @@ export async function fetchWorkFunctionData(taskId: string): Promise<WorkFunctio
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/work-function`);
 }
 
+/**
+ * 归档大文件回传（v0.9.74）：后台把 LOCPOT（可能几百 MB）与 ACF.dat 拉回本地镜像。
+ * 归档时自动跑；这个接口给**已归档的历史任务**补拉（面板上的「立即回传」）。
+ */
+export async function triggerArchiveFiles(
+  taskId: string,
+): Promise<{ started?: boolean; reused?: boolean; run_id?: string; reason?: string }> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/archive-files`, { method: 'POST' });
+}
+
 /** 清除本地功函数结果（PLANAR_AVERAGE.dat + meta），远端文件不动 */
 export async function clearWorkFunction(
   taskId: string,

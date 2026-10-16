@@ -18,6 +18,7 @@ import {
   clearWorkFunction,
   fetchWorkFunctionData,
   fetchWorkFunctionStatus,
+  triggerArchiveFiles,
   triggerWorkFunction,
 } from '../../api/jobs';
 import type { WorkFunctionData, WorkFunctionStatus } from '../../types';
@@ -45,6 +46,63 @@ const STATE_LABELS: Record<string, string> = {
 
 function fmt(value: number | null | undefined, digits = 3): string {
   return value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits);
+}
+
+function fmtBytes(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return '—';
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/**
+ * 原始文件本地镜像状态条（v0.9.74）：LOCPOT（几百 MB）与 ACF.dat。
+ *
+ * 归档时后台自动回传；这里显示本地有没有 / 正在传多少 / 上次失败原因，并给「立即回传」
+ * 手动补拉（历史归档任务用得上）。
+ */
+function ArchiveFilesBar({
+  files,
+  onTrigger,
+}: {
+  files: NonNullable<WorkFunctionStatus['local']['files']>;
+  onTrigger: () => void;
+}) {
+  const locpot = files.locpot;
+  const acf = files.acf;
+  const run = files.run;
+  const record = (files.record ?? {}) as Record<string, { state?: string; error?: string }>;
+  const locpotRecord = record.locpot || {};
+  const failed = locpotRecord.state === 'failed';
+  const done = Boolean(locpot?.present);
+  const tone = failed ? 'is-warn' : done ? 'is-ok' : '';
+  const head = files.running
+    ? `正在后台回传${run?.file === 'acf' ? ' ACF.dat' : ' LOCPOT'}…`
+    : done
+      ? `LOCPOT 已回传本地镜像（${fmtBytes(locpot?.bytes)}）`
+      : failed
+        ? `LOCPOT 回传失败：${locpotRecord.error || '未知原因'}`
+        : 'LOCPOT 未回传（体积大，归档时会自动后台回传）';
+  const progress =
+    files.running && run?.bytes_total
+      ? ` ${Math.min(100, Math.round(((run.bytes_done ?? 0) / run.bytes_total) * 100))}%（${fmtBytes(
+          run.bytes_done,
+        )} / ${fmtBytes(run.bytes_total)}）`
+      : '';
+  return (
+    <div className={`archive-files-bar ${tone}`.trim()}>
+      <span className="archive-files-bar__text">
+        {head}
+        {progress}
+        {acf?.present ? ` · ACF.dat 已回传（${fmtBytes(acf.bytes)}）` : ' · ACF.dat 未回传'}
+      </span>
+      {!files.running ? (
+        <Button size="small" onClick={onTrigger}>
+          {done && acf?.present ? '重新回传' : '立即回传'}
+        </Button>
+      ) : null}
+    </div>
+  );
 }
 
 export default function WorkFunctionPanel({ taskId, taskName, available }: Props) {
@@ -137,6 +195,26 @@ export default function WorkFunctionPanel({ taskId, taskName, available }: Props
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
+  /** LOCPOT / ACF.dat 后台回传进行中 → 每 5 秒刷一次状态（v0.9.74） */
+  const archiveRunning = Boolean(status?.local?.files?.running);
+  useEffect(() => {
+    if (!archiveRunning) return undefined;
+    const timer = window.setInterval(() => void load(false), 5000);
+    return () => window.clearInterval(timer);
+  }, [archiveRunning, load]);
+
+  const triggerArchive = useCallback(async () => {
+    try {
+      const res = await triggerArchiveFiles(taskId);
+      message.success(
+        res?.reused ? '已有回传在跑，稍后看进度' : '已开始后台回传（LOCPOT / ACF.dat）',
+      );
+      await load(false);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '触发回传失败');
+    }
+  }, [load, message, taskId]);
+
   const analyze = useCallback(async () => {
     setBusy(true);
     setError('');
@@ -165,6 +243,7 @@ export default function WorkFunctionPanel({ taskId, taskName, available }: Props
   const running = status?.status === 'running' || busy;
   const remote = status?.remote;
   const hasLocal = Boolean(status?.local?.has_result);
+  const files = status?.local?.files;
   const axisDirty = Boolean(data && data.axis && data.axis !== axis);
   const dipole = data?.dipole;
   const vacuum = data?.vacuum_level ?? null;
@@ -337,6 +416,9 @@ export default function WorkFunctionPanel({ taskId, taskName, available }: Props
           <Spin size="small" /> {status?.stage_label || '处理中…'}
         </div>
       )}
+
+      {/* 原始文件本地镜像（v0.9.74）：LOCPOT 较大 → 归档时后台回传；这里显示状态 + 手动补拉 */}
+      {files ? <ArchiveFilesBar files={files} onTrigger={() => void triggerArchive()} /> : null}
 
       {error ? (
         <Alert

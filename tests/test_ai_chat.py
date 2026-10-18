@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 import ai_chat_service as service
 import ai_chat_store as store
 import ai_workspace as workspace
+import checks_store
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from middleware.auth import install
@@ -58,15 +59,24 @@ class Provider(BaseHTTPRequestHandler):
         if payload["model"] == "redirect-model":
             self.send_response(307); self.send_header("Location", "/stolen"); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
-        if payload["model"] in ("workspace-model", "workspace-loop", "workspace-blocked"):
+        if payload["model"] in ("workspace-model", "workspace-loop", "workspace-blocked", "inspection-model"):
             count = sum(m.get("role") == "tool" for m in payload["messages"])
-            if count < 3 or payload["model"] == "workspace-loop":
+            if count < (4 if payload["model"] == "inspection-model" else 3) or payload["model"] == "workspace-loop":
                 choices = [
                     ("list_workspace", {"path": "project"}),
                     ("read_workspace", {"path": "project/neb/Model-alice/files/CONTCAR"}),
                     ("write_workspace", {"path": "work/CONTCAR.v1", "content": "candidate structure draft"}),
                 ]
                 name, args = choices[min(count, 2)]
+                if payload["model"] == "inspection-model":
+                    previous = [json.loads(m["content"]) for m in payload["messages"] if m.get("role") == "tool"]
+                    inspection_choices = [
+                        ("find_project_tasks", {"query": "Model-alice"}),
+                        ("get_task_inspections", {"task_id": "task-alice"}),
+                        ("get_inspection_evidence", {"task_id": "task-alice", "observation_id": previous[1]["observations"][0]["observation_id"] if count >= 2 else "", "kind": "curves"}),
+                        ("write_workspace", {"path": "work/inspection-plan.md", "content": "基于三个目录最新结果分阶段分析；仅保存计划草稿，未执行计算"}),
+                    ]
+                    name, args = inspection_choices[count]
                 if payload["model"] == "workspace-blocked":
                     name, args = "read_workspace", {"path": "project/../bob/private.txt"}
                 arguments = json.dumps(args)
@@ -79,6 +89,9 @@ class Provider(BaseHTTPRequestHandler):
         if payload["model"].startswith("deepseek-"):
             self.wfile.write(b': keep-alive\n\ndata: {"choices":[{"delta":{"reasoning_content":"PRIVATE_REASONING_TEST"},"finish_reason":null}]}\n\n')
         text = "模拟回答：已有结果符合本地快照；仍需核对预期。" + KEY
+        if payload["model"] == "inspection-model":
+            evidence = [json.loads(m["content"]) for m in payload["messages"] if m.get("role") == "tool"][1]
+            text = f"已按需查询{evidence['returned']}个目录的最新结果；最近目录{evidence['observations'][0]['output_dir']}，存在阶段切换，计划仅保存草稿。" + KEY
         if payload["model"] == "deepseek-only-thinking":
             text = ""
         if payload["model"] == "slow-model":
@@ -99,6 +112,7 @@ class AIChatTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix="vasp-ai-http-")
         cls.patches = [patch.object(store, "AI_DIR", Path(cls.temp.name)/"ai"),
+                       patch.object(checks_store, "CHECKS_DIR", Path(cls.temp.name)/"checks"),
                        patch.object(store, "KEY_PATH", Path(cls.temp.name)/"private/master.key"),
                        patch.object(service, "load_db", return_value=PROJECTS),
                        patch.object(ai_chat, "load_db", return_value=PROJECTS),
@@ -227,7 +241,7 @@ class AIChatTests(unittest.TestCase):
         _, events = self.api(f"/runs/{run['id']}/events", raw=True)
         self.assertIn('"status": "completed"', events)
         self.assertEqual({t["function"]["name"] for t in REQUESTS[-1]["tools"]},
-                         {"list_workspace", "read_workspace", "write_workspace"})
+                         {"list_workspace", "read_workspace", "write_workspace", "find_project_tasks", "get_task_inspections", "get_inspection_evidence"})
 
     def test_stop_and_single_active_run(self):
         connection = self.connection("slow-model"); conversation = self.conversation(connection)
@@ -490,6 +504,41 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(len(result["tool_events"]), 6)
         self.assertIn("上限", result["error"])
+
+    def test_model_queries_recent_inspections_then_evidence_and_plan_on_demand(self):
+        task_id = "task-alice"
+        for index in range(3):
+            row = {"task_id": task_id, "task_type": "neb", "checked_at": f"2026-10-18T2{index}:00:00",
+                   "status": "running", "remote_dir": "/remote/model", "job_id": "42" if index else "41",
+                   "current_output": {"latest_dir": f"con{index+4}"},
+                   "last_energy": -10-index, "incar": {"ENCUT": 500}, "kpoints": {"mesh": [2, 2, 1]},
+                   "force_history": [{"step": index, "energy": -10-index, "max_force": 0.2-index*0.05}]}
+            checks_store.archive_results([row], "mock", f"inspection{index}")
+        connection = self.connection("inspection-model")
+        conversation = self.conversation(connection, task_id)
+        current = copy.deepcopy(PROJECTS)
+        current["projects"][0]["tasks"][0].update(status="running", job_id="42", current_output={"latest_dir": "con6"})
+        with patch.object(service, "load_db", return_value=current):
+            status, run = self.send(conversation)
+            self.assertEqual(status, 200, run)
+            result = self.wait_run(run)
+        self.assertEqual(result["status"], "completed", result)
+        events = result["tool_events"]
+        self.assertEqual([e["name"] for e in events], ["find_project_tasks", "get_task_inspections", "get_inspection_evidence", "write_workspace"])
+        self.assertEqual(result["usage"]["total_tokens"], 70)
+        evidence = events[1]["result"]
+        self.assertEqual(evidence["returned"], 3)
+        self.assertEqual([row["output_dir"] for row in evidence["observations"]], ["con6", "con5", "con4"])
+        self.assertEqual(evidence["retention_unit"], "calculation_directory")
+        self.assertFalse(evidence["comparisons"][0]["same_observed_stage"])
+        self.assertIsNone(evidence["comparisons"][1]["energy_delta_ev"])
+        self.assertFalse(evidence["evidence"]["inherited_fields"])
+        self.assertEqual(events[2]["result"]["items"][0]["step"], 2)
+        self.assertFalse(events[3]["result"]["applied"])
+        self.assertNotIn("observations", result["snapshot"]["context"])
+        self.assertIn("get_task_inspections", result["snapshot"]["context"]["workspace_rules"]["inspections"])
+        _, detail = self.api(f"/conversations/{conversation['id']}")
+        self.assertIn("按需查询3个目录", detail["messages"][-1]["content"])
 
     def test_large_project_budget_never_silently_caps_at_twelve_tasks(self):
         context = {"scope": "project", "project": {"name": "test"}, "summary": {"task_count": 30},

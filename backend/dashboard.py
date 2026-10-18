@@ -399,29 +399,9 @@ def _completed_task_ids_by_day(force: bool = False) -> Dict[str, set]:
     yesterday = today - timedelta(days=1)
     prev = today - timedelta(days=2)
     seen: Dict[str, set] = {"today": set(), "yesterday": set(), "prev": set()}
-    files = sorted(CHECKS_DIR.glob("check_results_*.json"), key=lambda p: p.stat().st_mtime)
-    for path in files[-400:]:
-        try:
-            day = datetime.fromtimestamp(path.stat().st_mtime).date()
-        except OSError:
-            continue
-        if day == today:
-            key = "today"
-        elif day == yesterday:
-            key = "yesterday"
-        elif day == prev:
-            key = "prev"
-        else:
-            continue
-        try:
-            entries = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if entry.get("status") == "completed" and entry.get("task_id"):
-                seen[key].add(str(entry["task_id"]))
+    days = checks_store.daily_summary()
+    for label, day in (("today", today), ("yesterday", yesterday), ("prev", prev)):
+        seen[label] = set(days.get(day.isoformat(), {}).get("completed", []))
     _DAY_COMPLETED_CACHE["at"] = now
     _DAY_COMPLETED_CACHE["data"] = seen
     return seen

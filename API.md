@@ -165,7 +165,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 | `GET /free-energy/{group_id}/summary` | — | 自由能台阶数据（中间体 DFT/矫正项/相对能/收敛） | 自由能路径进度判断 |
 | `GET /reports/groups`、`GET /reports/groups/{group_id}/data` | — | 组结构化数据（台阶图/能垒图原始值） | 同上 |
 
-> 原始归档：`data/checks/check_results_*.json`（每轮一份）+ `data/checks/runs.json`（每轮摘要）。需要逐字段（`force_converged`、`precision.issues`、`markers`）时可直接读文件，或走 `GET /inspections/{task_id}`。
+> 原始归档：`data/checks/check_results_*.json`（每批一份，按任务裁剪，每个任务最多保留最近5个计算目录各自的一条最新观测，同目录更新覆盖）+ `data/checks/runs.json`（最近50轮执行摘要）。后台启动及每次巡检归档后自动整理；混合批次仅移除超额任务条目，空文件删除。`latest_results.json` 为最新合并结果视图，`daily_summary.json` 仅保留按日去重统计集合，避免清理历史改变总览/报告或丢失沿用的力信息；均非额外原始巡检历史。任务历史查询按实际checked_at倒序，最多5个不同目录，不再限制只扫描最新1200份文件。需要逐字段（`force_converged`、`precision.issues`、`markers`）时可直接读文件，或走 `GET /inspections/{task_id}`。
 
 ### 3.3 集群 / 总览
 
@@ -807,7 +807,10 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 **长度与恢复**：完整历史保留；每轮最多选取 40 条、24000 字符的近期历史，项目快照预算 28000 字符，截断/省略会标明，可在“本轮依据”查看。第一版没有自动语义摘要。单账号最多 3 个并发回答，同一会话只允许 1 个。断开页面不取消后台回答；重新打开可继续订阅。后端重启将未结束运行标为 interrupted，不自动重发付费请求。
 
-**项目文件工作区**：每轮项目上下文仅附 `workspace_rules` 简短规则（项目边界、只读/草稿权限、地图查询入口），不附完整 `directory_map` 或任务 `workspace_path`。模型需定位文件时调用 `read_workspace` 读取 `evidence/directory-map.json`；前端完整地图接口保持不变，地图仍沿用 `task_paths.py` 的布局约定。虚拟根为 `project/`、`reports/`、`evidence/`、`knowledge/`、`reference/`（只读）和 `work/`（会话私有草稿）。模型工具仅 `list_workspace`、`read_workspace`、`write_workspace`，禁用路径越界、符号链接、敏感文件及覆盖。写入仅新建 work 文件，单文件120000字节、每会话4 MiB/100文件。每轮最多12次工具操作、6轮工具推理及一轮总结，工具结果预算90000字符；后续推理请求累计服务商实际 usage。`tool_events` 保留意图、参数、结果和状态，并随运行/SSE返回；服务重启的未结束工具标为 interrupted。PUT 会话可传 `workspace_enabled`；新建项目会话默认启用，已有会话原地升级默认关闭。通用会话不可启用。不兼容工具协议可关闭，无自动降级重试。凭据和全局状态继续由后端持有；不提供远端、代码执行或正式文件应用。详见 [MODEL_WORKSPACE.md](MODEL_WORKSPACE.md)。
+**项目文件工作区**：每轮项目上下文仅附 `workspace_rules` 简短规则（项目边界、只读/草稿权限、地图查询入口），不附完整 `directory_map` 或任务 `workspace_path`。模型需定位文件时调用 `read_workspace` 读取 `evidence/directory-map.json`；前端完整地图接口保持不变，地图仍沿用 `task_paths.py` 的布局约定。虚拟根为 `project/`、`reports/`、`evidence/`、`knowledge/`、`reference/`（只读）和 `work/`（会话私有草稿）。模型文件工具为 `list_workspace`、`read_workspace`、`write_workspace`，另有只读巡检工具 `find_project_tasks`、`get_task_inspections`、`get_inspection_evidence`；禁用路径越界、符号链接、敏感文件及覆盖。写入仅新建 work 文件，单文件120000字节、每会话4 MiB/100文件。每轮最多12次工具操作、6轮工具推理及一轮总结，工具结果预算90000字符；后续推理请求累计服务商实际 usage。`tool_events` 保留意图、参数、结果和状态，并随运行/SSE返回；服务重启的未结束工具标为 interrupted。PUT 会话可传 `workspace_enabled`；新建项目会话默认启用，已有会话原地升级默认关闭。通用会话不可启用。不兼容工具协议可关闭，无自动降级重试。凭据和全局状态继续由后端持有；不提供远端、代码执行或正式文件应用。详见 [MODEL_WORKSPACE.md](MODEL_WORKSPACE.md)。
+
+
+**模型按需巡检链路**：在启用工作区的项目会话中，由模型按问题定位任务并调用 `get_task_inspections(task_id, limit=3)`，默认最近3个计算目录、最多5个目录各自的最新观测；同目录后续巡检更新覆盖，不保留该目录多次巡检时间序列。需要具体曲线/参数/NEB数值时再调用 `get_inspection_evidence(task_id, observation_id, kind, offset=0)`。查询返回完整JSON，而非页面截图或任意字节截断；原始字段缺失不从最新汇总补填，跨目录/作业/参数阶段不直接计算差值。观测被同目录更新或超过5目录保留范围时明确报错、需重新查询。名称歧义可用 `find_project_tasks(query)`，返回本项目最多20个候选。活跃任务观测缺失、超两倍配置巡检间隔或未来时间异常时提示刷新，历史完成结果不机械按年龄失效；均不发SSH。工具定义属于模型请求协议，不是新增公开HTTP动作路由；工具参数、原始数值证据及状态持久化到运行 `tool_events`，可在本轮依据审阅。工具能力继续由工作区开关控制。
 
 ## 5. 智能体闭环：巡检 → 判断 → 执行（建议用法）
 

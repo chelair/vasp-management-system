@@ -1500,37 +1500,13 @@ def _sections_markdown(report, charts):
 
 def _anomaly_trend(project_name: str, days: int = 7) -> List[Dict[str, Any]]:
     """近 N 天异常任务数量趋势（按归档文件的修改时间归日，任务去重）。"""
-    from checks_store import CHECKS_DIR
+    from checks_store import daily_summary
 
     today = datetime.now().date()
-    buckets: Dict[str, set] = {
-        (today - timedelta(days=i)).isoformat(): set() for i in range(days)
-    }
-    if not CHECKS_DIR.is_dir():
-        return [{"date": d, "count": 0} for d in sorted(buckets)]
-    files = sorted(CHECKS_DIR.glob("check_results_*.json"), key=lambda p: p.stat().st_mtime)
-    for path in files:
-        try:
-            day = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
-        except OSError:
-            continue
-        if day not in buckets:
-            continue
-        try:
-            entries = __import__("json").loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if str(entry.get("project_name")) != project_name:
-                continue
-            if (
-                entry.get("status") in ("zombied", "unconverged")
-                or entry.get("error_messages")
-            ):
-                buckets[day].add(str(entry.get("task_id")))
-    return [{"date": d, "count": len(buckets[d])} for d in sorted(buckets)]
+    summary = daily_summary()
+    dates = sorted((today - timedelta(days=i)).isoformat() for i in range(days))
+    return [{"date": day, "count": len(summary.get(day, {}).get("anomalies", {}).get(project_name, []))}
+            for day in dates]
 
 
 def _stats(facts: List[Dict[str, Any]], archived_count: int) -> Dict[str, Any]:

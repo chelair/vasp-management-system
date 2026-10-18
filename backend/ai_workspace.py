@@ -12,6 +12,7 @@ import stat
 import threading
 
 import ai_chat_store as store
+import ai_inspections as inspections
 from config import DATA_DIR, load_servers
 from dates import now_iso
 from paths import local_root, remote_root
@@ -185,7 +186,7 @@ def reading(project: dict, conversation: dict, context: dict, path: str, offset:
         files = virtual_files(project, context)
         if len(pieces) == 3 and pieces[1] == "history" and pieces[2] in files["history"]:
             from checks_store import collect_task_history
-            value = collect_task_history(pieces[2][:-5], limit=20)
+            value = collect_task_history(pieces[2][:-5], limit=5)
         elif len(pieces) == 2 and pieces[1] in files and pieces[1] != "history":
             value = files[pieces[1]]
         else:
@@ -264,6 +265,12 @@ def remove_work(project: dict, conversation: dict):
 
 
 TOOLS = [
+    {"type": "function", "function": {"name": "find_project_tasks", "description": "在当前项目按名称、ID或目录片段定位任务；多个匹配时确认类型和目录，不能跨项目。",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string", "maxLength": 200}}, "required": ["query"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_task_inspections", "description": "查询最近3个计算目录各自的最新巡检结果（最多5个）。同目录更新覆盖，不是连续巡检历史；目录内趋势请查离子步曲线。返回数值、来源、阶段和时效，不触发巡检或SSH。",
+        "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3}}, "required": ["task_id"], "additionalProperties": False}}},
+    {"type": "function", "function": {"name": "get_inspection_evidence", "description": "按观测ID读取该次巡检的曲线、NEB映像数值或参数；完整JSON分页，不把当前结构冒充历史结构。观测过期需重新查询。",
+        "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "observation_id": {"type": "string"}, "kind": {"type": "string", "enum": ["curves", "neb", "parameters"]}, "offset": {"type": "integer", "minimum": 0}}, "required": ["task_id", "observation_id", "kind"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "list_workspace", "description": "按目录地图浏览当前项目，只读；支持 offset 分页，每页最多100项。",
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}}, "required": ["path"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "read_workspace", "description": "读取地图内文本，每次最多12000字节，offset 分页或 tail 取尾部；返回来源、时间和分片哈希。",
@@ -276,6 +283,25 @@ TOOLS = [
 def dispatch(project: dict, conversation: dict, context: dict, name: str, arguments: dict) -> dict:
     if name not in {tool["function"]["name"] for tool in TOOLS} or not isinstance(arguments, dict):
         raise ValueError("不支持的工作区工具")
+    if name in ("find_project_tasks", "get_task_inspections", "get_inspection_evidence"):
+        allowed = {"query"} if name == "find_project_tasks" else {"task_id", "limit"} if name == "get_task_inspections" else {"task_id", "observation_id", "kind", "offset"}
+        if set(arguments)-allowed:
+            raise ValueError("巡检工具参数不合法")
+        if name == "find_project_tasks":
+            if not isinstance(arguments.get("query"), str):
+                raise ValueError("请输入任务查询文本")
+            return inspections.find_tasks(project, **arguments)
+        if not isinstance(arguments.get("task_id"), str) or len(arguments["task_id"]) > 200:
+            raise ValueError("任务ID不合法")
+        if name == "get_task_inspections":
+            if type(arguments.get("limit", 3)) is not int or not 1 <= arguments.get("limit", 3) <= 5:
+                raise ValueError("只支持查询最近1至5个目录的最新结果，默认3个")
+            return inspections.query_inspections(project, **arguments)
+        if (not isinstance(arguments.get("observation_id"), str) or len(arguments["observation_id"]) != 24
+                or arguments.get("kind") not in ("curves", "neb", "parameters")
+                or type(arguments.get("offset", 0)) is not int or not 0 <= arguments.get("offset", 0) <= 1000000):
+            raise ValueError("观测ID、证据类型或分页参数不合法")
+        return inspections.query_evidence(project, **arguments)
     allowed = {"path", "content"} if name == "write_workspace" else {"path", "offset", "tail"} if name == "read_workspace" else {"path", "offset"}
     if set(arguments)-allowed or not isinstance(arguments.get("path"), str):
         raise ValueError("工作区参数不合法")

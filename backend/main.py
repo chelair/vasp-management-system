@@ -40,6 +40,9 @@ from ssh import warmup_connection
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_data_dirs()
+    from checks_store import enforce_retention
+    retention = enforce_retention()
+    print(f"[checks] 每任务最多5个计算目录，每目录一个最新结果；本次清理{retention['removed_records']}条旧记录", flush=True)
     try:
         from ai_chat_store import recover_runs
         recover_runs()

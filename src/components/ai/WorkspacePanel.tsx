@@ -5,7 +5,7 @@ import { getAIWorkspace, listAIWorkspace, readAIWorkspace } from '../../api/aiCh
 import type { AIRun, AIWorkspaceFile, AIWorkspaceListing, AIWorkspaceMap } from '../../api/aiChat';
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '读取失败';
-const TOOL_NAMES: Record<string, string> = { list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿' };
+const TOOL_NAMES: Record<string, string> = { list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿', find_project_tasks: '定位任务', get_task_inspections: '查询最近巡检', get_inspection_evidence: '读取巡检数值证据' };
 
 export default function WorkspacePanel({ conversationId, runs, enabled }: { conversationId: string; runs: AIRun[]; enabled: boolean }) {
   const [map, setMap] = useState<AIWorkspaceMap | null>(null);
@@ -41,7 +41,7 @@ export default function WorkspacePanel({ conversationId, runs, enabled }: { conv
   return <div className="ai-file-panel">
     {error && <Alert type="warning" showIcon message={error} />}
     {map ? <>
-      <p className="ai-muted">{enabled ? '模型可按地图读取文件、创建草稿。' : '模型文件工具未启用，可在会话设置中开启。'}正式数据只读，草稿不会自动应用。</p>
+      <p className="ai-muted">{enabled ? '模型可按需查询巡检、读取文件、创建草稿。' : '模型工具未启用，可在会话设置中开启工作区。'}正式数据只读，草稿不会自动应用。</p>
       <h4>目录地图</h4>
       {map.roots.map((root) => <button className="ai-run-row" key={root.path} onClick={() => { void browse(root.path.replace(/\/$/, '')); }}>
         <strong><FolderOpenOutlined /> {root.path}<Tag style={{ marginLeft: 8 }}>{root.access === 'read_write' ? '可写草稿' : '只读'}</Tag></strong><span>{root.purpose}</span>
@@ -67,13 +67,14 @@ export default function WorkspacePanel({ conversationId, runs, enabled }: { conv
       {listing.next_offset != null && <Button size="small" onClick={() => { void browse(listing.path, listing.next_offset!); }}>下一页</Button>}
       {!listing.items.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无文件" />}
     </>}
-    <h4>模型文件操作记录</h4>
+    <h4>模型工具记录</h4>
     {events.length ? events.map((event, index) => <div className="ai-record" key={`${event.runId}-${event.id}-${index}`}>
       <strong>{TOOL_NAMES[event.name] ?? event.name} · {event.status === 'completed' ? '成功' : event.status === 'running' ? '执行中' : event.status === 'interrupted' ? '已中断' : '失败'}</strong>
-      <span>{String(event.arguments?.path ?? '')}</span><span>{event.at.replace('T', ' ')}</span>
+      <span>{String(event.arguments?.path ?? event.arguments?.query ?? event.arguments?.task_id ?? '')}</span><span>{event.at.replace('T', ' ')}</span>
+      {event.name === 'get_task_inspections' && event.status === 'completed' && <span>{event.result.retention_unit === 'calculation_directory' ? `已读取 ${String(event.result.returned ?? 0)} 个目录的最新结果` : `已读取 ${String(event.result.returned ?? 0)} 次巡检`}</span>}
       {event.result?.error != null && <span className="ai-run-error">{String(event.result.error)}</span>}
       {event.name === 'write_workspace' && event.status === 'completed' && <Button size="small" onClick={() => { void read(String(event.result.path)); }}>查看草稿</Button>}
-    </div>) : <p className="ai-muted">暂无文件工具调用。可让模型先查看目录地图并分析某个任务的实际文件。</p>}
+    </div>) : <p className="ai-muted">暂无工具调用。可让模型分析某任务最近三个计算目录的最新结果，需要时再读取实际文件。</p>}
     <Modal title={file?.path ?? '文件内容'} open={!!file} onCancel={() => setFile(null)} footer={null} width={900}>
       {file && <><p className="ai-muted">本地文件 · {file.bytes} 字节 · 当前从字节 {file.offset} 开始；{file.next_offset == null ? '已到文件末尾' : '还有后续内容'}。未实时核对远端。</p>
         <pre className="ai-json">{file.content}</pre><div className="ai-actions">

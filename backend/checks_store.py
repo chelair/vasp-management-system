@@ -1,6 +1,15 @@
 """巡检结果存取：归档 check_results_*.json、按 task_id 合并、映射为前端展示行。"""
 
 import json
+import hashlib
+from contextlib import contextmanager
+from datetime import datetime
+from functools import wraps
+import os
+import posixpath
+import tarfile
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -11,6 +20,204 @@ from task_paths import is_auxiliary_task
 CHECKS_DIR = DATA_DIR / "checks"
 RUNS_FILE = DATA_DIR / "checks" / "runs.json"
 MAX_RUNS = 50
+MAX_TASK_HISTORY = 5
+_LOCK = threading.RLock()
+_LOCAL = threading.local()
+
+
+@contextmanager
+def _locked():
+    import fcntl
+    with _LOCK:
+        depth = getattr(_LOCAL, "depth", 0)
+        _LOCAL.depth = depth + 1
+        try:
+            if depth:
+                yield
+            else:
+                CHECKS_DIR.mkdir(parents=True, exist_ok=True)
+                with (CHECKS_DIR / ".retention.lock").open("a") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(lock, fcntl.LOCK_UN)
+        finally:
+            _LOCAL.depth = depth
+
+
+def _synchronized(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with _locked():
+            return func(*args, **kwargs)
+    return wrapped
+
+
+def _atomic_json(path: Path, value, *, mtime_ns: int | None = None):
+    fd, temporary = tempfile.mkstemp(dir=CHECKS_DIR, prefix=".checks_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mtime_ns is not None:
+            os.utime(temporary, ns=(mtime_ns, mtime_ns))
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _read_json(path: Path, default):
+    if not path.is_file():
+        return default
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _archives():
+    result = []
+    for path in CHECKS_DIR.glob("check_results_*.json"):
+        try:
+            entries = _read_json(path, [])
+            if isinstance(entries, list):
+                result.append((path, path.stat().st_mtime_ns, entries))
+        except (OSError, ValueError):
+            continue  # 损坏文件不参与裁剪，避免误删。
+    return sorted(result, key=lambda item: (item[1], item[0].name))
+
+
+def _entry_time(entry: dict, fallback: float) -> float:
+    try:
+        return datetime.fromisoformat(str(entry.get("checked_at") or "").replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError):
+        return fallback
+
+
+def _ordered_entries(archives):
+    rows = [(entry, path, index, _entry_time(entry, mtime / 1e9))
+            for path, mtime, entries in archives for index, entry in enumerate(entries)
+            if isinstance(entry, dict) and entry.get("task_id")]
+    return sorted(rows, key=lambda row: (row[3], str(row[1]), row[2]))
+
+
+def observation_directory(entry: dict) -> dict:
+    """目录身份独立于作业/参数；统一相对conN、完整路径和主目录别名。"""
+    root = str(entry.get("remote_dir") or "").strip().rstrip("/")
+    output = (entry.get("current_output") or {}).get("latest_dir")
+    if output is None:
+        # 没有输出来源时不擅自当作主目录；保留一个明确标记未知来源的槽。
+        return {"key": "unknown:" + root, "path": None, "known": False}
+    output = str(output).strip().rstrip("/")
+    if output in ("", ".", "MAIN", "main"):
+        path = root or "."
+    elif output.startswith("/"):
+        path = output
+    elif root and (root == output or root.endswith("/" + output)):
+        path = root
+    else:
+        path = posixpath.join(root, output)
+    path = posixpath.normpath(path)
+    return {"key": "directory:" + path, "path": path, "known": True}
+
+
+def _latest_from(archives):
+    merged = _read_json(CHECKS_DIR / "latest_results.json", {})
+    for entry, _, _, _ in _ordered_entries(archives):
+        tid = entry["task_id"]
+        if tid not in merged or _entry_time(entry, 0) >= _entry_time(merged[tid], 0):
+            merged[tid] = _merge_entry(merged[tid], entry) if tid in merged else entry
+    return merged
+
+
+def _daily_from(archives):
+    # 仅保存任务ID去重集合，不保存额外巡检详情，保证裁剪不改变历史统计。
+    saved = _read_json(CHECKS_DIR / "daily_summary.json", {})
+    days = {day: {"completed": set(row.get("completed", [])),
+                  "anomalies": {project: set(ids) for project, ids in row.get("anomalies", {}).items()}}
+            for day, row in saved.items()}
+    for _, mtime, entries in archives:
+        day = datetime.fromtimestamp(mtime / 1e9).date().isoformat()
+        bucket = days.setdefault(day, {"completed": set(), "anomalies": {}})
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("task_id"):
+                continue
+            tid = str(entry["task_id"])
+            if entry.get("status") == "completed":
+                bucket["completed"].add(tid)
+            if entry.get("status") in ("zombied", "unconverged") or entry.get("error_messages"):
+                bucket["anomalies"].setdefault(str(entry.get("project_name")), set()).add(tid)
+    return {day: {"completed": sorted(row["completed"]),
+                  "anomalies": {project: sorted(ids) for project, ids in row["anomalies"].items()}}
+            for day, row in days.items()}
+
+
+@_synchronized
+def daily_summary() -> dict:
+    return _daily_from(_archives())
+
+
+def _include_backup(archives, backup_path: Path):
+    """一次性迁移只读备份，不解包任意路径；恢复候选最终仍经目录去重和上限裁剪。"""
+    grouped = {path.name: [path, mtime, list(entries)] for path, mtime, entries in archives}
+    with tarfile.open(backup_path, "r:gz") as backup:
+        for member in backup:
+            name = Path(member.name).name
+            if not member.isfile() or not name.startswith("check_results_") or not name.endswith(".json"):
+                continue
+            stream = backup.extractfile(member)
+            if stream is None:
+                continue
+            with stream:
+                entries = json.load(stream)
+            if not isinstance(entries, list):
+                continue
+            target = grouped.setdefault(name, [CHECKS_DIR / name, int(member.mtime * 1e9), []])
+            seen = {json.dumps(row, sort_keys=True, ensure_ascii=False) for row in target[2]}
+            for row in entries:
+                canonical = json.dumps(row, sort_keys=True, ensure_ascii=False)
+                if canonical not in seen:
+                    target[2].append(row)
+                    seen.add(canonical)
+    return list(grouped.values())
+
+
+@_synchronized
+def enforce_retention(backup_path: Path | None = None) -> dict:
+    """每任务最多5个计算目录、每目录一个最新原始观测；先保视图/统计再原子裁剪。"""
+    archives = _archives()
+    existing = {path: entries for path, _, entries in archives}
+    if backup_path is not None:
+        archives = _include_backup(archives, backup_path)
+    latest = _latest_from(archives)
+    daily = _daily_from(archives)
+    _atomic_json(CHECKS_DIR / "latest_results.json", latest)
+    _atomic_json(CHECKS_DIR / "daily_summary.json", daily)
+    kept = set()
+    counts = {}
+    seen_directories = set()
+    for entry, path, index, _ in reversed(_ordered_entries(archives)):
+        tid = entry["task_id"]
+        directory = (tid, observation_directory(entry)["key"])
+        if directory not in seen_directories and counts.get(tid, 0) < MAX_TASK_HISTORY:
+            kept.add((path, index))
+            seen_directories.add(directory)
+            counts[tid] = counts.get(tid, 0) + 1
+    removed = deleted = restored = 0
+    for path, mtime, entries in archives:
+        remaining = [entry for index, entry in enumerate(entries)
+                     if not isinstance(entry, dict) or not entry.get("task_id") or (path, index) in kept]
+        removed += len(entries) - len(remaining)
+        restored += sum(entry not in existing.get(path, []) for entry in remaining)
+        if not remaining and path.exists():
+            path.unlink()
+            deleted += 1
+        elif remaining and remaining != existing.get(path):
+            _atomic_json(path, remaining, mtime_ns=mtime)
+    invalidate_cache()
+    return {"tasks": len(counts), "removed_records": removed, "deleted_files": deleted,
+            "retained_records": sum(counts.values()), "restored_records": restored,
+            "max_per_task": MAX_TASK_HISTORY, "retention_unit": "calculation_directory"}
 
 TASK_TYPE_LABELS = {
     "opt": "结构优化",
@@ -20,14 +227,17 @@ TASK_TYPE_LABELS = {
 }
 
 
+@_synchronized
 def archive_results(entries: List[Dict[str, Any]], server: str, ts: str) -> str:
     """归档一轮巡检的批量检查结果。"""
     CHECKS_DIR.mkdir(parents=True, exist_ok=True)
     path = CHECKS_DIR / f"check_results_{ts}_{server}.json"
-    path.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_json(path, entries)
+    enforce_retention()
     return str(path)
 
 
+@_synchronized
 def collect_results() -> Dict[str, Dict[str, Any]]:
     """扫描结果文件并按 task_id 合并。
 
@@ -35,60 +245,42 @@ def collect_results() -> Dict[str, Dict[str, Any]]:
     未提供/本次未检查的字段（markers / notes / force_history / 力统计）
     沿用上一次结果，避免覆盖丢失（例如本次未下载检查时保留上次的检查标记）。
     """
-    merged: Dict[str, Dict[str, Any]] = {}
-    if not CHECKS_DIR.is_dir():
-        return merged
-    files = sorted(
-        CHECKS_DIR.glob("check_results_*.json"),
-        key=lambda p: p.stat().st_mtime,
-    )
-    for path in files:
-        try:
-            entries = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - 单个结果文件损坏不影响整体
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            task_id = entry.get("task_id")
-            if task_id:
-                merged[task_id] = (
-                    _merge_entry(merged[task_id], entry)
-                    if task_id in merged
-                    else entry
-                )
-    return merged
+    return _latest_from(_archives())
 
 
-def collect_task_history(task_id: str, limit: int = 5, scan_files: int = 1200) -> List[Dict[str, Any]]:
-    """取某个任务最近 `limit` 轮**巡检原始条目**（新 → 旧），供 AI 任务上下文用。
+@_synchronized
+def collect_task_observations(task_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """最近最多5个目录的最新原始观测及标识；不补填历史字段。"""
+    result = []
+    seen = set()
+    if not task_id or limit <= 0:
+        return result
+    for entry, path, _, _ in reversed(_ordered_entries(_archives())):
+        if entry.get("task_id") != task_id:
+            continue
+        directory = observation_directory(entry)
+        if directory["key"] in seen:
+            continue
+        seen.add(directory["key"])
+        canonical = json.dumps(entry, ensure_ascii=False, sort_keys=True)
+        result.append({"observation_id": hashlib.sha256((path.name + "\n" + canonical).encode()).hexdigest()[:24],
+                       "archive": path.name, "directory": directory, "data": entry})
+        if len(result) >= min(limit, MAX_TASK_HISTORY):
+            break
+    return result
+
+
+@_synchronized
+def collect_task_history(task_id: str, limit: int = 5, scan_files: int | None = None) -> List[Dict[str, Any]]:
+    """取某任务最近 `limit` 个计算目录各自最新的巡检原始条目（新→旧）。
 
     与 `collect_results()`（合并成"最新一条"）不同：这里要的是**历史序列**
-    （能量/力/收敛/错误标志随轮次的变化）。只扫最近 `scan_files` 份归档，避免全量读；
-    停跑较久的任务其记录可能在更早的归档里（2026-10-13 实测：归档已 1541 份，停跑两周的任务要往前扫约 700 份才命中）。
+    每目录只有一个最新结果，不是同目录的连续巡检时间序列。最多5个目录；scan_files仅保留参数兼容，
+    不再限制扫描范围，避免较早停止的任务被错误判为没有历史。
     """
     if not CHECKS_DIR.is_dir() or not task_id or limit <= 0:
         return []
-    files = sorted(
-        CHECKS_DIR.glob("check_results_*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )[: max(1, scan_files)]
-    history: List[Dict[str, Any]] = []
-    for path in files:
-        try:
-            entries = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - 单个归档损坏跳过
-            continue
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if entry.get("task_id") != task_id:
-                continue
-            history.append(entry)
-            if len(history) >= limit:
-                return history
-    return history
+    return [row["data"] for row in collect_task_observations(task_id, limit)]
 
 
 #: `collect_results()` 的短缓存：data/checks 有 20+MB，作业管理/总览每次请求都全量读代价太高。

@@ -4,7 +4,7 @@ import { Alert, App, Button, Collapse, Descriptions, Empty, Form, Input, Modal, 
 import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
 import PageHeader from '../components/common/PageHeader';
 import ConnectionSettings from '../components/ai/ConnectionSettings';
-import ChatMarkdown from '../components/ai/ChatMarkdown';
+import StreamingAnswer from '../components/ai/StreamingAnswer';
 import WorkspacePanel from '../components/ai/WorkspacePanel';
 import {
   createAIConversation, deleteAIConversation, getAIContext, getAIConversation, getAIRun,
@@ -49,6 +49,11 @@ export default function AI() {
   const [form] = Form.useForm<{ title: string; prompt: string; workspace_enabled: boolean }>();
   const messagesRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
+  const freshRuns = useRef(new Set<string>());
+  const scrollAnswer = useCallback(() => {
+    const box = messagesRef.current;
+    if (box && autoScroll.current) box.scrollTop = box.scrollHeight;
+  }, []);
   const active = detail?.runs.find(isActiveRun);
 
   const reloadConnections = useCallback(async () => {
@@ -67,6 +72,7 @@ export default function AI() {
 
   useEffect(() => {
     let cancelled = false;
+    freshRuns.current.clear();
     setDetail(null); setContext(null); setError(''); setDraft(selected ? drafts.current[selected] ?? '' : '');
     setEditOpen(false); setInspecting(null);
     autoScroll.current = true;
@@ -74,11 +80,15 @@ export default function AI() {
     setLoading(true);
     void getAIConversation(selected).then((data) => {
       if (cancelled) return;
-      setDetail(data); setScope(data.project_id ?? 'general');
+      setDetail(data);
       return getAIContext(selected).then((snapshot) => { if (!cancelled) setContext(snapshot); });
     }).catch((e) => { if (!cancelled) setError(errorText(e)); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [selected]);
+
+  useEffect(() => {
+    if (detail) setScope(targets.some((project) => project.id === detail.project_id && !project.closed) ? detail.project_id! : 'general');
+  }, [detail?.id, targets]);
 
   useEffect(() => {
     if (!active || !selected) return;
@@ -115,18 +125,36 @@ export default function AI() {
 
   const projectOptions = useMemo(() => [
     { label: '通用对话 · 不附加项目', value: 'general' },
-    ...targets.map((project) => ({ label: `${project.name} · ${project.tasks.length} 个任务${project.closed ? '（已关闭）' : ''}`, value: project.id })),
+    ...targets.filter((project) => !project.closed).map((project) => ({ label: `${project.name} · ${project.tasks.length} 个任务`, value: project.id })),
   ], [targets]);
   const scopeName = targets.find((p) => p.id === scope)?.name ?? '通用对话';
-  const filtered = conversations.filter((c) => (c.project_id ?? 'general') === scope);
+  const visibleConversations = useMemo(() => {
+    const openProjects = new Set(targets.filter((project) => !project.closed).map((project) => project.id));
+    return conversations.filter((conversation) => !conversation.project_id || openProjects.has(conversation.project_id))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id));
+  }, [conversations, targets]);
+  const conversationGroups = useMemo(() => {
+    const groups = new Map<string, { id: string; name: string; conversations: AIConversation[] }>();
+    for (const conversation of visibleConversations) {
+      const id = conversation.project_id ?? 'general';
+      if (!groups.has(id)) groups.set(id, { id, name: targets.find((project) => project.id === id)?.name ?? '通用对话', conversations: [] });
+      groups.get(id)!.conversations.push(conversation);
+    }
+    // 已按时间排序的会话依次入组：组内倒序，分组也按最近一次对话排序。
+    return [...groups.values()];
+  }, [visibleConversations, targets]);
   const model = connections.find((c) => c.id === detail?.connection_id);
   const choose = (id: string | null) => setParams(id ? { conversation: id } : {});
 
   const newConversation = async () => {
     const requestedScope = scope;
+    if (scope !== 'general' && !targets.some((project) => project.id === scope && !project.closed)) {
+      setScope('general'); void message.warning('请选择未关闭的项目或通用对话'); return;
+    }
     setBusy(true);
     try {
-      const result = await createAIConversation({ title: `${scopeName} · ${filtered.length + 1}`, project_id: scope === 'general' ? undefined : scope });
+      const count = conversations.filter((conversation) => (conversation.project_id ?? 'general') === scope).length;
+      const result = await createAIConversation({ title: `${scopeName} · ${count + 1}`, project_id: scope === 'general' ? undefined : scope });
       await reloadList(); if (scopeRef.current === requestedScope) choose(result.id);
     } catch (e) { void message.error(errorText(e)); }
     finally { setBusy(false); }
@@ -136,7 +164,8 @@ export default function AI() {
     const id = detail.id, text = draft;
     setBusy(true); setError(''); autoScroll.current = true;
     try {
-      await sendAIMessage(id, text, retry);
+      const started = await sendAIMessage(id, text, retry);
+      freshRuns.current.add(started.id);
       if (!retry) drafts.current[id] = '';
       const fresh = await getAIConversation(id);
       if (selectedRef.current === id) { setDetail(fresh); if (!retry) setDraft(''); }
@@ -161,17 +190,17 @@ export default function AI() {
     {error && <Alert type="warning" closable onClose={() => setError('')} message={error} action={active ? <Button size="small" onClick={() => setStreamRevision((n) => n + 1)}>重新连接</Button> : undefined} />}
     <div className="ai-workspace">
       <aside className="ai-sessions">
-        <label className="ai-label">附加项目</label>
-        <Select aria-label="选择附加项目" showSearch optionFilterProp="label" value={scope} options={projectOptions} style={{ width: '100%' }} onChange={(value) => {
-          setScope(value); choose(conversations.find((c) => (c.project_id ?? 'general') === value)?.id ?? null);
-        }} />
+        <label className="ai-label">新对话所属项目</label>
+        <Select aria-label="选择新对话所属项目" showSearch optionFilterProp="label" value={scope} options={projectOptions} style={{ width: '100%' }} onChange={setScope} />
         <Button block icon={<PlusOutlined />} loading={busy} onClick={() => { void newConversation(); }} style={{ margin: '12px 0' }}>新建会话</Button>
-        <div className="ai-muted ai-scope-title">{scopeName}</div>
-        <div className="ai-session-list">{filtered.map((conversation) => <button key={conversation.id}
+        <div className="ai-muted ai-scope-title">最近对话</div>
+        <div className="ai-session-list">{conversationGroups.map((group) => <section className="ai-session-group" key={group.id} aria-label={`${group.name}的对话`}>
+          <div className="ai-session-group-title"><strong>{group.name}</strong><span>{group.conversations.length}</span></div>
+          {group.conversations.map((conversation) => <button key={conversation.id}
           className={`ai-session${selected === conversation.id ? ' selected' : ''}`} onClick={() => choose(conversation.id)}>
           <strong>{conversation.title}</strong><span>{conversation.updated_at.replace('T', ' ').slice(0, 16)}</span>
-        </button>)}</div>
-        {!filtered.length && <div className="ai-muted ai-empty-hint">为当前项目创建会话。会附加项目内各任务的状态与结果摘要，不同项目分别保存对话。</div>}
+        </button>)}</section>)}</div>
+        {!visibleConversations.length && <div className="ai-muted ai-empty-hint">暂无对话。这里汇总通用对话和所有未关闭项目的对话，已关闭项目的对话自动归档隐藏。</div>}
       </aside>
 
       <section className="ai-chat" aria-label="AI 对话窗口">
@@ -210,7 +239,7 @@ export default function AI() {
                 <div className="ai-message-meta"><strong>{item.role === 'user' ? '你' : 'AI'}</strong><span>{item.created_at.replace('T', ' ').slice(5, 16)}</span>
                   {item.role === 'assistant' && <Tag color={item.status === 'failed' ? 'error' : isActiveRun({ status: item.status } as AIRun) ? 'processing' : 'default'}>{STATUS[item.status] ?? item.status}</Tag>}
                 </div>
-                {item.role === 'user' ? <div className="ai-user-text">{item.content}</div> : <ChatMarkdown text={item.content || (item.status === 'queued' || item.status === 'running' ? '正在等待模型回答…' : '本次未生成文字')} />}
+                {item.role === 'user' ? <div className="ai-user-text">{item.content}</div> : <StreamingAnswer text={item.content} status={item.status} fresh={!!run && freshRuns.current.has(run.id)} onProgress={scrollAnswer} />}
                 {run?.error && <div className="ai-run-error">{run.error}</div>}
                 {item.role === 'assistant' && <div className="ai-answer-tools"><Button size="small" type="text" onClick={() => { void navigator.clipboard?.writeText(item.content); }}>复制回答</Button>
                   {run && <Button size="small" type="text" onClick={() => { void getAIRun(run.id).then(setInspecting).catch((e) => message.error(errorText(e))); }}>本轮依据</Button>}
@@ -282,13 +311,13 @@ export default function AI() {
       catch (e) { void message.error(errorText(e)); }
     }}><Form form={form} layout="vertical"><Form.Item name="title" label="会话名称" rules={[{ required: true, whitespace: true }]}><Input maxLength={120} /></Form.Item>
       <Form.Item name="prompt" label="会话提示词" extra="可描述研究角色、目标和回答偏好。保存后增加版本，已有回答仍保留原版本记录。"><Input.TextArea rows={7} maxLength={8000} showCount placeholder="例如：重点检查几何结构和收敛证据，区分事实与假设。" /></Form.Item>
-      {detail?.project_id && <Form.Item name="workspace_enabled" label="项目文件工作区" valuePropName="checked" extra="模型可读取项目文件，并在独立 work/ 创建草稿；不能执行代码、改正式文件或提交作业。不支持工具调用的接口可关闭。DeepSeek 工作区分析使用直接回答模式。"><Switch /></Form.Item>}
+      {detail?.project_id && <Form.Item name="workspace_enabled" label="项目文件工作区" valuePropName="checked" extra="模型可查询最近三个计算目录各自的最新巡检结果（最多五个目录，同目录更新覆盖）、读取项目文件并创建独立草稿；不能执行代码、改正式文件或提交作业。不兼容工具的接口可关闭。DeepSeek 工作区使用直接回答模式。"><Switch /></Form.Item>}
       <p className="ai-muted">系统规则固定要求证据与来源，禁止编造或声称已执行操作。</p>
     </Form></Modal>
     <Modal title="本轮回答依据" open={!!inspecting} onCancel={() => setInspecting(null)} footer={null} width={900}>
       {inspecting && <><p className="ai-muted">{inspecting.model} · 提示词版本 {inspecting.prompt_version} · {STATUS[inspecting.status]}</p>
         <JsonView value={inspecting.snapshot} />
-        {!!inspecting.tool_events?.length && <Collapse items={[{ key: 'tools', label: '本轮文件工具与读取证据', children: <JsonView value={inspecting.tool_events} /> }]} />}</>}
+        {!!inspecting.tool_events?.length && <Collapse items={[{ key: 'tools', label: '本轮工具调用与读取证据', children: <JsonView value={inspecting.tool_events} /> }]} />}</>}
     </Modal>
   </div>;
 }

@@ -379,6 +379,7 @@ export interface ProjectReportMeta {
   summary: string;
   risk_summary: { high?: number; medium?: number; low?: number; total?: number };
   completion_percent: number | null;
+  weighted_progress_percent?: number | null;
   chart_count: number;
   json_path: string;
   markdown_path: string;

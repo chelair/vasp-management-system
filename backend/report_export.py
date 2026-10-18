@@ -863,6 +863,13 @@ def _apply_hidden(section_key: str, body_html: str, hidden: set) -> str:
     kept: List[str] = []
     for part in re.split(r"(?=<h4>)", body_html):
         label = _label(part, "h4")
+        if label == "关键结果概览":
+            def summary_row(match):
+                row = match.group(0)
+                first = re.search(r"<td\b[^>]*>(.*?)</td>", row, flags=re.S)
+                name = html_lib.unescape(re.sub(r"<[^>]+>", "", first.group(1))).strip() if first else ""
+                return "" if f"etask:{section_key}:{name}" in hidden else row
+            part = re.sub(r"<tr>.*?</tr>", summary_row, part, flags=re.S)
         if label and (
             f"type:{section_key}:{label}" in hidden or f"task:{section_key}:{label}" in hidden
         ):

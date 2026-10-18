@@ -87,14 +87,14 @@ export function ProjectProgressPanel({
     segments.reduce((sum, seg) => sum + Number(seg.share || 0), 0) || 1;
   const detail =
     taskStats && taskStats.total != null
-      ? `当量加权主进度 · 任务 ${taskStats.completed ?? 0}/${taskStats.total} 已完成` +
+      ? `当量加权主进度 · 未归档任务 ${taskStats.completed ?? 0}/${taskStats.total} 已完成` +
         (taskStats.archived ? `，${taskStats.archived} 个已关闭` : '')
       : '';
   const w = workload;
   const notes: string[] = [];
   if (w && w.total_units != null) {
     notes.push(
-      `工作量 ${Number(w.total_units).toFixed(1)} 当量 ≈ ${Number(
+      `折算工作量 ${Number(w.total_units).toFixed(1)} 当量 ≈ ${Number(
         w.core_hours_total ?? 0,
       ).toLocaleString('en-US', { maximumFractionDigits: 0 })} 核时（1 当量 ${Number(
         w.core_hours_per_weight ?? 0,
@@ -106,7 +106,7 @@ export function ProjectProgressPanel({
     );
     const eta =
       w.eta_days != null && Number(w.core_hours_remaining ?? 0) > 0
-        ? ` → 预计还需 ${Number(w.eta_days).toFixed(1)} 天，${w.eta_at ?? ''} 完成`
+        ? ` → 按当量估算还需 ${Number(w.eta_days).toFixed(1)} 天，预计 ${w.eta_at ?? ''} 完成`
         : ' → 剩余工作量为 0，项目已收尾';
     notes.push(
       `有效算力 ${Number(w.core_hours_per_day ?? 0).toLocaleString('en-US', {
@@ -280,7 +280,7 @@ export function FreeEnergyReportPanel({
           无数据
         </span>
         <span className="report-panel__legend-ref">
-          相对能以结构 {referenceLabel} 为参考 · {path.group_name ?? path.group_id ?? ''} ·
+          相对值以结构 {referenceLabel} 为参考 · {path.group_name ?? path.group_id ?? ''} ·
           点台阶看结构三视图
         </span>
       </div>

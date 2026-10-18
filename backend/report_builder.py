@@ -1030,7 +1030,7 @@ def _sections_markdown(report, charts):
     workload = info.get("workload") or {}
     status_icon = {"normal": "🟢", "warning": "🟠", "critical": "🔴"}[info["project_status"]]
     eta_text = (
-        f"**{workload['eta_at']}**（还需 {workload['eta_days']:.1f} 天"
+        f"**{workload['eta_at']}**（按当量估算还需 {workload['eta_days']:.1f} 天"
         f"：剩余 {workload['core_hours_remaining']:,.0f} 核时 ÷ 有效算力 "
         f"{workload['core_hours_per_day']:,.0f} 核时/天）"
         if workload.get("eta_days") is not None and workload.get("core_hours_remaining", 0) > 0
@@ -1043,13 +1043,16 @@ def _sections_markdown(report, charts):
             f"- **报告生成时间**：{info['generated_at']}",
             f"- **整体状态**：{status_icon} **{info['project_status_label']}** —— {info['status_reason']}",
             f"- **项目进度**：**{info.get('weighted_progress_percent', info['progress_percent'])}%**"
-            f"（按任务当量加权；{summary}）",
-            f"- **工作量**：{workload.get('total_units', 0):.1f} 当量 ≈ "
+            f"（按任务当量加权，含已归档成果；{summary}）",
+            f"- **未归档任务完成率**：{info['progress_percent']}%",
+            f"- **折算工作量**：{workload.get('total_units', 0):.1f} 当量 ≈ "
             f"{workload.get('core_hours_total', 0):,.0f} 核时（1 当量 "
             f"{workload.get('core_hours_per_weight', 0):.0f} 核时），已完成 "
             f"{workload.get('core_hours_done', 0):,.0f} 核时",
-            f"- **预计完成**：{eta_text}",
+            f"- **预计完成（估算）**：{eta_text}",
             f"- **时间窗口**：{info['time_window_label']}",
+            "",
+            "_核时按任务当量折算，并非实测消耗；工期按固定有效算力估算，未计入排队与后续续算变化。_",
             "",
             f"**计算内容描述**：{info.get('calc_description') or '未填写'}",
             "",
@@ -1061,6 +1064,38 @@ def _sections_markdown(report, charts):
 
     science = report["science"]
     blocks = []
+    ele_tasks = (science.get("ele") or {}).get("tasks") or []
+    result_rows = []
+    for item in ele_tasks:
+        pdos_result = item.get("pdos_summary") or {}
+        wf = item.get("work_function_summary") or {}
+        bader_result = item.get("bader_summary") or {}
+        if not (pdos_result or wf or bader_result or (item.get("charge_diff") or {}).get("ok")):
+            continue
+        centers = "；".join(
+            f"{center['name']} {center['value']:+.2f}"
+            for center in pdos_result.get("band_centers") or []
+        )
+        energy_range = pdos_result.get("range") or []
+        if centers and len(energy_range) >= 2:
+            centers += f"（区间 {_fmt(energy_range[0], 1)} ~ {_fmt(energy_range[1], 1)}）"
+        result_rows.append([
+            str(item.get("task_name") or "—"),
+            _fmt(wf.get("work_function")),
+            str(wf.get("axis") or "—"),
+            centers or "—",
+            f"{bader_result['n_atoms']} 个原子" if bader_result.get("n_atoms") else "—",
+            "已生成" if (item.get("charge_diff") or {}).get("ok") else "—",
+        ])
+    if result_rows:
+        blocks.extend([
+            "### 关键结果概览\n\n",
+            _md_table(
+                ["模型", "功函数 (eV)", "方向", "带中心 (eV，相对 E_F)", "Bader 分析", "差分电荷"],
+                result_rows,
+            ),
+            "\n带中心按所列轨道、自旋与积分区间分别统计；功函数按所列方向计算。详细结果见各模型分析。\n\n",
+        ])
     opt_items = science.get("opt") or []
     if opt_items:
         blocks.append("### 结构优化\n")
@@ -1117,6 +1152,10 @@ def _sections_markdown(report, charts):
     paths = science.get("free_energy") or []
     if paths:
         blocks.append("### 自由能路径\n\n")
+        blocks.append(
+            "数值口径：校正后能量 = DFT 总能量 + 已有矫正项，相对值以首个具备数据的中间体为零点。"
+            "反应自由能需结合配平反应、参考物种及温度、电位等条件解释；该台阶相对值不等同于 NEB 活化能垒。\n\n"
+        )
         entries = []
         for path in paths:
             structures = path["structures"]
@@ -1286,18 +1325,7 @@ def _sections_markdown(report, charts):
                 )
                 charge_diff = item.get("charge_diff") or {}
                 if charge_diff.get("ok"):
-                    bytes_ = charge_diff.get("bytes") or 0
-                    size = (
-                        f"{bytes_ / 1024 / 1024:.1f} MB"
-                        if bytes_ >= 1024 * 1024
-                        else f"{bytes_} B"
-                    )
-                    diff_state = (
-                        f"已在远端用 VTST 脚本算好差分电荷（chgsum.pl 各分块 → "
-                        f"chgdiff.pl 完整 \u2212 分块和），回传为 "
-                        f"**`diffcharge_files/chgfiles/CHGCAR_diff.vasp`**（{size}，"
-                        f"耗时 {charge_diff.get('elapsed_seconds', '-')} s）。"
-                    )
+                    diff_state = "差分电荷已生成（Δρ = ρ(完整) − Σρ(分块)）。"
                 elif charge_diff:
                     # 失败原因只留在结构化数据里（报告是对外文件，不放警告）
                     diff_state = "差分电荷未完成。"
@@ -1306,8 +1334,7 @@ def _sections_markdown(report, charts):
                 if item.get("charge_diff_dialog"):
                     ele_blocks.append(
                         f"{diff_state} 差分图（VESTA 三视图）见 "
-                        f"[差分三视图（a / b / c）](#{item['charge_diff_dialog']})，"
-                        "磁盘上位于 `diffcharge_files/images/`。\n\n"
+                        f"[差分三视图（a / b / c）](#{item['charge_diff_dialog']})。\n\n"
                     )
                 elif charge_diff.get("ok"):
                     # 差分算好了但本地三视图不在（被「清除三视图」删掉 / 只回了数据）
@@ -1316,18 +1343,14 @@ def _sections_markdown(report, charts):
                     )
                 else:
                     ele_blocks.append(
-                        f"{diff_state} 差分图（VESTA 三视图）放在 `diffcharge_files/images/`。\n\n"
+                        f"{diff_state}\n\n"
                     )
             # Bader 电荷（v0.9.54）：远端 ACF.dat 的结果 + 逐原子净电荷统计（不做元素分组）
             for item in [x for x in with_diff if x.get("bader_summary")]:
                 summary = item["bader_summary"]
                 stats = summary.get("stats") or {}
                 ele_blocks.append(f"\n#### {item['task_name']} · Bader 电荷\n")
-                ele_blocks.append(
-                    "在**远端**用 `chgsum.pl AECCAR0 AECCAR2` 求参考电荷，再 `bader CHGCAR "
-                    "-ref CHGCAR_sum_aec` 做 Bader 划分，回传 `ACF.dat` 解析逐原子电荷"
-                    "（每个原子按其 Bader 体积内的电子数计）。\n\n"
-                )
+                ele_blocks.append("Bader 电荷为原子分区内的电子数；净电荷 Δq = ZVAL − Bader 电荷，正值表示失电子，负值表示得电子。\n\n")
                 if summary.get("net_charge_available") and stats:
                     ele_blocks.append(
                         f"共 {summary['n_atoms']} 个原子：Bader 电荷合计 "
@@ -1354,10 +1377,7 @@ def _sections_markdown(report, charts):
             for item in [x for x in with_diff if x.get("pdos_summary")]:
                 summary = item["pdos_summary"]
                 ele_blocks.append(f"\n#### {item['task_name']} · 态密度（PDOS）\n")
-                ele_blocks.append(
-                    "在**远端**用 vaspkit（task 111 + 113）提取态密度，只回传整合数据"
-                    "（`dos.json`）；费米能级按 OUTCAR 的 E-fermi，横轴相对 E_F。\n\n"
-                )
+                ele_blocks.append("横轴能量相对费米能级 E_F；带中心按所列轨道与积分范围计算。\n\n")
                 if summary.get("chart"):
                     ele_blocks.append(
                         f"![{item['task_name']} 态密度]({summary['chart']})\n\n"
@@ -1392,8 +1412,8 @@ def _sections_markdown(report, charts):
                 summary = item["work_function_summary"]
                 ele_blocks.append(f"\n#### {item['task_name']} · 功函数\n")
                 ele_blocks.append(
-                    f"在**远端**用 VASPKIT 的 426 功能提平面平均静电势"
-                    f"（方向 {summary.get('axis')} ↗ {summary.get('axis_cartesian')}），"
+                    f"平面平均静电势沿 {summary.get('axis')} 方向提取"
+                    f"（对应 {summary.get('axis_cartesian')}），"
                     "**功函数 = 真空能级 − E_F**。\n\n"
                 )
                 if summary.get("chart"):
@@ -1413,7 +1433,20 @@ def _sections_markdown(report, charts):
                 # ⚠ 警告不进报告（2026-10-15 用户："报告不出现警告和提示，报告是给客户看的"）：
                 # 真空能级交叉校验 / 平台波动这类提示只在巡检详情面板与结构化数据里给，
                 # 客户看的报告只呈现数值与出处（VASPKIT 汇总 / 本地平台估计）。
-        blocks.append("".join(ele_blocks))
+        # 仅重排现有模型分析块：标题、挂点、数据与模型内的分析顺序均保持兼容。
+        electronic_text = "".join(ele_blocks)
+        chunks = re.split(r"(?=\n#### )", electronic_text)
+        grouped = [chunks[0]]
+        remaining = chunks[1:]
+        for item in with_diff:
+            headings = tuple(
+                f"\n#### {item['task_name']} · {kind}\n"
+                for kind in ("差分电荷", "Bader 电荷", "态密度（PDOS）", "功函数")
+            )
+            selected = [chunk for chunk in remaining if chunk.startswith(headings)]
+            grouped.extend(selected)
+            remaining = [chunk for chunk in remaining if not chunk.startswith(headings)]
+        blocks.append("".join(grouped + remaining))
     sections["science"] = "".join(blocks).strip() + "\n"
 
     issues = report["issues"]["items"]
@@ -1899,13 +1932,13 @@ def build_report(
             + (f"，{stats['archived']} 个已关闭" if stats["archived"] else "")
         ),
         notes=[
-            f"工作量 {plan['total_units']:.1f} 当量 ≈ {plan['core_hours_total']:,.0f} 核时"
+            f"折算工作量 {plan['total_units']:.1f} 当量 ≈ {plan['core_hours_total']:,.0f} 核时"
             f"（1 当量 {plan['core_hours_per_weight']:.0f} 核时）· "
             f"已完成 {plan['core_hours_done']:,.0f} · 剩余 {plan['core_hours_remaining']:,.0f} 核时",
             f"有效算力 {plan['core_hours_per_day']:,.0f} 核时/天"
             f"（{plan['max_cores']:.0f} 核 × 24h × {plan['utilization'] * 100:.0f}%）"
             + (
-                f" → 预计还需 {plan['eta_days']:.1f} 天，{plan['eta_at']} 完成"
+                f" → 按当量估算还需 {plan['eta_days']:.1f} 天，预计 {plan['eta_at']} 完成"
                 if plan["eta_days"] is not None and plan["core_hours_remaining"] > 0
                 else " → 剩余工作量为 0，项目已收尾"
             ),
@@ -1932,14 +1965,15 @@ def build_report(
         "project_id": project_id,
         # 已关闭（或全部任务已归档）的项目不再判定进度/资源/队列类风险
         "closed": bool(project.get("closed")) or stats["total"] == 0,
-        "progress_percent": stats["completion_percent"],
+        "progress_percent": weighted_percent,
+        "task_completion_percent": stats["completion_percent"],
         "time_progress_percent": time_progress,
         "progress_gap": (
-            round((time_progress or 0) - stats["completion_percent"], 1)
+            round((time_progress or 0) - weighted_percent, 1)
             if time_progress is not None
             else None
         ),
-        "overdue": bool(deadline_days is not None and deadline_days < 0 and stats["completion_percent"] < 100),
+        "overdue": bool(deadline_days is not None and deadline_days < 0 and weighted_percent < 100),
         "overdue_days": abs(deadline_days) if deadline_days is not None and deadline_days < 0 else 0,
         "days_left": deadline_days,
         "deadline": str(project.get("deadline") or ""),
@@ -1983,8 +2017,9 @@ def build_report(
         "normal": "未触发风险规则，项目运行正常",
     }
     summary_text = (
-        f"本项目共 {stats['total']} 个任务，已完成 {stats['completed']}"
-        f"（完成率 {stats['completion_percent']}%），运行中 {stats['running']}、"
+        f"项目进度 {weighted_percent}%（当量加权，含已归档成果）；"
+        f"未归档任务 {stats['total']} 个，已完成 {stats['completed']}"
+        f"（任务完成率 {stats['completion_percent']}%），运行中 {stats['running']}、"
         f"排队 {stats['queued']}、待处理 {stats['pending']}；"
         f"异常 {stats['failed'] + stats['unconverged']} 个"
         f"（未收敛 {stats['unconverged']}、异常中断 {stats['failed']}）。"
@@ -2045,7 +2080,8 @@ def build_report(
         item["action_id"] = f"AC{index:03d}"
 
     key_findings: List[str] = [
-        f"完成度 {stats['completion_percent']}%（{stats['completed']}/{stats['total']}），当前阶段："
+        f"项目进度 {weighted_percent}%（当量加权）；未归档任务完成率 "
+        f"{stats['completion_percent']}%（{stats['completed']}/{stats['total']}），当前阶段："
         f"{_current_stage(facts, counter)}"
     ]
     if stats["unconverged"] or stats["failed"]:

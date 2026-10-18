@@ -53,7 +53,7 @@ DEFAULT_THRESHOLDS = {"max_force_threshold": 0.02, "rms_force_threshold": 0.01}
 #: NEB 一次最多取多少个映像（防目录里混入奇怪编号）
 MAX_IMAGES = 200
 #: 缓存载荷版本：字段口径变化时递增，旧缓存自动作废（不必手动清 data/）
-CACHE_SCHEMA = 4  # v4：受力来源改成"候选目录列表 + 实际命中目录"（见 _structure_dirs）
+CACHE_SCHEMA = 5  # v5：fmax / force_max 从最大单轴分量改为合力模长 |F|
 #: 远端单次调用超时（秒）：只读尾部 + 两个 grep，正常 2–5s 内
 REMOTE_TIMEOUT = 120
 
@@ -394,12 +394,16 @@ def _build_payload(
 
     atoms: List[Dict[str, Any]] = []
     for index, (fx, fy, fz) in enumerate(forces):
+        fx = float(fx)
+        fy = float(fy)
+        fz = float(fz)
         atom: Dict[str, Any] = {
             "index": index,
-            "fx": round(float(fx), 6),
-            "fy": round(float(fy), 6),
-            "fz": round(float(fz), 6),
-            "fmax": round(max(abs(float(fx)), abs(float(fy)), abs(float(fz))), 6),
+            "fx": round(fx, 6),
+            "fy": round(fy, 6),
+            "fz": round(fz, 6),
+            # 历史字段名保留 fmax，含义统一为逐原子合力模长 |F|
+            "fmax": round((fx * fx + fy * fy + fz * fz) ** 0.5, 6),
             "fixed": bool(fixed[index]) if index < len(fixed) else False,
         }
         if elements and index < len(elements):

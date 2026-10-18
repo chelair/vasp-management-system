@@ -111,11 +111,21 @@ export function collectHiddenBlocks(root: HTMLElement): HiddenBlock[] {
       });
     grouped.forEach((list, name) => {
       if (list.length < 2) return; // 只有一个子块就不必再给"整任务"入口
+      // 新版概览表与整模型隐藏联动，避免详细分析隐藏后概览仍保留该模型数据。
+      const overview = children.find((el) => el.tagName === 'H5' && headingLabel(el) === '关键结果概览');
+      let overviewTable = overview?.nextElementSibling;
+      while (overviewTable && overviewTable.tagName !== 'TABLE' && overviewTable.tagName !== 'H5') {
+        overviewTable = overviewTable.nextElementSibling;
+      }
+      const summaryRows = overviewTable?.tagName === 'TABLE'
+        ? Array.from(overviewTable.querySelectorAll<HTMLElement>('tbody tr'))
+          .filter((row) => row.querySelector('td')?.textContent?.trim() === name)
+        : [];
       blocks.push({
         key: `etask:${sectionKey}:${name}`,
         kind: 'etask',
         label: name,
-        elements: list.flatMap((b) => b.elements),
+        elements: [...list.flatMap((b) => b.elements), ...summaryRows],
         anchor: list[0].anchor,
         buttonText: '隐藏整任务',
         buttonTitle: `${name} 的全部子块一起隐藏（可在右上角「已隐藏」里恢复）`,

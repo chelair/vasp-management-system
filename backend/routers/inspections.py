@@ -190,7 +190,7 @@ def _build_analysis(project: dict, task: dict, entry: dict, history: list):
         }
     if task_type == "neb":
         # NEB 映像分析（v0.6.9）：展示优化后的 IS → 中间态 → FS 结构横向对比。
-        # 结构由巡检按与 opt 相同的 25 步桶规则同步到本地上表（reports/structure/images/）。
+        # 与 opt 同步规则一致：运行期每 25 步、目录变化及完成时同步最终结构。
         cifs = read_neb_image_cifs(project, task)
         barrier = entry.get("neb_barrier") or {}
         # nebef.pl 的映像号是 0/1/2…，目录名是 00/01/02…：按数值归一化后再匹配
@@ -232,7 +232,7 @@ def _build_analysis(project: dict, task: dict, entry: dict, history: list):
             "skipped": (
                 None
                 if images
-                else "尚未同步 NEB 映像结构：需要巡检推进到 25 离子步桶后自动抓取各映像 CONTCAR"
+                else "尚未同步 NEB 映像结构：巡检会在目录变化、每推进 25 离子步或计算完成时抓取结构，同步失败会重试"
             ),
             "warnings": [],
         }

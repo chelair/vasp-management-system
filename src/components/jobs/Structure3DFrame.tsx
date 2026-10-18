@@ -23,7 +23,7 @@ export interface AtomForce {
   fx: number;
   fy: number;
   fz: number;
-  /** max(|fx|,|fy|,|fz|)（eV/Å） */
+  /** 逐原子合力模长 sqrt(fx²+fy²+fz²)（eV/Å） */
   fmax: number;
   /** Selective dynamics 固定的原子 */
   fixed?: boolean;

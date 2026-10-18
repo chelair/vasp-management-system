@@ -147,7 +147,7 @@ export interface AtomicForceAtom {
   fx: number;
   fy: number;
   fz: number;
-  /** max(|fx|,|fy|,|fz|) —— 与 VASP 力判据（EDIFFG）同口径 */
+  /** 逐原子合力模长 sqrt(fx²+fy²+fz²)，eV/Å */
   fmax: number;
   /** Selective dynamics 固定的原子（不参与收敛判据） */
   fixed: boolean;

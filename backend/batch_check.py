@@ -759,9 +759,10 @@ def force_thresholds_from_incar(
 ) -> Tuple[Dict[str, float], str]:
     """结构优化的力收敛阈值来自 INCAR 的 EDIFFG（负值＝力判据，eV/Å）。
 
-    VASP 的判定是「所有力分量 < |EDIFFG|」；本系统还额外看 RMS（历史口径），
-    这里取 |EDIFFG|/2 作为 RMS 阈值，与原来 registry(0.02 / 0.01) 的比例一致，
-    EDIFFG=-0.02 时与旧行为完全相同。EDIFFG 缺失或为正值（能量判据）时退回 registry。
+    「最大力」统一按逐原子合力模长 sqrt(Fx²+Fy²+Fz²) 统计；RMS 仍按 VASP 的
+    三分量 RMS 口径，避免改变收敛判据的整体尺度。RMS 阈值取 |EDIFFG|/2，
+    与原来 registry(0.02 / 0.01) 的比例一致。EDIFFG 缺失或为正值（能量判据）
+    时退回 registry。
     """
     ediifg = _to_float(incar.get("EDIFFG"))
     if ediifg is not None and ediifg < 0:
@@ -923,7 +924,11 @@ def compute_force_stats(
     forces: List[Tuple[float, float, float]],
     fixed_flags: Optional[List[bool]],
 ) -> Optional[Tuple[float, float]]:
-    """计算活动原子的最大力与 RMS 力；无活动原子返回 None。"""
+    """计算活动原子的最大合力模长与分量 RMS；无活动原子返回 None。
+
+    最大力：max(sqrt(Fx²+Fy²+Fz²))，与三维结构视图的逐原子读数同口径。
+    RMS 力：sqrt(sum(各分量²) / 分量数)，保留 VASP 标准的统计口径。
+    """
     active = []
     for index, force in enumerate(forces):
         if fixed_flags and index < len(fixed_flags) and fixed_flags[index]:
@@ -932,7 +937,9 @@ def compute_force_stats(
     if not active:
         return None
     components = [abs(c) for force in active for c in force]
-    max_force = max(components)
+    max_force = max(
+        (fx * fx + fy * fy + fz * fz) ** 0.5 for fx, fy, fz in active
+    )
     rms_force = (sum(c * c for c in components) / len(components)) ** 0.5
     return round(max_force, 6), round(rms_force, 6)
 

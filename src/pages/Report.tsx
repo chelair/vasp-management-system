@@ -151,6 +151,7 @@ export default function Report() {
   const [reports, setReports] = useState<ProjectReportMeta[]>([]);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [detailRevision, setDetailRevision] = useState(0);
   const [detail, setDetail] = useState<ProjectReportDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -192,18 +193,26 @@ export default function Report() {
   }, [loadReports]);
 
   useEffect(() => {
+    let cancelled = false;
     if (!selectedReportId) {
       setDetail(null);
+      setDetailLoading(false);
       return;
     }
     setDetailLoading(true);
+    setDetail(null);
     fetchProjectReport(selectedReportId)
       .then((data) => {
-        setDetail(data);
+        if (!cancelled) setDetail(data);
       })
-      .catch((err) => message.error(err instanceof Error ? err.message : '读取报告失败'))
-      .finally(() => setDetailLoading(false));
-  }, [selectedReportId, message]);
+      .catch((err) => {
+        if (!cancelled) message.error(err instanceof Error ? err.message : '读取报告失败');
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedReportId, detailRevision, message]);
 
   const handleGenerate = async (scope: { project_id?: string; all?: boolean }) => {
     const key = scope.all ? 'all' : scope.project_id ?? '';
@@ -219,7 +228,11 @@ export default function Report() {
       }
       const list = await loadReports();
       const fresh = result.reports[0] ?? list[0];
-      if (fresh) setSelectedReportId(fresh.report_id);
+      if (fresh) {
+        setSelectedReportId(fresh.report_id);
+        // 同一项目重新生成会沿用 report_id，仍需重新读取详情。
+        setDetailRevision((revision) => revision + 1);
+      }
     } catch (err) {
       message.error(err instanceof Error ? err.message : '生成报告失败');
     } finally {
@@ -449,10 +462,8 @@ export default function Report() {
       hosts.push({ key: taskId, taskId, el: host, dialogId: dialogEl?.id ?? null });
     });
     setEfHosts(hosts);
-    return () => {
-      hosts.forEach((h) => h.el.remove());
-      setEfHosts([]);
-    };
+    // Portal 子节点由 React 卸载；不要在 effect 清理中删除宿主或清空其内容。
+    // 切换报告后旧宿主随 Markdown 脱离文档，React 仍需完成其子树的卸载。
   }, [renderedSections, detail]);
 
   /** 哪些弹窗是打开的（`toggle` 事件）：弹窗里的图表只在打开时挂载（见上） */
@@ -509,10 +520,7 @@ export default function Report() {
       hosts.push({ kind, taskId, el, figure });
     });
     setWidgetHosts(hosts);
-    return () => {
-      hosts.forEach((h) => h.el.replaceChildren());
-      setWidgetHosts([]);
-    };
+    // 不可 replaceChildren()：这些子节点属于 React Portal，必须由 React 清理。
   }, [renderedSections, detail]);
 
   /**
@@ -557,10 +565,6 @@ export default function Report() {
       hosts.push({ kind: fe ? 'fe' : 'neb', key: matched[1], el: host });
     });
     setPanelHosts(hosts);
-    return () => {
-      hosts.forEach((h) => h.el.replaceChildren());
-      setPanelHosts([]);
-    };
   }, [renderedSections, detail]);
 
   /** 打开报告里某个结构三视图弹窗（与点击 `.report-chip[data-dialog]` 同一行为） */
@@ -822,7 +826,6 @@ export default function Report() {
         | undefined)?.basic_info ?? null
     );
   }, [detail]);
-  const detailWorkload = detailBasic?.workload ?? null;
   const detailWeightedPercent = detailBasic?.weighted_progress_percent ?? null;
 
   /** 单个项目分组（已关闭项目的分组灰显） */
@@ -858,7 +861,9 @@ export default function Report() {
             </span>
             <span className="report-item__summary">{item.summary}</span>
             <span className="report-item__stats">
-              <span>完成度 {item.completion_percent ?? '—'}%</span>
+              <span>{item.weighted_progress_percent != null
+                ? `项目进度 ${item.weighted_progress_percent}%`
+                : `未归档任务完成率 ${item.completion_percent ?? '—'}%`}</span>
               <span>图表 {item.chart_count}</span>
               <span className="report-item__risk">
                 风险 {item.risk_summary?.high ?? 0}/{item.risk_summary?.medium ?? 0}/
@@ -1131,21 +1136,8 @@ export default function Report() {
                     {detailWeightedPercent != null
                       ? `${detailWeightedPercent}%（当量）`
                       : `${detail.meta.completion_percent ?? '—'}%`}
-                    （任务 {detail.meta.completion_percent ?? '—'}%）
+                    （未归档任务完成率 {detail.meta.completion_percent ?? '—'}%）
                   </span>
-                  {detailWorkload ? (
-                    <span>
-                      工作量 {detailWorkload.total_units?.toFixed(1)} 当量 ≈{' '}
-                      {Math.round(detailWorkload.core_hours_total).toLocaleString()} 核时
-                    </span>
-                  ) : null}
-                  {detailWorkload ? (
-                    <span className="report-detail__eta">
-                      {detailWorkload.core_hours_remaining > 0 && detailWorkload.eta_at
-                        ? `预计完成 ${detailWorkload.eta_at}（还需 ${detailWorkload.eta_days?.toFixed(1)} 天 · 有效算力 ${Math.round(detailWorkload.core_hours_per_day).toLocaleString()} 核时/天）`
-                        : '已收尾（剩余工作量 0）'}
-                    </span>
-                  ) : null}
                   <span>
                     风险 高 {detail.meta.risk_summary?.high ?? 0} / 中{' '}
                     {detail.meta.risk_summary?.medium ?? 0} / 低{' '}
@@ -1177,6 +1169,7 @@ export default function Report() {
                     ))}
                     {/* 能量/力收敛曲线：ECharts 组件（替代报告里那张 SVG 图，v0.9.60） */}
                     {efHosts.map((host) => {
+                      if (!contentRef.current?.contains(host.el)) return null;
                       // 弹窗里的图：等弹窗打开再挂（关闭时容器 0 尺寸，ECharts 画不出来）
                       if (host.dialogId && !openDialogs[host.dialogId]) return null;
                       const item = (
@@ -1198,6 +1191,7 @@ export default function Report() {
 
                     {/* 自由能台阶图 / NEB 能垒曲线（v0.9.62）：换成就地挂载的 ECharts 看板 */}
                     {panelHosts.map((host) => {
+                      if (!contentRef.current?.contains(host.el)) return null;
                       if (host.kind === 'progress') {
                         const basic = (detail?.structured as
                           | {
@@ -1258,6 +1252,7 @@ export default function Report() {
 
                     {/* 电子结构挂点（v0.9.61）：Bader 折叠表 / PDOS 交互图 / 功函数曲线 */}
                     {widgetHosts.map((host) => {
+                      if (!contentRef.current?.contains(host.el)) return null;
                       const item = eleTasks.find(
                         (x) => String(x?.task_id ?? '') === host.taskId,
                       );
@@ -1336,6 +1331,7 @@ export default function Report() {
 
                     {/* 注解面板（结果分析 / 论文参考）：只在「重点科学结果分析」章节内的挂载点上 */}
                     {Object.entries(noteTargets).map(([anchorKey, target]) => {
+                      if (!contentRef.current?.contains(target.element)) return null;
                       const note = notes[target.noteKey] ?? { analysis_note: '', paper_note: '' };
                       const readOnly = target.summaryLabel
                         ? (noteBlocks[target.summaryLabel] ?? []).filter(

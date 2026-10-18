@@ -12,6 +12,7 @@ import Jobs from './pages/Jobs';
 import Login from './pages/Login';
 import Report from './pages/Report';
 import SSH from './pages/SSH';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 /** 受保护路由：未登录（或本地 token 失效）时跳登录页，并记住原地址 */
 export function RequireAuth({ children }: { children: ReactNode }) {
@@ -65,7 +66,11 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="/inspection" element={<Inspection />} />
           <Route path="/jobs" element={<Jobs />} />
-          <Route path="/report" element={<Report />} />
+          <Route path="/report" element={
+            <ErrorBoundary title="报告加载失败" hint="可点击重试，或切换到其他页面。">
+              <Report />
+            </ErrorBoundary>
+          } />
           <Route
             path="/automation"
             element={

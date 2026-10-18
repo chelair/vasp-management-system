@@ -238,8 +238,8 @@ def _sync_and_convert_structure(
     task: Dict[str, Any],
     latest_dir: str = "",
     used: Optional[Dict[str, str]] = None,
-) -> List[str]:
-    """下载 POSCAR / CONTCAR 并用 vasp2cif 转为 CIF。
+) -> Tuple[List[str], bool]:
+    """下载 POSCAR / CONTCAR 并用 vasp2cif 转为 CIF，返回说明与同步成功标记。
 
     目录口径（v0.9.28 起统一为"最新续算目录优先"）：两者都取**最新续算目录 conN**，
     取不到才回退任务主目录 —— 与提交作业、续算、归档、`current_output` 的口径一致。
@@ -249,6 +249,9 @@ def _sync_and_convert_structure(
     界面/本地镜像每次都按主目录刷新，看起来"没同步 con1 的 POSCAR"）。
     """
     markers: List[str] = []
+    downloaded: set = set()
+    converted: set = set()
+    current_contcar = False
     local_files = local_files_dir(project["name"], task)
     local_files.mkdir(parents=True, exist_ok=True)
     remote_dir = task_remote_dir(project["server"], task).rstrip("/")
@@ -282,6 +285,10 @@ def _sync_and_convert_structure(
                 markers.append(f"{latest_dir}/ 里没有 {filename}，改用主目录的")
         if used is not None and ok:
             used[filename] = source_dir
+        if ok:
+            downloaded.add(filename)
+            if filename == "CONTCAR":
+                current_contcar = source_dir == latest_dir
         if not ok:
             markers.append(
                 "POSCAR缺失或内容为空" if filename == "POSCAR" else "CONTCAR未生成或内容为空"
@@ -304,9 +311,10 @@ def _sync_and_convert_structure(
             continue
         try:
             report_out.write_bytes(panel_out.read_bytes())
+            converted.add(name)
         except OSError as e:  # noqa: BLE001 - 报告目录写失败不影响面板
             markers.append(f"{name}.cif 写入报告目录失败：{e}")
-    return markers
+    return markers, current_contcar and downloaded == converted == {"POSCAR", "CONTCAR"}
 
 
 def _merge_notes(existing: Optional[str], markers: List[str]) -> str:
@@ -334,7 +342,7 @@ def _sync_neb_image_structures(
     project: Dict[str, Any],
     task: Dict[str, Any],
     latest_dir: str = "",
-) -> List[str]:
+) -> Tuple[List[str], bool]:
     """同步 NEB 各映像的**优化后结构**（IS → 中间态 → FS），生成 CIF。
 
     - 中间映像取 CONTCAR（优化后几何）；**缺 CONTCAR 的中间映像跳过**，不回退 POSCAR
@@ -346,6 +354,7 @@ def _sync_neb_image_structures(
     - 用**单次远端 bash 脚本**把各映像结构 base64 回传（避免 N 次 SSH 往返）；
     - 原始结构写入 <任务>/files/neb_images/<label>，CIF 写入
       <任务>/reports/structure/images/<label>.cif（覆盖旧结果，失败保留旧文件）。
+    返回说明与成功标记；所有映像均取得有效结构并转换成功才算整次同步成功。
     """
     markers: List[str] = []
     server = project["server"]
@@ -364,6 +373,7 @@ def _sync_neb_image_structures(
             'for d in "$BASE"/[0-9]*; do',
             '  [ -d "$d" ] || continue',
             '  img=$(basename "$d")',
+            '  echo "@@@EXPECTED:$img"',
             '  f="$d/CONTCAR"',
             '  if [ ! -s "$f" ] && { [ "$img" = "$FIRST" ] || [ "$img" = "$LAST" ]; }; then',
             '    f="$d/POSCAR"',
@@ -393,7 +403,11 @@ def _sync_neb_image_structures(
     source = "CONTCAR"
     buffer: List[str] = []
     sections: List[tuple] = []
+    expected: set = set()
     for line in result["stdout"].splitlines():
+        if line.startswith("@@@EXPECTED:"):
+            expected.add(line.split(":", 1)[1])
+            continue
         if line.startswith("@@@IMG:"):
             if current:
                 sections.append((current, "".join(buffer), source))
@@ -432,7 +446,10 @@ def _sync_neb_image_structures(
         markers.append(f"NEB 映像结构已同步：{labels[0]}–{labels[-1]}（共 {len(labels)} 个{_neb_source_note(from_poscar)}）")
     else:
         markers.append("未取到任何 NEB 映像结构（目录为空，或映像还没有 CONTCAR）")
-    return markers
+    missing = expected - set(labels)
+    if missing:
+        markers.append(f"未同步映像结构：{'、'.join(sorted(missing))}，下次巡检重试")
+    return markers, bool(labels) and set(labels) == expected
 
 
 def _apply_result(
@@ -477,46 +494,57 @@ def _apply_result(
     if not (task.get("job_id") or result.get("job_id")) and db_status != "completed":
         notes_markers.append("未见有效完成日志")
 
-    # 结构分析触发条件（替换原“状态变化或最新输出目录变化”）：
-    # - 每 25 个离子步一个桶（0-24→0，25-49→1，50-74→2…），桶 ≥ 1 才可能触发；
-    # - 同一目录：仅当离子步桶比上次触发时更大才再次触发（25-49 触发后，
-    #   再次巡检仍在 25-49 不触发，直到 50-74 及以后）；
-    # - 目录变化：视为新目录重新计数（有效上桶重置为 -1），重复上述规则；
-    # - 其余筛选（opt 类型等）保持不变。
+    # 运行期按 25 步节流，目录变化立即同步；完成后必须补同步最终结构。
     task_type = str(task.get("task_type") or "")
     steps = _ionic_steps(result, task_type)
     bucket = _analysis_bucket(steps)
-    prev_bucket = int(task.get("last_analysis_bucket") or -1)
+    saved_bucket = task.get("last_analysis_bucket")
+    prev_bucket = int(saved_bucket) if saved_bucket is not None else -1
     prev_dir = str(task.get("last_analysis_dir") or "")
     dir_changed = (latest_dir or "") != prev_dir
     effective_prev_bucket = -1 if dir_changed else prev_bucket
-    # 结构分析触发条件（opt 与 neb 相同）：25 步一桶、桶号推进才触发、目录变化重置
-    # - 目录变化（含"上次同步的 conN 已经被清理/换成新的"）→ **立刻重新同步**：
-    #   界面上的结构来源必须跟着当前 conN 走（用户口径 2026-10-08：受力与 CONTCAR 同源）。
+    # 成功标记与输出目录 / 作业 / 步数绑定：历史已完成任务补同步一次；
+    # 失败不写标记，下轮即使状态已经是 completed 也会重试。
+    completion = {
+        "dir": latest_dir or "",
+        "job_id": str(result.get("job_id") or task.get("job_id") or ""),
+        "steps": steps,
+    }
+    final_sync_needed = db_status == "completed" and (
+        old_status != "completed" or task.get("last_structure_completion") != completion
+    )
     should_analyze = task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and (
-        dir_changed or (bucket >= 1 and bucket > effective_prev_bucket)
+        final_sync_needed or dir_changed or (bucket >= 1 and bucket > effective_prev_bucket)
     )
 
     markers: List[str] = []
     structure_synced = False
     extra_fields: Dict[str, Any] = {}
+    if task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and db_status != "completed":
+        if task.get("last_structure_completion") is not None:
+            extra_fields["last_structure_completion"] = None
     if should_analyze:
-        structure_synced = True
+        if db_status == "completed":
+            # 任务可能被重新打开后再次结束，旧成功标记不能掩盖这次同步失败。
+            extra_fields["last_structure_completion"] = None
         used_dirs: Dict[str, str] = {}
         try:
             if task_type == NEB_TYPE:
-                markers = _sync_neb_image_structures(project, task, latest_dir)
+                markers, structure_synced = _sync_neb_image_structures(project, task, latest_dir)
                 # NEB 各映像取自 <latest_dir>/<映像>/，受力也按同一目录取
                 used_dirs["CONTCAR"] = latest_dir or ""
             else:
-                markers = _sync_and_convert_structure(
+                markers, structure_synced = _sync_and_convert_structure(
                     project, task, latest_dir, used=used_dirs
                 )
         except Exception as e:  # noqa: BLE001 - 结构同步异常不阻塞巡检
             markers.append(f"结构文件同步异常：{e}")
-        extra_fields["last_analysis_bucket"] = bucket
-        extra_fields["last_analysis_dir"] = latest_dir or ""
-        if used_dirs:
+        if structure_synced:
+            extra_fields["last_analysis_bucket"] = bucket
+            extra_fields["last_analysis_dir"] = latest_dir or ""
+            if db_status == "completed":
+                extra_fields["last_structure_completion"] = completion
+        if used_dirs and structure_synced:
             # 结构文件实际来源目录（"" = 任务主目录）；供「查看原子受力」对齐
             extra_fields["last_structure_dirs"] = used_dirs
     notes_markers.extend(markers)

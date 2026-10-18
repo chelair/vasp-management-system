@@ -111,6 +111,14 @@ def evaluate(
         matched: List[Any] = []
         if scope == "task":
             matched = [f for f in task_facts if _match(condition, f)]
+            # 兼容 data/config 中沿用的旧内置规则：续算次数本身不能证明未收敛。
+            # 只约束这条内置规则，不修改用户的规则文件或其他规则的匹配语义。
+            if rule.get("rule_id") == "R_TASK_CONTINUATION_MANY":
+                matched = [
+                    f for f in matched
+                    if f.get("converged") is not True
+                    and (f.get("converged") is False or f.get("status") == "unconverged")
+                ]
         elif scope == "project":
             if _match(condition, project_facts):
                 matched = [project_facts]

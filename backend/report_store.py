@@ -12,6 +12,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import threading
 from datetime import date, datetime
@@ -37,7 +38,36 @@ INDEX_FILE = REPORTS_DIR / "index.json"
 #: 报告注解（结果分析描述 / 论文写作参考）：data/reports/notes/{report_id}.json
 NOTES_DIR = REPORTS_DIR / "notes"
 _lock = threading.Lock()
-_notes_lock = threading.Lock()
+_notes_lock = threading.RLock()
+
+
+def _remap_hidden_figures(old_doc: Dict[str, Any], new_doc: Dict[str, Any], hidden: List[str]) -> List[str]:
+    """报告重排后以图片路径对应单图隐藏位置；章节/任务隐藏 key 不变。"""
+    def figures(doc):
+        return {
+            section["key"]: re.findall(r"^!\[[^\]]*\]\(([^)]+)\)\s*$", section.get("markdown", ""), re.M)
+            for section in doc.get("markdown_sections") or []
+        }
+
+    before, after = figures(old_doc), figures(new_doc)
+    result = []
+    for key in hidden:
+        parts = key.split(":", 2)
+        if len(parts) != 3 or parts[0] != "figure":
+            result.append(key)
+            continue
+        section, raw_index = parts[1:]
+        old_paths, new_paths = before.get(section, []), after.get(section, [])
+        if not raw_index.isdigit() or int(raw_index) >= len(old_paths):
+            continue
+        index = int(raw_index)
+        path = old_paths[index]
+        # 同一图片出现多次时，按其第几次出现定位，避免隐藏到另一个副本。
+        occurrence = old_paths[:index].count(path)
+        candidates = [i for i, value in enumerate(new_paths) if value == path]
+        if occurrence < len(candidates):
+            result.append(f"figure:{section}:{candidates[occurrence]}")
+    return result
 
 
 def _notes_path(report_id: str) -> Path:
@@ -199,6 +229,12 @@ def save_report(
     if not report_id:
         raise ValueError("报告缺少 metadata.report_id")
     target = REPORTS_DIR / _safe_name(project_name) / report_id
+    old_doc = None
+    if (target / "report.json").is_file():
+        try:
+            old_doc = json.loads((target / "report.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
     tmp = target.with_name(target.name + ".tmp")
     if tmp.exists():
         shutil.rmtree(tmp)
@@ -220,6 +256,12 @@ def save_report(
         shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp.replace(target)
+    if isinstance(old_doc, dict):
+        with _notes_lock:
+            edits = read_edits(report_id)
+            mapped = _remap_hidden_figures(old_doc, doc, edits["hidden_elements"])
+            if mapped != edits["hidden_elements"]:
+                save_edits(report_id, edits["hidden_sections"], mapped)
 
     # 结构化数据副本（2026-10-13，§4.4）：`data/reports/structured/<report_id>.json`
     # 只落**规范化 AI 视图**（ai_view）+ 元信息，供后续向量化/RAG 检索；失败不影响报告本体
@@ -274,6 +316,7 @@ def save_report(
         "completion_percent": (
             (doc.get("executive_summary") or {}).get("task_stats") or {}
         ).get("completion_percent"),
+        "weighted_progress_percent": (doc.get("basic_info") or {}).get("weighted_progress_percent"),
         "chart_count": len(charts),
         "json_path": f"{_safe_name(project_name)}/{report_id}/report.json",
         "markdown_path": f"{_safe_name(project_name)}/{report_id}/report.md",

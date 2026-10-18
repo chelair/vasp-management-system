@@ -486,6 +486,9 @@ body: {
 | 分析 | `POST /jobs/tasks/{id}/calculate-correction` | 自由能矫正项（vaspkit 501） |
 | 结构转换 | `POST /tools/cif-to-poscar` | CIF → POSCAR（`{content}` → `{poscar, elements, counts, atoms, cell, formula, warnings}`；纯文本不落盘，页面「导入 POSCAR」选 .cif 走的就是它；解析失败 400 带中文原因） |
 
+报告进度口径（2026-10-18）：`basic_info.weighted_progress_percent` 为包含归档成果的当量加权主进度；`basic_info.progress_percent` 与列表 `completion_percent` 仍为未归档任务完成率。新生成报告的列表另带可选 `weighted_progress_percent`，旧报告可能没有该字段。进度风险与摘要使用加权主进度；`workload.core_hours_*` 是当量折算核时，工期为固定产能假设下的估算。重新生成同一 report_id 时保留注解，并按图片路径迁移原有单图隐藏位置。
+
+
 > 未列全的请求体字段以 `/docs`（Swagger）为准；本文档只覆盖接入常用面。
 
 ---

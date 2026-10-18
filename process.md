@@ -1,10 +1,93 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
-> 生成时间：2026-08-29 · 最近更新：2026-10-14 · 当前版本：v0.9.45（差分电荷改为**远端算好只回传 CHGCAR_diff**：归档时在主任务目录用 VTST `chgsum.pl` + `chgdiff.pl` 生成，本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`，本机无需装 VTST；v0.9.44 差分电荷分块计算）
+> 生成时间：2026-08-29 · 最近更新：2026-10-18 · 当前版本：v1.0.0；下述 v0.9.45 为历史说明：v0.9.45（差分电荷改为**远端算好只回传 CHGCAR_diff**：归档时在主任务目录用 VTST `chgsum.pl` + `chgdiff.pl` 生成，本地存 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`，本机无需装 VTST；v0.9.44 差分电荷分块计算）
 > 用途：本窗口上下文过长时，新窗口凭本文档 + `TODO.md` + `README.md` + `API.md`（接口文档，面向自动化/智能体接入）直接接续开发。
 > 项目位置（生产机）：`/home/zouyuxi/projects/vasp-manager`（Linux，自包含；旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。部署与运维见 §11。
 > 维护：**本文档由开发助手（Codex）负责维护**，是跨窗口交接的唯一权威说明；每次版本提交都同步更新
 > 版本号、改动记录（§7）、待办状态（§9）与数据现状（§2）。发现文档与代码不一致时，以代码为准并立即回来改文档。
+
+---
+
+## 0. 本次接手核对（2026-10-18）
+
+### v1.0.0 发布（2026-10-18）
+
+- 本次将原 v0.9.77 未发布受力改动与报告、巡检修复合并发布为 **v1.0.0**；package.json / package-lock.json 同步为 1.0.0。沿用 main 分支提交及推送，不创建 tag。
+- 报告：修复 Portal 清理导致的白屏、过期响应与同 ID 重生成刷新；进度和风险统一当量口径，电子结果按模型集中展示，补关键结果概览及方法说明，保留注解、隐藏设置、交互和导出。
+- 巡检：opt / NEB 完成时补同步最终结构（含低精度收敛），运行期保留 25 步节流；成功标记与目录/作业/步数绑定，失败不推进同步标记并在下轮重试。Ag24@Al2O3_neb 的 con4 映像已只读远端补同步并校验一致。
+- 受力：逐原子与结构优化最大力统一为合力模长，固定原子继续从总体统计排除，RMS 口径保留；旧 schema 4 缓存失效。NEB 投影力保留原口径，历史报告/归档不批量重算。
+- 验证：18 项隔离 Python 回归测试及生产前端构建；报告浏览器切换/隐藏/重生成/竞态测试此前已通过。后端已重载生效，静态资源由新构建提供。
+- 用户原有的 `问题.md` 删除保持未暂存，不纳入版本；生产 data、账号、配置及生成资产不入 Git。下方接手记录及各阶段“未提交/未重启”仅描述当时状态。
+- 后续仍按本节后的待办解释处理；智能体科研闭环与文件来源管理重构尚未实施，不能因版本号升级视为已经完成。
+
+
+本节是当前接手摘要；下文历史版本、运行情况与本节冲突时，以本节核对结果和实际代码为准。
+
+### 初次接手时的代码与未提交内容（历史快照）
+
+- 仓库 `/home/zouyuxi/projects/vasp-manager`，分支 `main`，HEAD `88ca13f`；最近功能提交为 v0.9.76 `02cc498`。本地缓存的 `origin/main` 与 HEAD 无差异；本次未 fetch，不能据此保证远端实时状态。
+- `package.json` / lock 已改为 **0.9.77，但尚未提交**。原有改动包括 `backend/atomic_forces.py`、`backend/batch_check.py`、三个前端受力类型/说明文件以及本文档。
+- v0.9.77：逐原子 `fmax`、结构优化 `force_max` 改为合力模长 `sqrt(Fx²+Fy²+Fz²)`；RMS 保留分量 RMS；原子受力缓存 schema 从 4 升为 5。NEB 投影力口径沿用原实现。后续验收应区分新解析结果、旧巡检归档和旧报告，不应假设历史数据已全部重算。
+- `问题.md` 为已有的删除未提交状态，保留用户删除，不恢复、不混入其他提交。初次接手仅补交接文档；随后报告页修复见下节。未提交或推送。
+
+### 后续任务：报告页白屏修复（2026-10-18）
+
+- 已用本地报告快照 + 真实 Edge 浏览器复现：从 FS 切到 Ag 报告时触发 `NotFoundError: removeChild`，`#root` 内容清空。测试服务仅监听本机，未触发真实后端生成、巡检或 HPC 操作。
+- 根因：`Report.tsx` 的 widget/panel effect 清理直接 `replaceChildren()`，删掉 React Portal 的子节点，随后 React 卸载时再次删除。修复为由 React 管理子树卸载，并过滤已脱离当前正文的旧挂点。
+- 同时补报告详情请求的过期响应保护、加载失败时不保留其他报告旧详情；重新生成同一项目沿用同一 report_id，新增刷新计数以重取详情。
+- `/report` 路由增加现有 ErrorBoundary，其他组件出错时仍保留导航与重试入口。
+- 内容审阅与具体建议见 `REPORT_REVIEW.md`；此次没有调整统计、科学数值或报告章节。
+- 验证：Edge 真实浏览器（真实 ECharts / 3Dmol + 本地报告快照接口）连续切换 7 个项目、同 ID 重新生成后的详情刷新、延迟旧响应不覆盖当前报告均通过，pageerror 为 0。`npm run build` / `git diff --check` 通过；生产服务已提供新 dist，6 个静态资源均 HTTP 200，健康接口正常。本次未重启后端、未提交或推送。浏览器验证脚本与日志在 `/tmp/vasp-report-debug/`（临时调试资产，不保证长期保留）。
+
+### 后续任务：完成时最终结构同步（2026-10-18）
+
+- 根因：v0.5.0（`6d6b78ad`）将原有状态变化触发替换为 25 步节流；NEB 随后沿用。Ag24@Al2O3_neb / con4 在第 23 步结束，13:45 的第 5 步快照一直未更新，19:45 的巡检虽记录 running → completed，analysis_needed 仍为 false。
+- 修复：opt / neb 保留目录变化立即同步、运行期每 25 步同步；完成（含 low_precision）强制补同步。成功后保存 `last_structure_completion={dir,job_id,steps}`，相同完成结果不重复下载；历史已完成任务缺少该标记时补同步一次。恢复运行会清除标记，重新结束后再同步。
+- 失败重试：只有远端结构下载及 CIF 转换成功才推进 last_analysis_bucket / last_analysis_dir 和完成标记；NEB 要求所有映像成功，端点仍允许 POSCAR，中间映像不回退 POSCAR；opt 回退到主目录的旧 CONTCAR 不作为当前续算最终同步成功。失败不阻塞任务状态回填，下轮巡检重试。
+- 现场：已备份并刷新该任务 files/neb_images 与 reports/structure/images 的 5 个映像，逐文件 SHA-256 与远端 con4 一致。映像 02 H161 的分数坐标为 0.439547155171883 / 0.673316536813023 / 0.421998685892409。备份 `/tmp/vasp-neb-final-sync-cox71tjz`。现场补同步未写项目数据库，完成标记由下次正式巡检事务保存；未触发提交、续算或自动化动作。
+- 验证：15 项隔离回归测试通过（含原有报告 6 项）；后端已于 20:41 平滑重载，健康检查通过。未更改远端计算文件，未提交或推送。
+- 另记文件来源问题：VESTA 的 NEB 静态 PNG 渲染仍读取 files/<映像>/CONTCAR，而详情 CIF 读取 files/neb_images/<映像>；此次修复范围为巡检结构同步及详情坐标，未改 PNG 来源链路。
+
+### 后续任务：报告结构与内容调整（2026-10-18，用户确认后实施）
+
+- 生成器：项目风险/摘要使用 `weighted_progress_percent` 对应的当量口径；原 `basic_info.progress_percent` / `completion_percent` 字段继续表示未归档任务完成率，避免破坏 API 消费方。报告索引新增可选 `weighted_progress_percent`。
+- `report_rules.evaluate` 为内置 `R_TASK_CONTINUATION_MANY` 补未收敛依据要求；现有自定义规则文件不改写。真实 FS@Kaolin@E 已收敛，不再误触发该规则。
+- 正文新增关键结果概览，电子结构按模型聚合；保留全部原有标题、挂点、3D、完整 Bader 表、PDOS/功函数与导出功能。核时/工期标折算/估算，自由能补参考口径说明。
+- `report_store.save_report` 重新生成时以图片路径/出现次序迁移单图隐藏 key，章节/任务隐藏与注解保留；前端和导出整模型隐藏同时过滤概览行。
+- 生效方式：刷新网页后重新生成目标报告。没有批量重写旧报告，没有变更科学数值、项目/任务状态、VASP 参数或用户规则配置。内容范围与剩余建议见 `REPORT_REVIEW.md`。
+- 测试：`.venv/bin/python -m unittest discover -s tests -v`（6 项，隔离临时数据目录、无 SSH）；真实 FS 事实只读核对；7 个真实快照的浏览器显示、概览隐藏/恢复、同 ID 生成刷新与竞态测试通过，pageerror=0；`npm run build` 与 `git diff --check` 通过。
+- 运维：前端 dist 已重建；后端已于北京时间 2026-10-18 16:41 重载，systemd active、`/api/health` 200。本机服务 Restart=always，以服务进程 SIGTERM 正常退出后由 systemd 拉起。未提交或推送。
+
+### 功能入口与调用关系
+
+| 范围 | 主要入口 / 实现 |
+| --- | --- |
+| 前端与请求 | `src/App.tsx`：总览、巡检、作业、报告、自动化、SSH；`src/api/client.ts`：统一信封、Bearer token、401/403 处理 |
+| 后端启动 | `backend/run.py` → `backend/main.py` → `backend/routers/`；启动同时启用 SSH 预热、巡检调度、自动化 |
+| 项目与数据 | `storage.py` / `config.py` / `paths.py` / `task_paths.py`；JSON 主库、原子写入与备份；任务路径按本地/远端根解析 |
+| 巡检 | `inspection_runner.py` → 上传并运行远端 `batch_check.py` → 状态回填、结构同步、`checks_store.py` 归档 |
+| 作业与输入文件 | `routers/jobs.py`、`continuation.py`、`input_state.py`、`potcar.py`；真实提交/停止/续算与远端文件操作 |
+| 科学分析 | `atomic_forces.py`、`pdos.py`、`bader.py`、`charge_diff.py`、`work_function.py` |
+| 报告 | `report_builder.py` / `report_charts.py` / `report_export.py`；前端 `src/interactive/` 共享交互内核，构建时另产报告运行时 |
+| 权限与 AI | `auth.py` / `middleware/auth.py` / `permissions.py`；`ai_view.py` / `task_context.py` / `pending_actions.py` |
+| 自动化 | `backend/automation/`：事件、规则、调度、动作、审计；现有四类动作含 preflight，前端入口限 admin |
+
+### 已验证与操作边界
+
+- 初次接手时 `npm run typecheck`、`git diff --check` 均通过；后续报告修复另做了前端构建与浏览器回归（见上节）。未执行远端巡检或作业动作，不能将前端验证视为 v0.9.77 受力科学结果验收。
+- systemd `vasp-manager` 为 `active/running`；`GET http://127.0.0.1:3001/api/health` 返回成功。服务启动时间为 2026-10-18 10:29:25（北京时间）。本次未重启服务；健康响应不能证明运行中代码与当前工作区完全一致。
+- 生产端口 3001，后端同时托管 `dist/`。前端发布用 `npm run build`（含 `dist/report/report-interactive.js`）；后端修改后需重启服务。只读接手不触发部署。
+- 同一 `data/` 只能有一个写入后端；备份/迁移必须包含被 gitignore 的 `data/`。不读取或抄录账号、token、SSH 密钥。
+- 远端操作统一走 `backend/ssh.py` 连接池，批量操作合并 exec；非登录 shell，LSF 命令显式加载 profile；不得拿运行中任务做破坏性测试。
+- 联调使用隔离数据目录 + mock SSH，并核对 path_mapping 无生产绝对路径；不要直接启动第二个生产实例，启动会激活调度器。
+
+### 待办的当前解释
+
+- `待办.md` 为用户需求记录，多数项目已标完成；`TODO.md`、README 与本文 §9/§10 中混有历史状态，不能逐条当作现存缺失功能。
+- 登录、项目归属权限、规则自动化、AI scope/委托/待确认队列已实现；§10 末尾“账号认证待做”、§9 的“无动作目录/preflight/幂等”等是历史方案。外部 LLM 自主决策闭环仍需独立开发。
+- PDOS、Bader、功函数、差分电荷及报告接入已实现；POTCAR 也已有远端生成代码，不能依旧文档视为纯占位。
+- 巡检异常规则引擎、自动化开放普通用户后的 owner 校验仍是后续议题，按原有暂缓约定等待任务指令。其他旧待办须先核对对应实现再排期。
+- 下一次开发先明确需求；v1.0.0 已补隔离的受力数值/固定原子/缓存失效验收，后续开发基于该发布继续。
 
 ---
 
@@ -163,7 +246,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 | `task_paths.py` | 任务目录推导、`is_continuation_task`、类型→顶层分类目录 |
 | `storage.py` | 文件型 DB：原子写 + 备份 + `update_task_status`（无流转白名单） |
 | `batch_check.py` | **远端巡检脚本**（自动上传部署）：定位最新输出、bjobs 状态（抗折行解析）、OUTCAR 解析（能量/力历史/收敛）、NEB 映像状态判定、nebef.pl 能垒 |
-| `inspection_runner.py` | 巡检编排：筛选 → 上传脚本 → 远端批量执行 → 结果回填（job_id/current_output/状态）→ 归档；结构同步按「离子步每 25 步一桶 + 目录变化重置」触发（见 §6.2b）：opt 下载 POSCAR/CONTCAR，NEB（v0.6.9）单次远端脚本取各映像 CONTCAR/POSCAR，均调 `scripts/vasp2cif.py` 生成 CIF（opt → reports/structure/，NEB → reports/structure/images/） |
+| `inspection_runner.py` | 巡检编排：筛选 → 上传脚本 → 远端批量执行 → 结果回填（job_id/current_output/状态）→ 归档；结构同步按「运行期每 25 步 + 目录变化立即同步 + 完成时最终同步（失败重试）」触发（见 §6.2b）：opt 下载 POSCAR/CONTCAR，NEB（v0.6.9）单次远端脚本取各映像 CONTCAR/POSCAR，均调 `scripts/vasp2cif.py` 生成 CIF（opt → reports/structure/，NEB → reports/structure/images/） |
 | `inspection_scheduler.py` | **自动巡检调度**（v0.6.2）：后台线程每 60s 检查一次，`auto_inspection_enabled` 打开且「距上次巡检 ≥ `inspection_interval_hours`」时触发一轮全局巡检；提供 `scheduler_status()` 与 `update_schedule()`（写入 settings.json） |
 | `checks_store.py` | 巡检归档合并（最新条目 + 旧 force_history 沿用）、列表行组装（has_inspection 等） |
 | `report_builder.py` / `report_charts.py` / `report_panels.py` / `report_rules.py` / `report_store.py` / `report_schema.py` / `report_export.py` | **分项目报告（v0.7.0，v0.7.3 起看板同版式）**：数据收集（任务元数据 + 巡检归档 + 集群快照 + 审计日志）→ 结构化对象 → Markdown → 纯 Python SVG 图表；`report_charts.py` 是通用图（双轴曲线 / 圆环 / 进度条 / 结构三视图 / 映像矩阵），**`report_panels.py` 是与巡检详情页同版式的看板图**（统计卡 + 图例 + 自由能台阶图 / NEB 能垒曲线 / 项目进度分块进度条）；风险规则外置可配；按项目分目录存储 + 索引；自包含 HTML 导出（可选章节、图表内联） |
@@ -226,7 +309,7 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 1. **SSH 连接**：统一走 `ssh.py` 连接池；每条 exec 有 ~1.3-2s 远端 shell 启动开销（HPC 负载高时 3-4s），**多步操作必须合并成单次 base64 bash 脚本**（参考 continuation `_remote_script` + `===STATE===/===FILES===` 标记分段）。
 2. **巡检**：全局 `POST /api/inspections/run`、单任务 `run-single/{task_id}`（任意状态可巡检，跳过筛选）；batch_check 自动上传远端；结果归档 data/checks 并按 task_id 合并；运行中任务也回传 last_energy + force_history。
-2b. **结构分析触发（analysis_needed，v0.4.6 起；v0.6.9 起 opt + neb 同规则）**：opt 与 neb 任务都适用；离子步每 25 步一桶（0-24→桶0、25-49→桶1、50-74→桶2…）。同一输出目录：桶 ≥1 且比上次触发桶更大才触发（25-49 触发后，再次巡检仍在 25-49 不触发，直到 50-74 及以后）；输出目录变化：视为新目录重置计数，重复按桶触发。触发时下载 POSCAR/CONTCAR → `scripts/vasp2cif.py` 生成 `reports/structure/{POSCAR,CONTCAR}.cif`（新结果覆盖旧 CIF）；**NEB 任务**（v0.6.9）步数取中间映像 OUTCAR 的 TOTAL-FORCE 块最大值，触发时用单次远端脚本把各映像 CONTCAR（缺则 POSCAR）base64 回传，生成 `reports/structure/images/<label>.cif`（IS → 中间态 → FS，详情页做 3D 横向对比），任务持久化 `last_analysis_bucket` / `last_analysis_dir`。**CIF 使用规则**：详情接口有本地 CIF 直接用；没有 CIF 但本地有 POSCAR/CONTCAR 时用脚本现场转换补缺（只补缺不覆盖）；转换先写临时文件成功后再原子替换，失败保留上一次结果。前端 Structure3DViewer 用 3Dmol 渲染（VESTA PNG 方案已移除）。
+2b. **结构分析触发（analysis_needed，v0.4.6 起；v0.6.9 起 opt + neb 同规则）**：opt 与 neb 任务都适用；离子步每 25 步一桶（0-24→桶0、25-49→桶1、50-74→桶2…）。同一输出目录：桶 ≥1 且比上次触发桶更大才触发（25-49 触发后，再次巡检仍在 25-49 不触发，直到 50-74 及以后）；输出目录变化时立即同步；完成（含低精度收敛）时无论步数都补同步最终结构。last_structure_completion 按目录/作业/步数记录成功，历史任务缺标记时补同步，失败不推进同步标记，下轮重试。触发时下载 POSCAR/CONTCAR → `scripts/vasp2cif.py` 生成 `reports/structure/{POSCAR,CONTCAR}.cif`（新结果覆盖旧 CIF）；**NEB 任务**（v0.6.9）步数取中间映像 OUTCAR 的 TOTAL-FORCE 块最大值，触发时用单次远端脚本把各映像 CONTCAR（缺则 POSCAR）base64 回传，生成 `reports/structure/images/<label>.cif`（IS → 中间态 → FS，详情页做 3D 横向对比），任务持久化 `last_analysis_bucket` / `last_analysis_dir`。**CIF 使用规则**：详情接口有本地 CIF 直接用；没有 CIF 但本地有 POSCAR/CONTCAR 时用脚本现场转换补缺（只补缺不覆盖）；转换先写临时文件成功后再原子替换，失败保留上一次结果。前端 Structure3DViewer 用 3Dmol 渲染（VESTA PNG 方案已移除）。
 3. **续算**：`POST /jobs/tasks/{id}/continuation`。opt：最新目录 OUTCAR/CONTCAR 均非空 → 创建 con(N+1)，复制 CONTCAR→POSCAR/POTCAR/KPOINTS/INCAR/提交脚本、**WAVECAR 用 mv**，INCAR 改 ISTART=1/ICHARG=0；未完成 → 分流提示（input_complete_but_not_finished / input_incomplete）；运行中 → 提示等待。NEB：从最新续算目录复制共享文件 + 端点 POSCAR 固定并**带上 00/NN OUTCAR**、中间映像 CONTCAR→POSCAR、**各映像（含端点/中间态）存在 WAVECAR 时随续算 mv 移动**（目标已有不覆盖）。续算在 DB 登记隐藏子任务（不展示，供后台定位）。
    - **活跃作业保护（v0.5.5）**：opt/NEB 续算脚本都在创建目录**之前**用 `bjobs -l`（含 `bjobs -o 'jobid exec_cwd'` 按源目录/映像子目录二次匹配）判定是否有 RUN/SSUSP/PSUSP/USUSP 作业，命中则只回传状态、返回 `action="running"`，**不建目录、不移动文件**。opt 自 v0.4.5 起如此，NEB 在 v0.5.5 补齐（此前 NEB 续算对运行中作业没有拦截）。
    - **WAVECAR 是移动语义**：续算成功后源目录不再保留 WAVECAR（opt 与 NEB 一致，目标已存在则不覆盖）。NEB 连端点 00/NN 的 WAVECAR 也一并移动，端点 POSCAR/OUTCAR 是复制。
@@ -271,7 +354,19 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
 
 ---
 
-## 7. 近期重要改动记录（v0.4.1 → v0.9.76）
+## 7. 近期重要改动记录（v0.4.1 → v1.0.0）
+
+- v1.0.0（2026-10-18）：正式合并发布报告白屏与内容修复、受力模长统一、opt / NEB 完成时最终结构同步及失败重试；新增隔离回归测试和报告审阅文档。具体范围、兼容性与验证见 §0 发布说明。
+
+- v0.9.77（2026-10-18 用户：“都改成模长”）：**受力统计统一为合力模长**。排查
+  `PAYH3_TS2_neb` 映像 01 时确认，NEB 看板的 `0.2547` 来自 VASP 在 NEB 投影后输出的
+  `FORCES: max atom`，而“查看原子受力”读取的是投影前原始 `TOTAL-FORCE`；原实现又用
+  `max(|Fx|,|Fy|,|Fz|)` 着色和统计，导致同一原始力块出现 `0.2578`（最大单轴分量）与
+  `0.2925`（选中原子合力模长）两套读数。现在 `batch_check.compute_force_stats()` 的
+  `force_max`、力收敛历史、`atomic_forces` 的逐原子 `fmax` 和前端着色统一为
+  `sqrt(Fx²+Fy²+Fz²)`；`force_rms` 仍保留 VASP 的三分量 RMS 口径，避免收敛阈值尺度漂移。
+  `atomic_forces` 缓存 schema 升至 5，旧缓存自动失效重取。NEB 看板继续使用
+  `nebef.pl` 的投影后模长，不改 NEB 收敛语义；后端需重启、前端需重构建。
 
 - 2026-10-16（用户三条："新建项目-neb 那里，几个映像数改成中间体，更直观而且和作业管理那里一样；新增页面加计算内容和预期；
   自动化新建规则那里选择任务-已关闭项目不出现在选项中"）：**新增项目与自动化规则的小改**（v0.9.76）。
@@ -1386,7 +1481,8 @@ TMDZYX 的 dir_path/remote_dir 形如 `TMDZYX/opt/Co/con2`：续算子任务不�
   payload 里带 `source_dir`，缓存命中要求来源目录一致 → **换 conN / 重新同步结构后旧缓存自动失效重取**。
   **落盘**：`<任务目录>/reports/atomic_forces[_<映像>].json`（与 `files/` 同级，不混进 VASP 输入文件），
   带远端 OUTCAR 指纹；任务已结束时命中本地缓存、不再连远端；任务在跑则重新取并覆盖；`refresh=1` 强制重取。
-  **着色**（`utils/forceColor.ts`）：每原子取**最大力分量** `max(|Fx|,|Fy|,|Fz|)`（与 VASP 力判据、`force_max` 同口径），
+  **着色**（`utils/forceColor.ts`）：每原子最初取最大力分量 `max(|Fx|,|Fy|,|Fz|)`；
+  **v0.9.77 起统一改为合力模长** `sqrt(Fx²+Fy²+Fz²)`（与 `force_max`、选中原子读数同口径），
   阈值取 INCAR 的 `|EDIFFG|`（缺失退回 registry 0.02）；`≤阈值` = **纯绿**（达标），`>阈值` = **黄→红**渐变
   （**不经过绿色**，一眼分得出哪些还没收敛），上限取 `max(阈值×4, 实测最大)`；固定原子（Selective dynamics）
   显示灰色。元素序列或原子数与当前 CIF 对不上 → **不着色**并提示。
@@ -1882,7 +1978,8 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 
 ## 10. 新窗口接续清单
 
-> **当前状态速览（2026-10-16 整理）**：代码在 **v0.9.76**（commit `02cc498`；新增项目：NEB 数量改叫「中间体」、补「计算内容/预期结果」两栏；自动化规则候选剔除已关闭项目）。
+> **当前状态速览（2026-10-18 整理）**：代码在 **v1.0.0**；包含报告与最终结构同步修复，受力统计统一使用合力模长
+> `sqrt(Fx²+Fy²+Fz²)`（NEB 看板继续使用 VASP 投影后的 `FORCES: max atom`）。
 > **v0.9.75** = `aab7ec9`（修 Bader 元素顺序错位：ACF 行序以分析时的电荷密度为准，并冻结那次分析的结构）。
 > **v0.9.74** = `17a90cd`（归档时后台回传 LOCPOT + ACF.dat，功函数面板可看进度/手动补拉）。
 > **v0.9.73** = `6d1845d`（自由能中间体也换成 3D 视图，点表格「结构 N」切换）。
@@ -1938,7 +2035,7 @@ TODO.md 与本节冲突时以本节 + 代码实际状态为准（TODO.md 历史�
 > （`pdosWidget.ts`），站内 React 只复用内核 → 三处口径一致；导出的运行时用 esbuild 打 IIFE 后**整段内联**，
 > 数据内联进 `window.__VASP_REPORT_DATA__`（JSON 里 `<` 转义成 `\u003c`）；**静态图永远留在 HTML 里当兜底**，
 > JS 挂上组件后再 `display:none`，于是老浏览器/微信/打印都不受影响。
-> **已知不一致**：`package.json` 仍是 `0.9.44`（v0.9.45 那次提交漏改版本号），下一个版本提交时一并订正到当前版本。
+> **版本同步**：v1.0.0 发布已统一 package.json 与 package-lock.json 版本；以下旧版接续步骤只作历史参考。
 
 1. `git -C /home/zouyuxi/projects/vasp-manager log --oneline -4` → 最新应为 v0.9.61 那条；
    `git status` 目前只剩 `问题.md`（删除未提交，用户自己删的，助手不动）一处待处理（见上方速览）。

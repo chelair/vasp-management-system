@@ -772,6 +772,43 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 ---
 
+## 4.8 AI 工作台（本轮实现步骤 1 / 2 / 3）
+
+前端 `/ai`，接口统一前缀 `/api/ai/chat`。支持对话、本地上下文及按项目约束的文件工作区；不执行代码、SSH 或计算操作。需人类账号登录；每条连接、会话和运行按 `user_id` 隔离，即使管理员也不能通过这些接口读取其他人的私有记录。项目会话额外检查当前项目可见权限，失去权限后不再返回历史内容。
+
+| 方法 | 路径（省略前缀） | 用途 |
+| --- | --- | --- |
+| GET / POST | `/connections` | 列出 / 创建私有模型连接 |
+| PUT / DELETE | `/connections/{id}` | 编辑 / 删除连接 |
+| POST | `/connections/{id}/test` | 只查询 `/models` 验证连接，不发起生成 |
+| GET | `/targets` | 当前账号可见的项目与任务 |
+| GET / POST | `/conversations` | 列出 / 创建通用或绑定项目的会话 |
+| GET / PUT / DELETE | `/conversations/{id}` | 历史、会话名称/提示词/模型设置、删除；GET 的 `before` 用于更早消息分页 |
+| GET | `/conversations/{id}/context` | 最新本地快照，不触发远端同步 |
+| GET | `/conversations/{id}/workspace` | 项目目录地图、主任务本地位置及远端来源、工具开关 |
+| GET | `/conversations/{id}/workspace/files` | `path` 虚拟相对目录、`offset` 分页，最多100项；根目录用空路径 |
+| GET | `/conversations/{id}/workspace/file` | `path` 文本文件、`offset` 字节偏移、`tail`，最多12000字节；含时间和分片哈希 |
+| POST | `/conversations/{id}/messages` | `{content, retry, request_id}`；创建回答运行，返回 run；同一 request_id 去重 |
+| GET | `/runs/{id}` | 运行、用量及当时的提示词 / 上下文快照 |
+| GET | `/runs/{id}/events` | 带认证的 SSE；只订阅已有运行，不产生新的模型请求 |
+| POST | `/runs/{id}/cancel` | 停止接收并关闭上游流，保留已显示的内容 |
+
+连接创建/编辑字段：`name`、`base_url`、`model`、`api_key`、`max_tokens`（128–32768，默认 2048）、`is_default`。基础地址通常形如 `https://provider.example/v1`，第一版支持 OpenAI 兼容 Chat Completions SSE。常规模型发送 `max_tokens`；gpt-5 / gpt-6 / o 系列发送 `max_completion_tokens`。不自动重试生成以避免重复计费。协议参考 [OpenAI 官方流式指南](https://developers.openai.com/api/docs/guides/streaming-responses) 与 [Chat Completions 参数说明](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。服务商未在流中返回 usage 时显示未返回，不伪造 token 用量。
+
+**保密**：API Key 只写不读，所有响应都不带原值或密文；后端 Fernet 加密密钥，数据库目录 0700、文件 0600。主密钥默认 `~/.config/vasp-manager/ai.key`，可用环境变量 `VASP_AI_KEY_FILE` 指定，独立于 `data/ai/chat.sqlite3`。备份时须安全、分开备份主密钥与数据库，丢失主密钥后需重新配置连接，禁止把主密钥加入 Git。模型接口不跟随 HTTP 跳转；更换基础地址须重新输入密钥。远端 API 要求 HTTPS，本机模型允许 HTTP；从浏览器配置密钥也要求 HTTPS 或本机端口转发。不要向聊天框粘贴凭据。
+
+**项目级附加上下文（2026-10-18 调整）**：新建会话使用 `{title, project_id, connection_id}`；不传 project_id 则为通用会话。旧 task_id 创建参数仍兼容，但会解析为所属项目。会话绑定项目后不允许编辑为其他项目，避免混用聊天历史；同一项目可创建多个独立会话。旧任务会话启动时补齐 project_id，保留原 task_id、标题、消息、提示词和旧回答快照，不合并历史。权限按当前项目可见范围重新校验。
+
+上下文接口现在返回完整项目概览：项目说明/目标/预期、全部主任务的类型/状态/分组/作业/目录/能量/力/NEB结果摘要、最近巡检与操作记录。附属续算和分块不重复列为主任务，其操作仍可出现在项目日志。聚合只读本地、共用巡检缓存，不逐个任务读取大文件。发送模型时遵循字符预算，任务较多先转为 task_table（columns/rows），保留覆盖数量；确实超预算时由 summary.included_task_count / omitted_task_count 和 budget_note 明确说明。侧栏展示完整本地概览，“本轮依据”展示实际发给模型的版本。
+
+**DeepSeek 官方接口**：模型连接中点击“填入 DeepSeek 官方配置”，基础地址为 `https://api.deepseek.com`，默认 `deepseek-flash`、8192 tokens、直接回答；也可选择 `deepseek-v4-pro` 或手填服务商返回的模型名。连接新增 `thinking_mode=default|enabled|disabled`；仅对 DeepSeek 官方域名的当前型号发送 `thinking.type`，其他兼容接口不附加该参数。官方连接请求包含 `stream_options.include_usage=true`。思考片段不作为最终回答保存或回传；启用工作区时强制直接回答，避免工具多轮依赖未保留的思考链。关闭工作区仍使用原有模式配置。只有思考、没有最终答案时提示提高输出上限或改用直接回答。旧连接自动增加默认模式字段，密文及关联会话保留。参考 [DeepSeek 官方接入说明](https://api-docs.deepseek.com/)、[思考模式](https://api-docs.deepseek.com/guides/thinking_mode) 与 [Chat Completion 参数](https://api-docs.deepseek.com/api/create-chat-completion)。
+
+**上下文**：工作台使用上文的项目级聚合，按需读取本地任务元数据、共用巡检缓存与项目操作日志；通用会话不附加任何项目数据。每次发问重建观测快照，任务结果与结构来源目录不一致时明确提示。原有 `/api/ai/tasks/{task_id}/context` 仍保留单任务接口契约，工作台不再以它作为唯一附加单位。
+
+**长度与恢复**：完整历史保留；每轮最多选取 40 条、24000 字符的近期历史，项目快照预算 28000 字符，截断/省略会标明，可在“本轮依据”查看。第一版没有自动语义摘要。单账号最多 3 个并发回答，同一会话只允许 1 个。断开页面不取消后台回答；重新打开可继续订阅。后端重启将未结束运行标为 interrupted，不自动重发付费请求。
+
+**项目文件工作区**：每轮项目上下文仅附 `workspace_rules` 简短规则（项目边界、只读/草稿权限、地图查询入口），不附完整 `directory_map` 或任务 `workspace_path`。模型需定位文件时调用 `read_workspace` 读取 `evidence/directory-map.json`；前端完整地图接口保持不变，地图仍沿用 `task_paths.py` 的布局约定。虚拟根为 `project/`、`reports/`、`evidence/`、`knowledge/`、`reference/`（只读）和 `work/`（会话私有草稿）。模型工具仅 `list_workspace`、`read_workspace`、`write_workspace`，禁用路径越界、符号链接、敏感文件及覆盖。写入仅新建 work 文件，单文件120000字节、每会话4 MiB/100文件。每轮最多12次工具操作、6轮工具推理及一轮总结，工具结果预算90000字符；后续推理请求累计服务商实际 usage。`tool_events` 保留意图、参数、结果和状态，并随运行/SSE返回；服务重启的未结束工具标为 interrupted。PUT 会话可传 `workspace_enabled`；新建项目会话默认启用，已有会话原地升级默认关闭。通用会话不可启用。不兼容工具协议可关闭，无自动降级重试。凭据和全局状态继续由后端持有；不提供远端、代码执行或正式文件应用。详见 [MODEL_WORKSPACE.md](MODEL_WORKSPACE.md)。
+
 ## 5. 智能体闭环：巡检 → 判断 → 执行（建议用法）
 
 目标：**只读为主、动作最少、影响最小**。三个阶段各自的推荐调用：

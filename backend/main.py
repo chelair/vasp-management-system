@@ -17,6 +17,7 @@ from permissions import PermissionDenied
 from routers import auth as auth_router
 from routers import pending_actions as pending_actions_router
 from routers import ai as ai_router
+from routers import ai_chat as ai_chat_router
 from routers import automation as automation_router
 from routers import auxiliary as aux
 from routers import free_energy
@@ -39,6 +40,13 @@ from ssh import warmup_connection
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_data_dirs()
+    try:
+        from ai_chat_store import recover_runs
+        recover_runs()
+        from ai_chat_service import migrate_project_conversations
+        migrate_project_conversations()
+    except Exception:
+        print("[ai-chat] AI 私有存储暂不可用，请检查磁盘权限；其他模块继续运行", flush=True)
 
     # 路径解析自检（v0.9.22）：隔离实例的本地镜像必须落在自己的数据目录里，
     # 一眼能从日志看到解析结果；写在绝对路径上且跑到数据目录外时给醒目提示
@@ -197,6 +205,7 @@ app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
 app.include_router(pending_actions_router.router, prefix="/api")
 app.include_router(ai_router.router, prefix="/api")
+app.include_router(ai_chat_router.router, prefix="/api")
 
 
 # 生产模式：同时托管前端 dist/（单端口部署）

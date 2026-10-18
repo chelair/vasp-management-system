@@ -7,6 +7,7 @@ import {
   ReadOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import BrandLogo from './BrandLogo';
 import { useAuth } from '../../context/AuthContext';
@@ -16,6 +17,7 @@ const NAV_ITEMS = [
   { to: '/inspection', label: '巡检中心', icon: <SafetyCertificateOutlined /> },
   { to: '/jobs', label: '作业管理', icon: <FolderOpenOutlined /> },
   { to: '/report', label: '智能报告', icon: <FileTextOutlined /> },
+  { to: '/ai', label: 'AI 工作台', icon: <RobotOutlined /> },
 ];
 
 interface Props {
@@ -92,9 +94,9 @@ export default function Sidebar({ open, onNavigate }: Props) {
 
       <div className="sidebar__footer">
         <div className="storage-badge">
-          <div>存储方式：文件型存储（JSON）</div>
+          <div>本地存储：JSON / SQLite</div>
           <div style={{ marginTop: 4, color: 'var(--color-text-muted)', fontSize: 11 }}>
-            v0.2.0
+            v1.0.1
           </div>
         </div>
       </div>

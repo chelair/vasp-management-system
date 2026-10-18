@@ -1,0 +1,508 @@
+"""AI 工作台端到端：真实 HTTP/SSE + 模拟模型，隔离数据，不触碰生产账号/SSH。"""
+import copy
+from contextlib import closing
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import socket
+import sqlite3
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+_DATA = tempfile.TemporaryDirectory(prefix="vasp-ai-test-")
+os.environ.setdefault("VASP_WEB_DATA_DIR", _DATA.name)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+
+import ai_chat_service as service
+import ai_chat_store as store
+import ai_workspace as workspace
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from middleware.auth import install
+import permissions
+from routers import ai_chat
+import uvicorn
+
+KEY = "test-private-key-never-in-client-123456789"
+USERS = {name: {"user_id": name, "username": name, "role": "user"} for name in ("alice", "bob")}
+PROJECTS = {"projects": [{"project_id": name, "name": name, "owner": name,
+    "tasks": [{"task_id": f"task-{name}", "model_name": f"Model-{name}", "task_type": "neb", "status": "completed",
+               "current_output": {"latest_dir": "con4"}, "last_analysis_dir": "con4"}]} for name in USERS]}
+PROJECTS["projects"][0]["tasks"].extend([
+    {"task_id": "task-alice-extra", "model_name": "Model-alice-extra", "task_type": "opt", "status": "unconverged"},
+    {"task_id": "task-alice-aux", "model_name": "hidden", "task_type": "opt", "dir_path": "alice/opt/model/con1", "status": "completed"},
+])
+REQUESTS = []
+
+
+class Provider(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        self.send_response(200); self.end_headers()
+        self.wfile.write(b'{"data":[{"id":"mock-model"}]}')
+
+    def do_POST(self):
+        payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        REQUESTS.append(payload)
+        if payload["model"] == "error-model":
+            self.send_response(401); self.end_headers(); self.wfile.write(KEY.encode()); return
+        if payload["model"] == "redirect-model":
+            self.send_response(307); self.send_header("Location", "/stolen"); self.end_headers(); return
+        self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+        if payload["model"] in ("workspace-model", "workspace-loop", "workspace-blocked"):
+            count = sum(m.get("role") == "tool" for m in payload["messages"])
+            if count < 3 or payload["model"] == "workspace-loop":
+                choices = [
+                    ("list_workspace", {"path": "project"}),
+                    ("read_workspace", {"path": "project/neb/Model-alice/files/CONTCAR"}),
+                    ("write_workspace", {"path": "work/CONTCAR.v1", "content": "candidate structure draft"}),
+                ]
+                name, args = choices[min(count, 2)]
+                if payload["model"] == "workspace-blocked":
+                    name, args = "read_workspace", {"path": "project/../bob/private.txt"}
+                arguments = json.dumps(args)
+                fragments = [{"index": 0, "id": f"call_{count}", "type": "function", "function": {"name": name, "arguments": arguments[:5]}},
+                             {"index": 0, "function": {"arguments": arguments[5:]}}]
+                for fragment in fragments:
+                    self.wfile.write(("data: "+json.dumps({"choices": [{"delta": {"tool_calls": [fragment]}, "finish_reason": None}]})+"\n\n").encode())
+                self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}\n\ndata: [DONE]\n\n')
+                self.wfile.flush(); return
+        if payload["model"].startswith("deepseek-"):
+            self.wfile.write(b': keep-alive\n\ndata: {"choices":[{"delta":{"reasoning_content":"PRIVATE_REASONING_TEST"},"finish_reason":null}]}\n\n')
+        text = "模拟回答：已有结果符合本地快照；仍需核对预期。" + KEY
+        if payload["model"] == "deepseek-only-thinking":
+            text = ""
+        if payload["model"] == "slow-model":
+            text *= 8
+        try:
+            for i in range(0, len(text), 5):
+                data = {"choices": [{"delta": {"content": text[i:i+5]}, "finish_reason": None}]}
+                self.wfile.write(("data: " + json.dumps(data) + "\n\n").encode()); self.wfile.flush()
+                if payload["model"] == "slow-model": time.sleep(0.01)
+            self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":42}}\n\ndata: [DONE]\n\n')
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+class AIChatTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix="vasp-ai-http-")
+        cls.patches = [patch.object(store, "AI_DIR", Path(cls.temp.name)/"ai"),
+                       patch.object(store, "KEY_PATH", Path(cls.temp.name)/"private/master.key"),
+                       patch.object(service, "load_db", return_value=PROJECTS),
+                       patch.object(ai_chat, "load_db", return_value=PROJECTS),
+                       patch.object(service, "merged_results", return_value={
+                           "task-alice": {"checked_at": "2026-10-18T20:00:00", "status": "completed", "last_energy": -1.0, "current_output": {"latest_dir": "con4"}},
+                           "task-bob": {"checked_at": "2026-10-18T20:00:00", "last_energy": -99.0},
+                       }),
+                       patch.object(service, "AUDIT_FILE", Path(cls.temp.name)/"actions.jsonl"),
+                       patch.object(workspace, "DATA_DIR", Path(cls.temp.name)),
+                       patch.object(workspace, "load_servers", return_value={"server1": {"queue_system": "lsf", "password": KEY}}),
+                       patch("paths.load_path_mapping", return_value={"local_root": str(Path(cls.temp.name)/"projects"), "remote_roots": {"server1": "/remote/projects"}}),
+                       patch("task_paths.PROJECTS_DIR", Path(cls.temp.name)/"projects"),
+                       patch("auth.verify_token", side_effect=lambda token, **kwargs: ({}, USERS[token]) if token in USERS else None)]
+        for p in cls.patches: p.start()
+        app = FastAPI(); install(app); app.include_router(ai_chat.router, prefix="/api")
+        @app.exception_handler(permissions.PermissionDenied)
+        async def denied(_, exc):
+            return JSONResponse(status_code=403, content={"success": False, "message": exc.message})
+        cls.provider = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
+        cls.provider.daemon_threads = True
+        cls.provider_thread = threading.Thread(target=cls.provider.serve_forever, daemon=True); cls.provider_thread.start()
+        sock = socket.socket(); sock.bind(("127.0.0.1", 0)); sock.listen(20)
+        cls.base = f"http://127.0.0.1:{sock.getsockname()[1]}/api/ai/chat"
+        cls.server = uvicorn.Server(uvicorn.Config(app, log_level="critical", lifespan="off"))
+        cls.thread = threading.Thread(target=cls.server.run, kwargs={"sockets": [sock]}, daemon=True); cls.thread.start()
+        deadline = time.monotonic()+5
+        while not cls.server.started and time.monotonic()<deadline: time.sleep(0.01)
+        assert cls.server.started
+
+    @classmethod
+    def tearDownClass(cls):
+        time.sleep(1.5)  # 等模拟慢流退出；不会等待真实模型。
+        cls.server.should_exit = True; cls.thread.join(5)
+        cls.provider.shutdown(); cls.provider.server_close(); cls.provider_thread.join(2)
+        for p in reversed(cls.patches): p.stop()
+        cls.temp.cleanup()
+
+    def api(self, path, method="GET", body=None, user="alice", raw=False):
+        request = Request(self.base+path, data=json.dumps(body).encode() if body is not None else (b"" if method=="POST" else None),
+                          method=method, headers={"Authorization": "Bearer "+user, "Content-Type": "application/json"})
+        try:
+            with urlopen(request, timeout=5) as response:
+                data = response.read().decode()
+                self.assertNotIn(KEY, data)
+                self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+                return response.status, data if raw else json.loads(data)["data"]
+        except HTTPError as error:
+            data = error.read().decode(); error.close(); self.assertNotIn(KEY, data)
+            return error.code, json.loads(data)
+
+    def connection(self, model="mock-model", user="alice"):
+        status, result = self.api("/connections", "POST", {"name": "模拟模型", "base_url": f"http://127.0.0.1:{self.provider.server_port}/v1",
+             "model": model, "api_key": KEY, "max_tokens": 128}, user)
+        self.assertEqual(status, 200, result)
+        return result
+
+    def conversation(self, connection, task=None):
+        status, result = self.api("/conversations", "POST", {"title": "test", "connection_id": connection["id"], "task_id": task})
+        self.assertEqual(status, 200, result); return result
+
+    def send(self, conversation, retry=False, request_id=None):
+        return self.api(f"/conversations/{conversation['id']}/messages", "POST", {"content": "分析当前结果", "retry": retry, "request_id": request_id or store.uid()})
+
+    def wait_run(self, run):
+        for _ in range(150):
+            _, result = self.api(f"/runs/{run['id']}")
+            if result["status"] not in ("queued", "running"): return result
+            time.sleep(0.02)
+        self.fail("模拟运行未结束")
+
+    def test_encryption_secret_roundtrip_and_owner_isolation(self):
+        connection = self.connection()
+        self.assertTrue(connection["key_configured"])
+        self.assertNotIn("secret", connection); self.assertNotIn("api_key", connection)
+        with store.database() as db:
+            row = store.owned(db, "connections", connection["id"], "alice")
+            self.assertNotEqual(row["secret"], KEY); self.assertEqual(store.decrypt(row["secret"]), KEY)
+        self.assertEqual(store.KEY_PATH.stat().st_mode & 0o777, 0o600)
+        _, own = self.api("/connections"); _, other = self.api("/connections", user="bob")
+        self.assertTrue(any(x["id"]==connection["id"] for x in own["items"]))
+        self.assertFalse(any(x["id"]==connection["id"] for x in other["items"]))
+        self.assertEqual(self.api(f"/connections/{connection['id']}", "DELETE", user="bob")[0], 403)
+
+    def test_connection_test_and_destination_change_requires_new_key(self):
+        connection = self.connection()
+        _, result = self.api(f"/connections/{connection['id']}/test", "POST")
+        self.assertTrue(result["model_listed"])
+        body = {"name": "renamed", "base_url": connection["base_url"], "model": "mock-model", "max_tokens": 128}
+        self.assertEqual(self.api(f"/connections/{connection['id']}", "PUT", body)[0], 200)
+        body["base_url"] = "https://other.example/v1"
+        self.assertEqual(self.api(f"/connections/{connection['id']}", "PUT", body)[0], 400)
+
+    def test_task_context_and_cross_user_conversation_access(self):
+        connection = self.connection(); conversation = self.conversation(connection, "task-alice")
+        self.assertEqual(self.api(f"/conversations/{conversation['id']}", user="bob")[0], 403)
+        self.assertEqual(self.api("/conversations", "POST", {"title": "bad", "task_id": "task-bob"})[0], 403)
+        _, targets = self.api("/targets"); self.assertEqual([p["name"] for p in targets["items"]], ["alice"])
+        _, context = self.api(f"/conversations/{conversation['id']}/context")
+        self.assertEqual(context["scope"], "project")
+        self.assertEqual(context["project"]["project_id"], "alice")
+        self.assertIn("task-alice", [t["task_id"] for t in context["tasks"]])
+        self.assertNotIn("task-bob", [t["task_id"] for t in context["tasks"]])
+        general = self.conversation(connection)
+        _, context = self.api(f"/conversations/{general['id']}/context")
+        self.assertEqual(context["scope"], "general"); self.assertNotIn("task", context)
+
+    def test_multiturn_retry_snapshot_and_idempotent_send(self):
+        connection = self.connection(); conversation = self.conversation(connection, "task-alice")
+        code, run = self.send(conversation, request_id="same-request-123")
+        self.assertEqual(code, 200, run)
+        self.assertEqual(self.wait_run(run)["status"], "completed")
+        _, duplicate = self.send(conversation, request_id="same-request-123")
+        self.assertEqual(run["id"], duplicate["id"])
+        _, before = self.api(f"/conversations/{conversation['id']}")
+        self.assertEqual(len(before["messages"]), 2)
+        self.assertIn("[已隐藏凭据]", before["messages"][-1]["content"])
+        _, again = self.send(conversation)
+        snapshot = self.wait_run(again)["snapshot"]
+        self.assertEqual(snapshot["history_messages"], 2)
+        self.assertEqual(snapshot["context"]["project"]["project_id"], "alice")
+        _, retried = self.send(conversation, retry=True)
+        self.assertEqual(self.wait_run(retried)["status"], "completed")
+        _, after = self.api(f"/conversations/{conversation['id']}")
+        self.assertEqual(sum(m["role"]=="user" for m in after["messages"]), 2)
+        self.assertEqual(self.api(f"/runs/{run['id']}", user="bob")[0], 403)
+        _, events = self.api(f"/runs/{run['id']}/events", raw=True)
+        self.assertIn('"status": "completed"', events)
+        self.assertEqual({t["function"]["name"] for t in REQUESTS[-1]["tools"]},
+                         {"list_workspace", "read_workspace", "write_workspace"})
+
+    def test_stop_and_single_active_run(self):
+        connection = self.connection("slow-model"); conversation = self.conversation(connection)
+        _, run = self.send(conversation)
+        self.assertEqual(self.send(conversation)[0], 400)
+        self.assertEqual(self.api(f"/runs/{run['id']}/cancel", "POST")[0], 200)
+        self.assertEqual(self.wait_run(run)["status"], "cancelled")
+
+    def test_provider_error_and_redirect_do_not_leak_secrets(self):
+        for model in ("error-model", "redirect-model"):
+            with self.subTest(model=model):
+                conversation = self.conversation(self.connection(model))
+                _, run = self.send(conversation)
+                result = self.wait_run(run)
+                self.assertEqual(result["status"], "failed")
+                self.assertNotIn(KEY, json.dumps(result))
+
+    def test_prompt_version_and_recovery_keep_partial_message(self):
+        connection = self.connection(); conversation = self.conversation(connection)
+        _, updated = self.api(f"/conversations/{conversation['id']}", "PUT", {"title": "new", "connection_id": connection["id"], "prompt": "分析证据"})
+        self.assertEqual(updated["prompt_version"], 2)
+        _, run = self.send(conversation)
+        self.assertEqual(self.wait_run(run)["prompt_version"], 2)
+        with store.database() as db:
+            db.execute("UPDATE runs SET status='running' WHERE id=?", (run["id"],))
+            db.execute("UPDATE messages SET content='partial',status='running' WHERE id=?", (run["message_id"],))
+        store.recover_runs()
+        self.assertEqual(self.wait_run(run)["status"], "interrupted")
+        _, after = self.api(f"/conversations/{conversation['id']}")
+        self.assertEqual(after["messages"][-1]["content"], "partial")
+
+    def test_url_and_credential_redaction(self):
+        for bad in ("http://example.com/v1", "https://user:pass@example.com/v1", "https://example.com/v1?api_key=bad", "https://169.254.169.254/v1"):
+            with self.subTest(url=bad), self.assertRaises(ValueError): service.normalize_url(bad)
+        self.assertEqual(service.normalize_url("https://example.com/v1/chat/completions"), "https://example.com/v1")
+        data = service.clean({"password": "secret", "text": f"Bearer abcdefghijkl api_key={KEY}"}, (KEY,))
+        self.assertNotIn(KEY, json.dumps(data)); self.assertEqual(data["password"], "[已隐藏]")
+
+    def test_remote_plain_http_cannot_save_keys_and_revoked_task_is_hidden(self):
+        from starlette.requests import Request as StarletteRequest
+        request = StarletteRequest({"type": "http", "method": "POST", "path": "/", "scheme": "http",
+                                    "headers": [], "server": ("server", 3001), "client": ("203.0.113.20", 1234)})
+        with self.assertRaises(ValueError): ai_chat.secure_key_transport(request)
+        conversation = self.conversation(self.connection(), "task-alice")
+        revoked = copy.deepcopy(PROJECTS); revoked["projects"][0]["owner"] = "bob"
+        with patch.object(service, "load_db", return_value=revoked), patch.object(ai_chat, "load_db", return_value=revoked):
+            self.assertEqual(self.api(f"/conversations/{conversation['id']}")[0], 403)
+            _, listing = self.api("/conversations")
+            self.assertFalse(any(c["id"]==conversation["id"] for c in listing["items"]))
+
+    def test_context_budget_and_message_pagination_preserve_history(self):
+        huge = {"project": {"name": "test"}, "task": {"task_id": "t"}, "files": {f"file{i}": "x"*20000 for i in range(50)}}
+        bounded = service._context_budget(huge)
+        self.assertLessEqual(len(json.dumps(bounded, ensure_ascii=False)), service.CONTEXT_CHARS)
+        conversation = self.conversation(self.connection())
+        with store.database() as db:
+            for i in range(90):
+                db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES (?,?, 'user',?,'completed','2026-10-18')",
+                           (store.uid(), conversation["id"], str(i)))
+        _, latest = self.api(f"/conversations/{conversation['id']}")
+        self.assertEqual(len(latest["messages"]), 80); self.assertTrue(latest["has_more"])
+        _, older = self.api(f"/conversations/{conversation['id']}?before={latest['messages'][0]['seq']}")
+        self.assertEqual(len(older["messages"]), 10); self.assertFalse(older["has_more"])
+
+    def test_deepseek_payload_modes_and_other_providers_unchanged(self):
+        connection = {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-flash", "max_tokens": 8192, "thinking_mode": "disabled"}
+        payload = service.completion_payload(connection, [{"role": "user", "content": "test"}])
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+        self.assertEqual(payload["max_tokens"], 8192)
+        self.assertTrue(payload["stream_options"]["include_usage"])
+        connection.update(model="deepseek-v4-pro", thinking_mode="enabled")
+        self.assertEqual(service.completion_payload(connection, [])["thinking"], {"type": "enabled"})
+        connection["thinking_mode"] = "default"
+        self.assertNotIn("thinking", service.completion_payload(connection, []))
+        connection.update(base_url="https://other.example/v1", thinking_mode="enabled")
+        self.assertNotIn("thinking", service.completion_payload(connection, []))
+        self.assertNotIn("stream_options", service.completion_payload(connection, []))
+        connection["model"] = "gpt-6-astra"
+        self.assertIn("max_completion_tokens", service.completion_payload(connection, []))
+        connection.update(base_url="https://api.deepseek.com", model="deepseek-reasoner")
+        self.assertNotIn("thinking", service.completion_payload(connection, []))
+
+    def test_deepseek_reasoning_stream_and_multiturn_only_keep_answer(self):
+        connection = self.connection("deepseek-flash")
+        body = {"name": "DeepSeek mock", "base_url": connection["base_url"], "model": "deepseek-flash", "thinking_mode": "enabled", "max_tokens": 8192}
+        _, updated = self.api(f"/connections/{connection['id']}", "PUT", body)
+        self.assertEqual(updated["thinking_mode"], "enabled")
+        conversation = self.conversation(updated)
+        _, run = self.send(conversation)
+        result = self.wait_run(run)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["snapshot"]["connection"]["thinking_mode"], "enabled")
+        _, run = self.send(conversation)
+        self.assertEqual(self.wait_run(run)["status"], "completed")
+        _, detail = self.api(f"/conversations/{conversation['id']}")
+        self.assertNotIn("PRIVATE_REASONING_TEST", json.dumps(detail))
+        self.assertNotIn("reasoning_content", json.dumps(REQUESTS[-1]))
+        self.assertEqual(detail["runs"][0]["usage"]["total_tokens"], 42)
+
+    def test_existing_connection_migration_preserves_encrypted_key(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(store, "AI_DIR", Path(root)):
+            secret = store.encrypt(KEY)
+            with closing(sqlite3.connect(Path(root)/"chat.sqlite3")) as db, db:
+                db.execute("CREATE TABLE connections(id TEXT PRIMARY KEY,owner TEXT,name TEXT,base_url TEXT,model TEXT,secret TEXT,max_tokens INTEGER,is_default INTEGER,created_at TEXT,updated_at TEXT)")
+                db.execute("INSERT INTO connections VALUES (?,?,?,?,?,?,?,?,?,?)", ("old", "alice", "old", "https://api.deepseek.com", "deepseek-flash", secret, 2048, 1, "old", "old"))
+            migrated = store.connections("alice")[0]
+            self.assertEqual(migrated["thinking_mode"], "default")
+            with store.database() as db:
+                row = store.owned(db, "connections", "old", "alice")
+                self.assertEqual(row["secret"], secret)
+                self.assertEqual(store.decrypt(row["secret"]), KEY)
+
+    def test_deepseek_without_final_answer_explains_output_budget(self):
+        conversation = self.conversation(self.connection("deepseek-only-thinking"))
+        _, run = self.send(conversation)
+        result = self.wait_run(run)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("提高输出上限", result["error"])
+        self.assertNotIn("PRIVATE_REASONING_TEST", json.dumps(result))
+
+    def test_project_attachment_covers_members_and_filters_actions(self):
+        connection = self.connection()
+        code, conversation = self.api("/conversations", "POST", {"title": "project", "project_id": "alice", "connection_id": connection["id"]})
+        self.assertEqual(code, 200)
+        self.assertEqual(conversation["project_id"], "alice")
+        self.assertIsNone(conversation["task_id"])
+        self.assertEqual(self.api("/conversations", "POST", {"title": "bad", "project_id": "bob"})[0], 403)
+        service.AUDIT_FILE.write_text('\n'.join(json.dumps({"task_id": f"task-{name}", "command": "submit", "result": "ok", "username": name}) for name in ("alice", "bob")))
+        _, context = self.api(f"/conversations/{conversation['id']}/context")
+        self.assertEqual(context["summary"]["task_count"], 2)
+        self.assertEqual({t["task_id"] for t in context["tasks"]}, {"task-alice", "task-alice-extra"})
+        self.assertEqual([a["task_id"] for a in context["actions"]["recent"]], ["task-alice"])
+        _, run = self.send(conversation)
+        result = self.wait_run(run)
+        self.assertEqual(result["snapshot"]["context"]["scope"], "project")
+        self.assertEqual(len(result["snapshot"]["context"]["tasks"]), 2)
+
+    def test_legacy_task_conversation_migrates_without_losing_messages(self):
+        connection = self.connection()
+        legacy = store.create_conversation("alice", "old task chat", "task-alice", connection["id"])
+        orphan = store.create_conversation("alice", "orphan", "removed-task", connection["id"])
+        with store.database() as db:
+            db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES (?,?, 'user','keep history','completed','old')", (store.uid(), legacy["id"]))
+        service.migrate_project_conversations()
+        _, migrated = self.api(f"/conversations/{legacy['id']}")
+        self.assertEqual(migrated["project_id"], "alice")
+        self.assertEqual(migrated["task_id"], "task-alice")
+        self.assertEqual(migrated["messages"][0]["content"], "keep history")
+        self.assertEqual(migrated["title"], "old task chat")
+        self.assertFalse(migrated["workspace_enabled"])
+        self.assertEqual(self.api(f"/conversations/{orphan['id']}")[0], 403)
+        _, listing = self.api("/conversations")
+        self.assertFalse(any(c["id"]==orphan["id"] for c in listing["items"]))
+
+    def test_workspace_map_and_file_isolation(self):
+        connection = self.connection()
+        conversation = self.conversation(connection, "task-alice")
+        prefix = f"/conversations/{conversation['id']}/workspace"
+        root = Path(self.temp.name)/"projects/alice"
+        files = root/"neb/Model-alice/files"
+        files.mkdir(parents=True, exist_ok=True)
+        (files/"CONTCAR").write_text("fractional coordinates 0.4347 0.6692 0.4225")
+        outside = Path(self.temp.name)/"outside-private.txt"
+        outside.write_text("must never leave host")
+        link = files/"outside.txt"
+        if link.is_symlink(): link.unlink()
+        link.symlink_to(outside)
+        (root/"secret.pem").write_text("not a model file")
+        _, result = self.api(prefix)
+        self.assertTrue(result["enabled"])
+        self.assertEqual(len(result["task_locations"]), 2)
+        self.assertEqual(result["task_locations"][0]["path"], "project/neb/Model-alice")
+        _, listing = self.api(prefix+"/files?path=project/neb/Model-alice/files")
+        self.assertNotIn("outside.txt", [x["name"] for x in listing["items"]])
+        status, result = self.api(prefix+"/file?path=project/neb/Model-alice/files/CONTCAR")
+        self.assertEqual(status, 200, result)
+        self.assertIn("0.4347", result["content"])
+        self.assertEqual(result["hash_scope"], "returned_bytes")
+        for path in ("project/../outside-private.txt", "/etc/passwd", "project/secret.pem", "project/.env", "evidence/history/task-bob.json", "users/users.json"):
+            self.assertEqual(self.api(prefix+"/file?path="+path)[0], 400, path)
+        self.assertNotEqual(self.api(prefix+"/file?path=project/neb/Model-alice/files/outside.txt")[0], 200)
+        self.assertEqual(self.api(prefix, user="bob")[0], 403)
+        other = self.conversation(connection, "task-alice")
+        project = PROJECTS["projects"][0]
+        with store.database() as db:
+            row = store.owned(db, "conversations", conversation["id"], "alice")
+        workspace.writing(project, row, "work/draft-unique.txt", "new draft")
+        self.assertEqual(self.api(prefix+"/file?path=work/draft-unique.txt")[0], 200)
+        self.assertNotEqual(self.api(f"/conversations/{other['id']}/workspace/file?path=work/draft-unique.txt")[0], 200)
+        with self.assertRaises(ValueError): workspace.writing(project, row, "project/INCAR", "bad")
+        with self.assertRaises(ValueError): workspace.writing(project, row, "work/draft-unique.txt", "replace")
+        with self.assertRaises(ValueError): workspace.writing(project, row, "work/large.txt", "x"*(workspace.WRITE_LIMIT+1))
+        with self.assertRaises(ValueError): workspace.dispatch(project, row, {}, "exec", {"path": "project"})
+        with self.assertRaises(ValueError): workspace.dispatch(project, row, {}, "read_workspace", {"path": "project", "offset": -1})
+        with self.assertRaises(ValueError): workspace.dispatch(project, row, {}, "read_workspace", {"path": "project", "host_path": "/etc/passwd"})
+        work = workspace.roots(project, row)["work"]
+        (work/"escape").symlink_to(outside.parent, target_is_directory=True)
+        with self.assertRaises(ValueError): workspace.writing(project, row, "work/escape/unsafe.txt", "bad")
+        self.assertFalse((outside.parent/"unsafe.txt").exists())
+        # 文件分片有边界和真实字节哈希，尾部读取不读取整个大文件。
+        (files/"large.txt").write_text("A"*(workspace.READ_LIMIT+7)+"END")
+        piece = workspace.reading(project, row, {}, "project/neb/Model-alice/files/large.txt")
+        self.assertEqual(piece["next_offset"], workspace.READ_LIMIT)
+        self.assertTrue(workspace.reading(project, row, {}, "project/neb/Model-alice/files/large.txt", tail=True)["content"].endswith("END"))
+        self.assertEqual((files/"CONTCAR").read_text(), "fractional coordinates 0.4347 0.6692 0.4225")
+        revoked = copy.deepcopy(PROJECTS)
+        revoked["projects"][0]["owner"] = "bob"
+        with patch.object(service, "load_db", return_value=revoked):
+            self.assertEqual(self.api(prefix)[0], 403)
+            self.assertEqual(self.api(prefix+"/files?path=work")[0], 403)
+        self.assertEqual(self.api(f"/conversations/{conversation['id']}", "DELETE")[0], 200)
+        self.assertFalse(work.exists())
+        self.assertTrue((files/"CONTCAR").is_file())
+
+    def test_workspace_model_tools_stream_audit_and_draft(self):
+        connection = self.connection("workspace-model")
+        conversation = self.conversation(connection, "task-alice")
+        files = Path(self.temp.name)/"projects/alice/neb/Model-alice/files"
+        files.mkdir(parents=True, exist_ok=True)
+        (files/"CONTCAR").write_text("real local structure")
+        status, run = self.send(conversation)
+        self.assertEqual(status, 200, run)
+        result = self.wait_run(run)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual([event["name"] for event in result["tool_events"]], ["list_workspace", "read_workspace", "write_workspace"])
+        self.assertEqual(result["usage"]["total_tokens"], 63)
+        self.assertIn("real local structure", result["tool_events"][1]["result"]["content"])
+        self.assertFalse(result["tool_events"][2]["result"]["applied"])
+        _, file = self.api(f"/conversations/{conversation['id']}/workspace/file?path=work/CONTCAR.v1")
+        self.assertEqual(file["content"], "candidate structure draft")
+        self.assertTrue(result["snapshot"]["workspace_enabled"])
+        context = result["snapshot"]["context"]
+        self.assertNotIn("directory_map", context)
+        self.assertTrue(all("workspace_path" not in task for task in context["tasks"]))
+        self.assertIn("evidence/directory-map.json", context["workspace_rules"]["map"])
+        _, directory_map = self.api(f"/conversations/{conversation['id']}/workspace/file?path=evidence/directory-map.json")
+        self.assertIn("task_locations", directory_map["content"])
+        self.assertIn("project/neb/Model-alice", directory_map["content"])
+        # 禁用后不再给供应商发送工具定义，旧回答和草稿保留。
+        self.assertEqual(self.api(f"/conversations/{conversation['id']}", "PUT", {
+            "title": "tools off", "prompt": "", "connection_id": connection["id"], "workspace_enabled": False})[0], 200)
+        _, changed = self.api(f"/conversations/{conversation['id']}")
+        self.assertFalse(changed["workspace_enabled"])
+        plain = self.connection()
+        self.api(f"/conversations/{conversation['id']}", "PUT", {"title": "plain", "prompt": "", "connection_id": plain["id"]})
+        _, next_run = self.send(conversation)
+        self.assertEqual(self.wait_run(next_run)["status"], "completed")
+        self.assertNotIn("tools", REQUESTS[-1])
+
+    def test_workspace_tool_loop_and_forbidden_read_are_bounded(self):
+        conversation = self.conversation(self.connection("workspace-blocked"), "task-alice")
+        _, run = self.send(conversation)
+        result = self.wait_run(run)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertTrue(all(e["status"] == "failed" for e in result["tool_events"]))
+        self.assertNotIn("must never leave host", json.dumps(result))
+        looping = self.conversation(self.connection("workspace-loop"), "task-alice")
+        _, run = self.send(looping)
+        result = self.wait_run(run)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(len(result["tool_events"]), 6)
+        self.assertIn("上限", result["error"])
+
+    def test_large_project_budget_never_silently_caps_at_twelve_tasks(self):
+        context = {"scope": "project", "project": {"name": "test"}, "summary": {"task_count": 30},
+                   "tasks": [{"task_id": f"t{i}", "task_name": "model"} for i in range(30)]}
+        budget = service._context_budget(context)
+        self.assertEqual(len(budget["tasks"]), 30)
+        context["tasks"] = [{"task_id": f"t{i}", "task_name": "x"*120, "details": "x"*2000} for i in range(700)]
+        context["summary"]["task_count"] = 700
+        budget = service._context_budget(context)
+        self.assertLessEqual(len(json.dumps(budget, ensure_ascii=False)), service.CONTEXT_CHARS)
+        self.assertGreater(budget["summary"]["omitted_task_count"], 0)
+        self.assertEqual(budget["summary"]["included_task_count"]+budget["summary"]["omitted_task_count"], 700)
+        self.assertIn("不能视为已审阅", budget["budget_note"])
+
+
+if __name__ == "__main__": unittest.main()

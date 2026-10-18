@@ -20,6 +20,7 @@ const TITLES: Record<string, string> = {
   '/inspection': '巡检中心',
   '/jobs': '作业管理',
   '/report': '智能报告',
+  '/ai': 'AI 工作台',
   '/ssh': 'SSH 连接',
   '/automation': '自动化',
 };

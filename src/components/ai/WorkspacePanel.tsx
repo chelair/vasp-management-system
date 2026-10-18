@@ -1,0 +1,86 @@
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Button, Collapse, Empty, Input, Modal, Spin, Tag } from 'antd';
+import { FileTextOutlined, FolderOpenOutlined, ReloadOutlined } from '@ant-design/icons';
+import { getAIWorkspace, listAIWorkspace, readAIWorkspace } from '../../api/aiChat';
+import type { AIRun, AIWorkspaceFile, AIWorkspaceListing, AIWorkspaceMap } from '../../api/aiChat';
+
+const errorText = (error: unknown) => error instanceof Error ? error.message : '读取失败';
+const TOOL_NAMES: Record<string, string> = { list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿' };
+
+export default function WorkspacePanel({ conversationId, runs, enabled }: { conversationId: string; runs: AIRun[]; enabled: boolean }) {
+  const [map, setMap] = useState<AIWorkspaceMap | null>(null);
+  const [listing, setListing] = useState<AIWorkspaceListing | null>(null);
+  const [path, setPath] = useState('');
+  const [file, setFile] = useState<AIWorkspaceFile | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const alive = useRef(true);
+  const requestSeq = useRef(0);
+  useEffect(() => {
+    alive.current = true;
+    void getAIWorkspace(conversationId).then((value) => { if (alive.current) setMap(value); }).catch((e) => { if (alive.current) setError(errorText(e)); });
+    return () => { alive.current = false; requestSeq.current++; };
+  }, [conversationId]);
+  const browse = async (directory: string, offset = 0) => {
+    const seq = ++requestSeq.current;
+    setBusy(true); setError('');
+    try {
+      const value = await listAIWorkspace(conversationId, directory, offset);
+      if (alive.current && seq === requestSeq.current) { setListing(value); setPath(directory); }
+    } catch (e) { if (alive.current && seq === requestSeq.current) setError(errorText(e)); }
+    finally { if (alive.current && seq === requestSeq.current) setBusy(false); }
+  };
+  const read = async (name: string, offset = 0, tail = false) => {
+    const seq = ++requestSeq.current;
+    setBusy(true); setError('');
+    try { const value = await readAIWorkspace(conversationId, name, offset, tail); if (alive.current && seq === requestSeq.current) setFile(value); }
+    catch (e) { if (alive.current && seq === requestSeq.current) setError(errorText(e)); }
+    finally { if (alive.current && seq === requestSeq.current) setBusy(false); }
+  };
+  const events = runs.flatMap((run) => (run.tool_events ?? []).map((event) => ({ ...event, runId: run.id }))).slice(0, 36);
+  return <div className="ai-file-panel">
+    {error && <Alert type="warning" showIcon message={error} />}
+    {map ? <>
+      <p className="ai-muted">{enabled ? '模型可按地图读取文件、创建草稿。' : '模型文件工具未启用，可在会话设置中开启。'}正式数据只读，草稿不会自动应用。</p>
+      <h4>目录地图</h4>
+      {map.roots.map((root) => <button className="ai-run-row" key={root.path} onClick={() => { void browse(root.path.replace(/\/$/, '')); }}>
+        <strong><FolderOpenOutlined /> {root.path}<Tag style={{ marginLeft: 8 }}>{root.access === 'read_write' ? '可写草稿' : '只读'}</Tag></strong><span>{root.purpose}</span>
+      </button>)}
+      <Collapse ghost size="small" items={[
+        { key: 'rules', label: '目录与来源规则', children: <ul className="ai-context-hints">{map.rules.map((rule) => <li key={rule}>{rule}</li>)}</ul> },
+        { key: 'locations', label: `任务位置（${map.task_locations.length}）`, children: map.task_locations.map((task) => <div className="ai-record" key={task.task_id}>
+          <strong>{task.name}</strong>{task.path ? <Button type="link" size="small" onClick={() => { void browse(task.path!); }}>{task.path}</Button> : <span>本地路径未映射</span>}
+          <span>远端：{task.remote_dir || '未登记'}</span><span>输出：{task.output_dir || '主目录'} · 结构来源：{task.structure_source_dir || '未记录'}</span>
+        </div>) },
+      ]} />
+    </> : <Spin size="small" />}
+    <h4>浏览文件</h4>
+    <Input.Search aria-label="工作区相对路径" value={path} placeholder="例如 project/opt 或 work" onChange={(e) => setPath(e.target.value)} onSearch={(value) => { void browse(value); }} enterButton="浏览" />
+    <div className="ai-actions" style={{ marginTop: 8 }}><Button size="small" onClick={() => { void browse(''); }}>根目录</Button>
+      <Button size="small" disabled={!listing?.path} onClick={() => { void browse(listing!.path.replace(/\/$/, '').split('/').slice(0, -1).join('/')); }}>上一级</Button>
+      <Button size="small" icon={<ReloadOutlined />} onClick={() => { void browse(listing?.path ?? path); }}>刷新</Button></div>
+    {busy && <Spin size="small" />}
+    {listing && <><p className="ai-muted">{listing.path || '根目录'} · {listing.total} 项{listing.missing ? ' · 本地目录尚未生成' : ''}</p>
+      {listing.items.map((item) => <button className="ai-file-row" key={item.path} onClick={() => { void (item.type === 'directory' ? browse(item.path) : read(item.path)); }}>
+        {item.type === 'directory' ? <FolderOpenOutlined /> : <FileTextOutlined />}<span>{item.name}</span><small>{item.bytes == null || item.type === 'directory' ? '' : `${(item.bytes / 1024).toFixed(1)} KiB`}</small>
+      </button>)}
+      {listing.next_offset != null && <Button size="small" onClick={() => { void browse(listing.path, listing.next_offset!); }}>下一页</Button>}
+      {!listing.items.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无文件" />}
+    </>}
+    <h4>模型文件操作记录</h4>
+    {events.length ? events.map((event, index) => <div className="ai-record" key={`${event.runId}-${event.id}-${index}`}>
+      <strong>{TOOL_NAMES[event.name] ?? event.name} · {event.status === 'completed' ? '成功' : event.status === 'running' ? '执行中' : event.status === 'interrupted' ? '已中断' : '失败'}</strong>
+      <span>{String(event.arguments?.path ?? '')}</span><span>{event.at.replace('T', ' ')}</span>
+      {event.result?.error != null && <span className="ai-run-error">{String(event.result.error)}</span>}
+      {event.name === 'write_workspace' && event.status === 'completed' && <Button size="small" onClick={() => { void read(String(event.result.path)); }}>查看草稿</Button>}
+    </div>) : <p className="ai-muted">暂无文件工具调用。可让模型先查看目录地图并分析某个任务的实际文件。</p>}
+    <Modal title={file?.path ?? '文件内容'} open={!!file} onCancel={() => setFile(null)} footer={null} width={900}>
+      {file && <><p className="ai-muted">本地文件 · {file.bytes} 字节 · 当前从字节 {file.offset} 开始；{file.next_offset == null ? '已到文件末尾' : '还有后续内容'}。未实时核对远端。</p>
+        <pre className="ai-json">{file.content}</pre><div className="ai-actions">
+          <Button disabled={busy || file.offset === 0} onClick={() => { void read(file.path); }}>文件开头</Button>
+          <Button disabled={busy || file.next_offset == null} onClick={() => { void read(file.path, file.next_offset!); }}>下一段</Button>
+          <Button disabled={busy} onClick={() => { void read(file.path, 0, true); }}>文件尾部</Button>
+        </div><p className="ai-muted">SHA256（{file.hash_scope === 'full_virtual_file' ? '完整证据文件' : '当前字节片段'}）：{file.sha256}</p></>}
+    </Modal>
+  </div>;
+}

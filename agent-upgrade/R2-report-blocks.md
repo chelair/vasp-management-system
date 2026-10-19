@@ -1,6 +1,6 @@
 # R2 · 细粒度、可复用报告元素：任务与接续交接
 
-状态：**仅完成首轮源码审查与设计起步，尚无 R2 业务代码、接口、迁移或 R2 测试**。用户明确允许本轮只起步并交给其他 agents；不要把本文件当成已实现功能。R1 已部署，R2 不属于自主计算阶段3/4，不接入 AI 自动编排。
+状态：**R2-A / R2-B 已实现（后端闭环 + 26 项隔离测试）；R2-C 前端编辑、R2-D 余下元素类型未开始**。实现、改动清单与下一步见 `R2-blocks-implementation.md`；本文件保留完整任务合同与验收标准，并作为 R2 的唯一任务定义。R1 已部署；R2 不属于自主计算阶段3/4，不接入 AI 自动编排，**未部署、未推送**。
 
 本文件是下一位开发者的完整任务合同与工作清单；`AGENTS.md` 为总入口，`PROGRESS.md` 记录验收，`process.md` 记录生产部署。以当前 Git 和源码为准，开始/停止时更新交接，不能只在聊天中汇报。
 
@@ -143,3 +143,29 @@ Evidence/Block/组合合同的实际定义与设计偏差：
 ```
 
 如果只做到某一半，明确标记“进行中”，给出最后通过的测试和未完成接缝，禁止把设计当实现。下一次本助手回来也按同一入口读，不能依赖当前聊天历史。
+
+---
+
+## 7. 本轮进展回填（2026-10-20）
+
+```text
+交接日期 / agent：2026-10-20 / 临时代班（从其他 agents 接手）
+工作分支 / 基线提交 / 当前提交：main / 435140f / 见 R2-blocks-implementation.md §11（本地提交，未推送）
+已完成的R2-A/B/C/D项：
+  R2-A 完成 —— backend/report_blocks.py（14 类注册表、稳定 ID、全任务候选、来源/状态适配）
+  R2-B 完成 —— backend/report_compositions.py + routers/report_compositions.py（冻结证据、组合 CRUD、HTML 导出）
+  R2-C 未开始（前端编辑器/页面预览/浏览器回归）
+  R2-D 未开始（NEB/自由能/PDOS/Bader/功函数/差分解析与渲染、旧 key 映射）
+Evidence/Block/组合合同的实际定义与设计偏差：
+  实际 block_id/evidence_id = sha256(项目|类型|任务/组|variant) 截断；文本块 uuid
+  version 排除 observed_at/parsed_at（时间不冒充版本）；availability/validation/freshness/visibility 四分
+  evidence 去重映射 + source_refs 引用；保存时重算 ID 并校验版本，伪造 400、过期 409
+  偏差：R2-A 只接入 6 类证据解析（fact/params/energy/structure/comparison/method），
+        其余 10 类候选标 unparsed 且 resolvable=false，resolve 抛 UnsupportedEvidence（不伪造）
+真实运行的测试命令、结果、未覆盖内容：见 R2-blocks-implementation.md §9（13+13 新增全绿；194 既有回归全绿）
+是否部署/推送；生产PID、版本、备份：未部署、未推送、未重启服务；生产 PID/版本/备份均未变化
+已知缺陷 / 当前阻塞 / 下一步第一条可执行任务：
+  缺陷：组合写锁是进程内锁（沿用单后端进程假设）；R2-C/D 未接入
+  下一步：R2-C 前端 ReportCompositionEditor + 同一冻结证据预览 + 浏览器/PDF 回归
+保留的用户改动与敏感文件边界：待办.md、问题.md 两处删除未提交、未恢复；data/配置/密钥/dist/备份不进 Git
+```

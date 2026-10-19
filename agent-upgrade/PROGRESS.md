@@ -202,3 +202,14 @@ OK
 - R2审查关键发现：OPT上限6在详情/资源构建前截断，不只是Markdown；完整报告存储会清理同项目其他report_id；AI view不是完整Evidence且存在未知归并；当前PDOS预览/导出可能取当前任务数据，组合必须固定来源版本；旧隐藏依赖标题/图序号，需稳定block_id兼容映射。
 - 新增 `R2-report-blocks.md`：完整任务合同、14类元素、源码/运行时地图、Evidence与Block建议合同、A/B/C/D实施顺序、人工验收、隔离测试/生产边界、双向交回模板。AGENTS.md开头明确当前任务，agent.md仅提供入口，process等同步更新。**下一条任务是R2-A合同/全候选目录及隔离测试；目前R2零业务代码/接口/迁移/测试。**
 - 发布内容仅源码、Mock测试和交接文档；两份用户文档删除不提交，data/配置/密钥/dist/备份不进Git。提交和推送成功与否以最终Git日志和origin/main为准，后续接手先核对该状态；未来R2未验收不自动部署。
+
+## 14. R2-A/R2-B · 报告元素系统后端闭环（2026-10-20）
+
+- 接手：从其他 agents 临时接手 R2。基线 `435140f`（v1.1.0，R1 已部署、R2 仅设计文档）。先读 `AGENTS.md` 当前任务 → `R2-report-blocks.md` → `R1-report-notes.md` → git 状态，未要求用户复述需求。
+- **R2-A 完成**：新增 `backend/report_blocks.py`。14 类元素注册表（renderer/证据种类/scope/是否已接入）；稳定 ID = `sha256(项目|类型|任务/组|variant)` 截断，文本块 UUID；候选目录覆盖**全部授权任务**（不受完整报告 6 条上限影响），辅助任务（conN/差分分块）不单独成元素；`availability / validation / freshness / full_report_visibility` 四类状态分开记，UNKNOWN 不冒充 PASS；有 OUTCAR 无归档判 `unparsed`、真无数据才 `missing`。
+- **R2-B 完成**：新增 `backend/report_compositions.py` + `backend/routers/report_compositions.py`。两模型最小闭环（两条能量 + 参数对照 + 一条曲线 + 用户文字）；Evidence 去重冻结、Block 只存 `source_refs`；保存时后端重算 ID（伪造 400）、版本不一致返回 409 `evidence_stale`（显式 `refresh_evidence` 才接受）；组合 CRUD + 乐观锁 + 软删除/恢复 + 自包含 HTML 导出（内联 SVG/表格、转义脚本、剥离外链图片）。
+- 存储：`data/reports/compositions/<项目>/cmp_<12hex>.json`，与完整报告索引/单份清理隔离；旧 `report.json/md/notes/edits/HTML` 与报告 schema 1.2.0 未改。
+- 新增测试 26 项：`tests/r2_fixtures.py`、`tests/test_report_blocks.py`（13）、`tests/test_report_compositions.py`（13）。实测：两套各 `OK`；既有回归 53 常规（7 skip 为隔离容器）+ 10/38/47/26/20 逐套件全 `OK`，**合计 220 项通过**（194 既有 + 26 新增）。
+- 未做：R2-C 前端编辑器/页面预览/浏览器与 PDF 回归；R2-D 余下 10 类（NEB/自由能/PDOS/Bader/功函数/差分/结构 3D）解析与渲染、旧隐藏 key 映射。R2-A 对这 10 类只给候选并标 `resolvable=false`，解析请求明确拒绝而不是伪造。
+- **未部署、未推送、未重启服务**：生产 `vasp-manager.service`、`dist/`、`data/` 均未变动；前端无改动。用户原有 `待办.md`、`问题.md` 删除保持未暂存。
+- 交接文档：`agent-upgrade/R2-blocks-implementation.md`（摘要 + 详细改动 + 坑 + 下一步）；`R2-report-blocks.md` 状态与 §7 已回填；`AGENTS.md` 当前任务/进度、`API.md` R2 章节已更新。下一条任务：**R2-C 前端组合编辑器 + 同一冻结证据预览**。

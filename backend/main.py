@@ -30,6 +30,7 @@ from routers import (
     meta,
     paths,
     project_reports,
+    report_compositions,
     projects,
     reports,
     settings,
@@ -206,6 +207,7 @@ app.include_router(paths.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(project_reports.router, prefix="/api")
+app.include_router(report_compositions.router, prefix="/api")
 app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
 app.include_router(pending_actions_router.router, prefix="/api")

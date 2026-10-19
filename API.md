@@ -949,3 +949,66 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 审批提案payload需包含task_id、grant_id，可选follow_up。批准时重新校验项目归属和提案指纹，先持久化认领，再走同一网关；不能在批准请求中修改参数。旧无指纹提案需重新创建。Agent不能批准，也不能直接调用原submit/continuation/create-frac、修改配置或授权；原Agent无scope会话不能执行，scope=[]不再代表全权。
 
 兼容变化：原人工提交仍不要求Agent预算，但新增LSF/持久台账安全闸门；提交响应或本地写入不确定返回503及unknown说明，禁止直接重提。可返回的错误data带action_id/execution_status。原`GET /api/actions/runs/{id}`现在能读取持久化短动作；重启的running不再直接冒充已知failed。SSH配置GET仅admin可读，GET/PUT均不回显password，改为password_configured；不提供password时保留后端已有凭据。
+
+## 阶段R2：报告元素与组合（2026-10-20，后端闭环，**未部署**）
+
+R2 在完整报告之外新增"Evidence（科研事实）+ ReportBlock（展示元素）+ Composition（组合）"三层只读闭环。科学数据只在 Evidence 中存一份，Block 只引用 `evidence_id + version`；组合落在 `data/reports/compositions/`，与完整报告索引、单份清理和旧 `report.json/md/notes/edits` 完全隔离。
+
+权限：全部接口按当前登录用户对项目的归属校验（admin 全可见），`project_ref` 可为 `project_id` 或项目名。响应仍为统一信封 `{success, message, data}`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/reports/blocks/schema` | 14 类元素（renderer / 证据种类 / scope / 是否已接入）+ 上限 |
+| GET | `/api/reports/blocks/{project_ref}/candidates?refresh=false` | 全部授权任务的轻量候选；`refresh=true` 跳过巡检合并缓存 |
+| POST | `/api/reports/blocks/{project_ref}/evidence` | `{type, task_id?, group_id?}` → 解析一条 Evidence（不落盘） |
+| GET | `/api/reports/blocks/{project_ref}/compositions` | 组合列表（不含软删除） |
+| POST | `/api/reports/blocks/{project_ref}/compositions` | 新建组合 |
+| GET | `/api/reports/blocks/{project_ref}/compositions/{id}` | 组合详情（含冻结证据） |
+| PUT | `/api/reports/blocks/{project_ref}/compositions/{id}` | 整体替换（`expected_revision` 乐观锁） |
+| DELETE | `/api/reports/blocks/{project_ref}/compositions/{id}` | 软删除（保留证据，可恢复） |
+| GET | `/api/reports/blocks/{project_ref}/compositions/{id}/export.html?download=&print=` | 自包含 HTML（内联 SVG/表格，无外部资源） |
+
+候选条目关键字段：
+
+```json
+{
+  "block_id": "blk_<20hex>",
+  "type": "task.energy_force",
+  "task_id": "task_...", "group_id": "",
+  "evidence_id": "ev_<20hex>",
+  "renderer": "metric", "resolvable": true,
+  "availability": "available|missing|unparsed|unknown",
+  "validation": {"status": "PASS|FAIL|WARNING|NOT_TESTED|UNKNOWN", "items": []},
+  "freshness": {"state": "fresh|stale|unknown", "basis": "..."},
+  "full_report_visibility": "shown|omitted_limit|omitted_unconverged"
+}
+```
+
+组合请求体：
+
+```json
+{
+  "title": "两模型对照",
+  "blocks": [
+    {"type": "task.energy_force", "task_id": "task_a"},
+    {"type": "task.energy_force", "task_id": "task_b"},
+    {"type": "task.params", "task_id": "task_a"},
+    {"type": "task.convergence_curve", "task_id": "task_a"},
+    {"type": "text.analysis", "text": "纯文本或安全 Markdown"}
+  ],
+  "groups": [{"group_id": "g1", "title": "能量", "block_ids": ["blk_..."]}],
+  "hidden_block_ids": [], "deleted_block_ids": [],
+  "expected_revision": 1,
+  "refresh_evidence": false
+}
+```
+
+约束与错误：
+
+- `block_id`/`evidence_id` 由后端按（项目, 类型, 任务/组, variant）重算；前端伪造或借用返回 400。
+- `version = sha256(kind, payload, provenance)`，**不含**观测/解析时间；证据变化后更新返回 409 `{"code":"evidence_stale","changes":[...]}`，需 `refresh_evidence: true`。
+- 乐观锁冲突返回 409 `{"code":"revision_conflict","current_revision":N}`。
+- 未知类型、非法 `options`（白名单仅 compact/show_units/digits/note/caption）、文本 >4000 字、重复块、组合 >40 块均 400；单项目最多 50 份组合。
+- R2-A 仅接入 6 类证据解析（task.fact / task.params / task.energy / task.structure / project.comparison / project.method）。其余 10 类（group.free_energy、group.neb、ele.pdos、ele.bader、ele.work_function、ele.charge_diff 及对应块）在候选里 `resolvable=false` 且 `availability=unparsed`，解析/保存返回 400，**不伪造数据**。
+- 导出只使用组合中冻结的 Evidence（预览=导出），文本先转义并剥离图片语法，不加载外部资源。
+- 本阶段不提供前端编辑器（R2-C 未开始）；接口可直接由脚本/后续 UI 调用。

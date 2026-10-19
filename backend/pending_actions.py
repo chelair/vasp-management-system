@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,26 +25,29 @@ from dates import now_iso
 STORE = DATA_DIR / "pending_actions.json"
 LOCK = threading.Lock()
 
-STATUSES = ("pending", "approved", "rejected", "failed")
+STATUSES = ("pending", "executing", "approved", "rejected", "failed", "unknown")
+
+
+@contextmanager
+def _locked():
+    from automation import store
+    with store._locked(), LOCK:
+        yield
+
 
 
 def _load() -> Dict[str, Any]:
     if not STORE.is_file():
         return {"version": 1, "items": []}
-    try:
-        doc = json.loads(STORE.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - 坏了当空
-        return {"version": 1, "items": []}
+    doc = json.loads(STORE.read_text(encoding="utf-8"))
     if not isinstance(doc, dict) or not isinstance(doc.get("items"), list):
-        return {"version": 1, "items": []}
+        raise ValueError("待确认队列损坏，已停止执行")
     return doc
 
 
 def _save(doc: Dict[str, Any]) -> None:
-    STORE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STORE.with_name(STORE.name + ".tmp")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, STORE)
+    from automation.store import _write_json
+    _write_json(STORE, doc)
 
 
 def _next_id(items: List[Dict[str, Any]]) -> str:
@@ -80,7 +84,7 @@ def create(
     task_id = _task_of_payload(params)
     if spec.requires_task and not task_id:
         raise ValueError(f"动作 {name} 需要 payload.task_id")
-    with LOCK:
+    with _locked():
         doc = _load()
         item = {
             "id": _next_id(doc["items"]),
@@ -101,6 +105,8 @@ def create(
             "result": None,
             "error": None,
         }
+        from automation.ledger import fingerprint
+        item['proposal_fingerprint'] = fingerprint([name, params, requested_by, requested_kind, task_id])
         doc["items"].append(item)
         _save(doc)
     return item
@@ -128,7 +134,7 @@ def get_item(item_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _decide(item_id: str, *, status: str, decided_by: str, note: str = "") -> Optional[Dict[str, Any]]:
-    with LOCK:
+    with _locked():
         doc = _load()
         for item in doc["items"]:
             if str(item.get("id")) != str(item_id):
@@ -152,37 +158,54 @@ def reject(item_id: str, *, decided_by: str, note: str = "") -> Dict[str, Any]:
 
 
 def approve(item_id: str, *, decided_by: str, note: str = "") -> Dict[str, Any]:
-    """人工批准 → 复用自动化动作实现真正执行；失败标 `failed` 并保留错误。"""
-    from automation import actions as action_catalog
+    """批准时重新鉴权并先认领；所有执行进入同一授权/预算网关。"""
+    import auth
+    import permissions
+    from automation import actions, gateway, ledger
 
-    pending = get_item(item_id)
-    if pending is None:
-        raise LookupError(f"待确认动作不存在：{item_id}")
-    if str(pending.get("status")) != "pending":
-        raise ValueError(f"该动作已是 {pending.get('status')}，不能重复处理")
-
-    params = dict(pending.get("payload") or {})
-    task_id = str(params.get("task_id") or "")
-    result: Dict[str, Any] = {}
-    error = None
-    try:
-        spec = action_catalog.get(str(pending.get("action")))
-        spec.preflight(task_id, params)
-        result = spec.execute(task_id, params)
-    except Exception as e:  # noqa: BLE001 - 执行失败要留痕，不能吞
-        error = f"{type(e).__name__}: {e}"
-
-    decided = _decide(
-        item_id, status="failed" if error else "approved", decided_by=decided_by, note=note
-    )
-    if decided is None:
-        raise LookupError(f"待确认动作不存在：{item_id}")
-    with LOCK:
+    user = auth.find_user(decided_by)
+    if not user or not user.get('enabled') or user.get('role') == 'agent':
+        raise permissions.PermissionDenied('需要有效人工身份批准')
+    with _locked():
         doc = _load()
-        for item in doc["items"]:
-            if str(item.get("id")) == str(item_id):
-                item["result"] = result or None
-                item["error"] = error
-                _save(doc)
-                return dict(item)
-    return decided
+        pending = next((i for i in doc['items'] if i['id'] == item_id), None)
+        if pending is None:
+            raise LookupError('待确认动作不存在')
+        if pending['status'] != 'pending':
+            raise ValueError('该提案已被处理或正在执行，不能重复批准')
+        params = dict(pending.get('payload') or {})
+        project, task = actions.load_task(str(params.get('task_id') or ''))
+        permissions.ensure_project_owner(project, user)
+        expected = ledger.fingerprint([pending['action'], params, pending['requested_by'], pending['requested_kind'], task['task_id']])
+        if pending.get('proposal_fingerprint') != expected:
+            raise ValueError('提案参数已变化或旧提案无参数指纹，请重新创建提案')
+        if pending['requested_kind'] == 'agent':
+            requester = auth.find_user(pending['requested_by'])
+            if not requester or not requester.get('enabled'):
+                raise permissions.PermissionDenied('提案者已失效')
+            permissions.ensure_project_owner(project, requester)
+            grant = ledger.read()['grants'].get(str(params.get('grant_id') or ''))
+            if not grant or grant['agent_username'] != permissions.username_of(requester):
+                raise permissions.PermissionDenied('提案者与授权不一致')
+        # 先持久化认领；重启后不会从pending再次执行。
+        pending.update(status='executing', decided_by=decided_by, decided_at=now_iso(), decision_note=note)
+        _save(doc)
+    try:
+        record = gateway.execute(user=user, session=None, grant_id=str(params.get('grant_id') or ''),
+                                 action=pending['action'], task_id=task['task_id'],
+                                 params={k: v for k, v in params.items() if k not in {'grant_id', 'follow_up'}},
+                                 follow_up=params.get('follow_up'), idempotency_key='approval:' + item_id,
+                                 trigger='approval', trigger_id=item_id)
+        status = 'approved' if record['status'] in {'succeeded', 'skipped'} else 'pending' if record['status'] == 'dry_run' else 'unknown'
+        error = None
+    except Exception as exc:
+        matches = [a for a in ledger.read()['actions'].values() if a.get('trigger') == 'approval' and a.get('trigger_id') == item_id]
+        record = matches[-1] if matches else None
+        status = 'unknown' if record and record['status'] in {'unknown', 'running', 'interrupted'} else 'failed'
+        error = str(exc)
+    with _locked():
+        doc = _load()
+        item = next(i for i in doc['items'] if i['id'] == item_id)
+        item.update(status=status, result=record, error=error)
+        _save(doc)
+        return dict(item)

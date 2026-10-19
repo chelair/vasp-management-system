@@ -448,7 +448,7 @@ def create_session(
         "kind": kind,
         "created_by": created_by,
         # 2026-10-13：agent token 的能力范围（None = 不限，人类会话默认 None）
-        "scope": [str(x) for x in (scope or [])] or None,
+        "scope": [str(x) for x in scope] if scope is not None else (["read"] if user.get("role") == "agent" else None),
     }
     with _locked():
         doc = _read_json(SESSIONS_FILE, None)

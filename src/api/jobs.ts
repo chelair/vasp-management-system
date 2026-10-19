@@ -433,6 +433,15 @@ export interface TaskInputState {
   };
   changes: TaskInputChange[];
   last_applied?: { con: string; at: string; items: TaskInputChange[] } | null;
+  applied_history?: {
+    id: string;
+    at: string;
+    event: 'upload' | 'continuation' | 'submit';
+    directory: string;
+    job_id: string | null;
+    changes: { file: string; key: string; before: unknown; after: unknown; baseline_known: boolean }[];
+    note: string;
+  }[];
   pending: boolean;
   poscar_cif: string | null;
   contcar_cif: string | null;

@@ -14,7 +14,7 @@ from permissions import PermissionDenied
 
 class InspectionEvidenceTests(unittest.TestCase):
     def setUp(self):
-        self.project = {"project_id": "p", "name": "project", "tasks": [
+        self.project = {"project_id": "p", "name": "project", "server":"fixture", "tasks": [
             {"task_id": "t", "model_name": "Ag24_neb", "task_type": "neb", "status": "running", "job_id": "42", "current_output": {"latest_dir": "con5"}},
             {"task_id": "t2", "model_name": "Ag24_opt", "task_type": "opt", "status": "completed"}]}
         self.rows = []

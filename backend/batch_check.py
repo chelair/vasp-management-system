@@ -595,7 +595,7 @@ def _bjobs_cwd_table() -> Optional[Dict[str, str]]:
 
 
 def parse_incar(path: Path) -> Dict[str, str]:
-    """解析 INCAR 为 {KEY: 首个取值}（跳过注释；键统一大写）。
+    """解析 INCAR 为 {KEY: 完整取值}（跳过注释；键统一大写）。
 
     只做"搬运"：判定规则不放远端。INCAR 就在我们已经在读的最新输出目录里，
     1KB 文本，读它不增加任何 exec / SFTP 往返。
@@ -611,7 +611,7 @@ def parse_incar(path: Path) -> Dict[str, str]:
             continue
         key, value = line.split("=", 1)
         key = key.strip().upper()
-        token = value.strip().split()[0] if value.strip() else ""
+        token = " ".join(value.split())
         if key:
             values[key] = token
     return values
@@ -1330,15 +1330,26 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         # ① 结构优化的力收敛阈值改由 INCAR 的 EDIFFG 决定；
         # ② 做精度检查（k 网格密度 / EDIFFG / EDIFF）。
         # 全部复用同一次 exec，不新增任何 SSH 往返。
-        incar = parse_incar(Path(work_dir) / "INCAR") or parse_incar(Path(remote_dir) / "INCAR")
+        incar = parse_incar(Path(work_dir) / "INCAR")
+        incar_source = work_dir
+        if not incar:
+            incar = parse_incar(Path(remote_dir) / 'INCAR')
+            incar_source = remote_dir
         result["incar"] = incar or None
+        result['incar_value_format'] = 'full_values_v1'
+        # NEB等类型同样需要KPOINTS证据，沿用现有读取，不增加SSH或结构回传。
+        mesh, mesh_note = parse_kpoints_mesh(Path(work_dir) / "KPOINTS")
+        kpoints_source = work_dir
+        if mesh is None:
+            mesh, mesh_note = parse_kpoints_mesh(Path(remote_dir) / "KPOINTS")
+            kpoints_source = remote_dir
+        result['kpoints'] = {'mesh':mesh,'note':mesh_note}
+        result['parameter_sources'] = {'INCAR':incar_source,'KPOINTS':kpoints_source}
+        result['parameter_source_mismatch'] = incar_source != work_dir or kpoints_source != work_dir
         used_thresholds = thresholds
         if task_type == "opt":
             used_thresholds, threshold_source = force_thresholds_from_incar(incar, thresholds)
             result["force_thresholds"] = {**used_thresholds, "source": threshold_source}
-            mesh, mesh_note = parse_kpoints_mesh(Path(work_dir) / "KPOINTS")
-            if mesh is None:
-                mesh, mesh_note = parse_kpoints_mesh(Path(remote_dir) / "KPOINTS")
             lattice_abc = parse_lattice_abc(Path(work_dir) / "POSCAR") or parse_lattice_abc(
                 Path(remote_dir) / "POSCAR"
             )
@@ -1348,7 +1359,7 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                 incar, mesh, lattice_abc, mesh_note, _precision_requirements()
             )
         else:
-            # 其他任务类型只留 INCAR 快照，不改判定逻辑
+            # 其他任务类型只留 INCAR/KPOINTS 快照，不改判定逻辑
             result["force_thresholds"] = {**thresholds, "source": "registry"}
 
         # 以最新续算目录为准匹配作业（续算推进到新 conN 后，作业在新目录提交）

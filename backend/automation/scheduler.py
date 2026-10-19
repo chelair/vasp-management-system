@@ -97,6 +97,12 @@ class _TaskBusy(Exception):
 
 def _acquire_task_lock(task_id: str):
     """任务级互斥（进程内 + 文件锁）；忙则抛 _TaskBusy。"""
+    from automation.gateway import family_id
+    try:
+        task_id = family_id(task_id)
+    except Exception:
+        # 未知任务仍用原键；随后的业务预检会拒绝，不允许借此执行。
+        pass
     with _TASK_LOCKS_LOCK:
         local = _TASK_LOCKS.get(str(task_id))
         if local is None:
@@ -148,17 +154,28 @@ def _remember_run(record: Dict[str, Any]) -> None:
     store.update_runs(mutate)
 
 
+def _public_run(record):
+    status = {'succeeded': 'success', 'prepared': 'queued'}.get(record['status'], record['status'])
+    return {'run_id': record['id'], 'action': record['action'], 'task_id': record['task_id'],
+            'trigger': record.get('trigger', ''), 'trigger_id': record.get('trigger_id', ''),
+            'status': status, 'started_at': record['created_at'],
+            'finished_at': None if status in {'queued', 'running'} else record.get('updated_at'),
+            'result': record.get('result'), 'reason': record.get('reason', '')}
+
+
 def get_run(run_id: str) -> Optional[Dict[str, Any]]:
-    for record in reversed(store.load_runs().get("runs", [])):
-        if str(record.get("run_id")) == str(run_id):
-            return record
-    return None
+    from automation import ledger
+    record = ledger.get(run_id)
+    if record:
+        return _public_run(record)
+    return next((r for r in reversed(store.load_runs().get('runs', [])) if str(r.get('run_id')) == str(run_id)), None)
 
 
 def list_runs(limit: int = 50) -> list:
-    runs = list(store.load_runs().get("runs", []))
-    runs.reverse()
-    return runs[:limit]
+    from automation import ledger
+    records = {r['run_id']: r for r in store.load_runs().get('runs', [])}
+    records.update({r['id']: _public_run(r) for r in ledger.read()['actions'].values()})
+    return sorted(records.values(), key=lambda r: r.get('started_at') or '', reverse=True)[:limit]
 
 
 def _blocked(
@@ -238,10 +255,12 @@ def submit(
                 trigger=trigger, trigger_id=trigger_id, rule_id=rule_id, project=project_name,
             )
 
+    from automation.gateway import family_id
+    guard_task_id = family_id(task_id) if task_id else ''
     history = store.load_history()
     cooldown_seconds = int(guard.get("cooldown_seconds") or 0)
     if task_id and cooldown_seconds > 0:
-        last = history["cooldowns"].get(f"{task_id}|{action_name}")
+        last = history["cooldowns"].get(f"{guard_task_id}|{action_name}")
         if last:
             try:
                 remaining = (
@@ -260,7 +279,7 @@ def submit(
 
     max_runs = int(guard.get("max_runs_per_task") or 0)
     if task_id and max_runs > 0:
-        used = int(history["counts"].get(f"{task_id}|{action_name}") or 0)
+        used = int(history["counts"].get(f"{guard_task_id}|{action_name}") or 0)
         if used >= max_runs:
             return _blocked(
                 action_name, task_id, f"已达执行上限（{used}/{max_runs}）",
@@ -269,7 +288,9 @@ def submit(
 
     # 幂等指纹只认显式传入的 idempotency_key（自动生成的 task|action 指纹会让同一规则
     # 第二天就再也跑不起来——重复次数该由 guard 的冷却/上限控制）
-    fingerprint = str(idempotency_key or "")
+    # 按任务/动作/参数绑定显式幂等键，事件以触发ID稳定去重。
+    request_key = str(idempotency_key or (f"{trigger}|{trigger_id}|{rule_id}" if trigger_id and trigger != "api" else ""))
+    fingerprint = _fingerprint(str(task_id), action_name, {"params": params, "key": request_key}) if request_key else ""
     if fingerprint:
         seen = history["fingerprints"].get(fingerprint)
         if seen and seen.get("status") in ("success", "running", "dry_run"):
@@ -279,7 +300,7 @@ def submit(
                 trigger=trigger, trigger_id=trigger_id, rule_id=rule_id, project=project_name,
             )
 
-    effective_dry = settings.get("dry_run", False) if dry_run is None else bool(dry_run)
+    effective_dry = bool(settings.get("dry_run", False)) or bool(dry_run)
     if effective_dry:
         try:
             preflight = spec.preflight(str(task_id), params) if spec.requires_task else {}
@@ -323,6 +344,11 @@ def submit(
         "follow_up": follow_up,
         "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
+    from automation.gateway import prepare_legacy
+    try:
+        prepare_legacy(job)
+    except Exception as exc:
+        return _blocked(action_name, task_id or "", str(exc), trigger=trigger, trigger_id=trigger_id)
     if spec.long_running:
         _remember_run(
             {
@@ -385,10 +411,11 @@ def _record_history(job: Dict[str, Any], status: str, reason: str = "") -> None:
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     task_id = job.get("task_id") or ""
     action_name = job["action"]
-    key = f"{task_id}|{action_name}"
+    from automation.gateway import family_id
+    key = f"{family_id(task_id)}|{action_name}"
 
     def mutate(history: Dict[str, Any]) -> None:
-        if status == "success":
+        if status in ("success", "failed", "unknown"):
             history["cooldowns"][key] = now
             history["counts"][key] = int(history["counts"].get(key) or 0) + 1
         history["last_results"][key] = {"at": now, "status": status, "reason": reason}
@@ -434,7 +461,7 @@ def _maybe_disable_rule(job: Dict[str, Any]) -> None:
     )
 
 
-def _execute(job: Dict[str, Any]) -> Dict[str, Any]:
+def _execute_business(job: Dict[str, Any]) -> Dict[str, Any]:
     spec = actions.get(job["action"])
     started = time.time()
     task_id = job.get("task_id") or ""
@@ -452,9 +479,15 @@ def _execute(job: Dict[str, Any]) -> Dict[str, Any]:
         _maybe_disable_rule(job)
         return {"status": "failed", "reason": str(e), "audit_id": record.get("at"), "run_id": job["run_id"]}
 
+    from automation import ledger
+    ledger.update(job['run_id'], status='running', attempted=True)
     try:
         result = spec.execute(task_id, job.get("params") or {})
     except Exception as e:  # noqa: BLE001 - 执行失败
+        from automation import gateway
+        current = ledger.get(job['run_id'])
+        if current['status'] == 'running':
+            ledger.update(job['run_id'], status='unknown', reason=str(e))
         elapsed = int((time.time() - started) * 1000)
         record = audit.write(
             action=job["action"], status="failed", task_id=task_id,
@@ -493,6 +526,54 @@ def _execute(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _execute(job: Dict[str, Any]) -> Dict[str, Any]:
+    from automation import gateway, ledger
+    settings = store.load_settings()
+    task_id, action_name = job['task_id'], job['action']
+    history = store.load_history()
+    guard = job.get('guard') or {}
+    reason = ''
+    if not settings.get('enabled', True) or settings.get('dry_run', False):
+        reason = '执行前全局暂停或dry_run已开启'
+    elif job.get('rule_id') in set(settings.get('disabled_rules') or []):
+        reason = '规则已禁用'
+    elif any(g.get('managed') and gateway.family_id(task_id) in g['task_ids'] for g in ledger.read()['grants'].values()):
+        reason = '任务已显式纳入受控授权，旧规则不得绕过预算'
+    elif gateway._unresolved(ledger.read(), gateway.family_id(task_id), exclude=job['run_id']):
+        reason = '存在其他未对账动作'
+    elif _manual_takeover(task_id):
+        reason = '人工已接管'
+    key = f'{gateway.family_id(task_id)}|{action_name}'
+    used = int(history['counts'].get(key) or 0)
+    if int(guard.get('max_runs_per_task') or 0) and used >= int(guard['max_runs_per_task']):
+        reason = '执行前复核：已达执行上限'
+    last = history['cooldowns'].get(key)
+    if last and int(guard.get('cooldown_seconds') or 0):
+        at = datetime.fromisoformat(last)
+        if at.tzinfo is None:
+            at = at.astimezone()
+        if (datetime.now().astimezone() - at).total_seconds() < int(guard['cooldown_seconds']):
+            reason = '执行前复核：仍在冷却期'
+    if reason:
+        ledger.update(job['run_id'], status='failed', reason=reason)
+        return _blocked(action_name, task_id, reason)
+    record = ledger.get(job['run_id'])
+    gateway.strict_audit(record, 'running', '旧规则执行前持久记录')
+    token = gateway._CONTEXT.set(job['run_id'])
+    try:
+        outcome = _execute_business(job)
+        current = ledger.get(job['run_id'])
+        # 未捕获的远端副作用失败需要保留unknown，绝不自动重放。
+        if current['status'] == 'unknown':
+            outcome.update(status='unknown', follow_up=None)
+        else:
+            ledger.update(job['run_id'], status={'success': 'succeeded'}.get(outcome['status'], outcome['status']),
+                          result=outcome.get('result'), reason=outcome.get('reason', ''))
+        return outcome
+    finally:
+        gateway._CONTEXT.reset(token)
+
+
 def _worker_loop() -> None:
     while not _STOP.is_set():
         try:
@@ -517,6 +598,10 @@ def _worker_loop() -> None:
                 "run_id": job.get("run_id"),
             }
         finally:
+            from automation import ledger
+            existing = ledger.get(job['run_id'])
+            if existing and existing['status'] in {'prepared', 'running'} and outcome.get('status') in {'failed', 'blocked'}:
+                ledger.update(job['run_id'], status='unknown' if existing.get('attempted') else 'failed', reason=outcome.get('reason', ''))
             if lock_tuple is not None:
                 _release_task_lock(lock_tuple)
 
@@ -525,7 +610,7 @@ def _worker_loop() -> None:
             # 主动作已完成且锁已释放 → 投递后续动作（不等待，交给工作线程）
             submit(
                 follow_up,
-                task_id=job["task_id"],
+                task_id=str((outcome.get('result') or {}).get('task_id') or job['task_id']),
                 trigger="follow_up",
                 trigger_id=str(job.get("run_id") or ""),
                 rule_id=str(job.get("rule_id") or ""),
@@ -554,6 +639,7 @@ def _tick_schedules() -> None:
         return
     now = datetime.now()
     history = store.load_history()
+    initial_schedule = {key: dict(history[key]) for key in ('next_runs', 'next_crons', 'last_fired')}
     changed = False
     for schedule in rules.schedules():
         if not schedule.get("enabled"):
@@ -583,6 +669,8 @@ def _tick_schedules() -> None:
                 due_at = datetime.fromisoformat(next_text)
             except ValueError:
                 continue
+            if due_at.tzinfo is not None:
+                due_at = due_at.astimezone().replace(tzinfo=None)
             if now < due_at:
                 continue
             from automation import events
@@ -651,7 +739,17 @@ def _tick_schedules() -> None:
                 }
             )
     if changed:
-        store.save_history(history)
+        def merge_schedule(current):
+            for key in ('next_runs', 'next_crons', 'last_fired'):
+                for schedule_id in set(initial_schedule[key]) | set(history[key]):
+                    before, after = initial_schedule[key].get(schedule_id), history[key].get(schedule_id)
+                    if before == after or current[key].get(schedule_id) != before:
+                        continue
+                    if schedule_id in history[key]:
+                        current[key][schedule_id] = after
+                    else:
+                        current[key].pop(schedule_id, None)
+        store.update_history(merge_schedule)
 
 
 def _schedule_loop() -> None:

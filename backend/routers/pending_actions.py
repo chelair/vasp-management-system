@@ -133,6 +133,8 @@ def approve_pending_action(item_id: str, request: Request, payload: dict = Body(
         return denied
     try:
         user = _current(request)
+        if set(payload or {}) - {'note'}:
+            raise ValueError('审批不能修改动作参数，请重新创建提案')
         item = pending_actions.approve(
             item_id,
             decided_by=permissions.username_of(user) or "-",
@@ -146,6 +148,8 @@ def approve_pending_action(item_id: str, request: Request, payload: dict = Body(
             detail=f"{item_id} action={item.get('action')} error={item.get('error') or '-'}",
         )
         return ok("已批准并执行", {"item": item})
+    except permissions.PermissionDenied:
+        raise
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:
@@ -162,6 +166,12 @@ def reject_pending_action(item_id: str, request: Request, payload: dict = Body(d
         return denied
     try:
         user = _current(request)
+        pending = pending_actions.get_item(item_id)
+        if pending is None:
+            raise LookupError('待确认动作不存在')
+        from automation.actions import load_task
+        project, _ = load_task(pending['task_id'])
+        permissions.ensure_project_owner(project, _current(request))
         item = pending_actions.reject(
             item_id,
             decided_by=permissions.username_of(user) or "-",
@@ -175,6 +185,8 @@ def reject_pending_action(item_id: str, request: Request, payload: dict = Body(d
             detail=f"{item_id} action={item.get('action')}",
         )
         return ok("已驳回", {"item": item})
+    except permissions.PermissionDenied:
+        raise
     except LookupError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
     except ValueError as e:

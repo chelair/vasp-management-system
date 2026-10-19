@@ -132,7 +132,7 @@ def _to_public(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "user": cfg.get("user"),
         "auth_type": "key" if cfg.get("key_path") else "password",
         "key_path": cfg.get("key_path"),
-        "password": cfg.get("password"),
+        "password_configured": bool(cfg.get("password")),
         "home": cfg.get("home"),
         "queue_system": cfg.get("queue_system", "lsf"),
         "remote_base": cfg.get("remote_base"),
@@ -142,6 +142,7 @@ def _to_public(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
 @router.get("/config")
 def get_config():
     try:
+        permissions.ensure_admin(permissions.current_user_from_context())
         servers = load_servers()
         return ok(
             "查询成功",

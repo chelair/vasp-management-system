@@ -18,6 +18,7 @@ from routers import auth as auth_router
 from routers import pending_actions as pending_actions_router
 from routers import ai as ai_router
 from routers import ai_chat as ai_chat_router
+from routers import agent_execution as agent_execution_router
 from routers import automation as automation_router
 from routers import auxiliary as aux
 from routers import free_energy
@@ -127,7 +128,7 @@ async def lifespan(_: FastAPI):
         pass
 
 
-app = FastAPI(title="VASP 计算项目管理系统 API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="VASP 计算项目管理系统 API", version="1.1.0", lifespan=lifespan)
 
 # 认证中间件（第 2 步）：除白名单（POST /api/auth/login、GET /api/health）外，
 # /api/** 与 /docs、/openapi.json 一律要求登录
@@ -194,6 +195,7 @@ async def permission_handler(_, exc: PermissionDenied):
 app.include_router(meta.router, prefix="/api")
 app.include_router(auth_router.router, prefix="/api")
 app.include_router(automation_router.router, prefix="/api")
+app.include_router(agent_execution_router.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")

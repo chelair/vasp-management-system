@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -36,6 +37,7 @@ def write(
     run_id: str = "",
     remote_dir: str = "",
     username: str = "automation",
+    strict: bool = False,
 ) -> Dict[str, Any]:
     """追加一条自动化审计记录并返回它（status 非枚举值时原样写入，便于排障）。"""
     record: Dict[str, Any] = {
@@ -66,8 +68,12 @@ def write(
         AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(AUDIT_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if strict:
+                f.flush()
+                os.fsync(f.fileno())
     except OSError:
-        pass
+        if strict:
+            raise
     return record
 
 

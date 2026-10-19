@@ -615,7 +615,7 @@ def run_automation_rule(rule_id: str, request: Request):
                 "schedule_id": rule_id,
                 "rule_id": rule_id,
                 "scope": (rule.get("trigger") or {}).get("scope") or "all",
-                "fired_at": "manual",
+                "fired_at": store.new_run_id(),
             }
         )
         return ok("已投递触发信号（规则命中后逐个任务执行，可在决策日志查看）", {"rule_id": rule_id})

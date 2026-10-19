@@ -151,6 +151,8 @@ def build_task_context(
     summaries = read_task_file_summaries(project_name, task) if task_id else {}
     history = [_check_entry(e) for e in collect_task_history(task_id, limit=n_checks)]
     actions = _actions_for(task_id, n_actions)
+    from parameter_history import records
+    applied_parameters = records(project,task)
 
     missing: List[str] = []
     present = set(summaries.get("present") or [])
@@ -224,6 +226,9 @@ def build_task_context(
             or (files_meta.get("CONTCAR") or {}).get("lattice_abc"),
             "draft": state.get("draft") or {},
             "pending_changes": [c for c in (state.get("changes") or []) if not c.get("applied_at")],
+            "applied_parameter_history": [{k:r.get(k) for k in ('id','at','event','directory','job_id','semantics')}
+                                         for r in applied_parameters],
+            "parameter_history_tool": 'get_task_parameter_history：最近5次实际参数，草稿不计入；按记录ID读取具体值',
         },
         "checks": {"history_count": len(history), "recent": history},
         "actions": {"recent": actions},

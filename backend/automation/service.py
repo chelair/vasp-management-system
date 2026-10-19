@@ -15,7 +15,7 @@ def _mark_interrupted_runs() -> None:
     changed = False
     for record in runs.get("runs", []):
         if record.get("status") == "running":
-            record["status"] = "failed"
+            record["status"] = "interrupted"
             record["reason"] = "服务重启导致中断"
             record["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
             changed = True
@@ -31,6 +31,8 @@ def start_automation() -> None:
     try:
         store.ensure_defaults()
         _mark_interrupted_runs()
+        from automation import gateway
+        gateway.reconcile()  # 只读LSF对账，不重放队列或任何副作用。
         scheduler.start()
         events.start()
         _STARTED = True

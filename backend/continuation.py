@@ -362,6 +362,10 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
             _write_remote_file(server, f"{new_dir}/INCAR", updated)
         if applied:
             task["input_state"] = mark_applied(task.get("input_state") or {}, con)
+        from parameter_history import append, parameters
+        task['input_state'] = append(task.get('input_state') or {}, event='continuation', directory=new_dir,
+                                     source_directory=source_dir, before=parameters({'INCAR':incar_text}),
+                                     after=parameters({'INCAR':updated}))
         return {
             "task_type": "neb",
             "con": con,
@@ -436,6 +440,10 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
         _write_remote_file(server, f"{new_dir}/INCAR", updated)
     if applied:
         task["input_state"] = mark_applied(task.get("input_state") or {}, con)
+    from parameter_history import append, parameters
+    task['input_state'] = append(task.get('input_state') or {}, event='continuation', directory=new_dir,
+                                 source_directory=current_dir, before=parameters({'INCAR':incar_text}),
+                                 after=parameters({'INCAR':updated}))
     return {
         "task_type": task_type,
         "con": con,

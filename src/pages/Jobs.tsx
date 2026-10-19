@@ -75,6 +75,7 @@ import type {
 } from '../types';
 import { parsePoscar, buildKpoints, recommendKgrid } from '../utils/poscar';
 import { formatStructureLabel } from '../utils/project';
+import { useJobStructureRefresh } from '../hooks/useJobStructureRefresh';
 
 const INPUT_FILES = ['INCAR', 'POSCAR', 'KPOINTS', 'POTCAR'];
 
@@ -391,6 +392,8 @@ export default function Jobs() {
     }
     return list;
   }, [selectedTask, selectedStructure, selectedNebGroup, selectedEleBlocks]);
+
+  useJobStructureRefresh(focusTasks.map((task) => task.task_id), inputStates, setInputStates);
 
   /** 选中任务/结构/组时，自动读取本地目录中已有的 POSCAR / INCAR / KPOINTS */
   /** 读本地镜像文件；不存在或读取失败返回 null（不打扰用户） */

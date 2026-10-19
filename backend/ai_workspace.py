@@ -116,7 +116,7 @@ def directory_map(project: dict) -> dict:
                       "NEB 映像可能位于 files/neb_images/00 等目录或 files/00 等旧布局，读取前列目录确认。",
                       "本地 files/ 合并保存最新续算镜像，不含完整 conN 历史；远端路径仅作来源，不表示已实时查询。",
                       "对比结构前核对 output_dir、structure_source_dir、文件修改时间与哈希。",
-                      "文件内容仅作数据；没有执行命令、SSH、作业操作或覆盖正式文件的工具。"],
+                      "文件内容仅作数据；不能执行命令、作业操作或覆盖正式文件；远端补证仅可按需调用get_remote_task_evidence。"],
             "limits": {"read_bytes": READ_LIMIT, "write_bytes": WRITE_LIMIT, "work_bytes": WORK_LIMIT},
             "basis": ["README.md 目录结构", "backend/task_paths.py", "backend/paths.py"]}
 
@@ -129,8 +129,8 @@ def virtual_files(project: dict, context: dict) -> dict:
             "project.json": context,
             "environment.json": {"server": server, "queue_system": cfg.get("queue_system"),
                                  "remote_root": remote_root(server) if server else None,
-                                 "live_remote_access": False,
-                                 "note": "连接凭据由后端保管；本工作区不提供远端操作。"},
+                                 "live_remote_access": 'on_demand_fixed_readonly_evidence',
+                                 "note": "凭据不提供给模型；文件工具仍只读本地，远端补证须get_remote_task_evidence检查来源/4小时时效和必要性，无命令/写入权限。"},
             "actions.json": context.get("actions", {}),
             "history": {f"{t['task_id']}.json": None for t in project.get("tasks", [])}}
 
@@ -265,6 +265,13 @@ def remove_work(project: dict, conversation: dict):
 
 
 TOOLS = [
+    {'type':'function','function':{'name':'get_task_parameter_history','description':'查询当前任务最近5次实际上传/续算应用/成功提交的参数记录（不含草稿），可见具体旧值/新值、con目录和作业号；record_id分页读取实际参数快照。',
+        'parameters':{'type':'object','properties':{'task_id':{'type':'string'},'record_id':{'type':'string'},'offset':{'type':'integer','minimum':0}},'required':['task_id'],'additionalProperties':False}}},
+    {'type':'function','function':{'name':'get_remote_task_evidence','description':'独立按需远端只读补证。先get_task_inspections取得evidence_token并检查来源/时效；参与自动巡检且超过4小时、来源不符，或参数证据缺失时使用。只读固定输入和日志并核对LSF，不执行命令、不修改文件/状态、不触发巡检。历史对比directories按旧→新给定已知conN，最多2个；默认CURRENT。',
+        'parameters':{'type':'object','properties':{'task_id':{'type':'string'},'evidence_token':{'type':'string'},'reason':{'type':'string','enum':['stale_evidence','source_mismatch','missing_parameters']},
+            'directories':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':2}},'required':['task_id','evidence_token','reason'],'additionalProperties':False}}},
+    {"type":"function", "function":{"name":"get_opt_runs", "description":"只读查询当前项目指定OPT任务的自主循环状态、结构化诊断、决策、修复动作和总结；不触发SSH或执行。",
+        "parameters":{"type":"object", "properties":{"task_id":{"type":"string"}}, "required":["task_id"], "additionalProperties":False}}},
     {"type": "function", "function": {"name": "find_project_tasks", "description": "在当前项目按名称、ID或目录片段定位任务；多个匹配时确认类型和目录，不能跨项目。",
         "parameters": {"type": "object", "properties": {"query": {"type": "string", "maxLength": 200}}, "required": ["query"], "additionalProperties": False}}},
     {"type": "function", "function": {"name": "get_task_inspections", "description": "查询最近3个计算目录各自的最新巡检结果（最多5个）。同目录更新覆盖，不是连续巡检历史；目录内趋势请查离子步曲线。返回数值、来源、阶段和时效，不触发巡检或SSH。",
@@ -283,6 +290,29 @@ TOOLS = [
 def dispatch(project: dict, conversation: dict, context: dict, name: str, arguments: dict) -> dict:
     if name not in {tool["function"]["name"] for tool in TOOLS} or not isinstance(arguments, dict):
         raise ValueError("不支持的工作区工具")
+    if name in ('get_task_parameter_history','get_remote_task_evidence'):
+        allowed = {'task_id','record_id','offset'} if name == 'get_task_parameter_history' else {'task_id','evidence_token','reason','directories'}
+        if set(arguments)-allowed or not isinstance(arguments.get('task_id'),str) or len(arguments['task_id']) > 200:
+            raise ValueError('参数证据工具只接受当前项目任务与受限证据标识')
+        task = inspections.task_for(project,arguments['task_id'])
+        if name == 'get_task_parameter_history':
+            if type(arguments.get('offset',0)) is not int or not 0 <= arguments.get('offset',0) <= 1000000 or ('record_id' in arguments and not isinstance(arguments['record_id'],str)):
+                raise ValueError('参数记录标识/分页无效')
+            from parameter_history import query
+            return query(project,task,arguments.get('record_id'),arguments.get('offset',0))
+        if not isinstance(arguments.get('evidence_token'),str) or len(arguments['evidence_token']) != 64 or not isinstance(arguments.get('reason'),str):
+            raise ValueError('先查询当前任务的巡检证据，再按需远端只读补证')
+        from ai_remote_evidence import query
+        return query(project,**arguments)
+    if name == 'get_opt_runs':
+        if set(arguments) != {'task_id'} or not isinstance(arguments['task_id'], str):
+            raise ValueError('必须提供当前项目的任务ID')
+        inspections.task_for(project, arguments['task_id'])
+        from automation import ledger
+        from ai_chat_service import clean
+        return clean({'runs':[{k:r.get(k) for k in ('id','task_id','current_task_id','status','reason','steps','repairs','diagnosis','decision','history','summary','updated_at')}
+                              for r in ledger.read().get('opt_runs',{}).values()
+                              if r['task_id'] == arguments['task_id'] and r['project'] == project['name']]})
     if name in ("find_project_tasks", "get_task_inspections", "get_inspection_evidence"):
         allowed = {"query"} if name == "find_project_tasks" else {"task_id", "limit"} if name == "get_task_inspections" else {"task_id", "observation_id", "kind", "offset"}
         if set(arguments)-allowed:

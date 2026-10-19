@@ -20,6 +20,7 @@ interface BackendServerEntry {
   auth_type?: 'key' | 'password';
   key_path?: string | null;
   password?: string | null;
+  password_configured?: boolean;
   home?: string | null;
   queue_system?: string | null;
   remote_base?: string | null;
@@ -34,7 +35,7 @@ function fromBackend(entry: BackendServerEntry): ServerConfig {
     user: entry.user,
     authType: entry.key_path ? 'key' : 'password',
     keyPath: entry.key_path ?? undefined,
-    password: entry.password ?? undefined,
+    passwordConfigured: entry.password_configured ?? false,
     home: entry.home ?? undefined,
     queueSystem: entry.queue_system ?? 'lsf',
     remoteBase: entry.remote_base ?? undefined,
@@ -65,7 +66,9 @@ export function readUICache(): ServerConfig[] | null {
     const raw = localStorage.getItem(UI_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as ServerConfig[];
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(({ password: _secret, ...server }) => server);
+      }
     }
   } catch {
     // 缓存损坏时忽略
@@ -76,7 +79,8 @@ export function readUICache(): ServerConfig[] | null {
 /** 保存本地 UI 状态缓存 */
 export function persistUICache(servers: ServerConfig[]): void {
   try {
-    localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(servers));
+    const publicServers = servers.map(({ password: _secret, ...server }) => server);
+    localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(publicServers));
   } catch {
     // localStorage 不可用时静默失败
   }
@@ -139,13 +143,13 @@ export async function syncServerConfigs(servers: ServerConfig[]): Promise<void> 
 export async function testRemoteConnection(
   cfg: Pick<
     ServerConfig,
-    'id' | 'host' | 'port' | 'user' | 'authType' | 'keyPath' | 'password'
+    'id' | 'host' | 'port' | 'user' | 'authType' | 'keyPath' | 'password' | 'passwordConfigured'
   >,
 ): Promise<ConnectionTestResult> {
   if (cfg.authType === 'key' && !cfg.keyPath?.trim()) {
     return { ok: false, latencyMs: 0, message: '认证方式为密钥文件，但私钥路径为空' };
   }
-  if (cfg.authType === 'password' && !cfg.password?.trim()) {
+  if (cfg.authType === 'password' && !cfg.password?.trim() && !cfg.passwordConfigured) {
     return { ok: false, latencyMs: 0, message: '认证方式为密码，但密码为空' };
   }
   try {

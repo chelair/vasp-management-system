@@ -133,6 +133,14 @@ async def auth_middleware(request: Request, call_next):
             },
         )
 
+    # Agent执行只允许受控网关或提案；write不再等于任意业务API写权限。
+    if user.get("role") == "agent" and method not in SAFE_METHODS:
+        allowed = method == "POST" and path.rstrip("/") in {
+            "/api/agent-execution/actions", "/api/pending-actions", "/api/auth/logout",
+        }
+        if not allowed or (needed != "read" and not session.get("scope")):
+            return _unauthorized("Agent必须通过受控执行入口，不能直接修改业务或权限", 403)
+
     request.state.token = token
     request.state.session = session
     request.state.user = user

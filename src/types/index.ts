@@ -671,6 +671,7 @@ export interface ServerConfig {
   keyPath?: string;
   /** 密码（authType=password 时使用；仅演示，正式版由后端保管） */
   password?: string;
+  passwordConfigured?: boolean;
   /** 用户主目录 */
   home?: string;
   queueSystem: QueueSystem | string;

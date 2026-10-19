@@ -1,0 +1,20 @@
+ vasp.6.5.0               19Oct2026
+ POSCAR:  Si
+ POTCAR:  PAW_PBE Si 05Jan2001
+   NSW = 100   IBRION = 2   ISIF = 2
+   ENCUT = 450.0   EDIFF = 1E-06
+
+ ----------------------------------- Iteration   1(   1)  -----------------------------------
+ FREE ENERGY OF IONIC STEP =  -0.10800000E+02  (eV)
+
+ POSITION                                       TOTAL-FORCE (eV/Angst)
+ -----------------------------------------------------------------------------------
+      0.00000      0.00000      0.00000         0.000000    0.000000    0.000000
+ -----------------------------------------------------------------------------------
+
+  reached required accuracy - stopping structural energy minimisation
+
+ General timing and accounting informations for this job:
+ ========================================================
+ Total CPU time used (sec):       12.345
+ Elapsed time (sec):               13.000

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import shlex
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -226,10 +227,10 @@ def _prepare_remote_write(
             # 目录还不存在时先建出来（v0.9.30）：新建的独立任务以前不在远端建目录，
             # 第一次「同步到远端」就会因为目录不存在失败（用户 2026-09-25 踩坑）
             'mkdir -p "' + remote_dir + '" 2>/dev/null || { echo "@@@MKDIR_FAIL"; exit 4; }',
-            'cd "' + remote_dir + '" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
+            'cd ' + shlex.quote(remote_dir) + ' 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
             'LATEST=$(ls -d con[0-9]* 2>/dev/null | sed "s|.*/||" | sort -V | tail -1)',
-            'WORK="' + remote_dir + '"',
-            '[ -n "$LATEST" ] && WORK="' + remote_dir + '/$LATEST"',
+            'WORK=' + shlex.quote(remote_dir),
+            '[ -n "$LATEST" ] && WORK="$WORK/$LATEST"',
             'cd "$WORK" 2>/dev/null || { echo "@@@NO_DIR"; exit 3; }',
             'if [ -f "' + name + '" ]; then',
             '  mv -f "' + name + '" "' + backup_name + '"',
@@ -281,6 +282,8 @@ def _audit_log(project: str, task_id: str, remote_dir: str, command: str, result
       因为总览趋势的"提交作业数"仍从它回溯统计，不能停写。
     """
     username = permissions.context_username() or "-"
+    from automation.gateway import execution_context
+    controlled_action = execution_context()
     timestamp = datetime.now().isoformat(timespec="seconds")
     try:
         AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +305,8 @@ def _audit_log(project: str, task_id: str, remote_dir: str, command: str, result
                     {
                         "at": timestamp,
                         "username": username,
+                        "automation": bool(controlled_action),
+                        "action_id": controlled_action,
                         "project": project,
                         "task_id": task_id,
                         "remote_dir": remote_dir,
@@ -460,8 +465,16 @@ def core_continuation(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str
     }
 
 
-def core_submit(
-    project: Dict[str, Any], task: Dict[str, Any], *, dry_run: bool = False
+def core_submit(project: Dict[str, Any], task: Dict[str, Any], *, dry_run: bool = False):
+    from automation.gateway import safe_submit
+    try:
+        return safe_submit(project, task, dry_run=dry_run)
+    except ValueError as exc:
+        raise ActionError(409, str(exc)) from exc
+
+
+def _core_submit(
+    project: Dict[str, Any], task: Dict[str, Any], *, dry_run: bool = False, execution=None
 ) -> Dict[str, Any]:
     """提交作业核心：一次 exec 完成「定位最新 conN → 输入文件非空检查 → bsub」。
 
@@ -497,27 +510,49 @@ def core_submit(
         *_submit_preflight_lines(str(task.get("task_type") or ""), submit_script),
         '[ -n "$EMPTY" ] && { echo "@@@EMPTY=$EMPTY"; exit 4; }',
     ]
+    if execution:
+        # 固定预检目录，任何资源脚本变化都拒绝本次提交。
+        lines += [
+            'EXPECTED=' + shlex.quote(execution['work_dir']),
+            '[ "$WORK" = "$EXPECTED" ] || { echo "@@@PIN_CHANGED"; exit 8; }',
+            'SCRIPT_B64=$(base64 -w0 vasp.lsf)',
+            'ACTUAL=$(printf \'%s\' "$SCRIPT_B64" | base64 -d | sha256sum | cut -d " " -f1)',
+            '[ "$ACTUAL" = ' + shlex.quote(execution['script_hash']) + ' ] || { echo "@@@PIN_CHANGED"; exit 8; }',
+        ]
     if dry_run:
-        lines.append('echo "@@@CHECK_ONLY"')
+        lines += [
+            'SCRIPT_B64=$(base64 -w0 vasp.lsf)',
+            'echo "@@@SCRIPT_HASH=$(printf \'%s\' "$SCRIPT_B64" | base64 -d | sha256sum | cut -d \" \" -f1)"',
+            'echo "@@@SCRIPT_B64=$SCRIPT_B64"',
+            'echo "@@@CHECK_ONLY"',
+        ]
     else:
         lines += [
+            # 与bsub同一次SSH采集，只有LSF接受后才记入参数历史；不读取草稿或异步镜像。
+            'for F in INCAR KPOINTS; do [ -f "$F" ] && [ "$(stat -c %s "$F")" -le 65536 ] && echo "@@@INPUT_${F}=$(base64 -w0 "$F")"; done',
             'echo "@@@BSUB"',
-            "source " + profile + " >/dev/null 2>&1 || true",
-            'bsub < "' + submit_script + '"',
+            "source " + shlex.quote(profile) + " >/dev/null 2>&1 || true",
+            ('printf \'%s\' "$SCRIPT_B64" | base64 -d | bsub -J ' + shlex.quote(execution['execution_name'])) if execution else 'bsub < "' + submit_script + '"',
             'echo "@@@BSUB_RC=$?"',
         ]
     script = "\n".join(lines)
     try:
         script_b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
         result = ssh.run_remote(server, f"echo {script_b64} | base64 -d | bash", timeout=90)
-    except Exception as e:  # noqa: BLE001 - SSH 连接类错误统一按 502 上报
+    except Exception as e:  # noqa: BLE001 - 提交请求可能已经送达，不能当成明确失败
+        if not dry_run:
+            raise ActionError(503, f"SSH返回异常，提交结果不确定；禁止重复提交，请先对账：{e}", {"uncertain": True}) from e
         raise ActionError(502, f"无法连接远程服务器，请检查 SSH 配置：{e}") from e
 
     raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
     work_match = re.search(r"@@@WORK=(.+)", raw)
     work_dir = work_match.group(1).strip() if work_match else remote_dir
+    if ssh.mock_enabled() and work_dir.startswith(str(ssh._mock_root())):
+        work_dir = work_dir[len(str(ssh._mock_root())):]
+    if "@@@PIN_CHANGED" in raw:
+        raise ActionError(409, "预检后目录或LSF脚本变化，已阻止提交", {"not_submitted": True})
     if "@@@NO_DIR" in raw:
-        raise ActionError(404, f"远程目录不存在：{remote_dir}")
+        raise ActionError(404, f"远程目录不存在：{remote_dir}", {"not_submitted": True})
     empty_match = re.search(r"@@@EMPTY=(.*)", raw)
     if empty_match:
         missing = [name for name in empty_match.group(1).split() if name]
@@ -529,7 +564,7 @@ def core_submit(
             400,
             f"以下输入文件缺失或为空，已阻止提交：{'、'.join(missing)}"
             f"（目录 {work_dir}；请先补齐再提交）",
-            {"missing": missing, "work_dir": work_dir},
+            {"missing": missing, "work_dir": work_dir, "not_submitted": True},
         )
     if dry_run:
         return {
@@ -538,6 +573,8 @@ def core_submit(
             "task_id": task_id,
             "work_dir": work_dir,
             "submit_script": submit_script,
+            "script_text": base64.b64decode(re.search(r"@@@SCRIPT_B64=(.*)", raw).group(1)).decode('utf-8'),
+            "script_hash": re.search(r"@@@SCRIPT_HASH=([a-f0-9]{64})", raw).group(1),
             "raw_output": raw,
         }
 
@@ -559,8 +596,11 @@ def core_submit(
         detail = _bsub_detail()
         _audit_log(
             project["name"], task_id, work_dir, command,
-            f"BSUB_REJECTED rc={bsub_rc or '?'} {detail}",
+            f"{'BSUB_UNCERTAIN' if bsub_rc in ('', '0') else 'BSUB_REJECTED'} rc={bsub_rc or '?'} {detail}",
         )
+        if bsub_rc in ('', '0'):
+            raise ActionError(503, "未能确认远端作业ID，提交结果不确定；禁止重复提交，请先对账",
+                              {"uncertain": True, "work_dir": work_dir, "raw_output": raw})
         raise ActionError(
             400,
             f"bsub 提交被集群拒绝（rc={bsub_rc or '?'}）：{detail}"
@@ -573,8 +613,17 @@ def core_submit(
             update_task_status(
                 db, project["name"], task_id, "queued", {"job_id": new_job_id}
             )
+            from parameter_history import parameters, record_in_db
+            captured = {}
+            for name in ('INCAR','KPOINTS'):
+                item = re.search(r'@@@INPUT_' + name + r'=(.*)', raw)
+                if item:
+                    captured[name] = base64.b64decode(item[1],validate=True).decode('utf-8',errors='replace')
+            record_in_db(db, task_id, event='submit', directory=work_dir, before={},
+                         after=parameters(captured), job_id=new_job_id)
     except Exception as e:  # noqa: BLE001 - 状态落库失败不影响已提交事实
         _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")
+        raise ActionError(503, "远端已提交但本地状态写入失败，需对账，禁止重复提交", {"job_id": new_job_id}) from e
     _audit_log(project["name"], task_id, remote_dir, command, f"OK job={new_job_id}")
     _schedule_input_sync(str(project.get("name") or ""), task_id)
     return {"job_id": new_job_id, "new_status": "queued", "raw_output": raw}
@@ -1572,6 +1621,7 @@ def _push_input_file(
     name: str,
     text: str,
     work_dir: str,
+    old_text: Optional[str] = None,
 ) -> tuple:
     """「同步到远端」之后的本地状态更新（v0.8.7）。
 
@@ -1620,11 +1670,16 @@ def _push_input_file(
         )
         state["source"] = source
         current["input_state"] = state
+        if name in ('INCAR','KPOINTS'):
+            from parameter_history import parameters, record_in_db
+            record_in_db(db, task_id, event='upload', directory=work_dir,
+                         before=parameters({name:old_text}), after=parameters({name:text}))
         updated = dict(current)
+        updated_project = next(p for p in db['projects'] if p['name'] == project['name'])
     # 结构文件推到远端后，本地镜像也换了内容 → 顺手重算 CIF（3D 视图立刻反映新结构）
     if name in ("POSCAR", "CONTCAR"):
         refresh_structure_cif(project, updated, name)
-    return _input_payload(project, updated), applied
+    return _input_payload(updated_project, updated), applied
 
 
 def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
@@ -1635,6 +1690,7 @@ def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, A
     （有未生效草稿的文件带 `protected: true`，只跳过覆盖、元数据照更新）。
     """
     state = dict(task.get("input_state") or {})
+    from parameter_history import records
     files_meta = dict(state.get("files") or {})
     files: Dict[str, Any] = {}
     for name in ("INCAR", "KPOINTS", "POSCAR", "CONTCAR"):
@@ -1661,6 +1717,7 @@ def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, A
         "draft": state.get("draft") or {},
         "changes": state.get("changes") or [],
         "last_applied": state.get("last_applied"),
+        "applied_history": records(project,task),
         "pending": has_pending(state),
         "poscar_cif": poscar_cif,
         "contcar_cif": contcar_cif,
@@ -2063,7 +2120,7 @@ def upload_incar(task_id: str, payload: dict = Body(default={})):
         )
         _write_remote_file(server, f"{work_dir}/INCAR", new_text)
         # 同步到远端 = 立即应用：本地镜像/元数据一并刷新，草稿台账标记已应用
-        payload_state, applied = _push_input_file(project, task_id, "INCAR", new_text, work_dir)
+        payload_state, applied = _push_input_file(project, task_id, "INCAR", new_text, work_dir, old_text=old)
         _audit_log(
             project["name"],
             task_id,
@@ -2528,7 +2585,7 @@ def upload_kpoints(task_id: str, payload: dict = Body(default={})):
         )
         _write_remote_file(server, f"{work_dir}/KPOINTS", str(content))
         payload_state, applied = _push_input_file(
-            project, task_id, "KPOINTS", str(content), work_dir
+            project, task_id, "KPOINTS", str(content), work_dir, old_text=old
         )
         _audit_log(
             project["name"],

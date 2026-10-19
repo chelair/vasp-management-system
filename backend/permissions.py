@@ -130,7 +130,7 @@ def token_scope(session: Optional[Dict[str, Any]]) -> Optional[List[str]]:
     if not isinstance(session, dict):
         return None
     raw = session.get("scope")
-    if not raw:
+    if raw is None:
         return None
     return [str(x) for x in raw]
 

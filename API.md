@@ -1,7 +1,24 @@
 # 接口文档（API.md）
 
+v1.1.0参数证据补充（2026-10-19已部署）：已有`GET /api/jobs/tasks/{id}/input`增加`applied_history`，每个任务族最多5次实际上传/续算应用/成功提交的参数记录，草稿不计入；task context的input增加历史引用。
+
+AI工作区新增`get_task_parameter_history(task_id, record_id?, offset=0)`及`get_remote_task_evidence(task_id, evidence_token, reason, directories?)`。后者先用get_task_inspections取得token，由后端验证4小时时效、自动巡检参与范围、来源/参数缺口及任务目录边界；固定文件只读并合并LSF查询，不接收命令/任意路径、不触发巡检、不修改状态或文件。reason为stale_evidence/source_mismatch/missing_parameters；directories默认CURRENT，历史对比旧→新最多2个MAIN或已知conN。详情见`agent-upgrade/03-parameter-evidence.md`。
+
+阶段2单OPT闭环（2026-10-19已部署，Mock验收，自主执行关闭）：
+
+| 方法与路径 | 权限与用途 |
+| --- | --- |
+| POST `/api/agent-execution/opt-runs` | 人工owner/admin；创建单OPT有限循环，不立即提交 |
+| GET `/api/agent-execution/opt-runs/{id}` | 当前项目owner/admin及授权Agent只读；诊断/来源/决策/历史/总结 |
+| POST `/api/agent-execution/opt-runs/{id}/step` | 人工owner/admin；推进一次；也由已有巡检事件自动推进 |
+| POST `/api/agent-execution/opt-runs/{id}/control` | 人工owner/admin；`command: pause/resume/close`；不停止远端作业 |
+
+创建字段：task_id、grant_id，及可选max_steps（默认30，1–100）、max_repairs（默认1，0–10且不超授权重试预算）、nsw_increment/nsw_max（默认0/0，禁用自动增加；启用须同时显式配置）、min_force_improvement（默认0.05，0–1之间）、connection_id（启动账号自己的现有加密AI连接，可选）。运行摘要附于GET `/api/agent-execution`的opt_runs。Agent不能创建/控制/推进循环，聊天新增只读get_opt_runs工具。未结束的循环包括暂停状态，禁止通过通用动作接口绕过其科学策略；人工close后才解除循环托管。
+
+walltime及有限NSW策略通过原网关执行；模型只审阅结构化提案。未知状态、不完整数据、SCF失败及越界建议暂停。CONVERGED仅表示初期基础交叉验证通过，numerical_precision仍NOT_TESTED。详细约束、使用示例与147项离线验收见`agent-upgrade/02-opt-loop.md`。
+
 > 面向**自动化 / 智能体接入**的接口清单与调用约定。
-> 基准版本：**v0.8.9** · 维护：本文档由开发助手随版本更新；**与代码不一致时以代码 + 在线 Swagger（`/docs`）为准**。
+> 基准版本：**v1.1.0** · 维护：本文档由开发助手随版本更新；**与代码不一致时以代码 + 在线 Swagger（`/docs`）为准**。
 > 相关：`process.md`（交接文档）、`TODO.md` §13（智能体闭环）/ §14（账号与鉴权）。
 > 快速文档：`http://<host>:3001/docs`（Swagger UI）、`http://<host>:3001/openapi.json`。
 
@@ -865,3 +882,68 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 - 每次版本提交（`process.md` §7 新增条目）时同步更新本文档：新增/变更接口、body 字段、前置条件、耗时与风险级别。
 - 本文档只描述**对外可见的 HTTP 面**；内部函数（`inspection_runner`、`continuation`、`input_state` 等）见 `process.md` §4。
 - 变更接口时优先改代码 → 再更新本文档；发现不一致以代码 + `/docs` 为准并立即回来修正。
+
+
+### 作业管理结构展示同步（2026-10-19）
+
+无新增后端接口或巡检回传变更。前端巡检请求成功返回后、切换任务时，作业页面重新读取现有 `GET /api/jobs/tasks/{task_id}/input` 中的本地结构，仅更新POSCAR/CONTCAR展示，不回填参数编辑器。不定时轮询、不添加后台推送、不触发远端结构同步；本轮未回传结构时继续使用本地已保存结果。
+
+## 阶段1：受控自主执行（2026-10-19，已部署，默认关闭）
+
+独立于旧automation开关，新入口默认关闭；没有授权不能执行。完整边界、测试及回滚见 `agent-upgrade/01-gateway.md`。AI工作台尚未注册执行工具。
+
+| 方法与路径 | 权限与作用 |
+| --- | --- |
+| `GET /api/agent-execution` | 当前可见授权及动作台账；Agent仅看自己的授权 |
+| `PUT /api/agent-execution/settings` | 仅admin；`{"enabled":true/false}`，暂停不停止已有HPC作业 |
+| `POST /api/agent-execution/grants` | 人工项目owner/admin创建授权；初始enabled=false、managed=false |
+| `PATCH /api/agent-execution/grants/{id}` | 人工owner/admin；只接受`{"enabled":true/false}`，不能由Agent改预算 |
+| `POST /api/agent-execution/actions` | Agent有效write scope或项目人工身份；必须有有效grant、动作/任务白名单和幂等键 |
+| `POST /api/agent-execution/actions/{id}/reconcile` | 人工owner/admin只读对账；没有bsub或队列重放 |
+| `POST /api/agent-execution/actions/{id}/resolve-not-submitted` | 人工确认未知动作没有提交；`confirmed_no_submission:true,evidence`，证据至少20字 |
+| `POST /api/agent-execution/actions/{id}/resolve-finished` | 已知Job ID但历史已清理时人工确认结束；`confirmed_finished:true,evidence`，按申请上界结算 |
+
+授权示例（仅说明协议，不代表已启用生产）：
+
+```json
+{
+  "agent_username": "project_agent",
+  "task_ids": ["existing_task_id"],
+  "allowed_actions": ["task.submit", "task.continuation"],
+  "queue": "normal",
+  "limits": {
+    "max_active_jobs": 1,
+    "max_submissions": 3,
+    "max_retries": 1,
+    "max_core_hours": 48,
+    "max_walltime_hours": 1,
+    "max_cores": 24
+  }
+}
+```
+
+前三项有保守默认，后三项必须显式配置。一个授权只能对应一个项目、服务器和CPU队列；绑定任务根目录、任务类型及服务器目标指纹，变化后必须重新授权。新授权未启用时不影响旧规则；首次显式启用后任务进入托管范围，旧规则不能绕过预算，暂停也不会恢复该旁路。
+
+执行示例：
+
+```json
+{
+  "grant_id": "grant_...",
+  "task_id": "existing_task_id",
+  "action": "task.continuation",
+  "follow_up": "task.submit",
+  "idempotency_key": "stable-intent-identifier",
+  "params": {},
+  "dry_run": true
+}
+```
+
+也可通过`Idempotency-Key`请求头提供键。仅允许现有task.submit、task.continuation、frac.create；仅continuation可接submit，后续动作也必须在授权白名单。阶段1不接受任意参数修改；续算子任务继承原任务授权但必须位于指定根目录的conN中。
+
+响应仍为统一信封；data是持久动作记录，包含id、status、requested资源(resources)、reservation、job_id、时间、result/reason、事件和触发依据。状态为prepared/running/succeeded/failed/skipped/unknown/interrupted；succeeded仅表示动作执行完成。dry_run只返回预检与预算预览，不预留、不建远端文件、不提交；全局dry_run不能被请求覆盖。相同键返回原记录，参数改变拒绝；换键仍受预算/重试和未对账动作限制。
+
+资源只解析静态CPU单作业LSF子集：固定`#BSUB -n`、`#BSUB -W HH:MM`、`#BSUB -q`，不支持的选项、动态声明、数组和GPU资源拒绝自动执行。并发预算事务内更新。实际核时尚无可信采集器，结束后以申请上界记`consumed_core_hours`，标注`consumption_basis=reserved_upper_bound`，不作计费数据。
+
+审批提案payload需包含task_id、grant_id，可选follow_up。批准时重新校验项目归属和提案指纹，先持久化认领，再走同一网关；不能在批准请求中修改参数。旧无指纹提案需重新创建。Agent不能批准，也不能直接调用原submit/continuation/create-frac、修改配置或授权；原Agent无scope会话不能执行，scope=[]不再代表全权。
+
+兼容变化：原人工提交仍不要求Agent预算，但新增LSF/持久台账安全闸门；提交响应或本地写入不确定返回503及unknown说明，禁止直接重提。可返回的错误data带action_id/execution_status。原`GET /api/actions/runs/{id}`现在能读取持久化短动作；重启的running不再直接冒充已知failed。SSH配置GET仅admin可读，GET/PUT均不回显password，改为password_configured；不提供password时保留后端已有凭据。

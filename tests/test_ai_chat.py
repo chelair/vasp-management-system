@@ -1,6 +1,7 @@
 """AI 工作台端到端：真实 HTTP/SSE + 模拟模型，隔离数据，不触碰生产账号/SSH。"""
 import copy
 from contextlib import closing
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -59,7 +60,7 @@ class Provider(BaseHTTPRequestHandler):
         if payload["model"] == "redirect-model":
             self.send_response(307); self.send_header("Location", "/stolen"); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
-        if payload["model"] in ("workspace-model", "workspace-loop", "workspace-blocked", "inspection-model"):
+        if payload["model"] in ("workspace-model", "workspace-loop", "workspace-blocked", "inspection-model", "parameter-model"):
             count = sum(m.get("role") == "tool" for m in payload["messages"])
             if count < (4 if payload["model"] == "inspection-model" else 3) or payload["model"] == "workspace-loop":
                 choices = [
@@ -77,6 +78,13 @@ class Provider(BaseHTTPRequestHandler):
                         ("write_workspace", {"path": "work/inspection-plan.md", "content": "基于三个目录最新结果分阶段分析；仅保存计划草稿，未执行计算"}),
                     ]
                     name, args = inspection_choices[count]
+                if payload['model'] == 'parameter-model':
+                    previous = [json.loads(m['content']) for m in payload['messages'] if m.get('role') == 'tool']
+                    name, args = [
+                        ('get_task_inspections',{'task_id':'task-alice'}),
+                        ('get_task_parameter_history',{'task_id':'task-alice'}),
+                        ('get_remote_task_evidence',{'task_id':'task-alice','evidence_token':previous[0]['evidence_token'] if previous else '', 'reason':'stale_evidence'}),
+                    ][count]
                 if payload["model"] == "workspace-blocked":
                     name, args = "read_workspace", {"path": "project/../bob/private.txt"}
                 arguments = json.dumps(args)
@@ -241,7 +249,7 @@ class AIChatTests(unittest.TestCase):
         _, events = self.api(f"/runs/{run['id']}/events", raw=True)
         self.assertIn('"status": "completed"', events)
         self.assertEqual({t["function"]["name"] for t in REQUESTS[-1]["tools"]},
-                         {"list_workspace", "read_workspace", "write_workspace", "find_project_tasks", "get_task_inspections", "get_inspection_evidence"})
+                         {"list_workspace", "read_workspace", "write_workspace", "find_project_tasks", "get_task_inspections", "get_inspection_evidence", "get_opt_runs", "get_task_parameter_history", "get_remote_task_evidence"})
 
     def test_stop_and_single_active_run(self):
         connection = self.connection("slow-model"); conversation = self.conversation(connection)
@@ -539,6 +547,51 @@ class AIChatTests(unittest.TestCase):
         self.assertIn("get_task_inspections", result["snapshot"]["context"]["workspace_rules"]["inspections"])
         _, detail = self.api(f"/conversations/{conversation['id']}")
         self.assertIn("按需查询3个目录", detail["messages"][-1]["content"])
+
+    def test_model_checks_age_then_actual_parameters_then_readonly_current_state(self):
+        import ai_inspections
+        import ai_remote_evidence
+        import parameter_history
+        checks_patch=patch.object(checks_store,'CHECKS_DIR',Path(self.temp.name)/'parameter-checks')
+        checks_patch.start()
+        def cleanup_checks():
+            checks_patch.stop()
+            checks_store.invalidate_cache()
+        self.addCleanup(cleanup_checks)
+        current=copy.deepcopy(PROJECTS)
+        project=current['projects'][0]
+        project['server']='fixture'
+        task=project['tasks'][0]
+        task.update(status='running',job_id='42',remote_dir='/remote/model',current_output={'latest_dir':'con6'})
+        task['input_state']=parameter_history.append({},event='upload',directory='/remote/model/con6',
+            before={'INCAR':{'NSW':'100'}},after={'INCAR':{'NSW':'200'}})
+        checks_store.archive_results([{'task_id':'task-alice','task_type':'neb','checked_at':(datetime.now()-timedelta(hours=5)).isoformat(),
+            'status':'running','remote_dir':'/remote/model','job_id':'42','current_output':{'latest_dir':'con6'},
+            'incar':{'NSW':'100'},'kpoints':{'mesh':[1,1,1]}}],'mock','stale-parameter-evidence')
+        sample={'samples':[{'requested':'CURRENT','directory':'con6','files':{
+            'INCAR':{'text':'NSW = 200\nMAGMOM = 2*1.0 3*0.0\n','stable':True,'truncated':False,'mtime':1},
+            'KPOINTS':{'text':'grid\n0\nGamma\n1 1 1\n0 0 0\n','stable':True,'truncated':False,'mtime':1}},'images':[]}],
+            'current_directory':'con6','sampled_epoch':1,'text_budget_bytes':24000,'remaining_bytes':23000}
+        output=json.dumps(sample)+'\n@@@LSF_BEGIN\n42|RUN|/remote/model/con6|fixture-job\n@@@LSF_RC=0\n'
+        connection=self.connection('parameter-model')
+        conversation=self.conversation(connection,'task-alice')
+        ai_remote_evidence._CACHE.clear()
+        with patch.object(service,'load_db',return_value=current), \
+             patch.object(ai_inspections,'load_settings',return_value={'auto_inspection_enabled':True}), \
+             patch.object(ai_remote_evidence.unknown,'jobs_script',return_value='echo mock-lsf'), \
+             patch.object(ai_remote_evidence.unknown,'remote',return_value=output) as remote:
+            status,run=self.send(conversation)
+            self.assertEqual(status,200,run)
+            result=self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        events=result['tool_events']
+        self.assertEqual([e['name'] for e in events],['get_task_inspections','get_task_parameter_history','get_remote_task_evidence'])
+        self.assertTrue(events[0]['result']['freshness']['stale_for_live_decision'])
+        self.assertEqual(events[1]['result']['records'][0]['changes'][0]['after'],'200')
+        self.assertEqual(events[2]['result']['current_state']['state'],'RUN')
+        self.assertEqual(events[2]['result']['evidence']['samples'][0]['incar']['MAGMOM'],'2*1.0 3*0.0')
+        self.assertFalse(events[2]['result']['intervention_authorized'])
+        self.assertEqual(remote.call_count,1)
 
     def test_large_project_budget_never_silently_caps_at_twelve_tasks(self):
         context = {"scope": "project", "project": {"name": "test"}, "summary": {"task_count": 30},

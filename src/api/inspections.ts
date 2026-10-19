@@ -1,6 +1,9 @@
 import { request } from './client';
 import type { InspectionDetail, InspectionResult } from '../types';
 
+/** 前端巡检请求已返回；仅让已打开的作业页面更新本地展示。 */
+export const INSPECTION_COMPLETED = 'vasp:inspection-completed';
+
 export interface InspectionRejected {
   task_id: string;
   message: string;
@@ -82,19 +85,23 @@ export async function fetchInspectionMeta(): Promise<InspectionMeta | null> {
 export async function runInspection(
   scope: InspectionRunScope = {},
 ): Promise<InspectionRunSummary> {
-  return request<InspectionRunSummary>('/inspections/run', {
+  const summary = await request<InspectionRunSummary>('/inspections/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(scope),
   });
+  window.dispatchEvent(new Event(INSPECTION_COMPLETED));
+  return summary;
 }
 
 /** 单任务巡检（任意状态任务均可触发；完成后归档新增/更新该任务记录） */
 export async function runSingleInspection(taskId: string): Promise<InspectionRunSummary> {
-  return request<InspectionRunSummary>(
+  const summary = await request<InspectionRunSummary>(
     `/inspections/run-single/${encodeURIComponent(taskId)}`,
     { method: 'POST' },
   );
+  window.dispatchEvent(new Event(INSPECTION_COMPLETED));
+  return summary;
 }
 
 /**

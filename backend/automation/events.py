@@ -19,6 +19,14 @@ _THREADS: List[threading.Thread] = []
 _STOP = threading.Event()
 
 
+def _event_id(event):
+    if event.get('run_id'):
+        return str(event['run_id'])
+    if event.get('schedule_id'):
+        return f"{event['schedule_id']}:{event.get('fired_at', '')}"
+    return ''
+
+
 def publish(event: Dict[str, Any]) -> None:
     """投递事件（非阻塞，立即返回；调用方不等待规则匹配与动作执行）。"""
     try:
@@ -60,7 +68,7 @@ def _match_rules_for_task(rule_iter, project: Dict[str, Any], task: Dict[str, An
                 task_id=str(task.get("task_id") or ""),
                 project=str(project.get("name") or ""),
                 trigger=str(event.get("type") or ""),
-                trigger_id=str(event.get("run_id") or event.get("schedule_id") or ""),
+                trigger_id=_event_id(event),
                 rule_id=str(rule.get("id") or ""),
                 reason=reason,
             )
@@ -71,7 +79,7 @@ def _match_rules_for_task(rule_iter, project: Dict[str, Any], task: Dict[str, An
             task_id=str(task.get("task_id") or ""),
             params=rule.get("params") or {},
             trigger=str(event.get("type") or ""),
-            trigger_id=str(event.get("run_id") or event.get("schedule_id") or ""),
+            trigger_id=_event_id(event),
             rule_id=str(rule.get("id") or ""),
             guard=rule.get("guard") or {},
             follow_up=rule.get("follow_up_action") or None,
@@ -88,6 +96,8 @@ def _handle(event: Dict[str, Any]) -> None:
 
     if event_type == "inspection_completed":
         task_id = str(event.get("task_id") or "")
+        from automation import opt_loop
+        opt_loop.inspection_event(task_id)
         for project in db.get("projects", []):
             for task in project.get("tasks", []):
                 if str(task.get("task_id")) != task_id:
@@ -127,7 +137,7 @@ def _loop() -> None:
                 status="failed",
                 task_id=str(event.get("task_id") or ""),
                 trigger=str(event.get("type") or ""),
-                trigger_id=str(event.get("run_id") or event.get("schedule_id") or ""),
+                trigger_id=_event_id(event),
                 reason=f"事件处理失败：{e}",
             )
 

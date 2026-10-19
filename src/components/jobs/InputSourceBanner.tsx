@@ -1,4 +1,4 @@
-import { Button, Card, Tag, Tooltip } from 'antd';
+import { Button, Card, Collapse, Tag, Tooltip } from 'antd';
 import { ReloadOutlined, RollbackOutlined, SyncOutlined } from '@ant-design/icons';
 import type { TaskInputChange, TaskInputState } from '../../api/jobs';
 
@@ -26,6 +26,9 @@ export default function InputSourceBanner({
   const source = input?.source ?? null;
   const pending = (input?.changes ?? []).filter((c) => !c.applied_at);
   const applied = input?.last_applied?.items ?? [];
+  const history = input?.applied_history ?? [];
+  const valueText = (value: unknown) => value == null ? '—' : typeof value === 'string' ? value : JSON.stringify(value);
+  const eventText = { upload: '已上传参数', continuation: '续算已应用', submit: '提交参数快照' };
   const pendingFiles = Array.from(new Set(pending.map((c) => c.file)));
 
   return (
@@ -99,6 +102,21 @@ export default function InputSourceBanner({
           （{input?.last_applied?.con}）
         </div>
       )}
+      {history.length > 0 && <Collapse size="small" ghost items={[{
+        key: 'parameter-history', label: `实际参数记录（最近 ${history.length} 次，最多 5 次，不含草稿）`,
+        children: <>
+          <p>上传或续算写入不代表运行中的 VASP 已重读参数；提交快照用于确认该次提交的输入。</p>
+          {history.map((record) => <div key={record.id} className="input-source__applied">
+            <div><Tag bordered={false}>{eventText[record.event]}</Tag>
+              <code>{record.directory}</code> · {record.at.replace('T', ' ').slice(0, 19)}
+              {record.job_id ? ` · 作业 ${record.job_id}` : ''}</div>
+            {record.changes.length ? record.changes.map((change) => <div key={`${change.file}-${change.key}`}>
+              <b>{change.file} · {change.key}</b>：
+              {change.baseline_known ? valueText(change.before) : '旧值未采集'} → {valueText(change.after)}
+            </div>) : <span>与已采集的原参数一致。</span>}
+          </div>)}
+        </>,
+      }]} />}
     </Card>
   );
 }

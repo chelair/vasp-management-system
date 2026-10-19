@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { App, Button, Card, Descriptions, Empty, Segmented, Tag, Tooltip, Upload } from 'antd';
 import {
   CloudUploadOutlined,
@@ -113,6 +113,9 @@ export default function PoscarPanel({
   const contcarMeta = input?.files?.CONTCAR;
   const cif = view === 'contcar' ? input?.contcar_cif ?? null : input?.poscar_cif ?? null;
   const shownMeta = view === 'contcar' ? contcarMeta : poscarMeta;
+
+  // 新结构到达后旧选中原子的坐标已失效，避免右侧继续展示上一帧坐标。
+  useEffect(() => setSelectedAtoms([]), [taskId, cif]);
 
   /** 点击原子：默认单选（替换）；按住 Ctrl/⌘ 累加多选（与常见三维编辑器一致） */
   const handleClickAtom = (atom: AtomRef, additive: boolean) => {

@@ -95,6 +95,7 @@ export interface ProjectUpdatePayload {
   deadline?: string;
   calc_description?: string;
   expected_results?: string;
+  ai_report_notes_enabled?: boolean;
   estimated_hours?: number | null;
 }
 

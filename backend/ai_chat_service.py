@@ -413,6 +413,102 @@ def completion_payload(connection: dict, messages: list) -> dict:
     return payload
 
 
+class TextGenerationControl:
+    """文本草稿请求的取消/总时限；不进入聊天运行库，不授予工具能力。"""
+    def __init__(self):
+        self.stopped = threading.Event()
+        self.response = None
+        self.lock = threading.Lock()
+
+    def cancel(self):
+        self.stopped.set()
+        with self.lock:
+            response = self.response
+        if response is not None:
+            # shutdown 中断正在阻塞的 readline；仅 close 可能等待另一线程读锁。
+            try:
+                response.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+            except (AttributeError, OSError):
+                pass
+
+    def check(self):
+        if self.stopped.is_set():
+            raise ValueError("生成已取消或超过 120 秒；原注解未改动")
+
+
+def readonly_json_completion(owner: str, connection_id: str, messages: list,
+                             control: TextGenerationControl | None = None) -> tuple[dict, str]:
+    """复用私有连接、密钥解密与兼容流式请求；固定无工具，只返回完整 JSON。"""
+    control = control or TextGenerationControl()
+    control.check()
+    with store.database() as db:
+        if not db.execute("SELECT 1 FROM connections WHERE owner=? LIMIT 1", (owner,)).fetchone():
+            raise ValueError("尚未配置自己的模型连接，请先到 AI 工作台配置；普通报告仍可使用")
+        connection = store.owned(db, "connections", connection_id, owner)
+    key = store.decrypt(connection["secret"])
+    messages = clean(messages, (key,))
+    payload = completion_payload({**connection, "max_tokens": min(connection["max_tokens"], 4096)}, messages)
+    if urlsplit(connection["base_url"]).hostname == "api.deepseek.com":
+        payload["thinking"] = {"type": "disabled"}
+    timer = threading.Timer(120, control.cancel)
+    timer.daemon = True
+    timer.start()
+    parts, size, complete = [], 0, False
+    try:
+        with _open(connection, key, "/chat/completions", payload) as response:
+            with control.lock:
+                control.response = response
+            while True:
+                control.check()
+                line = response.readline(65537)
+                control.check()
+                if not line:
+                    break
+                if len(line) > 65536:
+                    raise ValueError("模型响应过长；原注解未改动")
+                if not line.startswith(b"data:"):
+                    continue
+                data = line[5:].strip()
+                if not data:
+                    continue
+                if data == b"[DONE]":
+                    break
+                obj = json.loads(data)
+                if obj.get("error"):
+                    raise ValueError("模型生成失败；请检查连接或额度后重试")
+                for choice in obj.get("choices", []):
+                    delta = choice.get("delta") or {}
+                    if delta.get("tool_calls") or delta.get("function_call"):
+                        raise ValueError("报告写作不允许模型调用工具")
+                    text = delta.get("content") or ""
+                    if not isinstance(text, str):
+                        raise ValueError("模型返回的文本格式不正确")
+                    size += len(text)
+                    if size > 40000:
+                        raise ValueError("模型草稿过长")
+                    parts.append(text)
+                    reason = choice.get("finish_reason")
+                    if reason not in (None, "stop"):
+                        raise ValueError("模型输出被截断或拒绝，请调整输出上限后重试")
+                    complete = complete or reason == "stop"
+        control.check()
+        if not complete:
+            raise ValueError("模型响应不完整；草稿未保存")
+        raw = "".join(parts).strip()
+        if raw.startswith("```json\n") and raw.endswith("```"):
+            raw = raw[8:-3].strip()
+        return clean(json.loads(raw), (key,)), clean(connection["model"], (key,))
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        raise ValueError("模型未返回有效 JSON 草稿，请重试；原注解未改动") from None
+    except (OSError, URLError, TimeoutError):
+        control.check()
+        raise ValueError("模型连接中断或超时；原注解未改动") from None
+    finally:
+        timer.cancel()
+        with control.lock:
+            control.response = None
+
+
 def _generate(run_id: str, connection: dict, key: str, messages: list, user: dict, workspace_enabled: bool = False):
     text, usage = "", {}
     hold = max(96, len(key))

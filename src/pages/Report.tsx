@@ -42,6 +42,7 @@ import PageHeader from '../components/common/PageHeader';
 import ReportNoteDialog from '../components/reports/ReportNoteDialog';
 import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
+import { ReportAIProvider, ReportAIControls } from '../components/reports/ReportAIContext';
 import { applyHiddenBlocks, collectHiddenBlocks, hiddenKeyLabel } from '../utils/reportHidden';
 import {
   BaderChargePanel,
@@ -172,6 +173,8 @@ export default function Report() {
   const [closedInSelectOpen, setClosedInSelectOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [showClosedReports, setShowClosedReports] = useState(false);
+  const [reportAIConnection, setReportAIConnection] = useState('');
+  const [autoAIReports, setAutoAIReports] = useState<string[]>([]);
 
   const loadReports = useCallback(async () => {
     const list = await fetchProjectReports();
@@ -232,6 +235,8 @@ export default function Report() {
         setSelectedReportId(fresh.report_id);
         // 同一项目重新生成会沿用 report_id，仍需重新读取详情。
         setDetailRevision((revision) => revision + 1);
+        // 同批重建详情后才允许自动草稿，避免旧 Provider 提前启动后随刷新被取消。
+        setAutoAIReports(result.reports.map(r => r.report_id));
       }
     } catch (err) {
       message.error(err instanceof Error ? err.message : '生成报告失败');
@@ -893,6 +898,11 @@ export default function Report() {
   );
 
   return (
+    <ReportAIProvider key={`${detail?.meta.report_id ?? ''}:${detailRevision}`}
+      reportId={detail?.meta.report_id ?? ''} notes={notes} onSaved={setNotes}
+      connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}
+      autoGenerate={Boolean(detail && autoAIReports.includes(detail.meta.report_id))}
+      onAutoStarted={() => setAutoAIReports(old => old.filter(id => id !== detail?.meta.report_id))}>
     <PageTransition>
       <PageHeader
         title="智能报告"
@@ -1147,6 +1157,7 @@ export default function Report() {
                 </div>
               </div>
 
+              <ReportAIControls />
               <div className="report-body">
                   <nav className="report-toc">
                     {renderedSections.map((s) => (
@@ -1434,5 +1445,6 @@ export default function Report() {
         </Card>
       </div>
     </PageTransition>
+    </ReportAIProvider>
   );
 }

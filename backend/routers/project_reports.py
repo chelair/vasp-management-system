@@ -5,6 +5,7 @@
 """
 
 from pathlib import Path
+import asyncio
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Query, Request
@@ -26,10 +27,10 @@ from report_store import (
     read_notes,
     report_dir,
     save_edits,
-    save_note,
     save_report,
 )
 from storage import load_db
+from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter(prefix="/reports/project", tags=["project-reports"])
 
@@ -393,7 +394,11 @@ def project_report_notes(report_id: str, request: Request):
     """
     try:
         _ensure_report_access(report_id, request)
-        return ok("查询成功", {"notes": read_notes(report_id)})
+        from report_ai_notes import annotate_staleness
+        doc, _, _ = load_report(report_id)
+        notes = read_notes(report_id)
+        annotate_staleness(doc, notes)
+        return ok("查询成功", {"notes": notes})
     except FileNotFoundError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
     except permissions.PermissionDenied:
@@ -414,12 +419,10 @@ def project_report_save_note(
         key = str(payload.get("key") or "").strip()
         if not key:
             return JSONResponse(status_code=400, content=fail("缺少 key（task_id 或 section_xxx）"))
-        notes = save_note(
-            report_id,
-            key,
-            str(payload.get("analysis_note") or ""),
-            str(payload.get("paper_note") or ""),
-        )
+        from report_ai_notes import save_reviewed, annotate_staleness
+        notes = save_reviewed(report_id, getattr(request.state, "user", None) or {}, payload)
+        doc, _, _ = load_report(report_id)
+        annotate_staleness(doc, notes)
         return ok("已保存", {"notes": notes})
     except FileNotFoundError as e:
         return JSONResponse(status_code=404, content=fail(str(e)))
@@ -429,6 +432,74 @@ def project_report_save_note(
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"保存报告注解失败：{e}"))
+
+
+class NoteGenerationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=200)
+    connection_id: str = Field(min_length=1, max_length=64)
+
+
+@router.get("/{report_id}/notes/ai-status")
+def project_report_note_ai_status(report_id: str, request: Request):
+    from routers.ai_chat import actor, guard
+    from report_ai_notes import status
+
+    @guard
+    def read():
+        user, _ = actor(request)
+        _ensure_report_access(report_id, request)
+        doc, _, _ = load_report(report_id)
+        return ok("查询成功", status(doc, user))
+    result = read()
+    if isinstance(result, dict):
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    return result
+
+
+@router.post("/{report_id}/notes/ai-preview")
+async def project_report_note_ai_preview(report_id: str, request: Request, body: NoteGenerationBody):
+    """独立于普通报告生成；单条预览，批量由前端逐条调用并保留部分成功结果。"""
+    from routers.ai_chat import actor
+    from ai_chat_service import TextGenerationControl
+    from report_ai_notes import preview
+
+    control = TextGenerationControl()
+    worker = None
+    disconnected = None
+    headers = {"Cache-Control": "no-store"}
+    try:
+        user, _ = actor(request)
+        _ensure_report_access(report_id, request)
+        worker = asyncio.create_task(asyncio.to_thread(preview, report_id, body.key, user, body.connection_id, control))
+        async def wait_disconnect():
+            # 已解析 JSON body 后监听真正的 disconnect；BaseHTTPMiddleware 下
+            # is_disconnected 的即时探测可能漏掉队列中的断开事件。
+            while (await request.receive())["type"] != "http.disconnect":
+                pass
+        disconnected = asyncio.create_task(wait_disconnect())
+        done, _ = await asyncio.wait({worker, disconnected}, return_when=asyncio.FIRST_COMPLETED)
+        if disconnected in done:
+            control.cancel()
+            worker.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+            return JSONResponse(status_code=499, content=fail("生成已取消，原注解未改动"), headers=headers)
+        return JSONResponse(ok("草稿已生成，尚未保存", await worker), headers=headers)
+    except permissions.PermissionDenied:
+        raise
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content=fail("报告不存在或已重新生成，请刷新"), headers=headers)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content=fail(str(exc)), headers=headers)
+    except asyncio.CancelledError:
+        control.cancel()
+        if worker:
+            worker.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        raise
+    except Exception:
+        return JSONResponse(status_code=503, content=fail("AI 草稿生成失败；普通报告和原注解不受影响"), headers=headers)
+    finally:
+        if disconnected:
+            disconnected.cancel()
 
 
 @router.get("/{report_id}/edits")

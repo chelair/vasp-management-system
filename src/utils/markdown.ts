@@ -53,6 +53,8 @@ function inline(text: string, chartResolver?: (path: string) => string): string 
 }
 
 interface Options {
+  /** 注解/模型草稿只展示文本，防止自动加载模型生成的外部图片。 */
+  allowImages?: boolean;
   /** 把 Markdown 里的相对图表路径（charts/xxx.svg）解析为可访问 URL */
   chartResolver?: (path: string) => string;
   /** 图片包装 class（默认 report-figure） */
@@ -60,7 +62,7 @@ interface Options {
 }
 
 export function renderMarkdown(markdown: string, options: Options = {}): string {
-  const { chartResolver, figureClass = 'report-figure' } = options;
+  const { chartResolver, figureClass = 'report-figure', allowImages = true } = options;
   const lines = (markdown || '').split('\n');
   const html: string[] = [];
   let i = 0;
@@ -132,6 +134,11 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
     // 图片：连续多张（a/b/c 三视图）包成一行，等宽紧凑；单张还是普通 figure
     const imgRe = /^!\[([^\]]*)\]\(([^)]+)\)$/;
     if (imgRe.test(line)) {
+      if (!allowImages) {
+        html.push(`<p>${escapeHtml(line)}</p>`);
+        i += 1;
+        continue;
+      }
       const figures: string[] = [];
       while (i < lines.length) {
         const m = imgRe.exec(lines[i].trim());

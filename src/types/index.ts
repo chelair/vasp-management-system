@@ -112,6 +112,7 @@ export interface Project {
   calc_description?: string;
   /** 预期结果（报告"基本信息"章节用；可空） */
   expected_results?: string;
+  ai_report_notes_enabled?: boolean;
   workload: Workload;
   /** 优先级：算出来的（紧急度 × 工作量），只读 */
   urgency?: string;
@@ -416,6 +417,16 @@ export interface ReportNote {
   analysis_note: string;
   paper_note: string;
   updated_at?: string;
+  source?: 'manual' | 'ai';
+  model?: string;
+  generated_at?: string;
+  input_fingerprint?: string;
+  generation_status?: string;
+  ai_origin?: boolean;
+  revision?: string;
+  stale?: boolean;
+  stale_reason?: string;
+  previous_note?: Partial<ReportNote>;
 }
 
 export interface ReportNoteEntry extends ReportNote {
@@ -943,6 +954,7 @@ export interface CreateProjectPayload {
   /** 报告「基本信息」里的两栏（v0.9.76 起新增项目时就能填） */
   calc_description?: string;
   expected_results?: string;
+  ai_report_notes_enabled?: boolean;
   estimated_hours?: number | null;
 }
 

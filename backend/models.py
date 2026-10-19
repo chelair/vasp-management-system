@@ -47,6 +47,7 @@ class ProjectIn(BaseModel):
     # 报告辅助字段（2026-10-12）：计算内容描述 / 预期结果，均可选、缺省空串
     calc_description: Optional[str] = None
     expected_results: Optional[str] = None
+    ai_report_notes_enabled: bool = False
 
     @field_validator("deadline")
     @classmethod
@@ -77,6 +78,7 @@ class ProjectPatchIn(BaseModel):
     deadline: Optional[str] = None
     calc_description: Optional[str] = None
     expected_results: Optional[str] = None
+    ai_report_notes_enabled: Optional[bool] = None
     estimated_hours: Optional[Union[int, float]] = None
 
     @field_validator("deadline")

@@ -3,6 +3,7 @@ import type {
   ProjectReportDetail,
   ProjectReportGenerateResult,
   ProjectReportMeta,
+  ReportNote,
 } from '../types';
 
 /**
@@ -117,12 +118,31 @@ export async function saveReportNote(
   key: string,
   analysisNote: string,
   paperNote: string,
-): Promise<{ notes: Record<string, { analysis_note: string; paper_note: string; updated_at?: string }> }> {
+  options: { expected_revision?: string; draft_token?: string; restore_previous?: boolean } = {},
+): Promise<{ notes: Record<string, ReportNote> }> {
   return request(`/reports/project/${encodeURIComponent(reportId)}/notes`, {
     method: 'PUT',
-    body: JSON.stringify({ key, analysis_note: analysisNote, paper_note: paperNote }),
+    body: JSON.stringify({ key, analysis_note: analysisNote, paper_note: paperNote, ...options }),
   });
 }
+
+export interface ReportAIDraft extends ReportNote {
+  key: string;
+  draft_token: string;
+  base_revision: string;
+}
+export interface ReportAIStatus {
+  enabled: boolean;
+  targets: { key: string; title: string }[];
+  notes: Record<string, ReportNote>;
+  empty_revision: string;
+}
+export const fetchReportAIStatus = (id: string) => request<ReportAIStatus>(
+  `/reports/project/${encodeURIComponent(id)}/notes/ai-status`);
+export const generateReportNote = (id: string, key: string, connectionId: string, signal: AbortSignal) => request<ReportAIDraft>(
+  `/reports/project/${encodeURIComponent(id)}/notes/ai-preview`, {
+    method: 'POST', body: JSON.stringify({ key, connection_id: connectionId }), signal,
+  });
 
 export interface ReportEdits {
   hidden_sections: string[];

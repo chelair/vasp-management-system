@@ -139,6 +139,7 @@ def create_project(payload: AddProjectPayload, request: Request):
             "description": str(p.description or ""),
             "calc_description": str(p.calc_description or ""),
             "expected_results": str(p.expected_results or ""),
+            "ai_report_notes_enabled": p.ai_report_notes_enabled,
             "owner": owner,
             "workload": priority["workload"],
             "urgency": priority["urgency"],
@@ -250,6 +251,8 @@ def update_project(project_id: str, payload: ProjectPatchIn, request: Request):
                     project[key] = str(patch[key] or "")
             if "estimated_hours" in patch:
                 project["estimated_hours"] = patch["estimated_hours"]
+            if "ai_report_notes_enabled" in patch:
+                project["ai_report_notes_enabled"] = patch["ai_report_notes_enabled"]
             if "deadline" in patch:
                 project["deadline"] = str(patch["deadline"])
                 priority = compute_priority(

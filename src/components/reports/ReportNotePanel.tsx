@@ -11,11 +11,12 @@
  */
 
 import { useState } from 'react';
-import { Button, Popconfirm, message } from 'antd';
+import { Alert, Button, Popconfirm, Tag, message } from 'antd';
 
 import { saveReportNote } from '../../api/reports';
 import { renderMarkdown } from '../../utils/markdown';
 import ReportNoteDialog from './ReportNoteDialog';
+import { useReportAI } from './ReportAIContext';
 
 export interface NoteEntry {
   label?: string;
@@ -41,7 +42,7 @@ function NoteText({ text }: { text: string }) {
   return (
     <div
       className="notes-text"
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(text, { allowImages: false }) }}
     />
   );
 }
@@ -58,14 +59,17 @@ export default function ReportNotePanel({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const ai = useReportAI();
+  const meta = ai?.notes[noteKey];
   const filled = Boolean(analysis.trim() || paper.trim());
 
   const handleDelete = async () => {
     setDeleting(true);
     try {
-      const res = await saveReportNote(reportId, noteKey, '', '');
+      const res = await saveReportNote(reportId, noteKey, '', '', { expected_revision: meta?.revision });
       message.success('已删除这条分析');
       onSaved?.(res.notes);
+      ai?.saved(res.notes, noteKey);
     } catch (e) {
       message.error(e instanceof Error ? e.message : '删除失败');
     } finally {
@@ -126,6 +130,11 @@ export default function ReportNotePanel({
           </div>
         </div>
       )}
+      {meta && filled && <div className="note-hint">
+        <Tag>{meta.source === 'ai' ? 'AI' : '人工'}{meta.ai_origin ? '（基于 AI 草稿）' : ''}</Tag>
+        {meta.model && <span>{meta.model} · {meta.generated_at}</span>}
+        {meta.stale && <Alert type="warning" showIcon message="分析可能过期" description={meta.stale_reason} />}
+      </div>}
       <ReportNoteDialog
         open={open}
         reportId={reportId}

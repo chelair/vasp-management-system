@@ -453,6 +453,7 @@ def _task_facts(
                 "dir_path": str(task.get("dir_path") or ""),
                 "remote_dir": str(task.get("remote_dir") or ""),
                 "latest_output_dir": latest_dir or None,
+                "output_state": (task.get("current_output") or {}).get("status"),
                 "last_energy": task.get("last_energy"),
                 "force_max": entry.get("force_max"),
                 "force_rms": entry.get("force_rms"),
@@ -486,8 +487,13 @@ def _task_facts(
                 "precision_ok": (entry.get("precision") or {}).get("ok"),
                 "convergence": entry.get("status"),
                 "incar_snapshot": entry.get("incar") or None,
+                "kpoints_snapshot": entry.get("kpoints") or None,
+                "parameter_sources": {"directories": entry.get("parameter_sources"),
+                    "mismatch": entry.get("parameter_source_mismatch"),
+                    "incar_value_format": entry.get("incar_value_format")},
                 "notes": str(entry.get("notes") or ""),
                 "last_check_time": task.get("last_check_time"),
+                "inspection_checked_at": entry.get("checked_at"),
                 "force_history": force_history if isinstance(force_history, list) else [],
                 "neb_barrier": entry.get("neb_barrier") or None,
                 "group": task.get("group") or None,
@@ -520,6 +526,17 @@ def _task_detail_row(fact: Dict[str, Any]) -> Dict[str, Any]:
         "cores": fact["cores"],
         "runtime_hours": fact["runtime_hours"],
         "errors": fact["errors"],
+        # 固定报告快照中的参数与验证依据；AI 不另读当前输入或发起 SSH。
+        "incar_snapshot": fact.get("incar_snapshot"),
+        "kpoints_snapshot": fact.get("kpoints_snapshot"),
+        "parameter_sources": fact.get("parameter_sources"),
+        "precision": fact.get("precision"),
+        "convergence": fact.get("convergence"),
+        "last_check_time": fact.get("last_check_time"),
+        "group": fact.get("group"),
+        "output_state": fact.get("output_state"),
+        "inspection_checked_at": fact.get("inspection_checked_at"),
+        "markers": fact.get("markers"),
     }
 
 
@@ -1577,14 +1594,13 @@ def ai_generate_notes(
     expected_results: str,
     task_result: Dict[str, Any],
     report: Optional[Dict[str, Any]] = None,
+    *, owner: str, connection_id: str, control=None,
 ) -> Dict[str, str]:
-    """**预留接口**：将来接 LLM 生成"结果分析描述 / 论文写作参考"。
+    """复用工作台私有连接，只生成文本；由独立预览请求调用，普通报告不调用。"""
+    from report_ai_notes import generate_text
 
-    输入：项目计算内容描述、预期结果、单个任务的计算结果与全局结构化数据；
-    输出：`{"analysis_note": ..., "paper_note": ...}`。
-    现在返回空串（前端"AI 生成"按钮置灰提示"即将支持"），接入时只改这个函数即可。
-    """
-    return {"analysis_note": "", "paper_note": ""}
+    return generate_text(calc_description, expected_results, task_result,
+                         owner=owner, connection_id=connection_id, control=control)
 
 
 #: 注解的「类型级」落点（用户 2026-10-13 口径）：markdown 标题 → 注解 key。
@@ -1627,6 +1643,12 @@ def attach_report_notes(report: Dict[str, Any], report_id: str) -> Dict[str, Any
     except Exception:  # noqa: BLE001 - 读注解失败不影响报告本体
         notes = {}
     report["notes"] = notes or {}
+    # 陈旧检测只读当前项目描述和报告快照；失败不影响普通报告。
+    try:
+        from report_ai_notes import annotate_staleness
+        annotate_staleness(report, notes)
+    except Exception:
+        pass
     science = report.get("science") or {}
     blocks: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -1635,6 +1657,7 @@ def attach_report_notes(report: Dict[str, Any], report_id: str) -> Dict[str, Any
             "label": label,
             "analysis_note": str((note or {}).get("analysis_note") or ""),
             "paper_note": str((note or {}).get("paper_note") or ""),
+            "stale": bool((note or {}).get("stale")),
         }
 
     def _apply(target: Dict[str, Any], key: str) -> Dict[str, Any]:

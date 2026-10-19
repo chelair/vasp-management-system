@@ -14,9 +14,14 @@
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 SCHEMA_CHANGELOG: List[Dict[str, str]] = [
+    {
+        "version": "1.2.0",
+        "date": "2026-10-19",
+        "changes": "R1：任务快照增加 INCAR/KPOINTS、参数来源、精度/巡检状态/时间和组归属；注解增加来源、模型、生成时间、指纹、修订与单次恢复信息。原章节布局及既有字段兼容。",
+    },
     {
         "version": "1.1.0",
         "date": "2026-09-13",

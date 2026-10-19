@@ -245,8 +245,12 @@ def _inline(text: str) -> str:
                 f'data-fe-index="{html_lib.escape(index, quote=True)}" '
                 f'data-note-task="{html_lib.escape(task_id, quote=True)}">{label}</button>'
             )
-        safe = href if not href.lower().startswith(("javascript:", "data:")) else "#"
-        return f'<a href="{safe}">{label}</a>'
+        raw = html_lib.unescape(href).strip()
+        allowed = bool(re.match(r"^(https?:|mailto:|#|/)", raw, re.I)) or not re.search(r"[:\\]", raw)
+        if re.search(r"[\x00-\x20]", raw):
+            allowed = False
+        safe = html_lib.escape(raw if allowed else "#", quote=True)
+        return f'<a href="{safe}" rel="noreferrer">{label}</a>'
 
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, out)
 
@@ -769,6 +773,7 @@ def notes_panel(entries: List[Dict[str, Any]], *, title: str = "结果分析与�
         paper = (entry.get("paper_note") or "").strip()
         blocks.append(
             head
+            + ('<p class="notes-label">分析可能过期：报告证据或项目描述已变化，请核对。</p>' if entry.get("stale") else "")
             + (
                 f'<p class="notes-label">结果分析描述</p>{_notes_body(analysis)}'
                 if analysis

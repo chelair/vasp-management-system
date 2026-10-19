@@ -101,6 +101,7 @@ def map_project(
         # 报告辅助字段（2026-10-12）：计算内容描述 / 预期结果
         "calc_description": _str(project.get("calc_description"), ""),
         "expected_results": _str(project.get("expected_results"), ""),
+        "ai_report_notes_enabled": project.get("ai_report_notes_enabled") is True,
         "workload": _str(project.get("workload"), "small"),
         # 优先级（算出来的，只读展示）：urgent/not_urgent × large/small
         "urgency": _str(project.get("urgency"), ""),

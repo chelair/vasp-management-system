@@ -10,6 +10,8 @@
 """
 
 import base64
+import hashlib
+from functools import wraps
 import json
 import os
 import re
@@ -39,6 +41,20 @@ INDEX_FILE = REPORTS_DIR / "index.json"
 NOTES_DIR = REPORTS_DIR / "notes"
 _lock = threading.Lock()
 _notes_lock = threading.RLock()
+
+
+def serialized_notes(func):
+    """单服务内报告替换与注解读改写共用锁（不在模型请求期间持有）。"""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with _notes_lock:
+            return func(*args, **kwargs)
+    return wrapped
+
+
+def note_revision(note: dict | None) -> str:
+    value = {k: v for k, v in (note or {}).items() if k not in ("stale", "stale_reason", "revision")}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def _remap_hidden_figures(old_doc: Dict[str, Any], new_doc: Dict[str, Any], hidden: List[str]) -> List[str]:
@@ -120,7 +136,8 @@ def save_edits(
     }
 
 
-def read_notes(report_id: str) -> Dict[str, Dict[str, str]]:
+@serialized_notes
+def read_notes(report_id: str) -> Dict[str, Dict[str, Any]]:
     """读一份报告的全部注解：`{key: {analysis_note, paper_note, updated_at}}`（缺文件=空）。
 
     key 是 `task_id`（任务级）或 `section_<章节key>`（模块级）。读坏当空，不抛错。
@@ -134,7 +151,7 @@ def read_notes(report_id: str) -> Dict[str, Dict[str, str]]:
         return {}
     if not isinstance(data, dict):
         return {}
-    out: Dict[str, Dict[str, str]] = {}
+    out: Dict[str, Dict[str, Any]] = {}
     for key, value in data.items():
         if not isinstance(value, dict):
             continue
@@ -143,22 +160,34 @@ def read_notes(report_id: str) -> Dict[str, Dict[str, str]]:
             "paper_note": str(value.get("paper_note") or ""),
             "updated_at": str(value.get("updated_at") or ""),
         }
+        for field in ("source", "model", "generated_at", "input_fingerprint", "generation_status",
+                      "ai_origin", "previous_note"):
+            if field in value:
+                out[str(key)][field] = value[field]
+        out[str(key)]["revision"] = note_revision(out[str(key)])
     return out
 
 
+@serialized_notes
 def save_note(
-    report_id: str, key: str, analysis_note: str, paper_note: str
-) -> Dict[str, Dict[str, str]]:
+    report_id: str, key: str, analysis_note: str, paper_note: str, *,
+    metadata: dict | None = None, expected_revision: str | None = None,
+) -> Dict[str, Dict[str, Any]]:
     """写一条注解（按 key 覆盖），返回整份注解。key 为空/超长直接拒绝。"""
     clean = str(key or "").strip()
     if not clean or len(clean) > 200:
         raise ValueError("key 不能为空且长度不超过 200")
     notes = read_notes(report_id)
+    if expected_revision is not None and note_revision(notes.get(clean)) != expected_revision:
+        raise ValueError("注解已被其他操作修改，请刷新后核对；草稿未保存")
     entry = {
         "analysis_note": str(analysis_note or ""),
         "paper_note": str(paper_note or ""),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "source": "manual",
     }
+    if metadata:
+        entry.update(metadata)
     if not entry["analysis_note"] and not entry["paper_note"]:
         notes.pop(clean, None)  # 两条都清空 = 删除该条
     else:
@@ -167,9 +196,10 @@ def save_note(
     path = _notes_path(report_id)
     tmp = path.with_name(path.name + ".tmp")
     with _notes_lock:
-        tmp.write_text(json.dumps(notes, ensure_ascii=False, indent=1), encoding="utf-8")
+        stored = {key: {k: v for k, v in value.items() if k != "revision"} for key, value in notes.items()}
+        tmp.write_text(json.dumps(stored, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, path)
-    return notes
+    return read_notes(report_id)
 
 
 def _ensure_dirs() -> None:
@@ -219,6 +249,7 @@ def report_dir(report_id: str) -> Optional[Path]:
     return None
 
 
+@serialized_notes
 def save_report(
     doc: Dict[str, Any], markdown: str, charts: Dict[str, str]
 ) -> Dict[str, Any]:
@@ -355,6 +386,7 @@ def list_reports(project: Optional[str] = None) -> List[Dict[str, Any]]:
     return sorted(items, key=lambda i: str(i.get("generated_at") or ""), reverse=True)
 
 
+@serialized_notes
 def load_report(report_id: str) -> Tuple[Dict[str, Any], str, Optional[Path]]:
     """返回 (结构化数据, Markdown 文本, 报告目录)。"""
     directory = report_dir(report_id)

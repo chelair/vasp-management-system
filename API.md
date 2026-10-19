@@ -1,5 +1,7 @@
 # 接口文档（API.md）
 
+R1 报告 AI 注解（2026-10-19已部署）：原项目新增/更新支持 `ai_report_notes_enabled`（默认 false）；`GET /api/reports/project/{id}/notes/ai-status` 查询开关与目标，`POST .../notes/ai-preview` 接收 `{key, connection_id}`，仅返回草稿。复用发起用户私有工作台连接，不接收密钥、命令或前端自报科研结果。原 `PUT .../notes` 兼容人工编辑，可加 `draft_token` 保存经确认的草稿、`expected_revision` 防覆盖、`restore_previous=true` 恢复一次生成前保存文本。普通 `/generate` 不等待或调用模型。报告 schema 为1.2.0（兼容旧字段/布局），详细边界见 [R1 交接](./agent-upgrade/R1-report-notes.md)。
+
 v1.1.0参数证据补充（2026-10-19已部署）：已有`GET /api/jobs/tasks/{id}/input`增加`applied_history`，每个任务族最多5次实际上传/续算应用/成功提交的参数记录，草稿不计入；task context的input增加历史引用。
 
 AI工作区新增`get_task_parameter_history(task_id, record_id?, offset=0)`及`get_remote_task_evidence(task_id, evidence_token, reason, directories?)`。后者先用get_task_inspections取得token，由后端验证4小时时效、自动巡检参与范围、来源/参数缺口及任务目录边界；固定文件只读并合并LSF查询，不接收命令/任意路径、不触发巡检、不修改状态或文件。reason为stale_evidence/source_mismatch/missing_parameters；directories默认CURRENT，历史对比旧→新最多2个MAIN或已知conN。详情见`agent-upgrade/03-parameter-evidence.md`。

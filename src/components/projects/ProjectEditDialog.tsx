@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Input, message } from 'antd';
+import { Input, Switch, message } from 'antd';
 
 import { updateProject } from '../../api/projects';
 import type { Project } from '../../types';
@@ -34,6 +34,7 @@ export default function ProjectEditDialog({ open, project, onClose, onSaved }: P
   const [deadline, setDeadline] = useState('');
   const [calcDescription, setCalcDescription] = useState('');
   const [expectedResults, setExpectedResults] = useState('');
+  const [aiReportNotes, setAIReportNotes] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -42,6 +43,7 @@ export default function ProjectEditDialog({ open, project, onClose, onSaved }: P
     setDeadline(project.deadline ?? '');
     setCalcDescription(project.calc_description ?? '');
     setExpectedResults(project.expected_results ?? '');
+    setAIReportNotes(project.ai_report_notes_enabled === true);
   }, [project, open]);
 
   useEffect(() => {
@@ -64,6 +66,7 @@ export default function ProjectEditDialog({ open, project, onClose, onSaved }: P
         deadline,
         calc_description: calcDescription,
         expected_results: expectedResults,
+        ai_report_notes_enabled: aiReportNotes,
       });
       message.success('项目已保存');
       onSaved?.(res.project);
@@ -138,6 +141,11 @@ export default function ProjectEditDialog({ open, project, onClose, onSaved }: P
             onChange={(e) => setExpectedResults(e.target.value)}
           />
         </label>
+        <div className="field">
+          <span>AI 报告撰写（默认关闭）</span>
+          <Switch checked={aiReportNotes} onChange={setAIReportNotes} aria-label="AI 报告撰写" />
+          <small>开启后可用自己的模型连接生成分析草稿；预览确认后保存。关闭保留已有注解。</small>
+        </div>
         <p className="hint">
           保存后立即写入 data/projects.json；报告生成时会带进「基本信息」章节
           （交付日期 {deadline || '—'}，保存时间以文件修改为准）。

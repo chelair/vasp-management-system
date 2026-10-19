@@ -5811,6 +5811,24 @@ dialog.outcar-tail-dialog .btn--primary:disabled {
   display: block;
 }
 
+.report-ai-controls {
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.report-ai-preview {
+  border: 1px solid #a9c8ff;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+
+@media print {
+  .report-ai-controls { display: none; }
+}
+
 /* ---------------- 报告注解（结果分析与论文参考）新交互：添加按钮 + 编辑/删除（2026-10-13） ---------------- */
 .note-add-row {
   display: flex;

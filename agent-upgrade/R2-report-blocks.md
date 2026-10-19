@@ -150,7 +150,7 @@ Evidence/Block/组合合同的实际定义与设计偏差：
 
 ```text
 交接日期 / agent：2026-10-20 / 临时代班（从其他 agents 接手）
-工作分支 / 基线提交 / 当前提交：main / 435140f / 见 R2-blocks-implementation.md §11（本地提交，未推送）
+工作分支 / 基线提交 / 当前提交：main / 435140f / dd807cf（本地提交，未推送）
 已完成的R2-A/B/C/D项：
   R2-A 完成 —— backend/report_blocks.py（14 类注册表、稳定 ID、全任务候选、来源/状态适配）
   R2-B 完成 —— backend/report_compositions.py + routers/report_compositions.py（冻结证据、组合 CRUD、HTML 导出）

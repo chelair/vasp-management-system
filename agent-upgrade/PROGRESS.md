@@ -212,4 +212,4 @@ OK
 - 新增测试 26 项：`tests/r2_fixtures.py`、`tests/test_report_blocks.py`（13）、`tests/test_report_compositions.py`（13）。实测：两套各 `OK`；既有回归 53 常规（7 skip 为隔离容器）+ 10/38/47/26/20 逐套件全 `OK`，**合计 220 项通过**（194 既有 + 26 新增）。
 - 未做：R2-C 前端编辑器/页面预览/浏览器与 PDF 回归；R2-D 余下 10 类（NEB/自由能/PDOS/Bader/功函数/差分/结构 3D）解析与渲染、旧隐藏 key 映射。R2-A 对这 10 类只给候选并标 `resolvable=false`，解析请求明确拒绝而不是伪造。
 - **未部署、未推送、未重启服务**：生产 `vasp-manager.service`、`dist/`、`data/` 均未变动；前端无改动。用户原有 `待办.md`、`问题.md` 删除保持未暂存。
-- 交接文档：`agent-upgrade/R2-blocks-implementation.md`（摘要 + 详细改动 + 坑 + 下一步）；`R2-report-blocks.md` 状态与 §7 已回填；`AGENTS.md` 当前任务/进度、`API.md` R2 章节已更新。下一条任务：**R2-C 前端组合编辑器 + 同一冻结证据预览**。
+- 交接文档：`agent-upgrade/R2-blocks-implementation.md`（摘要 + 详细改动 + 坑 + 下一步）；`R2-report-blocks.md` 状态与 §7 已回填；`AGENTS.md` 当前任务/进度、`API.md` R2 章节已更新。代码提交 `dd807cf`（本地 main，未推送）。下一条任务：**R2-C 前端组合编辑器 + 同一冻结证据预览**。

@@ -1,0 +1,44 @@
+// Existing AI React page -> real isolated chat/SSE -> R3/R2 -> edit/export/history.
+const {build}=require('esbuild');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'/tmp/vasp-report-debug/node_modules/playwright-core');
+const {spawn}=require('node:child_process');
+const http=require('node:http'),path=require('node:path'),fs=require('node:fs/promises'),os=require('node:os'),assert=require('node:assert/strict');
+(async()=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'vasp-r4-ui-'));let python,browser,server;
+ try{
+  const runtime=path.join(dir,'runtime.js');await build({entryPoints:['src/interactive/reportRuntime.ts'],bundle:true,minify:true,format:'iife',outfile:runtime});
+  const bundle=await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import {App} from 'antd';import {MemoryRouter} from 'react-router-dom';import AI from './src/pages/AI';createRoot(document.getElementById('root')).render(<App><MemoryRouter initialEntries={['/?conversation='+window.CONVERSATION]}><AI/></MemoryRouter></App>);`,loader:'tsx',resolveDir:path.resolve('.')},bundle:true,write:false,outfile:path.join(dir,'app.js'),jsx:'automatic',define:{'process.env.NODE_ENV':'"development"'}});
+  python=spawn('.venv/bin/python',['tests/r4_server.py',runtime],{stdio:['ignore','pipe','pipe']});let stderr='';python.stderr.on('data',v=>stderr+=v);
+  const fixture=await new Promise((resolve,reject)=>{let out='';const timer=setTimeout(()=>reject(Error(stderr)),15000);python.on('exit',code=>{clearTimeout(timer);reject(Error(code+' '+stderr));});python.stdout.on('data',v=>{out+=v;if(out.includes('\n')){clearTimeout(timer);resolve(JSON.parse(out.split('\n')[0]));}});});
+  const api=async(s,method='GET',body)=>{const r=await fetch(`http://127.0.0.1:${fixture.port}/api`+s,{method,headers:{Authorization:'Bearer '+fixture.token,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});const data=await r.json();assert.equal(r.status,200,JSON.stringify(data));return data.data;};
+  server=http.createServer((req,res)=>{
+   if(req.url.startsWith('/api/')){const p=http.request(`http://127.0.0.1:${fixture.port}`+req.url,{method:req.method,headers:req.headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res);});p.on('error',e=>{res.writeHead(502);res.end(e.message);});req.pipe(p);return;}
+   const asset=['/app.js','/app.css'].includes(req.url)?req.url.slice(1):null;if(asset){res.setHeader('Content-Type',asset.endsWith('.js')?'text/javascript':'text/css');return res.end(bundle.outputFiles.find(f=>f.path.endsWith(asset)).text);}
+   const key=new URL(req.url,'http://local').searchParams.get('scenario')||'full';res.setHeader('Content-Type','text/html');res.end(`<link rel="stylesheet" href="/app.css"><div id="root"></div><script>window.CONVERSATION=${JSON.stringify(fixture.conversations[key])};localStorage.setItem('vasp.auth.token',${JSON.stringify(fixture.token)})</script><script src="/app.js"></script>`);
+  });await new Promise(r=>server.listen(0,'127.0.0.1',r));const url=`http://127.0.0.1:${server.address().port}`;
+  browser=await chromium.launch({executablePath:'/opt/microsoft/msedge/msedge',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});const page=await browser.newPage({viewport:{width:1700,height:1100},acceptDownloads:true});page.setDefaultTimeout(15000);const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  async function generate(scenario='full',question='比较 LMR 和 LIC@LMR 的氧空位形成能，生成一份科研报告。'){
+   await page.goto(url+'/?scenario='+scenario);const composer=page.getByRole('textbox',{name:'输入 AI 对话消息',exact:true});await composer.fill(question);await composer.press('Enter');
+   await page.getByText('已根据科学数据检查生成独立专题报告。',{exact:false}).first().waitFor();await page.getByRole('button',{name:'打开专题报告',exact:true}).first().click();await page.getByRole('textbox',{name:'专题报告标题',exact:true}).waitFor();
+   const items=await api('/reports/topic?conversation_id='+fixture.conversations[scenario]);return await api('/reports/topic/'+items.items[0].topic_id);
+  }
+  let doc=await generate();const id=doc.topic_id,science=JSON.stringify(doc.data);assert.deepEqual(doc.data.science.results.map(r=>r.value),[3,4,1]);
+  const controls=page.locator('[data-topic-block]');const evidence=doc.blocks.find(b=>b.origin==='r2'&&b.section==='results');const card=page.locator(`[data-topic-block="${evidence.block_id}"]`);
+  await card.getByRole('textbox',{name:'元素标题',exact:true}).fill('用于删除的证据');await card.getByRole('button',{name:'删除专题元素',exact:true}).click();
+  const lastEvidence=doc.blocks.filter(b=>b.origin==='r2'&&b.section==='results').at(-1);await page.locator(`[data-topic-block="${lastEvidence.block_id}"]`).getByRole('button',{name:'上移专题元素',exact:true}).click();
+  await page.getByRole('textbox',{name:'专题报告标题',exact:true}).fill('编辑后的氧空位专题');await page.getByRole('textbox',{name:'专题段落文字',exact:true}).fill('人工编辑的解释 [[F01]]；仍保留科学局限。');
+  assert.equal(await page.getByRole('button',{name:'下载 HTML',exact:true}).isDisabled(),true);
+  const save=async()=>{await page.getByRole('button',{name:'保存专题科研报告',exact:true}).click();await page.getByRole('button',{name:'下载 HTML',exact:true}).waitFor();await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='下载 HTML')?.disabled);};await save();
+  doc=await api('/reports/topic/'+id);assert.equal(JSON.stringify(doc.data),science);assert.deepEqual(doc.deleted_block_ids,[evidence.block_id]);assert.equal(doc.title,'编辑后的氧空位专题');assert.equal(doc.narratives[Object.keys(doc.narratives)[0]].user_text,'人工编辑的解释 [[F01]]；仍保留科学局限。');
+  assert.deepEqual(await controls.evaluateAll(nodes=>nodes.map(n=>n.getAttribute('data-topic-block'))),doc.blocks.map(b=>b.block_id));
+  let download=page.waitForEvent('download');await page.getByRole('button',{name:'下载 HTML',exact:true}).click();const file=await download;const html=await fs.readFile(await file.path(),'utf8');assert.ok(html.includes('人工编辑的解释'));assert.ok(!html.includes('用于删除的证据'));assert.ok(html.includes('3.0 eV'));
+  const frame=page.frameLocator('iframe[title="专题科研报告预览"]');await frame.getByText('人工编辑的解释',{exact:false}).waitFor();
+  const printResponse=page.waitForResponse(r=>r.url().includes('/export.html?print=true'));await page.getByRole('button',{name:'PDF 打印',exact:true}).click();assert.equal((await printResponse).status(),200);
+  const exportPage=await browser.newPage();await exportPage.setContent(html,{waitUntil:'domcontentloaded'});const pdf=await exportPage.pdf();assert.ok(pdf.length>1000);assert.equal(pdf.subarray(0,4).toString(),'%PDF');await exportPage.close();
+  await page.getByRole('button',{name:'重新生成本段',exact:true}).click();await page.waitForFunction(()=>document.querySelector('textarea[aria-label="专题段落文字"]')?.value.includes('重新组织')); doc=await api('/reports/topic/'+id);assert.equal(JSON.stringify(doc.data),science);assert.equal(doc.narratives[Object.keys(doc.narratives)[0]].user_text,null);
+  await page.goto(url);await page.getByRole('button',{name:'打开专题报告',exact:true}).first().click();await page.getByRole('textbox',{name:'专题报告标题',exact:true}).waitFor();assert.equal(await page.getByRole('textbox',{name:'专题报告标题',exact:true}).inputValue(),'编辑后的氧空位专题');assert.equal(await page.getByRole('button',{name:'恢复专题元素',exact:true}).count(),1);
+  const multi=await generate('multi');assert.equal(multi.data.science.results.length,0);const select=page.getByRole('combobox',{name:'LMR-氧位点',exact:true});await select.click();await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').first().click();await page.getByRole('button',{name:'应用明确选择',exact:true}).click();await page.getByText('已检查数据',{exact:true}).waitFor();const resolved=await api('/reports/topic/'+multi.topic_id);assert.equal(resolved.data.science.results.length,1);assert.equal(resolved.stage,'prepared');
+  const dos=await generate('dos','比较 Electronic 的 DOS，生成一份科研报告。');assert.ok(dos.selections.some(s=>dos.data.candidates.find(c=>c.block_id===s.block_id)?.type==='ele.pdos'));await page.frameLocator('iframe[title="专题科研报告预览"]').locator('[data-report-widget="pdos-chart"][data-mounted="1"]').waitFor();
+  assert.deepEqual(errors,[]);console.log('PASS R4 browser: existing AI chat/SSE, complete values, edit/delete/reorder/save/reopen, HTML/PDF, private paragraph regeneration, explicit multi-site choice, relevant DOS; zero page errors');
+ }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));python?.kill();await fs.rm(dir,{recursive:true,force:true});}
+})().catch(e=>{console.error(e);process.exitCode=1;});

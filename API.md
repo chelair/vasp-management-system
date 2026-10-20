@@ -1,5 +1,29 @@
 # 接口文档（API.md）
 
+## R4 专题报告（本地完成，未部署）
+
+复用原 `/api/ai/chat` 会话、连接凭据与SSE。项目会话启用原工作区后增加6个受限工具：`list_topic_projects`、`prepare_topic_report`、`plan_topic_report`、`write_topic_draft`、`save_topic_report`、`get_topic_report`；已有 `get_property_recipes` 提供配方定义。工具只保存专题文档，不新增计算/SSH/输入操作。
+
+新增人工登录用户接口 `/api/reports/topic`；每次读/编辑/导出重新检查报告所有者及全部项目权限，Agent不能使用。完整协议与限制见 [R4](agent-upgrade/R4-topic-reports.md)。
+
+| 方法与相对路径 | 用途 |
+| --- | --- |
+| GET 空路径 `?conversation_id=...` | 当前用户报告目录，可按原对话筛选 |
+| POST `/prepare` | `{conversation_id, question, request, project_ids?}`；先冻结R3/R2证据，独立ID |
+| GET `/{id}?revision=...` | 最新或历史冻结版本；附当前新鲜度提示 |
+| POST `/{id}/plan` | `{expected_revision,title?,sections?,selections}`；验证block_id/来源/相关性/可用性 |
+| POST `/{id}/draft` | `{expected_revision,paragraphs:[{section,title,text,kind}]}`；必须先有计划 |
+| PUT `/{id}` | 展示编辑：`expected_revision,title?,sections?,blocks?,hidden_block_ids?,deleted_block_ids?` |
+| POST `/{id}/save` | `{expected_revision}`；草案标为保存，不覆盖完整报告 |
+| POST `/{id}/resolve` | `{expected_revision,targets?,reference_report_id?,common_oxygen_reference?}`；显式选择产生新版本 |
+| POST `/{id}/regenerate` | `{expected_revision,block_id,connection_id}`；私有连接重写单段，失败原子保留 |
+| POST `/{id}/preview` | 空对象；预览已保存的冻结展示版本 |
+| GET `/{id}/export.html?print=false` | 自包含HTML；`print=true`为PDF打印入口 |
+
+`request` 支持R3的5种配方与`dos.comparison`（仅已有DOS/PDOS可视化，不新增派生公式）、1至4个`model_queries`、可选精确`targets`/已有人工氧参考报告ID。未知性质返回UNSUPPORTED缺口报告。模型不得提供mu_O数值、自定义公式、能量替代值或文件路径。多位点/多参考态保留候选；`common_oxygen_reference`在没有人工参考时仅形成待确认条件。
+
+文字中 `[[F01]]` 由Python展开为冻结事实的值/单位/状态；`[F01]` 为引用。拒绝自行填写数字、替代公式、无效事实引用和自定义HTML组件。AI原文与用户文字分离，PUT不能写`data`、Evidence、renderer或科学结果。冲突409附`current_revision`；无效400、不可访问/不存在403或404。所有报告响应禁止缓存。
+
 ## R3 科学性质（v1.1.3已部署）
 
 新增 `/api/properties/recipes`、`GET /discover`、`POST /evaluate`、`GET /reports/{report_id}`。五类固定PropertyRecipe、七类输入状态、跨项目逐项权限、同次观测来源/时效检查与Python确定性计算。未知性质UNSUPPORTED；不接受自定义公式或替代能量。氧空位必须验证中性、单O差异/位点及理论设置；缺mu_O不出绝对值，明确共同参考时可计算B−A。人工mu_O必须给每O数值、来源和条件；聊天工具不能设置该数值。

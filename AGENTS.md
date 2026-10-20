@@ -2,7 +2,7 @@
 
 ## 当前接手任务（优先于下文历史阶段任务，2026-10-20）
 
-- **当前R4开发**：用户要求复用AI工作台/R2/R3生成可编辑、独立保存/导出topic报告。R3发布后在 `/home/zouyuxi/projects/vasp-manager-r4` 隔离Git工作树、分支 `codex/r4-topic-reports` 开发；不改生产代码/数据，不部署R4。合同进展见R4文档（创建后）。
+- **R4本地完成、隔离验收通过，未部署/未推送**：用户要求复用AI工作台/R2/R3生成可编辑、独立保存/导出topic报告。R3发布后在 `/home/zouyuxi/projects/vasp-manager-r4` 隔离Git工作树、分支 `codex/r4-topic-reports` 开发；不改生产代码/数据，不部署R4。交付与实际验收见 `agent-upgrade/R4-topic-reports.md` 及PROGRESS §24；按用户要求完成后停止。
 
 - **R3已完成本地实现与隔离验收（v1.1.3已于16:35部署）**：科学性质注册、只读发现/精确观测绑定、Python验证运算、冻结需求报告、报告页“科学性质”面板及3个项目内AI工具。主验收为中性单O空位；其余4类配方也有合成数值测试。35项专项、既有回归、R3/R2浏览器、typecheck和/tmp构建通过。合同/限制见 `agent-upgrade/R3-properties.md`，实际结果见PROGRESS §22。用户另授权R4开发，R3发布后在独立目录开展；R4完成后不自动部署。
 

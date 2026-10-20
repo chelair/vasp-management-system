@@ -6,6 +6,8 @@ import PageHeader from '../components/common/PageHeader';
 import ConnectionSettings from '../components/ai/ConnectionSettings';
 import StreamingAnswer from '../components/ai/StreamingAnswer';
 import WorkspacePanel from '../components/ai/WorkspacePanel';
+import TopicReportLinks from '../components/ai/TopicReportLinks';
+import TopicReportEditor from '../components/reports/TopicReportEditor';
 import {
   createAIConversation, deleteAIConversation, getAIContext, getAIConversation, getAIRun,
   isActiveRun, listAIConnections, listAIConversations, listAITargets, sendAIMessage,
@@ -46,6 +48,8 @@ export default function AI() {
   const [editOpen, setEditOpen] = useState(false);
   const [inspecting, setInspecting] = useState<AIRun | null>(null);
   const [streamRevision, setStreamRevision] = useState(0);
+  const [topicId,setTopicId] = useState<string>();
+  const [topicRevision,setTopicRevision] = useState(0);
   const [form] = Form.useForm<{ title: string; prompt: string; workspace_enabled: boolean }>();
   const messagesRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
@@ -74,7 +78,7 @@ export default function AI() {
     let cancelled = false;
     freshRuns.current.clear();
     setDetail(null); setContext(null); setError(''); setDraft(selected ? drafts.current[selected] ?? '' : '');
-    setEditOpen(false); setInspecting(null);
+    setEditOpen(false); setInspecting(null); setTopicId(undefined);
     autoScroll.current = true;
     if (!selected) { setLoading(false); return; }
     setLoading(true);
@@ -185,7 +189,8 @@ export default function AI() {
 
 
   return <div className="ai-page">
-    <PageHeader title="AI 工作台" subtitle="按项目附加上下文 · 基于本地计算记录分析" extra={<Button icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button>} />
+    {topicId&&<TopicReportEditor key={topicId} topicId={topicId} connectionId={detail?.connection_id} onClose={()=>setTopicId(undefined)} onSaved={()=>setTopicRevision(r=>r+1)}/>}
+      <PageHeader title="AI 工作台" subtitle="按项目附加上下文 · 基于本地计算记录分析" extra={<Button icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button>} />
     {!connections.length && !loading && <Alert type="info" showIcon message="先配置模型接口，再开始对话" action={<Button size="small" onClick={() => setSettingsOpen(true)}>配置连接</Button>} />}
     {error && <Alert type="warning" closable onClose={() => setError('')} message={error} action={active ? <Button size="small" onClick={() => setStreamRevision((n) => n + 1)}>重新连接</Button> : undefined} />}
     <div className="ai-workspace">
@@ -232,7 +237,7 @@ export default function AI() {
               catch (e) { void message.error(errorText(e)); }
             }}>加载更早的消息</Button>}
             {!detail.messages.length && <div className="ai-welcome"><h2>从一个具体问题开始</h2><p>{detail.project_id ? '每次发问会附加整个项目的目标、预期、任务状态与结果摘要。' : '这里可以讨论研究思路和计算计划。选择项目后可创建带项目上下文的会话。'}</p>
-              {['帮我梳理整个项目的结果与缺失信息', '对比已有结果与预期，提出下一步验证计划'].map((text) => <Button key={text} onClick={() => { setDraft(text); drafts.current[detail.id] = text; }}>{text}</Button>)}</div>}
+              {['帮我梳理整个项目的结果与缺失信息', '对比已有结果与预期，提出下一步验证计划', '比较两个模型的科学性质，生成专题科研报告'].map((text) => <Button key={text} onClick={() => { setDraft(text); drafts.current[detail.id] = text; }}>{text}</Button>)}</div>}
             {detail.messages.map((item) => {
               const run = detail.runs.find((r) => r.message_id === item.id);
               return <article key={item.id} className={`ai-message ai-message--${item.role}`}>
@@ -267,6 +272,7 @@ export default function AI() {
       <aside className="ai-context"><div className="ai-context-header"><strong>项目上下文</strong><Button size="small" icon={<ReloadOutlined />} disabled={!selected} onClick={() => { void refreshContext(); }}>刷新</Button></div>
         {context ? <><p className="ai-muted">本地快照 · {show(context.generated_at).replace('T', ' ').slice(0, 19)}</p>
           <Tabs size="small" items={[
+            ...(detail?.project_id ? [{key:'topics',label:'专题报告',children:<TopicReportLinks conversationId={detail.id} runs={detail.runs} onOpen={setTopicId} revision={topicRevision}/>}]:[]),
             ...(detail?.project_id ? [{ key: 'workspace', label: '工作区', children: <WorkspacePanel key={detail.id} conversationId={detail.id} runs={detail.runs} enabled={!!detail.workspace_enabled} /> }] : []),
             { key: 'info', label: '基本信息', children: detail?.project_id ? <>
               <Descriptions column={1} size="small" items={[

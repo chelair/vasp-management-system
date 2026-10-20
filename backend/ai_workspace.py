@@ -266,7 +266,9 @@ def remove_work(project: dict, conversation: dict):
 
 from property_tools import TOOLS as PROPERTY_TOOLS
 
-TOOLS = PROPERTY_TOOLS + [
+from topic_tools import TOOLS as TOPIC_TOOLS
+
+TOOLS = TOPIC_TOOLS + PROPERTY_TOOLS + [
     {'type':'function','function':{'name':'get_task_parameter_history','description':'查询当前任务最近5次实际上传/续算应用/成功提交的参数记录（不含草稿），可见具体旧值/新值、con目录和作业号；record_id分页读取实际参数快照。',
         'parameters':{'type':'object','properties':{'task_id':{'type':'string'},'record_id':{'type':'string'},'offset':{'type':'integer','minimum':0}},'required':['task_id'],'additionalProperties':False}}},
     {'type':'function','function':{'name':'get_remote_task_evidence','description':'独立按需远端只读补证。先get_task_inspections取得evidence_token并检查来源/时效；参与自动巡检且超过4小时、来源不符，或参数证据缺失时使用。只读固定输入和日志并核对LSF，不执行命令、不修改文件/状态、不触发巡检。历史对比directories按旧→新给定已知conN，最多2个；默认CURRENT。',
@@ -289,9 +291,12 @@ TOOLS = PROPERTY_TOOLS + [
 ]
 
 
-def dispatch(project: dict, conversation: dict, context: dict, name: str, arguments: dict, *, user=None) -> dict:
+def dispatch(project: dict, conversation: dict, context: dict, name: str, arguments: dict, *, user=None, run_id='') -> dict:
     if name not in {tool["function"]["name"] for tool in TOOLS} or not isinstance(arguments, dict):
         raise ValueError("不支持的工作区工具")
+    if name in {tool['function']['name'] for tool in TOPIC_TOOLS}:
+        from topic_tools import dispatch as topic_dispatch
+        return topic_dispatch(user,conversation,run_id,name,arguments)
     if name in {tool['function']['name'] for tool in PROPERTY_TOOLS}:
         from property_tools import dispatch as property_dispatch
         return property_dispatch(project,user,name,arguments)

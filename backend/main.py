@@ -32,6 +32,7 @@ from routers import (
     project_reports,
     properties as properties_router,
     report_compositions,
+    topic_reports as topic_reports_router,
     projects,
     reports,
     settings,
@@ -209,6 +210,7 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(project_reports.router, prefix="/api")
 app.include_router(report_compositions.router, prefix="/api")
+app.include_router(topic_reports_router.router, prefix="/api")
 app.include_router(properties_router.router, prefix="/api")
 app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")

@@ -835,7 +835,11 @@ export default function Jobs() {
       await refreshProjects();
     } catch (err) {
       const reason = err instanceof Error ? err.message : '提交作业失败';
-      if (reason.includes('原作业无法在LSF确认结束')) setPriorJobTask(task);
+      if (reason.includes('仍有活跃作业')) {
+        // 后端已把任务同步回运行中；刷新后提交置灰、停止可点。
+        await refreshProjects();
+        message.warning(reason);
+      } else if (reason.includes('原作业无法在LSF确认结束')) setPriorJobTask(task);
       else if (reason.includes('请先对账') || reason.includes('未对账动作')) {
         modal.confirm({
           title: '提交记录需要对账', content: reason, okText: '核对作业状态', cancelText: '关闭',

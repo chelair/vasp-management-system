@@ -748,6 +748,33 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertIn('POSCAR', neb)
         self.assertIn('IMAGES', neb)
 
+    def test_submit_check_syncs_task_back_to_running(self):
+        record = self.execute()
+        db = self.storage.load_db()
+        task = db['projects'][0]['tasks'][0]
+        task['status'] = 'pending'
+        task['job_id'] = None
+        self.storage.save_db(db, backup=False)
+        project, current = self.gateway.actions.load_task('t1')
+        rows = self._terminal_rows(record, 'RUN')
+        with self.assertRaisesRegex(ValueError, '仍有活跃作业'):
+            self.gateway.check_idle_or_sync(project, current, record['plan']['work_dir'], rows)
+        current = self.storage.load_db()['projects'][0]['tasks'][0]
+        # 同目录作业还在跑：本地状态同步回运行中，前端提交置灰、停止可点。
+        self.assertEqual(current['status'], 'running')
+        self.assertEqual(current['job_id'], record['job_id'])
+        # PEND 同步为排队中
+        db = self.storage.load_db()
+        c = db['projects'][0]['tasks'][0]
+        c['status'] = 'pending'
+        c['job_id'] = None
+        self.storage.save_db(db, backup=False)
+        project, current = self.gateway.actions.load_task('t1')
+        with self.assertRaisesRegex(ValueError, '仍有活跃作业'):
+            self.gateway.check_idle_or_sync(project, current, record['plan']['work_dir'],
+                                            self._terminal_rows(record, 'PEND'))
+        self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['status'], 'queued')
+
     def test_bkill_result_confirms_stop_before_lsf_terminal(self):
         record = self.execute()
         job_id = record['job_id']

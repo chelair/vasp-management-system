@@ -234,6 +234,53 @@ def assert_remote_idle(project, task, directory, rows, *, allow_unconfirmed=Fals
             )
 
 
+def active_job_in(directory, rows):
+    """返回目标目录（精确匹配）里的活跃作业行；没有就返回 None。"""
+    target = str(directory or '').rstrip('/')
+    for row in rows:
+        if row['state'] in unknown.TERMINAL:
+            continue
+        cwd = str(row.get('directory') or '').rstrip('/')
+        if cwd and cwd == target:
+            return row
+    return None
+
+
+def sync_running_from_lsf(project, task, row):
+    """提交前发现同目录仍有活跃作业：把本地任务同步回运行中，界面即可禁止再次提交。
+
+    作业号按任务族登记在主任务上（与提交/对账同一口径）。
+    """
+    owner_id = family_id(task['task_id'])
+    status = 'queued' if row['state'] == 'PEND' else 'running'
+    with db_transaction() as db:
+        current = next(t for p in db['projects'] if p['name'] == project['name']
+                       for t in p['tasks'] if t['task_id'] == owner_id)
+        if current.get('status') == 'archived':
+            return False
+        update_task_status(db, project['name'], owner_id, status,
+                           {'job_id': str(row['job_id']), 'stop_requested_at': None, 'stop_requested_job_id': None})
+    return True
+
+
+def check_idle_or_sync(project, task, directory, rows):
+    """提交前的目录互斥检查；命中活跃作业时先同步本地状态，再拒绝提交。"""
+    row = active_job_in(directory, rows)
+    if row is None:
+        return
+    synced = False
+    try:
+        synced = sync_running_from_lsf(project, task, row)
+    except Exception:  # noqa: BLE001 - 同步失败不改变拒绝提交的事实
+        synced = False
+    state = '排队中' if row['state'] == 'PEND' else '运行中'
+    raise ValueError(
+        f"目录 {str(directory or '').rstrip('/')} 仍有活跃作业（{row['job_id']} {row['state']}）"
+        + (f"，已把任务同步为{state}" if synced else '')
+        + '；请先停止作业再提交'
+    )
+
+
 def prior_job_review(user, task_id):
     project, task = actions.load_task(task_id)
     permissions.ensure_project_owner(project, user)
@@ -362,7 +409,7 @@ def execute(*, user, session, grant_id, action, task_id, idempotency_key, params
         plan = snapshot_plan(project, planning_task)
         rows = unknown.jobs(project['server'])
         directory = plan['work_dir']
-        assert_remote_idle(project, task, directory, rows)
+        check_idle_or_sync(project, task, directory, rows)
         resources = budget.parse_lsf(plan['script_text']) if submitting else None
         with ledger.transaction() as doc:
             actor = live_actor(user, session)
@@ -456,7 +503,7 @@ def safe_submit(project, task, *, dry_run=False):
             if store.load_settings().get('dry_run', False):
                 raise ValueError('全局dry_run已开启')
         else:
-            assert_remote_idle(project, task, plan['work_dir'], unknown.jobs(project['server']))
+            check_idle_or_sync(project, task, plan['work_dir'], unknown.jobs(project['server']))
     else:
         # 调用方已持有任务族锁；只读核实历史记录，不重放提交。
         reconcile(task_id=task['task_id'], _lock_held=True)
@@ -470,7 +517,7 @@ def safe_submit(project, task, *, dry_run=False):
         try:
             strict_audit(record, 'running', '提交前记录，防止响应丢失后重复提交')
             plan = snapshot_plan(project, task)
-            assert_remote_idle(project, task, plan['work_dir'], unknown.jobs(project['server']))
+            check_idle_or_sync(project, task, plan['work_dir'], unknown.jobs(project['server']))
         except Exception as exc:
             ledger.update(record['id'], status='failed', reservation=0, reason=str(exc))
             raise

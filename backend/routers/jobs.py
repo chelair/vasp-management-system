@@ -1611,29 +1611,19 @@ def _stop_task_locked(task_id: str):
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
         return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
 
+    # 用户口径：不轮询 LSF。bkill 的返回就是停止依据，直接刷新本地状态；
+    # 同目录并发仍由提交时的实时 bjobs 检查兜底。
     confirmed = False
     confirmed_by = ''
     sync_error = ''
-    from automation.gateway import confirm_killed, sync_stopped_job
-    # LSF 有时要几秒才把终态反映到 bjobs：先短轮询，能拿到终态就按原有证据链收尾。
-    for attempt in range(3):
-        try:
-            if sync_stopped_job(project, task):
-                confirmed, confirmed_by = True, 'lsf'
-                break
-        except Exception as exc:  # 查询/落库失败不能伪装已停止
-            sync_error = str(exc)
-        if attempt < 2:
-            time.sleep(0.8)
-    if not confirmed:
-        # 拿不到终态就用 bkill 的 killed 结果确认停止；同目录并发仍由实时 bjobs 拦截。
-        try:
-            confirmed_by = 'bkill'
-            confirmed = confirm_killed(project, task, str(job_id), raw)
-        except Exception as exc:
-            sync_error = str(exc)
+    from automation.gateway import confirm_killed
+    try:
+        confirmed_by = 'bkill'
+        confirmed = confirm_killed(project, task, str(job_id), raw)
+    except Exception as exc:  # 落库失败不能伪装已停止
+        sync_error = str(exc)
     _audit_log(project['name'], task_id, str(job_id), 'bkill',
-               (f'OK; {confirmed_by} 确认停止' if confirmed else 'ACCEPTED; 等待LSF结束确认') +
+               ('OK; bkill 确认停止' if confirmed else 'ACCEPTED; 本地状态更新失败') +
                (('; SYNC_WARN: ' + sync_error) if sync_error else ''))
     _, current_task = _resolve_task(task_id)
     return ok('作业已停止' if confirmed else '停止请求已发出，等待LSF结束确认；暂不可重新提交', {

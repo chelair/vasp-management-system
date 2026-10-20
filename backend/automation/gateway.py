@@ -670,8 +670,12 @@ def confirm_killed(project, task, job_id, raw=''):
     for record in ledger.read()['actions'].values():
         if (record['family_id'] == family and str(record.get('job_id') or '') == str(job_id)
                 and not record.get('job_finished')):
+            # 与 LSF 终态路径同一记账口径：释放预留，核时按最坏情况计入。
             ledger.update(record['id'], job_finished=True, scheduler_state='EXIT',
                           stop_confirmed_by='bkill', stop_requested_at=requested,
+                          reservation=0,
+                          consumed_core_hours=record.get('reservation', 0) + record.get('consumed_core_hours', 0),
+                          consumption_basis='reserved_upper_bound',
                           reason='bkill 已确认终止' + (f'：{raw[:200]}' if raw else ''))
     with db_transaction() as db:
         current = next(t for p in db['projects'] if p['name'] == project['name']

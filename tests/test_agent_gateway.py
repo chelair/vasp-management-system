@@ -668,15 +668,13 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
                                             self._terminal_rows(record, 'RUN'))
         self.assertEqual(self.hpc.submit_count(), 1)
 
-    def test_stop_query_failure_still_uses_bkill_result(self):
+    def test_stop_does_not_poll_lsf(self):
         record = self.execute()
-        with patch.object(self.jobs.ssh, 'run_remote', return_value={'exit_code': 0}), \
-             patch.object(self.unknown, 'jobs', side_effect=ValueError('SSH查询失败')):
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={'exit_code': 0, 'stdout': 'Job <230001> is being terminated'}), \
+             patch.object(self.unknown, 'jobs', side_effect=AssertionError('停止不应查询 LSF')):
             response = self.jobs.stop_task('t1')
-        # bkill 已返回 0：拿不到 bjobs 也按 killed 收尾；告警保留查询失败原因。
         self.assertFalse(response['data']['stop_pending'])
         self.assertEqual(response['data']['confirmed_by'], 'bkill')
-        self.assertIn('SSH', response['data']['sync_warning'])
         task = self.storage.load_db()['projects'][0]['tasks'][0]
         self.assertEqual(task['status'], 'pending')
         self.assertIsNone(task['job_id'])

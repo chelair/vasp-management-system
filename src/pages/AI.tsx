@@ -226,9 +226,7 @@ export default function AI() {
               catch (e) { void message.error(errorText(e)); }
               finally { setBusy(false); }
             }} />
-            {model&&<Select aria-label="当前模型思考深度" style={{width:'100%',marginTop:6}} value={model.effective_reasoning_effort} options={model.reasoning_capabilities.options} disabled={!!active||busy||model.reasoning_capabilities.options.length<2} onChange={async effort=>{
-              setBusy(true);try{await saveAIConnection({name:model.name,base_url:model.base_url,model:model.model,max_tokens:model.max_tokens,is_default:model.is_default,reasoning_api:model.reasoning_api,reasoning_effort:effort,thinking_mode:effort==='default'?'default':effort==='none'?'disabled':'enabled'},model.id);await reloadConnections();void message.success('已更新此连接的默认思考深度，后续请求生效');}catch(e){void message.error(errorText(e));}finally{setBusy(false);}
-            }}/>}
+
           </div>
           <div className="ai-messages" ref={messagesRef} onScroll={() => {
             const box = messagesRef.current; if (box) autoScroll.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100;
@@ -256,18 +254,21 @@ export default function AI() {
               </article>;
             })}
           </div>
-          {model&&<p className="ai-muted" style={{margin:'4px 16px'}}>思考深度：{model.reasoning_capabilities.options.find(o=>o.value===model.effective_reasoning_effort)?.label||model.effective_reasoning_effort} · 调整后作为此连接的默认设置，后续请求生效。</p>}
+
           {model&&detail.workspace_enabled&&(model.reasoning_capabilities.tool_policy==='unsupported'||model.reasoning_capabilities.tool_policy==='none_only'&&model.effective_reasoning_effort!=='none')&&<Alert type="warning" message={model.reasoning_capabilities.note}/>}
           <div className="ai-composer"><Input.TextArea aria-label="输入 AI 对话消息" value={draft} maxLength={16000} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="输入问题，Enter 发送，Shift + Enter 换行" disabled={busy}
             onChange={(e) => { setDraft(e.target.value); drafts.current[detail.id] = e.target.value; }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }} />
             <div className="ai-composer-footer"><span className="ai-muted">{detail.workspace_enabled ? '可读取项目文件、保存独立草稿 · 不执行计算操作' : '基于摘要对话分析 · 未启用文件工具'}</span><div className="ai-actions">
+              {!active && <Button icon={<ReloadOutlined />} disabled={busy || !model || !detail.messages.some((m) => m.role === 'user')} onClick={() => { void send(true); }}>重新生成</Button>}
+              {model&&<Select className="ai-reasoning-select" variant="borderless" aria-label="当前模型思考深度" value={model.effective_reasoning_effort} options={model.reasoning_capabilities.options.map(option=>({...option,label:`思考 · ${option.label}`}))} disabled={!!active||busy||model.reasoning_capabilities.options.length<2} onChange={async effort=>{
+              setBusy(true);try{await saveAIConnection({name:model.name,base_url:model.base_url,model:model.model,max_tokens:model.max_tokens,is_default:model.is_default,reasoning_api:model.reasoning_api,reasoning_effort:effort,thinking_mode:effort==='default'?'default':effort==='none'?'disabled':'enabled'},model.id);await reloadConnections();void message.success('已更新此连接的默认思考深度，后续请求生效');}catch(e){void message.error(errorText(e));}finally{setBusy(false);}
+            }}/>}
               {active ? <Button icon={<StopOutlined />} onClick={async () => {
                 const id = detail.id;
                 try { await stopAIRun(active.id); const result = await getAIConversation(id); if (selectedRef.current === id) setDetail(result); }
                 catch (e) { void message.error(errorText(e)); }
               }}>停止生成</Button> : <>
-                <Button icon={<ReloadOutlined />} disabled={busy || !model || !detail.messages.some((m) => m.role === 'user')} onClick={() => { void send(true); }}>重新生成</Button>
                 <Button type="primary" icon={<SendOutlined />} loading={busy} disabled={!draft.trim() || !model} onClick={() => { void send(); }}>发送</Button>
               </>}
             </div></div>

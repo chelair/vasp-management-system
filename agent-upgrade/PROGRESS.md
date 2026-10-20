@@ -414,4 +414,4 @@ OK
 - 必要验证：`tests/test_managed_plan.py` 18 项、`tests/test_managed_http.py` 5 项（真实 uvicorn/鉴权/403/409）、`tests/test_vasp_script.py` 7 项全部通过；受影响的 `test_ai_chat`（27）、`test_opt_loop`（47）、`test_properties`（35）、`test_topic_reports`（17）、`test_ai_inspections`（5）、`test_parameter_evidence`（26）、`test_automation_baseline`（10）通过；`npm run typecheck` 与隔离 Vite 构建（产物在 `/tmp`，生产 `dist/` 未动）通过；一条真实 Edge/React 浏览器验收通过（渲染计划→暂停/恢复→人工改优先级并锁定→资源建议提示模拟数据→脚本预览无方案提示）。
 - 修正一处既有测试：`tests/test_ai_chat.py` 的工具集快照漏了 §30/§31 已上线的 `create_topic_report/search_report_data/update_topic_report`（本轮之前就是红的），按当前工具集补齐并加入四个托管工具。
 - 未做（明确留待后续）：执行面接通（首发提交、续算、停止）、`opt_evidence` 运行中异常提前返回的修复、`budget.parse_lsf` 接受 `-wt/-wa`、多队列授权 schema、`max_steps` 与 repairs 分账、事件线程与模型解耦、旧自动化与托管的执行归属互斥、前端创建计划表单。
-- 说明与边界：隔离验证通过 ≠ 真实项目已验证。当前执行开关关闭、零授权，本初版不会自动提交任何作业。HTTP 用例第一次运行时夹具未隔离集群采集，触发过一次真实的**只读** bhosts/bqueues 采集（未写远端文件、未提交作业）；随后已改为固定空采集夹具，并在后续运行确认不再连接。未部署、未重启、未推送、未备份计算文件。
+- 说明与边界：隔离验证通过 ≠ 真实项目已验证。当前执行开关关闭、零授权，本初版不会自动提交任何作业。HTTP 用例第一次运行时夹具未隔离集群采集，触发过一次真实的**只读** bhosts/bqueues 采集（未写远端文件、未提交作业）；随后已改为固定空采集夹具，并在后续运行确认不再连接。未部署、未重启、未备份计算文件；已按用户确认提交并推送 main（34e3801）。

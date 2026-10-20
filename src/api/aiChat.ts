@@ -30,6 +30,8 @@ export interface AIRun {
   usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   snapshot?: Record<string, unknown>;
   tool_events: { id: string; name: string; arguments: Record<string, unknown>; result: Record<string, unknown>; status: string; at: string }[];
+  /** 可选展示：模型思考链路（服务商返回时才有，后端截断到 6 万字符） */
+  reasoning?: string;
 }
 export interface AIConversation {
   id: string; task_id: string | null; title: string; connection_id: string | null;

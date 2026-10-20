@@ -349,7 +349,9 @@ class AIChatTests(unittest.TestCase):
         _, run = self.send(conversation)
         self.assertEqual(self.wait_run(run)["status"], "completed")
         _, detail = self.api(f"/conversations/{conversation['id']}")
-        self.assertNotIn("PRIVATE_REASONING_TEST", json.dumps(detail))
+        # 思考链路只用于「可选展示」：存进本次 run、绝不回到消息正文和历史请求。
+        self.assertTrue(any("PRIVATE_REASONING_TEST" in (r.get("reasoning") or "") for r in detail["runs"]))
+        self.assertTrue(all("PRIVATE_REASONING_TEST" not in m["content"] for m in detail["messages"]))
         self.assertNotIn("reasoning_content", json.dumps(REQUESTS[-1]))
         self.assertEqual(detail["runs"][0]["usage"]["total_tokens"], 42)
 
@@ -386,7 +388,7 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(self.api('/connections/'+connection['id'],'PUT',body)[0],400)
         self.assertEqual(next(c for c in self.api('/connections')[1]['items'] if c['id']==connection['id'])['reasoning_effort'],'xhigh')
 
-    def test_deepseek_tools_honor_depth_but_reasoning_stays_ephemeral(self):
+    def test_deepseek_tools_honor_depth_and_reasoning_is_display_only(self):
         connection=self.connection('deepseek-workspace')
         body={k:connection[k] for k in ('name','base_url','model','max_tokens','is_default')}
         body.update(reasoning_api='deepseek',reasoning_effort='max')
@@ -399,9 +401,11 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(REQUESTS[-1]['thinking'],{'type':'enabled'})
         assistants=[m for m in REQUESTS[-1]['messages'] if m.get('tool_calls')]
         self.assertTrue(all(m['reasoning_content']=='PRIVATE_TOOL_REASONING' for m in assistants))
-        self.assertNotIn('PRIVATE_TOOL_REASONING',json.dumps(run))
+        self.assertIn('PRIVATE_TOOL_REASONING', run.get('reasoning') or '')
         _,detail=self.api('/conversations/'+run['conversation_id'])
-        self.assertNotIn('PRIVATE_TOOL_REASONING',json.dumps(detail))
+        # 展示用：只存在本次 run 里，不进入消息正文/历史请求。
+        self.assertTrue(all('PRIVATE_TOOL_REASONING' not in m['content'] for m in detail['messages']))
+        self.assertTrue(any('PRIVATE_TOOL_REASONING' in (r.get('reasoning') or '') for r in detail['runs']))
 
     def test_readonly_report_json_honors_depth_without_persisting_thoughts(self):
         import io
@@ -432,9 +436,15 @@ class AIChatTests(unittest.TestCase):
         _,connection=self.api('/connections/'+connection['id'],'PUT',body)
         conversation=self.conversation(connection,'task-alice')
         before=len(REQUESTS)
-        status,error=self.api('/conversations/'+conversation['id']+'/messages','POST',{'content':'研究项目','request_id':store.uid()})
-        self.assertEqual(status,400,error);self.assertIn('工作区',error['message'])
-        self.assertEqual(len(REQUESTS),before)
+        status,run=self.api('/conversations/'+conversation['id']+'/messages','POST',{'content':'研究项目','request_id':store.uid()})
+        # 工具是模型能力：不支持工具的型号降级为摘要回答，本轮不发送工具定义，而不是整次失败。
+        self.assertEqual(status,200,run)
+        result=self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        self.assertFalse(result['snapshot']['workspace_enabled'])
+        self.assertIn('tools_disabled_reason',result['snapshot'])
+        self.assertNotIn('tools',REQUESTS[-1])
+        self.assertEqual(len(REQUESTS),before+1)
 
     def test_deepseek_without_final_answer_explains_output_budget(self):
         conversation = self.conversation(self.connection("deepseek-only-thinking"))
@@ -442,7 +452,7 @@ class AIChatTests(unittest.TestCase):
         result = self.wait_run(run)
         self.assertEqual(result["status"], "failed")
         self.assertIn("提高输出上限", result["error"])
-        self.assertNotIn("PRIVATE_REASONING_TEST", json.dumps(result))
+        self.assertIn("PRIVATE_REASONING_TEST", result.get("reasoning") or "")
 
     def test_project_attachment_covers_members_and_filters_actions(self):
         connection = self.connection()
@@ -473,7 +483,7 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(migrated["task_id"], "task-alice")
         self.assertEqual(migrated["messages"][0]["content"], "keep history")
         self.assertEqual(migrated["title"], "old task chat")
-        self.assertFalse(migrated["workspace_enabled"])
+        self.assertTrue(migrated["workspace_enabled"])
         self.assertEqual(self.api(f"/conversations/{orphan['id']}")[0], 403)
         _, listing = self.api("/conversations")
         self.assertFalse(any(c["id"]==orphan["id"] for c in listing["items"]))
@@ -562,23 +572,24 @@ class AIChatTests(unittest.TestCase):
         _, directory_map = self.api(f"/conversations/{conversation['id']}/workspace/file?path=evidence/directory-map.json")
         self.assertIn("task_locations", directory_map["content"])
         self.assertIn("project/neb/Model-alice", directory_map["content"])
-        # 禁用后不再给供应商发送工具定义，旧回答和草稿保留。
+        # 工具由模型按需选择，不再由会话开关控制：旧字段被忽略，下一轮仍提供工具定义。
         self.assertEqual(self.api(f"/conversations/{conversation['id']}", "PUT", {
-            "title": "tools off", "prompt": "", "connection_id": connection["id"], "workspace_enabled": False})[0], 200)
+            "title": "tools always on", "prompt": "", "connection_id": connection["id"],
+            "workspace_enabled": False})[0], 200)
         _, changed = self.api(f"/conversations/{conversation['id']}")
-        self.assertFalse(changed["workspace_enabled"])
+        self.assertTrue(changed["workspace_enabled"])
         plain = self.connection()
         self.api(f"/conversations/{conversation['id']}", "PUT", {"title": "plain", "prompt": "", "connection_id": plain["id"]})
         _, next_run = self.send(conversation)
         self.assertEqual(self.wait_run(next_run)["status"], "completed")
-        self.assertNotIn("tools", REQUESTS[-1])
+        self.assertIn("tools", REQUESTS[-1])
 
     def test_tool_markup_in_text_is_failed_not_executed_or_shown(self):
         conversation=self.conversation(self.connection('malformed-tools'),'task-alice')
         _,run=self.send(conversation)
         result=self.wait_run(run)
         self.assertEqual(result['status'],'failed')
-        self.assertIn('模型把工具指令写进正文',result['error'])
+        self.assertIn('模型把工具调用写成了正文',result['error'])
         self.assertEqual(result['tool_events'],[])
         _,detail=self.api(f"/conversations/{conversation['id']}")
         self.assertNotIn('DSML',detail['messages'][-1]['content'])
@@ -595,7 +606,7 @@ class AIChatTests(unittest.TestCase):
         _, run = self.send(looping)
         result = self.wait_run(run)
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(len(result["tool_events"]), 6)
+        self.assertEqual(len(result["tool_events"]), 8)
         self.assertIn("上限", result["error"])
 
     def test_model_queries_recent_inspections_then_evidence_and_plan_on_demand(self):

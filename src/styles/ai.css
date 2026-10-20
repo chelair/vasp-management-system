@@ -69,3 +69,10 @@
 
 .ai-composer-footer .ai-actions { margin-left: auto; }
 .ai-reasoning-select { min-width: 120px; background: var(--color-bg-secondary, rgba(128, 128, 128, .08)); border-radius: 8px; }
+
+/* 可选展示：思考链路与工具调用（2026-10-20） */
+.ai-reasoning { margin: 8px 0; padding-left: 10px; border-left: 3px solid var(--color-border); }
+.ai-reasoning summary { cursor: pointer; font-size: 12px; color: var(--color-text-secondary); }
+.ai-reasoning__body { white-space: pre-wrap; font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); max-height: 260px; overflow: auto; margin-top: 6px; }
+.ai-tool-events { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.ai-tool-event { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }

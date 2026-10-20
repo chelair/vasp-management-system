@@ -81,9 +81,15 @@ def database():
             db.execute("ALTER TABLE conversations ADD COLUMN project_id TEXT")
         if "workspace_enabled" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN workspace_enabled INTEGER NOT NULL DEFAULT 0")
+        # 工具不再由会话开关控制（列保留仅为旧数据/接口兼容）：只迁移一次，避免每次连接都抢写锁。
+        if db.execute("PRAGMA user_version").fetchone()[0] < 2:
+            db.execute("UPDATE conversations SET workspace_enabled=1 WHERE workspace_enabled=0")
+            db.execute("PRAGMA user_version=2")
         run_columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
         if "tool_events" not in run_columns:
             db.execute("ALTER TABLE runs ADD COLUMN tool_events TEXT NOT NULL DEFAULT '[]'")
+        if "reasoning" not in run_columns:
+            db.execute("ALTER TABLE runs ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
         for path in AI_DIR.glob("chat.sqlite3*"):
             path.chmod(0o600)
     try:
@@ -199,7 +205,7 @@ def create_conversation(owner: str, title: str, task_id: str | None, connection_
         db.execute("""INSERT INTO conversations
             (id,owner,task_id,title,connection_id,prompt,prompt_version,created_at,updated_at,project_id,workspace_enabled)
             VALUES (?,?,?,?,?,?,1,?,?,?,?)""",
-                   (item_id, owner, task_id, title, connection_id, "", now, now, project_id, int(bool(project_id))))
+                   (item_id, owner, task_id, title, connection_id, "", now, now, project_id, 1))
         return owned(db, "conversations", item_id, owner)
 
 
@@ -208,6 +214,8 @@ def public_run(row, *, snapshot: bool = False) -> dict:
            "connection_name", "prompt_version", "error", "created_at", "finished_at")}
     out["usage"] = json.loads(row["usage"])
     out["tool_events"] = json.loads(row["tool_events"])
+    # 思考链路只作可选展示；限制长度，避免单条消息把接口拖大。
+    out["reasoning"] = str(row["reasoning"] or "")[:60000]
     if snapshot:
         out["snapshot"] = json.loads(row["snapshot"])
     return out
@@ -242,15 +250,21 @@ def detail(owner: str, item_id: str, before: int | None = None) -> dict:
         return convo
 
 
-def update_answer(run_id: str, text: str, *, status: str = "running", error: str = "", usage: dict | None = None):
+def update_answer(run_id: str, text: str, *, status: str = "running", error: str = "", usage: dict | None = None,
+                  reasoning: str | None = None):
     with database() as db:
         run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if not run or run["status"] not in ("queued", "running"):
             return
         terminal = status not in ("queued", "running")
         db.execute("UPDATE messages SET content=?,status=? WHERE id=?", (text, status, run["message_id"]))
-        db.execute("UPDATE runs SET status=?,error=?,usage=?,finished_at=? WHERE id=?",
-                   (status, error, json.dumps(usage or {}), now_iso() if terminal else None, run_id))
+        if reasoning is None:
+            db.execute("UPDATE runs SET status=?,error=?,usage=?,finished_at=? WHERE id=?",
+                       (status, error, json.dumps(usage or {}), now_iso() if terminal else None, run_id))
+        else:
+            db.execute("UPDATE runs SET status=?,error=?,usage=?,finished_at=?,reasoning=? WHERE id=?",
+                       (status, error, json.dumps(usage or {}), now_iso() if terminal else None,
+                        str(reasoning)[:60000], run_id))
         db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now_iso(), run["conversation_id"]))
 
 

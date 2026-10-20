@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, App, Button, Collapse, Descriptions, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Switch, Tabs, Tag, Tooltip } from 'antd';
+import { Alert, App, Button, Collapse, Descriptions, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Tabs, Tag, Tooltip } from 'antd';
 import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
 import PageHeader from '../components/common/PageHeader';
 import ConnectionSettings from '../components/ai/ConnectionSettings';
@@ -22,6 +22,7 @@ const TASK_STATUS: Record<string, string> = { completed: '已完成', running: '
 const asObject = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const show = (value: unknown) => value == null || value === '' ? '—' : String(value);
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请重试';
+const toolBrief = (value: unknown) => { const text = JSON.stringify(value ?? {}); return text.length > 140 ? `${text.slice(0, 140)}…` : text; };
 function JsonView({ value }: { value: unknown }) { return <pre className="ai-json">{JSON.stringify(value ?? {}, null, 2)}</pre>; }
 
 export default function AI() {
@@ -50,7 +51,7 @@ export default function AI() {
   const [streamRevision, setStreamRevision] = useState(0);
   const [topicId,setTopicId] = useState<string>();
   const [topicRevision,setTopicRevision] = useState(0);
-  const [form] = Form.useForm<{ title: string; prompt: string; workspace_enabled: boolean }>();
+  const [form] = Form.useForm<{ title: string; prompt: string }>();
   const messagesRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
   const freshRuns = useRef(new Set<string>());
@@ -212,7 +213,7 @@ export default function AI() {
         {detail ? <>
           <header className="ai-chat-header"><div><strong>{detail.title}</strong><div className="ai-muted">{detail.project_id ? '项目会话' : '通用会话'} · 提示词版本 {detail.prompt_version}</div></div>
             <div className="ai-actions">
-              <Tooltip title="会话名称与提示词"><Button size="small" icon={<EditOutlined />} disabled={!!active} onClick={() => { form.setFieldsValue({ title: detail.title, prompt: detail.prompt, workspace_enabled: !!detail.workspace_enabled }); setEditOpen(true); }} aria-label="编辑会话提示词" /></Tooltip>
+              <Tooltip title="会话名称与提示词"><Button size="small" icon={<EditOutlined />} disabled={!!active} onClick={() => { form.setFieldsValue({ title: detail.title, prompt: detail.prompt }); setEditOpen(true); }} aria-label="编辑会话提示词" /></Tooltip>
               <Popconfirm title="删除此会话及其全部聊天记录？" onConfirm={async () => {
                 try { await deleteAIConversation(detail.id); delete drafts.current[detail.id]; choose(null); await reloadList(); }
                 catch (e) { void message.error(errorText(e)); }
@@ -246,6 +247,27 @@ export default function AI() {
                 <div className="ai-message-meta"><strong>{item.role === 'user' ? '你' : 'AI'}</strong><span>{item.created_at.replace('T', ' ').slice(5, 16)}</span>
                   {item.role === 'assistant' && <Tag color={item.status === 'failed' ? 'error' : isActiveRun({ status: item.status } as AIRun) ? 'processing' : 'default'}>{STATUS[item.status] ?? item.status}</Tag>}
                 </div>
+                {item.role === 'assistant' && run && (run.reasoning || run.tool_events?.length) ? (
+                  <details className="ai-reasoning" open={isActiveRun(run)}>
+                    <summary>
+                      思考与工具调用
+                      {run.tool_events?.length ? ` · ${run.tool_events.length} 次` : ''}
+                      {isActiveRun(run) ? '（生成中）' : ''}
+                    </summary>
+                    {run.reasoning ? <div className="ai-reasoning__body">{run.reasoning}</div> : null}
+                    {run.tool_events?.length ? (
+                      <div className="ai-tool-events">
+                        {run.tool_events.map((event) => (
+                          <div className="ai-tool-event" key={event.id}>
+                            <Tag color={event.status === 'failed' ? 'error' : event.status === 'running' ? 'processing' : 'default'}>{event.status}</Tag>
+                            <strong>{event.name}</strong>
+                            <span className="ai-muted">{toolBrief(event.arguments)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </details>
+                ) : null}
                 {item.role === 'user' ? <div className="ai-user-text">{item.content}</div> : <StreamingAnswer text={item.content} status={item.status} fresh={!!run && freshRuns.current.has(run.id)} onProgress={scrollAnswer} />}
                 {run?.error && <div className="ai-run-error">{run.error}</div>}
                 {item.role === 'assistant' && <div className="ai-answer-tools"><Button size="small" type="text" onClick={() => { void navigator.clipboard?.writeText(item.content); }}>复制回答</Button>
@@ -256,11 +278,11 @@ export default function AI() {
             {detail.project_id&&<TopicReportLinks inline conversationId={detail.id} runs={detail.runs} onOpen={setTopicId} revision={topicRevision}/>}
           </div>
 
-          {model&&detail.workspace_enabled&&(model.reasoning_capabilities.tool_policy==='unsupported'||model.reasoning_capabilities.tool_policy==='none_only'&&model.effective_reasoning_effort!=='none')&&<Alert type="warning" message={model.reasoning_capabilities.note}/>}
+          {model&&detail.project_id&&(model.reasoning_capabilities.tool_policy==='unsupported'||model.reasoning_capabilities.tool_policy==='none_only'&&model.effective_reasoning_effort!=='none')&&<Alert type="warning" message={model.reasoning_capabilities.note}/>}
           <div className="ai-composer"><Input.TextArea aria-label="输入 AI 对话消息" value={draft} maxLength={16000} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="输入问题，Enter 发送，Shift + Enter 换行" disabled={busy}
             onChange={(e) => { setDraft(e.target.value); drafts.current[detail.id] = e.target.value; }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }} />
-            <div className="ai-composer-footer"><span className="ai-muted">{detail.workspace_enabled ? '可读取项目文件、保存独立草稿 · 不执行计算操作' : '基于摘要对话分析 · 未启用文件工具'}</span><div className="ai-actions">
+            <div className="ai-composer-footer"><span className="ai-muted">{detail.project_id ? '模型可读取项目文件并调用工具 · 不执行计算操作' : '基于摘要对话分析'}</span><div className="ai-actions">
               {!active && <Button icon={<ReloadOutlined />} disabled={busy || !model || !detail.messages.some((m) => m.role === 'user')} onClick={() => { void send(true); }}>重新生成</Button>}
               {model&&<Select className="ai-reasoning-select" variant="borderless" aria-label="当前模型思考深度" value={model.effective_reasoning_effort} options={model.reasoning_capabilities.options.map(option=>({...option,label:`思考 · ${option.label}`}))} disabled={!!active||busy||model.reasoning_capabilities.options.length<2} onChange={async effort=>{
               setBusy(true);try{await saveAIConnection({name:model.name,base_url:model.base_url,model:model.model,max_tokens:model.max_tokens,is_default:model.is_default,reasoning_api:model.reasoning_api,reasoning_effort:effort,thinking_mode:effort==='default'?'default':effort==='none'?'disabled':'enabled'},model.id);await reloadConnections();void message.success('已更新此连接的默认思考深度，后续请求生效');}catch(e){void message.error(errorText(e));}finally{setBusy(false);}
@@ -281,7 +303,7 @@ export default function AI() {
         {context ? <><p className="ai-muted">本地快照 · {show(context.generated_at).replace('T', ' ').slice(0, 19)}</p>
           <Tabs size="small" items={[
             ...(detail?.project_id ? [{key:'topics',label:'专题报告',children:<TopicReportLinks conversationId={detail.id} runs={detail.runs} onOpen={setTopicId} revision={topicRevision}/>}]:[]),
-            ...(detail?.project_id ? [{ key: 'workspace', label: '工作区', children: <WorkspacePanel key={detail.id} conversationId={detail.id} runs={detail.runs} enabled={!!detail.workspace_enabled} /> }] : []),
+            ...(detail?.project_id ? [{ key: 'workspace', label: '工作区', children: <WorkspacePanel key={detail.id} conversationId={detail.id} runs={detail.runs} enabled /> }] : []),
             { key: 'info', label: '基本信息', children: detail?.project_id ? <>
               <Descriptions column={1} size="small" items={[
                 { key: 'p', label: '项目', children: show(project.name) },
@@ -325,7 +347,6 @@ export default function AI() {
       catch (e) { void message.error(errorText(e)); }
     }}><Form form={form} layout="vertical"><Form.Item name="title" label="会话名称" rules={[{ required: true, whitespace: true }]}><Input maxLength={120} /></Form.Item>
       <Form.Item name="prompt" label="会话提示词" extra="可描述研究角色、目标和回答偏好。保存后增加版本，已有回答仍保留原版本记录。"><Input.TextArea rows={7} maxLength={8000} showCount placeholder="例如：重点检查几何结构和收敛证据，区分事实与假设。" /></Form.Item>
-      {detail?.project_id && <Form.Item name="workspace_enabled" label="项目文件工作区" valuePropName="checked" extra="模型可查询最近三个计算目录各自的最新巡检结果（最多五个目录，同目录更新覆盖）、读取项目文件并创建独立草稿；不能执行代码、改正式文件或提交作业。不兼容工具的接口可关闭。支持工具的模型沿用连接中的思考深度。"><Switch /></Form.Item>}
       <p className="ai-muted">系统规则固定要求证据与来源，禁止编造或声称已执行操作。</p>
     </Form></Modal>
     <Modal title="本轮回答依据" open={!!inspecting} onCancel={() => setInspecting(null)} footer={null} width={900}>

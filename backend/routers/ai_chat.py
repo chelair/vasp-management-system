@@ -235,11 +235,9 @@ def update_conversation(item_id: str, request: Request, body: ConversationUpdate
         prompt, title = service.clean(body.prompt, (key,)), service.clean(body.title.strip(), (key,))
         if not title:
             raise ValueError("请输入会话名称")
-        enabled = bool(row["workspace_enabled"]) if body.workspace_enabled is None else body.workspace_enabled
-        if enabled and not row.get("project_id"):
-            raise ValueError("请先创建项目会话，再启用工作区")
-        db.execute("UPDATE conversations SET title=?,connection_id=?,prompt=?,prompt_version=?,workspace_enabled=?,updated_at=? WHERE id=?",
-                   (title, body.connection_id, prompt, row["prompt_version"] + int(prompt != row["prompt"]), int(enabled), now_iso(), item_id))
+        # 工具不再由会话开关控制：始终保留（项目会话才有可调用的项目工具）。
+        db.execute("UPDATE conversations SET title=?,connection_id=?,prompt=?,prompt_version=?,workspace_enabled=1,updated_at=? WHERE id=?",
+                   (title, body.connection_id, prompt, row["prompt_version"] + int(prompt != row["prompt"]), now_iso(), item_id))
     return ok("会话设置已保存", store.detail(owner, item_id))
 
 
@@ -273,7 +271,7 @@ def conversation_workspace(item_id: str, request: Request):
         raise ValueError("通用会话没有项目工作区")
     project = service.project_for(user, row["project_id"])
     return ok("目录地图已生成", {**workspace.directory_map(project), "task_locations": workspace.task_locations(project),
-                               "enabled": bool(row["workspace_enabled"])})
+                               "enabled": bool(row.get("project_id"))})
 
 
 @router.get("/conversations/{item_id}/workspace/files")

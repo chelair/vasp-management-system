@@ -16,7 +16,7 @@ export function ReportQuestions({item,onDone,disabled=false}:{item:{topic_id:str
         {q.options.map(option=><Radio key={option.value} value={option.value}>{option.label}{option.description&&<span style={{color:'#8a94a3',marginLeft:8}}>{option.description}</span>}</Radio>)}
         <Radio value="__custom">自己填写</Radio>
       </Space></Radio.Group>
-      {(answers[q.id]==='__custom'||!q.options.length)&&<Input.TextArea aria-label={`${q.title}-自定义回答`} value={custom[q.id]||''} onFocus={()=>setAnswers(old=>({...old,[q.id]:'__custom'}))} onChange={e=>{setAnswers(old=>({...old,[q.id]:'__custom'}));setCustom(old=>({...old,[q.id]:e.target.value}));}} placeholder={q.hint||'输入构型名称'} autoSize={{minRows:1,maxRows:3}} maxLength={300} style={{marginTop:10}}/>}
+      {(answers[q.id]==='__custom'||!q.options.length)&&<Input.TextArea aria-label={`${q.title}-自定义回答`} value={custom[q.id]||''} onFocus={()=>setAnswers(old=>({...old,[q.id]:'__custom'}))} onChange={e=>{setAnswers(old=>({...old,[q.id]:'__custom'}));setCustom(old=>({...old,[q.id]:e.target.value}));}} placeholder={'可直接描述你的选择，也可提供已知能量，例如气体能量 -37 eV'} autoSize={{minRows:1,maxRows:3}} maxLength={300} style={{marginTop:10}}/>}
       {q.options.length>0&&<div style={{color:'#8a94a3',fontSize:12,marginTop:8}}>{q.hint}</div>}
     </div>)}
     <Button type="primary" loading={busy} disabled={disabled} onClick={()=>void submit()}>按我的回答继续</Button>

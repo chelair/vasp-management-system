@@ -1050,3 +1050,5 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 2026-10-20台账同步补充（已随v1.1.2部署）：普通人工提交前和巡检异步事件后复用只读LSF对账，不改变巡检回传/频率、不新增轮询。终态与科学收敛独立；旧记录不恢复已停止作业号、不覆盖更新提交；来源变化/目录不符/查询失败保留阻塞。详见agent-upgrade/PROGRESS.md §20。
 
 简明报告接口：原AI工具新增create_topic_report；POST /api/reports/topic/quick（conversation_id、question、request，可选project_ids）；POST /{topic_id}/questions（expected_revision、answers）；PUT /{topic_id}/content（expected_revision、title、notes、blocks、deleted_block_ids）；POST /{topic_id}/rebuild生成新的简明报告。均沿用登录、所有权、no-store和revision。
+
+语义报告输入：create_topic_report新增targets（角色可给task_id，或energy_ev，或energy_value+energy_unit，及label/source_quote）、title/notes/show_warnings；新增search_report_data与update_topic_report。原/content新增show_warnings，控制预览与导出，不改变冻结计算与风险记录。用户给定参考能量无需存在对应任务。

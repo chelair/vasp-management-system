@@ -45,4 +45,32 @@ class MinimumReportTests(unittest.TestCase):
         self.assertEqual(topic_reports.load(self.user,d['topic_id'],revision=1)['stage'],'waiting')
         with self.assertRaises(Exception):self.simple.answer({'user_id':'someone','username':'other','role':'user'},d['topic_id'],answer)
 
+    def test_model_can_translate_alias_and_use_user_energy_from_prior_messages(self):
+        import topic_tools,topic_reports
+        self.project['tasks']=[t for t in self.project['tasks'] if t['task_id']!='ads'];self.storage.save_db({'projects':[self.project]})
+        question='一号板和之前那个气体算一下，按我的口径写报告'
+        history='之前那个气体的能量就用 -3 eV'
+        with self.store.database() as db:
+            for mid,role,text in [('past','user',history),('now','user',question),('answer','assistant','')]:
+                db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES(?,?,?,?,?,?)",(mid,self.conversation['id'],role,text,'completed','now'))
+            db.execute("INSERT INTO runs(id,owner,conversation_id,message_id,request_id,status,model,connection_name,prompt_version,snapshot,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",('translate',self.user['user_id'],self.conversation['id'],'answer','translate','completed','mock','mock',1,json.dumps({'messages':[{'role':'user','content':question}]}),'now'))
+        args={'property_id':'adsorption.simple','model_queries':['一号板'],'adsorbate_query':'之前那个气体','title':'按我的口径','show_warnings':False,
+              'targets':[{'surface':{'task_id':'surface'},'complex':{'task_id':'complex'},'adsorbate':{'label':'以前算过的气体','energy_ev':-3,'source_quote':history}}]}
+        response=topic_tools.dispatch(self.user,self.conversation,'translate','create_topic_report',args)
+        d=topic_reports.load(self.user,response['topic_id']);self.assertEqual(d['data']['science']['results'][0]['value'],-2)
+        ref=next(i for i in d['data']['science']['inputs'] if i['role']=='0.adsorbate');self.assertEqual(ref['source']['kind'],'user_provided');self.assertEqual(ref['source']['statement'],history);self.assertFalse(ref['source']['verified_against_calculation'])
+        h=self.simple.render_html(d);self.assertNotIn('使用这个结果前，请留意',h);self.assertIn('用户提供',h);self.assertEqual(d['title'],'按我的口径')
+        science=json.dumps(d['data'],sort_keys=True)
+        d=self.simple.update_content(self.user,d['topic_id'],{'expected_revision':d['revision'],'show_warnings':True})
+        self.assertIn('使用这个结果前，请留意',self.simple.render_html(d));self.assertEqual(json.dumps(d['data'],sort_keys=True),science)
+
+    def test_free_energy_answer_and_units_do_not_require_molecule_task(self):
+        self.project['tasks']=[t for t in self.project['tasks'] if t['task_id']!='ads'];self.storage.save_db({'projects':[self.project]})
+        d=self.create();self.assertEqual(d['simple']['questions'][0]['id'],'0.adsorbate')
+        d=self.simple.answer(self.user,d['topic_id'],{'expected_revision':1,'answers':{'0.adsorbate':'气体我以前算过，能量 -3 eV'}})
+        self.assertEqual(d['data']['science']['results'][0]['value'],-2);self.assertEqual(d['simple']['questions'],[])
+        from adsorption_minimum import provided_energy
+        item=provided_energy({'energy_value':-1,'energy_unit':'Ha','label':'气体'},self.user,self.project)
+        self.assertAlmostEqual(item['energy_ev'],-27.211386245988)
+
 if __name__=='__main__':unittest.main()

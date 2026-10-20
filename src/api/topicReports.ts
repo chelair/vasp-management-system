@@ -5,7 +5,7 @@ export interface TopicFact {fact_id:string;label:string;value:number;units:strin
 export interface TopicQuestion {id:string;title:string;options:{value:string;label:string;description?:string}[];hint?:string;error?:string}
 export interface TopicMeta {simple?:boolean;questions?:TopicQuestion[];result_summary?:string;topic_id:string;report_type:'topic';title:string;revision:number;stage:string;updated_at:string;conversation_id:string}
 export interface TopicReport extends Omit<TopicMeta,'simple'> {
-  simple?:{version:string;questions:TopicQuestion[];notes:string;warnings:string[]};
+  simple?:{version:string;questions:TopicQuestion[];notes:string;warnings:string[];show_warnings?:boolean};
   original_question:string;created_at:string;project_ids:string[];
   sections:{section_id:string;title:string}[];
   blocks:TopicBlock[];hidden_block_ids:string[];deleted_block_ids:string[];
@@ -31,4 +31,4 @@ export const regenerateTopicParagraph=(id:string,block:string,revision:number,co
 
 export const answerTopic=(id:string,revision:number,answers:Record<string,string>)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/questions`,{method:'POST',body:JSON.stringify({expected_revision:revision,answers})});
 export const rebuildTopic=(id:string)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/rebuild`,{method:'POST',body:'{}'});
-export const updateTopicContent=(id:string,body:{expected_revision:number;title:string;notes:string;blocks:string[];deleted_block_ids:string[]})=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/content`,{method:'PUT',body:JSON.stringify(body)});
+export const updateTopicContent=(id:string,body:{expected_revision:number;title:string;notes:string;show_warnings?:boolean;blocks:string[];deleted_block_ids:string[]})=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/content`,{method:'PUT',body:JSON.stringify(body)});

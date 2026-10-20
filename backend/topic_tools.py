@@ -15,14 +15,25 @@ def tool(name,description,properties,required=()):
     return {'type':'function','function':{'name':name,'description':description,
         'parameters':{'type':'object','properties':properties,'required':list(required),'additionalProperties':False}}}
 
+INPUT={'type':'object','properties':{
+    'task_id':{'type':'string'},'project_id':{'type':'string'},'observation_id':{'type':'string'},'query':{'type':'string'},'label':{'type':'string'},
+    'energy_ev':{'type':'number'},'energy_value':{'type':'number'},'energy_unit':{'type':'string','enum':['eV','Ha','Hartree','Ry','kJ/mol']},
+    'source_quote':{'type':'string','maxLength':2000},'note':{'type':'string','maxLength':2000}},'additionalProperties':False}
+INTERPRETED_TARGET={'type':'object','properties':{'label':{'type':'string'},'reason':{'type':'string'},**{role:INPUT for role in ('surface','adsorbate','complex')}},'additionalProperties':False}
+REPORT_TARGET={**TARGET,'properties':{**TARGET['properties'],**{role:INPUT for role in ('surface','adsorbate','complex')}}}
+
 TOOLS=[
-    tool('create_topic_report','用户用一句话要求科研报告时优先且直接调用本工具，无需先查询和逐个计划元素。服务端自己查授权项目数据、使用注册配方与Python计算、选择现有报告元素并保存可读报告。吸附能有三个角色的能量就给初步结果；k点/未收敛等仅警告。仅多候选或无法确定角色时返回简短问题，界面自动给用户选择/自定义回答。不要求task_id，不先写文章再找数字。',
-         {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'adsorbate_query':{'type':'string','maxLength':100},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4}},('property_id','model_queries')),
+    tool('create_topic_report','用户用一句话要求科研报告时优先且直接调用本工具，无需先查询和逐个计划元素。服务端自己查授权项目数据、使用注册配方与Python计算、选择现有报告元素并保存可读报告。吸附能有三个角色的能量就给初步结果；k点/未收敛等仅警告。仅多候选或无法确定角色时返回简短问题，界面自动给用户选择/自定义回答。你是用户与报告间的翻译官：可以理解口语/别名，先search_report_data查实际任务，再自行传targets绑定角色；不需要用户给task_id。用户在本轮或历史对话给过的能量可直接作为对应角色的energy_ev，或energy_value+energy_unit，并用source_quote引用用户原话；不需要存在分子任务。推断/假设须在note说明，不能伪装为计算事实。用户的标题、文字、风险提示显示偏好可直接传入。不先写文章再找数字。',
+         {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'adsorbate_query':{'type':'string','maxLength':100},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4},'targets':{'type':'array','items':INTERPRETED_TARGET,'maxItems':4},'title':{'type':'string','maxLength':200},'notes':{'type':'string','maxLength':8000},'show_warnings':{'type':'boolean'}},('property_id','model_queries')),
+    tool('search_report_data','按用户的别名/口语寻找可用任务和当前对话中的用户给定数据。可留空query先看任务目录，再由你理解并用task_id绑定报告角色；名称不必与用户输入完全相同。返回用户原话供取数，最新要求优先。只读授权项目，不执行计算作业。',
+         {'query':{'type':'string','maxLength':200},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4},'offset':{'type':'integer','minimum':0}}),
+    tool('update_topic_report','按用户要求修改报告标题、补充文字、内容顺序和风险提示是否展示；风险仍保存在底层记录。不会改底层能量和计算结果。',
+         {'topic_id':{'type':'string'},'expected_revision':{'type':'integer'},'title':{'type':'string'},'notes':{'type':'string'},'show_warnings':{'type':'boolean'},'blocks':{'type':'array','items':{'type':'string'}},'deleted_block_ids':{'type':'array','items':{'type':'string'}}},('topic_id','expected_revision')),
     tool('list_topic_projects','查找当前用户可访问项目，只读名称/ID/任务数。专题跨项目查询须逐项目鉴权，最多4项目。默认直接使用会话项目，不要求用户手工查已有数据。',
          {'query':{'type':'string','maxLength':100},'offset':{'type':'integer','minimum':0}}),
-    tool('prepare_topic_report','专题流程第一步：解析问题后给property_id和model_queries，服务端自动找任务、验证唯一结构关系/当前快照，复用R3计算，再冻结相关R2候选。DOS比较用dos.comparison（仅已有图及能量参考，不新增派生公式）。吸附能用adsorption.simple，model_queries为各表面体系如[LMR,LIC@LMR]，adsorbate_query为明确吸附物如H2；先验证同晶胞表面原子映射及一个吸附物组成。孤立/气相分子才使用isolated_molecule参考（Gamma采样），不得把它当自由能。多位点不能随机选，缺数值也继续生成缺口报告。氧参考仅可复用已有人工参考报告；common_oxygen_reference仅表示待确认的共同参考条件。原始问题由运行记录提供，不能伪造。',
+    tool('prepare_topic_report','专题流程第一步：解析问题后给property_id和model_queries，服务端自动找任务、验证唯一结构关系/当前快照，复用R3计算，再冻结相关R2候选。DOS比较用dos.comparison（仅已有图及能量参考，不新增派生公式）。吸附能用adsorption.simple，model_queries为各表面体系如[LMR,LIC@LMR]，adsorbate_query为明确吸附物如H2；采用最小数据模式：可由AI匹配角色，也可直接使用用户给定参考能量；质量问题仅提示。不要把电子吸附能当自由能。多位点不能随机选，缺数值也继续生成缺口报告。氧参考仅可复用已有人工参考报告；common_oxygen_reference仅表示待确认的共同参考条件。原始问题由运行记录提供，不能伪造。',
          {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},
-          'project_ids':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'targets':{'type':'array','items':TARGET,'maxItems':4},
+          'project_ids':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'targets':{'type':'array','items':REPORT_TARGET,'maxItems':4},
           'common_oxygen_reference':{'type':'boolean'},'reference_report_id':{'type':'string'},'surface_side':{'type':'string','enum':['start','end']},'reaction_correspondence':{'type':'string'},
           'adsorbate_query':{'type':'string','maxLength':100},'adsorbate_reference_type':{'type':'string','enum':['periodic','isolated_molecule']},'reference_conditions':{'type':'string','maxLength':2000}},
          ('property_id','model_queries')),
@@ -48,6 +59,20 @@ def dispatch(user,conversation,run_id,name,arguments):
     if not isinstance(arguments,dict):raise ValueError('工具参数必须为对象')
     spec=next(t['function']['parameters'] for t in TOOLS if t['function']['name']==name)
     if set(arguments)-set(spec['properties']) or set(spec['required'])-set(arguments):raise ValueError('专题工具参数不符合受限合同')
+    if name=='search_report_data':
+        from properties import authorized_projects
+        from task_paths import is_auxiliary_task
+        projects=authorized_projects(load_db(),user,arguments.get('project_ids') or [conversation['project_id']])
+        if len(projects)>4:raise ValueError('一次最多查询四个项目')
+        query=arguments.get('query','');offset=arguments.get('offset',0)
+        if not isinstance(query,str) or len(query)>200 or type(offset) is not int or not 0<=offset<=2000:raise ValueError('查询范围无效')
+        matches=[{'project_id':p['project_id'],'project':p['name'],'task_id':t['task_id'],'name':t.get('model_name'),'type':t.get('task_type'),'energy_ev':t.get('last_energy'),'status':t.get('status')}
+                 for p in projects for t in p.get('tasks',[]) if not is_auxiliary_task(t) and (not query or query.casefold() in (str(t.get('model_name',''))+' '+t['task_id']).casefold())]
+        with ai_chat_store.database() as db:
+            ai_chat_store.owned(db,'conversations',conversation['id'],str(user['user_id']))
+            rows=db.execute("SELECT content FROM messages WHERE conversation_id=? AND role='user' ORDER BY seq DESC LIMIT 40",(conversation['id'],)).fetchall()
+        history=[str(r['content'])[:1000] for r in reversed(rows) if any(word in str(r['content']).lower() for word in ('能量','气体','参考','energy','ev','hartree'))][-12:]
+        return {'tasks':matches[offset:offset+60],'total':len(matches),'has_more':len(matches)>offset+60,'user_statements':history,'note':'由你根据用户意图绑定角色；用户提供的值可以直接用于初步计算，标明出处即可。'}
     if name=='list_topic_projects':
         query=arguments.get('query','');offset=arguments.get('offset',0)
         if not isinstance(query,str) or len(query)>100 or type(offset) is not int or not 0<=offset<=1000:raise ValueError('项目查询/分页无效')
@@ -61,26 +86,23 @@ def dispatch(user,conversation,run_id,name,arguments):
         messages=json.loads(run['snapshot'])['messages']
         if not messages or messages[-1]['role']!='user':raise ValueError('运行缺少原始用户问题')
         question=messages[-1]['content']
-        if name=='create_topic_report' or (arguments.get('property_id') in ('adsorption.simple','adsorption.estimate') and not arguments.get('targets')):
+        if name=='create_topic_report' or arguments.get('property_id') in ('adsorption.simple','adsorption.estimate'):
             from topic_simple import create
-            request={k:v for k,v in arguments.items() if k in ('property_id','model_queries','adsorbate_query')}
-            return topics.summary(create(user,conversation,question,request,run_id=run_id,project_ids=arguments.get('project_ids')))
-        # Candidate IDs are observations, not authorization to choose a site or
-        # reservoir. Exact bindings from the model need an explicit user ID.
-        for target in arguments.get('targets',[]):
-            if not isinstance(target,dict):raise ValueError('目标绑定必须是对象')
-            for selector in target.values():
-                if isinstance(selector,dict) and selector.get('task_id') and selector['task_id'] not in question and selector['task_id']!=conversation.get('task_id'):
-                    raise ValueError('任务或位点须由用户明确选择；请先不带targets自动发现并返回候选，不得替用户随机绑定')
-        if arguments.get('reference_report_id') and arguments['reference_report_id'] not in question:
-            raise ValueError('多个氧参考须由用户明确选择；模型不能自行确认参考报告')
-        if arguments.get('adsorbate_reference_type')=='isolated_molecule' and not any(word in question.casefold() for word in ('孤立','气相','分子','isolated','gas','molecular','molecule')):
-            raise ValueError('孤立分子参考类型需用户明确说明或在报告中选择，不能由模型假定')
+            request={k:v for k,v in arguments.items() if k in ('property_id','model_queries','adsorbate_query','targets','title','notes','show_warnings')}
+            with ai_chat_store.database() as db:
+                seq=db.execute('SELECT seq FROM messages WHERE id=?',(run['message_id'],)).fetchone()['seq']
+                rows=db.execute("SELECT content FROM messages WHERE conversation_id=? AND role='user' AND seq<=? ORDER BY seq DESC LIMIT 60",(conversation['id'],seq)).fetchall()
+            statements=[str(r['content'])[:2000] for r in reversed(rows)]
+            return topics.summary(create(user,conversation,question,request,run_id=run_id,project_ids=arguments.get('project_ids'),user_statements=statements))
+        # The model may translate names and choose authorized roles; Python still validates the chosen scientific inputs.
         request={k:v for k,v in arguments.items() if k!='project_ids'}
         doc=topics.prepare(user,conversation,messages[-1]['content'],request,run_id=run_id,project_ids=arguments.get('project_ids'))
         return topics.summary(doc)
     doc=topics.load(user,arguments['topic_id'])
     if doc['conversation_id']!=conversation['id']:raise permissions.PermissionDenied('专题不属于当前对话')
+    if name=='update_topic_report':
+        from topic_simple import update_content
+        return topics.summary(update_content(user,doc['topic_id'],{k:v for k,v in arguments.items() if k!='topic_id'}))
     if doc.get('simple'):return topics.summary(doc)
     payload={k:v for k,v in arguments.items() if k!='topic_id'}
     if name=='get_topic_report':return topics.summary(doc)

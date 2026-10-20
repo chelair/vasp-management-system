@@ -63,6 +63,30 @@ def read_energy(project, task, observation_id=None):
             'convergence':convergence,'source':source,'warnings':warnings,'row':copy.deepcopy(row)}
 
 
+
+def provided_energy(selector,user,project,task=None):
+    import properties
+    raw=selector.get('energy_ev') if selector.get('energy_ev') is not None else selector.get('energy_value')
+    value=number(raw);unit='eV' if selector.get('energy_ev') is not None else str(selector.get('energy_unit','eV'))
+    factors={'ev':1.0,'ha':27.211386245988,'hartree':27.211386245988,'ry':13.605693122994,'kj/mol':1/96.4853321233}
+    factor=factors.get(unit.strip().casefold())
+    if factor is None:raise ValueError('请说明参考能量单位，可使用eV、Ha、Ry或kJ/mol')
+    value=number(value*factor)
+    kind=selector.get('_source_kind','provided_energy')
+    labels={'user_provided':'用户提供','ai_interpretation':'AI按用户描述解释','ai_assumption':'AI假设值','provided_energy':'手工给定'}
+    quote=str(selector.get('source_quote') or selector.get('note') or '')[:2000]
+    name=selector.get('label') or (task or {}).get('model_name') or '给定能量'
+    original=read_energy(project,task) if task else None
+    source={'kind':kind,'label':labels.get(kind,'手工给定'),'statement':quote,'original_value':number(raw),'original_unit':unit,
+            'provided_by':properties.permissions.username_of(user),'verified_against_calculation':False,
+            'quote_found_in_user_history':bool(selector.get('_quote_verified'))}
+    if original:source['linked_task_source']=original['source'];source['task_record_energy_ev']=original['energy_ev']
+    return {'task_id':(task or {}).get('task_id'),'model_name':str(name),'project_id':project['project_id'],
+            'energy_ev':value,'energy_definition':'provided_reference_energy','convergence':'给定能量，未自动核验收敛',
+            'source':source,'warnings':[labels.get(kind,'手工给定')+'的参考能量未与原计算自动核验。'+('请特别核对AI的理解。' if kind in ('ai_assumption','ai_interpretation') else '')],
+            'row':(original or {}).get('row',{})}
+
+
 def evaluate(db,user,payload):
     import properties
     projects=properties.authorized_projects(db,user,payload.get('project_ids'))
@@ -76,10 +100,12 @@ def evaluate(db,user,payload):
             project=pmap.get(selector.get('project_id') or projects[0]['project_id'])
             if project is None:raise properties.permissions.PermissionDenied('任务不属于本次授权项目')
             task_id=selector.get('task_id')
-            if not task_id:
-                gaps.append({'role':f'{index}.{role}','detail':f'还需要确认{LABELS[role]}使用哪项计算。','action':'从对话中的候选中选择，或输入构型名称。'});continue
-            task=properties.task_for(project,task_id)
-            item=read_energy(project,task,selector.get('observation_id'));item.update(role=f'{index}.{role}',role_label=LABELS[role]);bound[role]=item;inputs.append(item)
+            manual=selector.get('energy_ev') is not None or selector.get('energy_value') is not None
+            if not task_id and not manual:
+                gaps.append({'role':f'{index}.{role}','detail':f'还需要确认{LABELS[role]}使用哪份能量。','action':'可选择任务，也可以直接告诉AI你知道的能量。'});continue
+            task=properties.task_for(project,task_id) if task_id else None
+            item=provided_energy(selector,user,project,task) if manual else read_energy(project,task,selector.get('observation_id'))
+            item.update(role=f'{index}.{role}',role_label=LABELS[role]);bound[role]=item;inputs.append(item)
             if item['energy_ev'] is None:gaps.append({'role':item['role'],'detail':f'没有找到{LABELS[role]}“{item["model_name"]}”的能量。','action':'在任务详情同步计算结果（OUTCAR或OSZICAR）；尚未计算时再安排计算。'})
             for text in item['warnings']:warnings.append(f'{item["model_name"]}：{text}')
         settings=[i['row'].get('incar') or {} for i in bound.values()]

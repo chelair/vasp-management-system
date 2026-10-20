@@ -81,6 +81,14 @@ class Provider(BaseHTTPRequestHandler):
         if not payload.get('tools'):
             text=json.dumps({'text':'根据冻结事实 [[F01]]，这是重新组织的段落；未验证条件仍需保留。'},ensure_ascii=False)
             event={'content':text};reason='stop'
+        elif payload['model']=='flexible-report-model':
+            if count==0:
+                event={'tool_calls':[{'index':0,'id':'find_inputs','type':'function','function':{'name':'search_report_data','arguments':'{}'}}]};reason='tool_calls'
+            elif count==1:
+                args={'property_id':'adsorption.simple','model_queries':['一号板'],'adsorbate_query':'以前那个气体',
+                      'targets':[{'surface':{'task_id':'ads_missing_a_s'},'complex':{'task_id':'ads_missing_a_c'},'adsorbate':{'label':'用户已算过的气体','energy_ev':-3,'source_quote':'气体能量 -3 eV'}}]}
+                event={'tool_calls':[{'index':0,'id':'use_user_inputs','type':'function','function':{'name':'create_topic_report','arguments':json.dumps(args)}}]};reason='tool_calls'
+            else:event={'content':'已按你的意思生成报告。'};reason='stop'
         elif payload['model']=='simple-report-model':
             if count==0:
                 args={'property_id':'adsorption.simple','model_queries':['LMR'],'adsorbate_query':'H2'}

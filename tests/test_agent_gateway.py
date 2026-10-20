@@ -396,9 +396,13 @@ except scheduler._TaskBusy:
         self.assertEqual(self.hpc.submit_count(), 1)
         self.assertTrue((self.remote/'con1/POSCAR').is_file())
         self.assertEqual((self.remote/'con1/POSCAR').read_text(), (self.remote/'CONTCAR').read_text())
-        child = self.storage.load_db()['projects'][0]['tasks'][-1]
-        self.assertEqual(child['parent_task_id'], 't1')
-        self.assertEqual(child['job_id'], '230001')
+        tasks = {task['task_id']: task for task in self.storage.load_db()['projects'][0]['tasks']}
+        child = tasks[result.get('task_id')] if result.get('task_id') in tasks else None
+        created = next(task for task in tasks.values() if task.get('parent_task_id') == 't1')
+        self.assertEqual(created['parent_task_id'], 't1')
+        # 续算作业号登记在主任务，conN 只保留工作目录身份（2026-10-21 用户口径）。
+        self.assertEqual(tasks['t1']['job_id'], '230001')
+        self.assertIsNone(created.get('job_id'))
         self.assertEqual(result['reservation'], 24)
 
     def test_process_crash_after_bsub_before_ledger_completion(self):
@@ -689,6 +693,33 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertIsNotNone(self.gateway._unresolved(doc, 't1', directory='/remote/T1'))
         # 不传目录时保持保守的家庭级拦截
         self.assertIsNotNone(self.gateway._unresolved(doc, 't1'))
+
+    def test_continuation_owner_is_the_parent_task(self):
+        db = self.storage.load_db()
+        db['projects'][0]['tasks'].append({
+            'task_id': 't1_con1', 'task_type': 'opt', 'status': 'pending', 'model_name': 'T1_con1',
+            'remote_dir': 'STAGE1/T1/con1', 'dir_path': 'STAGE1/T1/con1',
+            'parent_task_id': 't1', 'input_state': {}})
+        self.storage.save_db(db, backup=False)
+        project, con = self.gateway.actions.load_task('t1_con1')
+        owner = self.jobs._family_owner_task(project, con)
+        self.assertEqual(owner['task_id'], 't1')
+
+    def test_continuation_submit_registers_job_on_parent_task(self):
+        self.hpc.write_inputs('STAGE1/T1/con1')
+        db = self.storage.load_db()
+        db['projects'][0]['tasks'].append({
+            'task_id': 't1_con1', 'task_type': 'opt', 'status': 'pending', 'model_name': 'T1_con1',
+            'remote_dir': 'STAGE1/T1/con1', 'dir_path': 'STAGE1/T1/con1',
+            'parent_task_id': 't1', 'input_state': {}})
+        self.storage.save_db(db, backup=False)
+        project, con = self.gateway.actions.load_task('t1_con1')
+        result = self.jobs.core_submit(project, con)
+        tasks = {task['task_id']: task for task in self.storage.load_db()['projects'][0]['tasks']}
+        # 续算目录提交的作业号登记在主任务；conN 自己只保留目录身份。
+        self.assertEqual(tasks['t1']['job_id'], result['job_id'])
+        self.assertEqual(tasks['t1']['status'], 'queued')
+        self.assertIsNone(tasks['t1_con1'].get('job_id'))
 
     def test_running_jobs_match_automation_execution_names(self):
         from dashboard import build_running_tasks

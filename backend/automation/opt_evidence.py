@@ -43,6 +43,21 @@ print(json.dumps({'directory':str(d),'sampled_epoch':time.time(),'files':files})
 '''
 
 
+def _owner_job(project, task):
+    """作业号登记在主任务：续算子任务没有自己的 job_id 时沿父链找（2026-10-21）。"""
+    current, seen = task, set()
+    while current:
+        job_id = str(current.get('job_id') or '')
+        if job_id:
+            return job_id
+        parent_id = current.get('parent_task_id')
+        if not parent_id or str(current.get('task_id')) in seen:
+            break
+        seen.add(str(current.get('task_id')))
+        current = next((t for t in project['tasks'] if str(t.get('task_id')) == str(parent_id)), None)
+    return ''
+
+
 def collect(project, root_task):
     directory = resolve_remote_path(project['server'], root_task['remote_dir']).rstrip('/')
     value = json.loads(unknown.remote(project['server'], f"python3 - {shlex.quote(directory)} <<'OPT_READ_ONLY'\n{_COLLECT}\nOPT_READ_ONLY"))
@@ -53,9 +68,10 @@ def collect(project, root_task):
         raise ValueError('输出目录超出任务边界')
     matching = [t for t in project['tasks'] if resolve_remote_path(project['server'], t['remote_dir']).rstrip('/') == value['directory']]
     task = next((t for t in matching if t.get('job_id')), matching[0] if matching else {})
+    job_id = _owner_job(project, task)
     rows = unknown.jobs(project['server'])
-    row = next((r for r in rows if r['job_id'] == str(task.get('job_id') or '') and r['directory'].rstrip('/') == value['directory']), None)
-    value.update(task_id=task.get('task_id'), job_id=str(task.get('job_id') or ''),
+    row = next((r for r in rows if r['job_id'] == job_id and r['directory'].rstrip('/') == value['directory']), None)
+    value.update(task_id=task.get('task_id'), job_id=job_id,
                  scheduler=row['state'] if row else 'UNKNOWN', checked_at=now_iso(), source='remote_readonly')
     if row and any(r['directory'].rstrip('/') == value['directory'] and r['job_id'] != row['job_id'] and r['state'] not in unknown.TERMINAL for r in rows):
         value['scheduler'] = 'UNKNOWN'

@@ -571,17 +571,20 @@ def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
                 fresh_project = next(p for p in db['projects'] if p['name'] == project['name'])
                 current_task = next(t for t in fresh_project['tasks'] if t['task_id'] == task['task_id'])
                 _verify_record_source(record, fresh_project, current_task)
-                current_id = str(current_task.get('job_id') or '')
+                # 作业号/状态登记在主任务（续算子任务只是工作目录）。
+                owner_id = family_id(task['task_id'])
+                owner_task = next((t for t in fresh_project['tasks'] if t['task_id'] == owner_id), current_task)
+                current_id = str(owner_task.get('job_id') or '')
                 same_job = current_id == str(match['job_id'])
                 if result.get('job_finished') and record.get('stop_requested_at') and same_job and not newer:
-                    if current_task['status'] in {'queued', 'running'}:
-                        update_task_status(db, project['name'], task['task_id'], 'pending', {'job_id': None, 'stop_requested_at': None, 'stop_requested_job_id': None})
+                    if owner_task['status'] in {'queued', 'running'}:
+                        update_task_status(db, project['name'], owner_id, 'pending', {'job_id': None, 'stop_requested_at': None, 'stop_requested_job_id': None})
                     else:
-                        current_task.update(stop_requested_at=None, stop_requested_job_id=None)
-                elif match['state'] in unknown.ACTIVE and not newer and current_task['status'] != 'archived':
+                        owner_task.update(stop_requested_at=None, stop_requested_job_id=None)
+                elif match['state'] in unknown.ACTIVE and not newer and owner_task['status'] != 'archived':
                     if not current_id or same_job:
                         status = 'queued' if match['state'] == 'PEND' else 'running'
-                        update_task_status(db, project['name'], task['task_id'], status, {'job_id': match['job_id']})
+                        update_task_status(db, project['name'], owner_id, status, {'job_id': match['job_id']})
             strict_audit(record, 'success', '只读LSF对账：' + match['state'])
         except Exception as exc:
             current = ledger.get(record['id'])

@@ -340,6 +340,29 @@ class ActionError(Exception):
         self.data = data or {}
 
 
+def _family_owner_task(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    """续算子任务的作业号/状态登记在主任务下（2026-10-21 用户口径）。
+
+    续算目录（conN）只是工作目录；任务族的主任务才是“这个作业属于谁”。
+    手工提交主任务时本来就是这么登记的，这里让自动化提交 conN 也一致。
+    """
+    current = task
+    seen = set()
+    while is_continuation_task(current) and current.get("parent_task_id"):
+        tid = str(current.get("task_id") or "")
+        if tid in seen:
+            break
+        seen.add(tid)
+        parent = next(
+            (item for item in project.get("tasks", []) if str(item.get("task_id")) == str(current["parent_task_id"])),
+            None,
+        )
+        if parent is None:
+            break
+        current = parent
+    return current
+
+
 def core_continuation(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     """同类型续算核心：远端建 conN 并登记隐藏续算子任务。
 
@@ -608,10 +631,11 @@ def _core_submit(
             {"work_dir": work_dir, "bsub_rc": bsub_rc, "raw_output": raw},
         )
     new_job_id = match.group(1)
+    owner_id = str(_family_owner_task(project, task).get("task_id") or task_id)
     try:
         with db_transaction() as db:
             update_task_status(
-                db, project["name"], task_id, "queued", {"job_id": new_job_id, "stop_requested_at": None, "stop_requested_job_id": None}
+                db, project["name"], owner_id, "queued", {"job_id": new_job_id, "stop_requested_at": None, "stop_requested_job_id": None}
             )
             from parameter_history import parameters, record_in_db
             captured = {}
@@ -619,7 +643,7 @@ def _core_submit(
                 item = re.search(r'@@@INPUT_' + name + r'=(.*)', raw)
                 if item:
                     captured[name] = base64.b64decode(item[1],validate=True).decode('utf-8',errors='replace')
-            record_in_db(db, task_id, event='submit', directory=work_dir, before={},
+            record_in_db(db, owner_id, event='submit', directory=work_dir, before={},
                          after=parameters(captured), job_id=new_job_id)
     except Exception as e:  # noqa: BLE001 - 状态落库失败不影响已提交事实
         _audit_log(project["name"], task_id, remote_dir, command, f"DB_WARN: {e}")

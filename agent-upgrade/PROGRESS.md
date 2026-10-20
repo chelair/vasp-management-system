@@ -422,3 +422,11 @@ OK
 - 按此规则上线托管初版（源码 34e3801 + 文档 dac2f81）：23:15 `npm run build` 通过（tsc + Vite + report runtime），23:16:23 重启，PID 3317374→**3359175**，`/api/health` 200（startedAt 23:16:23），前端 `index-DntTXNWK.js`，静态资源 200，SPA `/managed` 200，包内含“项目托管”。旧 `dist/` 副本在 `/tmp/dist-before-managed-231528`（不在仓库内），如需回滚可直接换回。
 - 启动日志正常：路径自检、巡检调度器、自动化 4 条规则均启动，重启后无 500。执行开关仍关闭、零授权，未提交任何 HPC 作业；未创建真实托管计划，未改 `data/` 业务数据。
 - 浏览器验收是隔离 React/Edge 环境（真实构建前）通过；生产登录态下的页面人工确认未做（无凭据），需要时由用户打开 `http://192.168.1.20:3001/managed` 查看。
+
+## 35. 「AI 报告撰写」开关移到智能报告页并上线（2026-10-20）
+
+- 用户要求把项目级「AI 报告撰写」开关从项目编辑弹窗移到智能报告页。报告页头按当前选中项目即时 `PUT /api/projects/{id}` 写 `ai_report_notes_enabled`，成功/关闭提示分别说明；项目编辑弹窗删除该开关与其保存字段，避免编辑项目时顺带覆盖。后端字段与接口未改。
+- 顺手更新 `agent-upgrade/R1-report-notes.md` 的使用说明；新增 `tests/browser/report-ai-toggle.cjs` 浏览器验收（真实 React + 假 fetch：默认关→开→关，断言两次 PUT 载荷、提示文案、旧位置已清理、无页面报错）。
+- 验证：`npm run typecheck` 通过；隔离 Vite 构建通过；浏览器验收通过。
+- 部署：23:25 `npm run build` 通过（产物 `index-CNTKGljD.js`，report runtime 565KB），静态资源 200、`/report` 200，包内含「AI 报告撰写」。本次只改前端，按 process.md §11.2 **不重启后端**，PID 仍 3359175，健康 200（startedAt 23:16:23）。旧 `dist/` 副本在 `/tmp/dist-before-aitoggle-232536`。
+- 源码 `8803136`，已直接推送 main。执行开关仍关闭，未改 `data/` 业务数据，未提交 HPC 作业。

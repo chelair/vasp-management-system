@@ -22,6 +22,7 @@ from routers import agent_execution as agent_execution_router
 from routers import automation as automation_router
 from routers import auxiliary as aux
 from routers import free_energy
+from routers import managed as managed_router
 from routers import (
     dashboard,
     groups,
@@ -199,6 +200,7 @@ app.include_router(meta.router, prefix="/api")
 app.include_router(auth_router.router, prefix="/api")
 app.include_router(automation_router.router, prefix="/api")
 app.include_router(agent_execution_router.router, prefix="/api")
+app.include_router(managed_router.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")

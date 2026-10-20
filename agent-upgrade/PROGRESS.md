@@ -394,3 +394,24 @@ OK
 - 必要验证：5项关键测试通过（含历史用户能量/无分子任务/别名任务绑定、单位转换、自定义能量回答、风险隐藏数据不变）；单条真实React/HTTP-SSE浏览器链路通过（模型先检索、再自行绑定别名和用户能量，隐藏风险并导出）。仅隔离Mock，无付费模型/真实科研值变更，无全量回归、无备份。最后类型/隔离构建及部署结果随后回填。
 
 - 22:12:14 CST上线完成：源码49892d4，单writer PID3287907→3317374，前端index-FO4qfsfQ.js，应用仍1.1.4。类型/隔离构建/报告runtime通过，健康和新静态资源200。旧报告数据未修改；无付费模型调用、无备份、无全量回归、无HPC写操作。代码与记录直接main同步，完成后停止。
+
+## 32. 巡检后项目托管：只读审视与构建提示词（2026-10-20）
+
+- 本轮按用户要求审视现状并给出最小版本开发提示词，未要求立即实现。核对巡检事件、OPT循环、执行网关/预算、队列节点采集、前端脚本、项目优先级、AI工具和相关测试定义。
+- 生产配置只读结果：自主执行关闭，零授权/OPT运行；动作台账12条不能当成AI托管验收；旧自动化开启且非dry-run，4条规则中1条启用；自动巡检按缺省启用/2小时。
+- 主要差距：项目规划/任务优先级覆盖/资源评分尚未串联，AI只能审阅既定OPT候选；逐任务事件而非整轮排序，运行中异常提前返回，pending首提缺触发；单队列/脚本不变校验与资源择优冲突，默认软结束指令尚不被预算解析接受；观察/修复计数、启动会话寿命与长期离线需求有出入。固定原子判力和软结束续算也是适用范围问题。
+- 交付 [现状与源码证据](managed-compute-audit.md) 及 [可直接交给开发助手的最小构建提示词](managed-compute-mvp-prompt.md)。只新增文档与入口，无业务代码/真实数据变化，无模型/HPC调用、备份、测试重跑、构建、部署、重启或推送。完成后停止，不能误报为托管功能已上线。
+
+## 33. 托管计划初版（M0）：计划/优先级/资源评分/脚本预览（2026-10-20）
+
+- 按 [托管审视](managed-compute-audit.md) 与 [最小构建提示词](managed-compute-mvp-prompt.md) 先做"不打开执行面"的最小可运行初版：只落地计划、任务级优先级、资源规则、候选排序与资源评分、后端脚本渲染；未改生产开关、未部署、未提交真实 HPC 作业。
+- 新增 `backend/managed_plan.py`：`data/managed_plan.json`（schema `managed-plan.1`），复用 `automation.store` 的进程锁+文件锁与原子写；严格字段白名单、版本号冲突 409、人工锁定不可被 AI 覆盖（`source=ai` 拒绝、`source=human` 可解锁）、结束计划仅人工可做；每次创建/修改写 `automation.audit`（trigger=managed）并在计划内保留最近 50 条 history。
+- 新增 `backend/managed_schedule.py`：任务层先排序（人工覆盖 > 阶段优先级 > 默认，同优先级按交付日期），候选含 pending→首发、unconverged/zombied→续算、queued/running→在跑（不产生动作）；资源层在已授权队列内枚举"节点×每节点核数"，硬过滤禁用/付费/超节点/超核数/超核时，再按队列 PEND、空闲核、节点数、walltime、核时、挂起风险做**确定性**评分，返回分项、原因和快照时间；模拟/过期/缺失快照一律 `blocked`，不拿假数据选资源。
+- 新增 `backend/vasp_script.py`：按 `src/utils/vaspLsf.ts` 八段结构渲染 `vasp.lsf`（软结束 `-wt/-wa` 默认开启），提供解析与提交前一致性检查；`tests/test_vasp_script.py` 用前端模板做漂移检查（固定段、常量、BSUB 顺序），避免两套模板悄悄分叉。
+- 新增 `backend/routers/managed.py`：`GET /api/managed`、`POST/GET/PATCH /plans`、`POST /plans/{id}/status`、`GET /plans/{id}/candidates`、`GET /plans/{id}/resource-plan`、`GET /plans/{id}/script-preview`；全部只读写计划，回应明确"未提交/未写入远端"；资源与脚本接口复用集群共享采集（TTL 缓存），不新增轮询。
+- 新增 `backend/managed_tools.py` 并接入 `ai_workspace`：`get_managed_plans` / `create_managed_plan` / `update_managed_plan` / `set_task_priority`，参数合同与 topic 工具一致（未知字段拒绝）；系统提示补充"说一句话→保存计划"的入口，仍禁止提交/停止作业。
+- 新增 `src/api/managed.ts`、`src/pages/Managed.tsx` 与侧边栏"项目托管"入口：展示目标、阶段、候选排序、为什么等待，支持暂停/恢复/结束、人工调优先级与锁定、只读资源建议与脚本预览；执行开关关闭时页面提示"不会自动推进"。
+- 必要验证：`tests/test_managed_plan.py` 18 项、`tests/test_managed_http.py` 5 项（真实 uvicorn/鉴权/403/409）、`tests/test_vasp_script.py` 7 项全部通过；受影响的 `test_ai_chat`（27）、`test_opt_loop`（47）、`test_properties`（35）、`test_topic_reports`（17）、`test_ai_inspections`（5）、`test_parameter_evidence`（26）、`test_automation_baseline`（10）通过；`npm run typecheck` 与隔离 Vite 构建（产物在 `/tmp`，生产 `dist/` 未动）通过；一条真实 Edge/React 浏览器验收通过（渲染计划→暂停/恢复→人工改优先级并锁定→资源建议提示模拟数据→脚本预览无方案提示）。
+- 修正一处既有测试：`tests/test_ai_chat.py` 的工具集快照漏了 §30/§31 已上线的 `create_topic_report/search_report_data/update_topic_report`（本轮之前就是红的），按当前工具集补齐并加入四个托管工具。
+- 未做（明确留待后续）：执行面接通（首发提交、续算、停止）、`opt_evidence` 运行中异常提前返回的修复、`budget.parse_lsf` 接受 `-wt/-wa`、多队列授权 schema、`max_steps` 与 repairs 分账、事件线程与模型解耦、旧自动化与托管的执行归属互斥、前端创建计划表单。
+- 说明与边界：隔离验证通过 ≠ 真实项目已验证。当前执行开关关闭、零授权，本初版不会自动提交任何作业。HTTP 用例第一次运行时夹具未隔离集群采集，触发过一次真实的**只读** bhosts/bqueues 采集（未写远端文件、未提交作业）；随后已改为固定空采集夹具，并在后续运行确认不再连接。未部署、未重启、未推送、未备份计算文件。

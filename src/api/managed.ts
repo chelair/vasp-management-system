@@ -59,7 +59,7 @@ export interface ManagedCandidate {
   task_name: string;
   task_type: string;
   status: string;
-  intent: 'first_submit' | 'continuation' | 'in_flight';
+  intent: 'first_submit' | 'continuation' | 'in_flight' | 'waiting_upstream';
   action: 'task.submit' | 'task.continuation' | null;
   priority: number;
   priority_source: 'override' | 'stage' | 'default';
@@ -106,10 +106,20 @@ export interface ResourceCandidate {
   explain: string[];
 }
 
+export interface ServerQueue {
+  queue: string;
+  cores_per_node: number;
+  walltime_hours: number;
+  paid: boolean;
+  suspend_risk?: string;
+  nodes: number;
+}
+
 export interface ResourcePlanResult {
   state: 'ok' | 'waiting' | 'blocked';
   reason: string;
   rules?: Partial<ManagedResourceRules>;
+  server_queues?: ServerQueue[];
   snapshot?: { ok?: boolean; reason?: string; ageSeconds?: number; queriedAt?: string };
   candidates: ResourceCandidate[];
   filtered?: Array<{ queue: string; reason: string }>;

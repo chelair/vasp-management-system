@@ -16,6 +16,8 @@ import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from task_paths import is_auxiliary_task
+
 READY = ("pending",)
 CONTINUE = ("unconverged", "zombied")
 IN_FLIGHT = ("queued", "running")
@@ -25,6 +27,9 @@ INTENTS = {
     **{s: "continuation" for s in CONTINUE},
     **{s: "in_flight" for s in IN_FLIGHT},
 }
+
+NEB_TYPE = "neb"
+UPSTREAM_DONE = ("completed",)
 
 _DEFAULT_TZ = "Asia/Shanghai"
 _RISK_SCORE = {"low": 6.0, "medium": 0.0, "high": -6.0}
@@ -75,6 +80,29 @@ def _priority(plan: dict, task_id: str, stage) -> tuple[int, str, bool]:
     return 0, "default", False
 
 
+def _upstream_blocker(project: dict, task: dict) -> str:
+    """NEB 依赖同组的 IS/FS 结构优化：上游没收敛就不算可推进。
+
+    续算子任务（conN）不参与判断，避免把正常的 walltime 接力当成未完成。
+    """
+    if str(task.get("task_type") or "") != NEB_TYPE:
+        return ""
+    group_id = str((task.get("group") or {}).get("group_id") or "")
+    if not group_id:
+        return ""
+    pending = [
+        str(item.get("model_name") or item.get("task_id"))
+        for item in project.get("tasks") or []
+        if str((item.get("group") or {}).get("group_id") or "") == group_id
+        and str(item.get("task_type") or "") == "opt"
+        and not is_auxiliary_task(item)
+        and str(item.get("status") or "") not in UPSTREAM_DONE
+    ]
+    if not pending:
+        return ""
+    return "上游结构优化未完成：" + "、".join(pending[:5]) + "；NEB 需要 IS/FS 收敛后再算"
+
+
 def candidates(plan: dict, project: dict) -> list:
     """当前项目里参与托管的候选任务（含不可推进的在跑任务，供界面解释）。"""
     stages = _stage_map(plan)
@@ -82,12 +110,18 @@ def candidates(plan: dict, project: dict) -> list:
     for order, task in enumerate(project.get("tasks") or []):
         if task.get("archived") is True:
             continue
+        # 续算目录（conN）与差分电荷分块是附属任务，不是独立候选；它们跟随主任务。
+        if is_auxiliary_task(task):
+            continue
         tid = str(task.get("task_id") or "")
         status = str(task.get("status") or "")
         intent = INTENTS.get(status)
         if not tid or not intent:
             continue
-        if intent == "in_flight":
+        blocker = _upstream_blocker(project, task)
+        if blocker:
+            intent, action, reason = "waiting_upstream", None, blocker
+        elif intent == "in_flight":
             action = None
             reason = "作业已在队列/运行中，等待巡检结果"
         elif intent == "first_submit":
@@ -271,17 +305,27 @@ def resource_plan(plan: dict, server_cfg: dict, snapshot, now: datetime | None =
     }
     allowed = list(rules.get("queues_allowed") or [])
     denied = set(rules.get("queues_denied") or [])
-    if not allowed:
-        result["reason"] = "计划未声明可用队列，请先确认这台服务器上允许使用哪些 CPU 队列"
-        return result
+    meta = _queue_meta(server_cfg)
+    # 无论是否已选队列，都把这台服务器有哪些队列给出来，页面才能让人一次性勾选。
+    result["server_queues"] = [
+        {"queue": name, "cores_per_node": entry.get("cores_per_node"),
+         "walltime_hours": round(float(entry.get("walltime_days") or 0) * 24.0, 2),
+         "paid": bool(entry.get("paid")), "suspend_risk": entry.get("risk"), "nodes": entry.get("nodes")}
+        for name, entry in meta.items()
+    ]
     health = freshness(snapshot, now)
     result["snapshot"] = health
+    if not health.get("ok") and not allowed:
+        result["state"] = "blocked"
+        result["reason"] = str(health.get("reason"))
+        return result
     if not health.get("ok"):
         result["state"] = "blocked"
         result["reason"] = str(health.get("reason"))
         return result
-
-    meta = _queue_meta(server_cfg)
+    if not allowed:
+        result["reason"] = "计划还没有选可用队列；在下面勾选这台服务器允许使用的 CPU 队列后即可评分"
+        return result
     live_map = {str(q.get("queue")): q for q in (snapshot.get("queues") or []) if isinstance(q, dict)}
     max_nodes = int(rules.get("max_nodes") or 1)
     max_cores = int(rules.get("max_cores") or 1)

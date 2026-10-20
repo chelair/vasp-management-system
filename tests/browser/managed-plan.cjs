@@ -14,8 +14,8 @@ const http = require('node:http'), path = require('node:path'), fs = require('no
 import {createRoot} from 'react-dom/client';
 import {App} from 'antd';
 import {MemoryRouter} from 'react-router-dom';
-import Managed from './src/pages/Managed';
-createRoot(document.getElementById('root')).render(<App><MemoryRouter initialEntries={['/managed']}><Managed/></MemoryRouter></App>);`,
+import { ManagedPanel } from './src/components/managed/ManagedPanel';
+createRoot(document.getElementById('root')).render(<App><MemoryRouter initialEntries={['/managed']}><ManagedPanel/></MemoryRouter></App>);`,
         loader: 'tsx',
         resolveDir: path.resolve('.'),
       },
@@ -61,7 +61,6 @@ createRoot(document.getElementById('root')).render(<App><MemoryRouter initialEnt
     await page.goto(url);
 
     // 1) 计划渲染：目标、阶段、候选排序（人工/AI 覆盖不出现，初始为阶段优先级）
-    await page.getByRole('heading', { name: '项目托管' }).waitFor();
     await page.getByText('周五交 model1 阶段报告，其余接着跑').waitFor();
     await page.getByText('阶段报告').first().waitFor();
     await page.getByText('待推进 2').waitFor();
@@ -101,6 +100,9 @@ createRoot(document.getElementById('root')).render(<App><MemoryRouter initialEnt
     // 4) 资源建议：模拟快照必须显示"不能作为自动提交依据"，且不出现候选
     await page.getByRole('button', { name: '资源建议' }).click();
     await page.getByText(/模拟数据或缺少真实采集/).waitFor();
+    // 空计划/未选队列时也要能看到服务器队列并可保存，而不是一片空白。
+    await page.getByText('这台服务器可用的队列').waitFor();
+    await page.getByRole('button', { name: '保存队列并评分' }).waitFor();
 
     // 5) 脚本预览：没有可用的真实快照 → 明确提示，不显示脚本
     await page.getByRole('button', { name: '脚本预览' }).click();

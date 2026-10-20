@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, App as AntApp, Button, Card, Empty, InputNumber, Modal, Popconfirm, Space, Switch, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntApp, Button, Card, Checkbox, Empty, InputNumber, Modal, Popconfirm, Space, Switch, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   FileTextOutlined,
@@ -35,6 +35,7 @@ const INTENT_LABEL: Record<ManagedCandidate['intent'], string> = {
   first_submit: '首发提交',
   continuation: '续算',
   in_flight: '在跑',
+  waiting_upstream: '等待上游',
 };
 
 const PRIORITY_SOURCE_LABEL: Record<ManagedCandidate['priority_source'], string> = {
@@ -128,7 +129,20 @@ const stageColumns: ColumnsType<ManagedStage> = [
   },
 ];
 
-function ResourceSuggestion({ result }: { result: ResourcePlanResult }) {
+function ResourceSuggestion({
+  result,
+  saving,
+  onSaveQueues,
+}: {
+  result: ResourcePlanResult;
+  saving?: boolean;
+  onSaveQueues: (queues: string[]) => void;
+}) {
+  const [selected, setSelected] = useState<string[]>(result.rules?.queues_allowed ?? []);
+  useEffect(() => {
+    setSelected(result.rules?.queues_allowed ?? []);
+  }, [result]);
+
   return (
     <Card size="small" title="资源建议（只读；没有写入或提交）">
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -151,7 +165,28 @@ function ResourceSuggestion({ result }: { result: ResourcePlanResult }) {
             </Space>
           </Card>
         ))}
-        {result.candidates.length === 0 && <Typography.Text type="secondary">没有满足条件的资源方案。</Typography.Text>}
+        {!!result.server_queues?.length && (
+          <div>
+            <Typography.Text strong>这台服务器可用的队列</Typography.Text>
+            <div style={{ margin: '6px 0' }}>
+              <Checkbox.Group value={selected} onChange={(values) => setSelected(values as string[])} style={{ display: 'block' }}>
+                {result.server_queues.map((queue) => (
+                  <Checkbox
+                    key={queue.queue}
+                    value={queue.queue}
+                    disabled={queue.paid && !result.rules?.paid_allowed}
+                    style={{ display: 'block', marginLeft: 0 }}
+                  >
+                    {queue.queue}（{queue.cores_per_node} 核/节点 · {queue.walltime_hours ? `${queue.walltime_hours} 小时` : '不限'} · {queue.paid ? '付费' : '免费'} · {queue.nodes} 节点）
+                  </Checkbox>
+                ))}
+              </Checkbox.Group>
+            </div>
+            <Button size="small" type="primary" loading={saving} disabled={selected.length === 0}
+              onClick={() => onSaveQueues(selected)}>保存队列并评分</Button>
+          </div>
+        )}
+        {result.candidates.length === 0 && <Typography.Text type="secondary">还没有可评分的资源方案：先选队列，再按当前集群快照评分。</Typography.Text>}
         {(result.filtered ?? []).length > 0 && (
           <Typography.Text type="secondary">
             已过滤：{result.filtered?.map((row) => `${row.queue}（${row.reason}）`).join('；')}
@@ -216,6 +251,22 @@ export function ManagedPanel() {
     }
   };
 
+  const saveQueues = async (plan: ManagedPlan, queues: string[]) => {
+    setBusy(`queues:${plan.id}`);
+    try {
+      const updated = await patchManagedPlan(plan.id, plan.revision, { resource_rules: { queues_allowed: queues } });
+      message.success('已保存可用队列，正在按当前快照评分');
+      await load(true);
+      const result = await fetchResourcePlan(updated.plan.id);
+      setResources((prev) => ({ ...prev, [plan.id]: result }));
+    } catch (error) {
+      message.error(errorText(error, '保存队列失败'));
+      await load(true);
+    } finally {
+      setBusy('');
+    }
+  };
+
   const showResource = async (plan: ManagedPlan) => {
     setBusy(`res:${plan.id}`);
     try {
@@ -263,7 +314,7 @@ export function ManagedPanel() {
       key: 'intent',
       width: 100,
       render: (intent: ManagedCandidate['intent']) => (
-        <Tag color={intent === 'in_flight' ? 'default' : intent === 'first_submit' ? 'green' : 'orange'}>
+        <Tag color={intent === 'in_flight' || intent === 'waiting_upstream' ? 'default' : intent === 'first_submit' ? 'green' : 'orange'}>
           {INTENT_LABEL[intent]}
         </Tag>
       ),
@@ -388,7 +439,7 @@ export function ManagedPanel() {
                       rowKey="stage_id"
                       columns={stageColumns}
                       dataSource={plan.stages}
-                      pagination={false}
+                      pagination={{ pageSize: 10, size: 'small', hideOnSinglePage: true }}
                       style={{ marginTop: 8 }}
                     />
                   </div>
@@ -401,12 +452,12 @@ export function ManagedPanel() {
                     rowKey="task_id"
                     columns={candidateColumns(plan)}
                     dataSource={summary.candidates ?? []}
-                    pagination={false}
+                    pagination={{ pageSize: 10, size: 'small', hideOnSinglePage: true }}
                     style={{ marginTop: 8 }}
                   />
                 </div>
 
-                {resources[plan.id] && <ResourceSuggestion result={resources[plan.id]} />}
+                {resources[plan.id] && <ResourceSuggestion result={resources[plan.id]} saving={busy === `queues:${plan.id}`} onSaveQueues={(queues) => void saveQueues(plan, queues)} />}
               </Space>
             </Card>
           );

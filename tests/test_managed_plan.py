@@ -189,6 +189,23 @@ class ManagedPlanTests(unittest.TestCase):
         self.assertNotIn("t5", [r["task_id"] for r in summary["candidates"]])
         self.assertTrue(summary["next"]["locked"] is False)
 
+    def test_auxiliary_continuations_and_neb_upstream_dependencies(self):
+        project = {"name": "P1", "tasks": [
+            {"task_id": "root", "task_type": "opt", "status": "unconverged", "model_name": "m", "dir_path": "P1/m"},
+            {"task_id": "con", "task_type": "opt", "status": "pending", "model_name": "m_con1", "dir_path": "P1/m/con1"},
+            {"task_id": "is", "task_type": "opt", "status": "running", "model_name": "PATH1_IS", "dir_path": "P1/neb/PATH1/opt/IS", "group": {"group_id": "g1"}},
+            {"task_id": "fs", "task_type": "opt", "status": "running", "model_name": "PATH1_FS", "dir_path": "P1/neb/PATH1/opt/FS", "group": {"group_id": "g1"}},
+            {"task_id": "neb", "task_type": "neb", "status": "pending", "model_name": "PATH1_neb", "dir_path": "P1/neb/PATH1/neb", "group": {"group_id": "g1"}},
+        ]}
+        rows = managed_schedule.candidates(self.plan, project)
+        ids = [row["task_id"] for row in rows]
+        # conN 是附属任务，不再作为独立候选
+        self.assertNotIn("con", ids)
+        neb = next(row for row in rows if row["task_id"] == "neb")
+        self.assertEqual(neb["intent"], "waiting_upstream")
+        self.assertIsNone(neb["action"])
+        self.assertIn("PATH1_IS", neb["reason"])
+
     def test_task_override_beats_stage_priority(self):
         updated = managed_plan.patch(self.plan["id"], self.alice, 1, {
             "task_overrides": [{"task_id": "t2", "priority": 100}]}, source="human")
@@ -236,7 +253,11 @@ class ManagedPlanTests(unittest.TestCase):
                                   source="human")
         result = managed_schedule.resource_plan(plan, SERVER_CFG, _snapshot(), now=NOW)
         self.assertEqual(result["state"], "waiting")
-        self.assertIn("未声明可用队列", result["reason"])
+        self.assertIn("还没有选可用队列", result["reason"])
+        # 即使还没选队列，也要把服务器有哪些队列给出来，页面才能一次性勾选。
+        names = [row["queue"] for row in result.get("server_queues") or []]
+        self.assertIn("normal_2week", names)
+        self.assertIn("paid_q", names)
 
     def test_resource_plan_respects_max_nodes_and_core_hours(self):
         plan = managed_plan.patch(self.plan["id"], self.alice, 1, {

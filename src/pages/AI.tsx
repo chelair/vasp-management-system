@@ -313,7 +313,7 @@ export default function AI() {
               ]} /><div className="ai-actions">{Object.entries(asObject(summary.status_counts)).map(([status, count]) => <Tag key={status}>{TASK_STATUS[status] ?? status} {show(count)}</Tag>)}</div>
               <h4>项目说明</h4><p className="ai-context-text">{show(project.description)}</p>
               <h4>计算目标</h4><p className="ai-context-text">{show(project.calc_description)}</p><h4>预期结果</h4><p className="ai-context-text">{show(project.expected_results)}</p>
-              <h4>项目任务概览</h4>{projectTasks.map((task) => <div className="ai-record" key={String(task.task_id)}>
+              <h4>项目任务概览{projectTasks.length > 10 ? `（前 10 / 共 ${projectTasks.length}）` : ''}</h4>{projectTasks.slice(0, 10).map((task) => <div className="ai-record" key={String(task.task_id)}>
                 <strong>{show(task.task_name)}</strong><span>{TYPES[String(task.task_type)] ?? show(task.task_type)} · {TASK_STATUS[String(task.status)] ?? show(task.status)}</span>
                 <span>作业 {show(task.job_id)} · 输出 {show(task.output_dir || '主目录')}</span>
               </div>)}

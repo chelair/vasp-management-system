@@ -4792,6 +4792,18 @@ body.is-atom-selecting * {
   align-items: center;
 }
 
+/* 「AI 报告撰写」开关：项目级设置，2026-10-20 从项目编辑弹窗移到报告页 */
+.report-ai-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
 .report-grid {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);

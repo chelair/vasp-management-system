@@ -11,6 +11,7 @@ import {
   Popover,
   Select,
   Skeleton,
+  Switch,
   Tag,
 } from 'antd';
 import {
@@ -33,7 +34,7 @@ import {
   reportHtmlUrl,
   saveReportEdits,
 } from '../api/reports';
-import { fetchProjects } from '../api/projects';
+import { fetchProjects, updateProject } from '../api/projects';
 import { createPortal } from 'react-dom';
 import EnergyForceCharts, { type EnergyForcePoint } from '../components/common/EnergyForceCharts';
 
@@ -179,6 +180,25 @@ export default function Report() {
   const [showClosedReports, setShowClosedReports] = useState(false);
   const [reportAIConnection, setReportAIConnection] = useState('');
   const [autoAIReports, setAutoAIReports] = useState<string[]>([]);
+  /** 「AI 报告撰写」开关（项目级设置，2026-10-20 从项目编辑弹窗移到这里） */
+  const [aiNotesSaving, setAINotesSaving] = useState(false);
+
+  const currentProject = projects.find((p) => p.id === selectedProject) ?? null;
+  const aiNotesEnabled = currentProject?.ai_report_notes_enabled === true;
+
+  const toggleAINotes = async (enabled: boolean) => {
+    if (!selectedProject) return;
+    setAINotesSaving(true);
+    try {
+      const res = await updateProject(selectedProject, { ai_report_notes_enabled: enabled });
+      setProjects((old) => old.map((p) => (p.id === selectedProject ? res.project : p)));
+      message.success(enabled ? '已开启 AI 报告撰写' : '已关闭 AI 报告撰写（已有注解保留）');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setAINotesSaving(false);
+    }
+  };
 
   const loadReports = useCallback(async () => {
     const list = await fetchProjectReports();
@@ -916,6 +936,20 @@ export default function Report() {
         subtitle="以项目为单位生成结构化报告：结构化数据（可喂大模型）+ Markdown + 图表，支持按章节导出 HTML / PDF"
         extra={
           <div className="report-actions">
+            <label
+              className="report-ai-toggle"
+              title="开启后可用自己的模型连接生成分析草稿；预览确认后保存。关闭保留已有注解。"
+            >
+              <span>AI 报告撰写</span>
+              <Switch
+                size="small"
+                checked={aiNotesEnabled}
+                loading={aiNotesSaving}
+                disabled={!selectedProject}
+                onChange={(checked) => void toggleAINotes(checked)}
+                aria-label="AI 报告撰写"
+              />
+            </label>
             <Button disabled={!selectedProject} onClick={() => setPropertiesOpen(true)}>科学性质</Button>
             <Button disabled={!selectedProject} onClick={() => setCompositionOpen(true)}>专题报告</Button>
             <Select

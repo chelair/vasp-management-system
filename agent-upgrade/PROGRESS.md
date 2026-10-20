@@ -430,3 +430,11 @@ OK
 - 验证：`npm run typecheck` 通过；隔离 Vite 构建通过；浏览器验收通过。
 - 部署：23:25 `npm run build` 通过（产物 `index-CNTKGljD.js`，report runtime 565KB），静态资源 200、`/report` 200，包内含「AI 报告撰写」。本次只改前端，按 process.md §11.2 **不重启后端**，PID 仍 3359175，健康 200（startedAt 23:16:23）。旧 `dist/` 副本在 `/tmp/dist-before-aitoggle-232536`。
 - 源码 `8803136`，已直接推送 main。执行开关仍关闭，未改 `data/` 业务数据，未提交 HPC 作业。
+
+## 36. 项目托管并入自动化页（2026-10-20）
+
+- 用户要求合并「项目托管」和「自动化」；选择：**并到「自动化」页，两个标签，暂时都只对管理员开放**。
+- 实现：托管页正文抽成 `src/components/managed/ManagedPanel.tsx`（去掉自己的 PageHeader/动画，保留刷新、去 AI 工作台、计划卡片、候选优先级编辑、资源建议、脚本预览、暂停/恢复/结束）；`src/pages/Automation.tsx` 改为「自动化」页头 + Tabs（项目托管默认 / 自动化规则），原自动化内容改为 `AutomationRules` 并保留其工具条；删除 `/managed` 路由、`src/pages/Managed.tsx` 与侧边栏独立入口，`/automation` 仍是 `AdminRoute`，后端鉴权未改。
+- 验证：`npm run typecheck` 通过；隔离 Vite 构建通过；新增 `tests/browser/automation-merged.cjs` 浏览器验收通过（两个标签、默认项目托管显示计划与「自主执行当前关闭」、切到自动化规则显示全局开关与新建规则、切回正常、请求分别命中 `/api/managed` 与 `/api/automation/*`、无页面报错）。
+- 部署：23:32 `npm run build` EXIT 0（产物 `index-CpGejSt0.js`），静态资源 200、`/automation` 200；仅前端改动，按 process.md §11.2 不重启后端，PID 仍 3359175，健康 200（startedAt 23:16:23）。旧 `dist/` 副本 `/tmp/dist-before-merge-233254`。
+- 源码 `6a6fe24` 已直接推送 main；执行开关仍关闭，无 HPC 写操作。

@@ -950,7 +950,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 兼容变化：原人工提交仍不要求Agent预算，但新增LSF/持久台账安全闸门；提交响应或本地写入不确定返回503及unknown说明，禁止直接重提。可返回的错误data带action_id/execution_status。原`GET /api/actions/runs/{id}`现在能读取持久化短动作；重启的running不再直接冒充已知failed。SSH配置GET仅admin可读，GET/PUT均不回显password，改为password_configured；不提供password时保留后端已有凭据。
 
-## 阶段R2：报告元素与专题组合（2026-10-20，本地验收通过，未部署）
+## 阶段R2：报告元素与专题组合（2026-10-20，已部署）
 
 完整报告路径不变。新元素只引用Evidence，数据在组合的evidence映射中去重冻结，存储为 `data/reports/compositions/<项目>/<id>.json`，不参与完整报告单份清理。所有项目数据接口复用登录与项目归属校验；admin按原权限，Agent不能绕过受控网关直接写业务API。
 

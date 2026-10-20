@@ -1288,6 +1288,81 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
             )
 
 
+def capture_property_evidence(work_dir):
+    """R3 bounded read-only evidence, embedded here because this script runs standalone.
+
+    Never falls back to another conN. Missing/unstable files remain explicit. Full
+    POTCAR contents are never returned, only per-dataset hashes and valences.
+    """
+    import hashlib
+    import stat
+    root = Path(work_dir)
+    result = {'schema_version': 'r3.evidence.1', 'directory': str(root), 'files': {}}
+    if root.is_symlink():
+        return {**result, 'error': 'symlink directory refused'}
+    def read(name, cap, sample=False):
+        path = root / name
+        if path.is_symlink():
+            return {'error': 'symlink refused'}
+        try:
+            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    return {'error': 'non-regular file'}
+                if before.st_size > cap and not sample:
+                    return {'error': 'file exceeds evidence limit', 'size': before.st_size}
+                raw = handle.read(cap)
+                if sample and before.st_size > cap:
+                    handle.seek(max(cap, before.st_size-cap))
+                    raw += b'\n@@R3_TAIL@@\n' + handle.read(cap)
+                after = os.fstat(handle.fileno())
+            return {'text': raw.decode('utf-8', 'replace'), 'size': before.st_size,
+                    'mtime_ns': before.st_mtime_ns, 'sha256': hashlib.sha256(raw).hexdigest(),
+                    'hash_basis': 'sample' if before.st_size > cap else 'full',
+                    'stable': (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns)}
+        except OSError:
+            return {'missing': True}
+    for name in ('POSCAR', 'INCAR', 'KPOINTS'):
+        result['files'][name] = read(name, 65536)
+    result['files']['OUTCAR'] = read('OUTCAR', 49152, sample=True)
+    result['files']['OSZICAR'] = read('OSZICAR', 8192, sample=True)
+    pot = read('POTCAR', 24*1024*1024)
+    text = pot.pop('text', '')
+    datasets = []
+    for block in text.split('End of Dataset'):
+        if not block.strip():
+            continue
+        title = re.search(r'TITEL\s*=\s*([^\n]+)', block)
+        zval = re.search(r'ZVAL\s*=\s*([\d.]+)', block)
+        datasets.append({'title': title[1].strip() if title else None,
+                         'zval': float(zval[1]) if zval else None,
+                         'sha256': hashlib.sha256(block.strip().encode()).hexdigest()})
+    result['potcar'] = {**pot, 'datasets': datasets}
+    # Keep only scientific header/termination/energy lines after hashing the sample.
+    # No arbitrary log text or hundreds of KiB per task in the retained archive.
+    out = result['files']['OUTCAR']
+    if 'text' in out:
+        out['text_basis'] = 'selected_scientific_lines_from_hashed_sample'
+        out['text'] = '\n'.join(line for line in out['text'].splitlines() if
+            re.search(r'\b(?:ENCUT|GGA|GGA_COMPAT|LDAU\w*|LHFCALC|METAGGA|IVDW|ISPIN|LSORBIT|LASPH|ISMEAR|SIGMA|LMAXMIX|NELECT|EDIFF|EDIFFG|NELM|NSW|IBRION|ISIF|IMAGES|AEXX|HFSCREEN|AGGAX|AGGAC|ALDAC|LUSE_VDW|LNONCOLLINEAR|LREAL|EFIELD|LDIPOL|IDIPOL|DIPOL|SAXIS|EFIELD_PEAD)\s*=|free\s+energy\s+TOTEN|generate k-points for:|shift:|POTCAR:|reached required accuracy|General timing and accounting|VERY BAD NEWS|ZBRENT:|BRMIX:', line))
+    # A file replaced during the collection invalidates this observation.
+    for name, record in result['files'].items():
+        if 'mtime_ns' in record:
+            try:
+                current = (root / name).stat()
+                record['stable'] &= (current.st_size, current.st_mtime_ns) == (record['size'], record['mtime_ns'])
+            except OSError:
+                record['stable'] = False
+    if 'mtime_ns' in pot:
+        try:
+            current = (root / 'POTCAR').stat()
+            result['potcar']['stable'] &= (current.st_size, current.st_mtime_ns) == (pot['size'], pot['mtime_ns'])
+        except OSError:
+            result['potcar']['stable'] = False
+    result['fingerprint'] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+    return result
+
+
 def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, Any]:
     """检查单个任务，任何异常只写入 error_messages，不影响其他任务。"""
     result = _new_result(task)
@@ -1492,6 +1567,18 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         if precision and precision.get("ok") is False:
             result["status"] = "low_precision"
             result["convergence"] = "low_precision"
+    # Additive metadata only; does not change status, SSH, or structure-sync policy.
+    try:
+        capture_dir = (result.get('current_output') or {}).get('dir') or work_dir
+        result['property_evidence'] = capture_property_evidence(capture_dir)
+        if task_type == 'neb':
+            root = Path(capture_dir)
+            images = sorted((p for p in root.iterdir() if p.is_dir() and p.name.isdigit()), key=lambda p: int(p.name))
+            result['property_evidence']['neb_images'] = [
+                {'label': image.name, 'evidence': capture_property_evidence(str(image))} for image in images[:32]]
+            result['property_evidence']['images_truncated'] = len(images) > 32
+    except Exception as exc:
+        result['property_evidence'] = {'schema_version': 'r3.evidence.1', 'error': str(exc)}
     return result
 
 

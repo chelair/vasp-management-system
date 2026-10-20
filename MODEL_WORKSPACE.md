@@ -1,5 +1,7 @@
 # 模型项目工作区与目录地图
 
+R3（2026-10-20本地开发，未部署）：新增只读科学工具get_property_recipes、discover_property_tasks和evaluate_property。按当前用户/会话项目重查，名称只生成候选，task_id/observation_id精确绑定。固定Python配方计算并保存独立数据需求报告；禁止模型覆盖公式/任务能量/氧化学势，未支持性质UNSUPPORTED。大原子数据和原始证据冻结在报告，工具只返回紧凑摘要。没有新增SSH/建模/HPC提交权限，跨项目比较和人工mu_O设置使用科学性质面板。详见[R3](agent-upgrade/R3-properties.md)。
+
 R1 报告撰写（2026-10-19已部署）：复用这里的账号私有加密连接，但独立报告请求只接收固定报告证据、返回文本草稿，不带聊天历史、文件/巡检/远端工具。不会因为工作台启用了工具而授予报告模型执行权限；项目默认关闭，明确预览保存后写入原报告 notes。详见 [R1](./agent-upgrade/R1-report-notes.md)。
 
 2026-10-19补充（已部署）：模型可按需查询最近5次实际参数记录，并在必要时独立读取远端固定范围证据。先get_task_inspections核对来源/时间，参与自动巡检的任务超过4小时、来源不符或参数缺失才get_remote_task_evidence，随后核对LSF当前状态；没有任意SSH命令权限。细节与测试见`agent-upgrade/03-parameter-evidence.md`。

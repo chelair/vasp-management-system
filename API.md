@@ -1,5 +1,11 @@
 # 接口文档（API.md）
 
+## R3 科学性质（本地开发，未部署）
+
+新增 `/api/properties/recipes`、`GET /discover`、`POST /evaluate`、`GET /reports/{report_id}`。五类固定PropertyRecipe、七类输入状态、跨项目逐项权限、同次观测来源/时效检查与Python确定性计算。未知性质UNSUPPORTED；不接受自定义公式或替代能量。氧空位必须验证中性、单O差异/位点及理论设置；缺mu_O不出绝对值，明确共同参考时可计算B−A。人工mu_O必须给每O数值、来源和条件；聊天工具不能设置该数值。
+
+完整请求/状态/科学边界与实例见 [R3合同](agent-upgrade/R3-properties.md)。这些接口只读原始数据并保存独立派生报告，不创建/提交HPC，不自动生成结构。原报告schema和R2组合接口保持兼容；新接口未部署，生产仍为v1.1.2。
+
 R1 报告 AI 注解（2026-10-19已部署）：原项目新增/更新支持 `ai_report_notes_enabled`（默认 false）；`GET /api/reports/project/{id}/notes/ai-status` 查询开关与目标，`POST .../notes/ai-preview` 接收 `{key, connection_id}`，仅返回草稿。复用发起用户私有工作台连接，不接收密钥、命令或前端自报科研结果。原 `PUT .../notes` 兼容人工编辑，可加 `draft_token` 保存经确认的草稿、`expected_revision` 防覆盖、`restore_previous=true` 恢复一次生成前保存文本。普通 `/generate` 不等待或调用模型。报告 schema 为1.2.0（兼容旧字段/布局），详细边界见 [R1 交接](./agent-upgrade/R1-report-notes.md)。
 
 v1.1.0参数证据补充（2026-10-19已部署）：已有`GET /api/jobs/tasks/{id}/input`增加`applied_history`，每个任务族最多5次实际上传/续算应用/成功提交的参数记录，草稿不计入；task context的input增加历史引用。

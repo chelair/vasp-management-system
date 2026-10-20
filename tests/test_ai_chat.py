@@ -249,7 +249,7 @@ class AIChatTests(unittest.TestCase):
         _, events = self.api(f"/runs/{run['id']}/events", raw=True)
         self.assertIn('"status": "completed"', events)
         self.assertEqual({t["function"]["name"] for t in REQUESTS[-1]["tools"]},
-                         {"list_workspace", "read_workspace", "write_workspace", "find_project_tasks", "get_task_inspections", "get_inspection_evidence", "get_opt_runs", "get_task_parameter_history", "get_remote_task_evidence"})
+                         {"list_workspace", "read_workspace", "write_workspace", "find_project_tasks", "get_task_inspections", "get_inspection_evidence", "get_opt_runs", "get_task_parameter_history", "get_remote_task_evidence", "get_property_recipes", "discover_property_tasks", "evaluate_property"})
 
     def test_stop_and_single_active_run(self):
         connection = self.connection("slow-model"); conversation = self.conversation(connection)

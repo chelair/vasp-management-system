@@ -41,6 +41,7 @@ import { getToken } from '../api/client';
 import PageHeader from '../components/common/PageHeader';
 import ReportNoteDialog from '../components/reports/ReportNoteDialog';
 import ReportCompositionEditor from '../components/reports/ReportCompositionEditor';
+import ScientificPropertiesPanel from '../components/reports/ScientificPropertiesPanel';
 import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
 import { ReportAIProvider, ReportAIControls } from '../components/reports/ReportAIContext';
@@ -153,6 +154,7 @@ export default function Report() {
   const [reports, setReports] = useState<ProjectReportMeta[]>([]);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [compositionOpen, setCompositionOpen] = useState(false);
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [detailRevision, setDetailRevision] = useState(0);
   const [detail, setDetail] = useState<ProjectReportDetail | null>(null);
@@ -906,6 +908,7 @@ export default function Report() {
       autoGenerate={Boolean(detail && autoAIReports.includes(detail.meta.report_id))}
       onAutoStarted={() => setAutoAIReports(old => old.filter(id => id !== detail?.meta.report_id))}>
     <PageTransition>
+      {propertiesOpen && selectedProject && <ScientificPropertiesPanel key={selectedProject} projectRef={selectedProject} projects={projects} onClose={() => setPropertiesOpen(false)}/>}
       {compositionOpen && selectedProject && <ReportCompositionEditor key={selectedProject} projectRef={selectedProject}
         projectName={projects.find(p => p.id === selectedProject)?.name || selectedProject} legacyHidden={detail?.meta.project_id === selectedProject ? hidden : []} onClose={() => setCompositionOpen(false)}/>}
       <PageHeader
@@ -913,6 +916,7 @@ export default function Report() {
         subtitle="以项目为单位生成结构化报告：结构化数据（可喂大模型）+ Markdown + 图表，支持按章节导出 HTML / PDF"
         extra={
           <div className="report-actions">
+            <Button disabled={!selectedProject} onClick={() => setPropertiesOpen(true)}>科学性质</Button>
             <Button disabled={!selectedProject} onClick={() => setCompositionOpen(true)}>专题报告</Button>
             <Select
               value={selectedProject}

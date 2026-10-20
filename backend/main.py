@@ -30,6 +30,7 @@ from routers import (
     meta,
     paths,
     project_reports,
+    properties as properties_router,
     report_compositions,
     projects,
     reports,
@@ -129,7 +130,7 @@ async def lifespan(_: FastAPI):
         pass
 
 
-app = FastAPI(title="VASP 计算项目管理系统 API", version="1.1.2", lifespan=lifespan)
+app = FastAPI(title="VASP 计算项目管理系统 API", version="1.1.3", lifespan=lifespan)
 
 # 认证中间件（第 2 步）：除白名单（POST /api/auth/login、GET /api/health）外，
 # /api/** 与 /docs、/openapi.json 一律要求登录
@@ -208,6 +209,7 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(project_reports.router, prefix="/api")
 app.include_router(report_compositions.router, prefix="/api")
+app.include_router(properties_router.router, prefix="/api")
 app.include_router(ssh.router, prefix="/api")
 app.include_router(inspections.router, prefix="/api")
 app.include_router(pending_actions_router.router, prefix="/api")

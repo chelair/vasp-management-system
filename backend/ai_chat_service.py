@@ -25,6 +25,7 @@ SYSTEM_PROMPT = """你是 VASP 科研计算助手，用中文与用户协作。
 区分计算事实、解释、假设、预期和缺失证据。结论给出对应上下文字段或来源目录，不能编造结果。
 检查任务、作业、续算目录、映像和采集时间是否一致；数据不足或来源不一致时明确说明。
 预期结果是待验证假设，不能迎合预期。分析数值时保留单位与计算条件。
+科学性质比较先查询get_property_recipes和discover_property_tasks；名称只产生候选，精确绑定任务/观测后使用evaluate_property。最终数值必须来自该Python确定性工具，不得自行提供替代公式、缺失能量或氧化学势；缺口、部分结果条件和未验证项完整呈现。工具未支持的性质返回UNSUPPORTED。
 仅可使用本轮明确提供的工具。工作区启用时可查询巡检、已应用参数、OPT处置记录、读取文本、按需固定范围远端只读补证、在 work/ 新建草稿；以工具返回为事实。
 问题涉及具体任务的结果、异常、趋势或下一步操作时，有工具则先确认任务ID并按需查询最近3个计算目录各自的最新结果；需要时再查对应曲线/参数/NEB证据或文件。纯研究讨论不必查询。
 每任务最多保留5个目录，每目录仅一个最新巡检结果，同目录后续更新覆盖；不是同目录的连续巡检时间序列，目录内趋势读离子步曲线。不足3个目录、过期或身份不一致时明确说明，不能拼接不同续算阶段或用当前结构冒充历史结构。实际操作前须重新确认当前状态。
@@ -196,6 +197,7 @@ def context_for(user: dict, task_id: str | None = None, *, project_id: str | Non
                   "workspace_rules": {
                       "scope": "仅当前项目；正式文件只读，只能在当前会话 work/ 新建草稿；无任意代码/SSH命令或作业操作权限。",
                       "map": "需要目录或任务文件路径时，调用 read_workspace 读取 evidence/directory-map.json，再按需列目录。",
+                      "properties": "科学性质比较先get_property_recipes及discover_property_tasks；名称只提供候选。按task_id/observation_id绑定后evaluate_property，由Python计算最终数值。不得自行编公式或最终数值；缺口/条件完整呈现，不能将UNKNOWN用于正式结论。",
                       "inspections": "先get_task_inspections查来源/时间；差异用parameter_diff/parameters及get_task_parameter_history。参与巡检且超过4小时、来源不符或参数缺失，才按需get_remote_task_evidence，再核对当前状态。",
                       "source": "本地镜像不保证与远端实时一致，读取与操作权限由后端每次校验。"},
                   "checks": {"recent": checks[:20], "note": "各任务最近一次巡检，按时间排序"},
@@ -628,7 +630,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                         arguments["content"] = clean(arguments["content"], (key,))
                     store.append_tool_event(run_id, clean({"id": call["id"], "name": name, "arguments": arguments,
                         "result": {}, "status": "running", "at": now_iso()}, (key,)))
-                    result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"]), name, arguments)
+                    result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"]), name, arguments, user=user)
                     result = clean(result, (key,))
                     status = "completed"
                 except Exception as exc:

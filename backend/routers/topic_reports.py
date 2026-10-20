@@ -47,6 +47,37 @@ def prepare(request:Request,payload:dict=Body()):
     return ok('已检查数据',doc)
 
 
+@router.post('/quick')
+@guard
+def quick(request:Request,payload:dict=Body()):
+    from topic_simple import create
+    user=actor(request)
+    if set(payload)-{'conversation_id','question','request','project_ids'}:raise ValueError('请求字段无效')
+    with ai_chat_store.database() as db:conversation=ai_chat_store.owned(db,'conversations',payload.get('conversation_id',''),str(user['user_id']))
+    return ok('报告已整理',create(user,conversation,payload.get('question',''),payload.get('request',{}),project_ids=payload.get('project_ids')))
+
+
+@router.post('/{topic_id}/questions')
+@guard
+def questions(topic_id:str,request:Request,payload:dict=Body()):
+    from topic_simple import answer
+    return ok('已按回答更新报告',answer(actor(request),topic_id,payload))
+
+
+@router.put('/{topic_id}/content')
+@guard
+def content(topic_id:str,request:Request,payload:dict=Body()):
+    from topic_simple import update_content
+    return ok('已保存',update_content(actor(request),topic_id,payload))
+
+
+@router.post('/{topic_id}/rebuild')
+@guard
+def rebuild(topic_id:str,request:Request):
+    from topic_simple import rebuild as rebuild_report
+    return ok('已重新生成简明报告',rebuild_report(actor(request),topic_id))
+
+
 @router.get('/{topic_id}')
 @guard
 def detail(topic_id:str,request:Request,revision:int|None=Query(default=None)):

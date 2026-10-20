@@ -2,8 +2,10 @@ import {request,requestBlobUrl} from './client';
 export interface TopicBlock {block_id:string;title:string;section:string;origin:'r2'|'question'|'property_fact'|'ai_text';type:string;text:string;data_status:string;source_refs:{evidence_id:string;version:string}[]}
 export interface TopicCandidate {block_id:string;title:string;type:string;task_id:string;project_id:string;availability:string}
 export interface TopicFact {fact_id:string;label:string;value:number;units:string;validation_status:string}
-export interface TopicMeta {topic_id:string;report_type:'topic';title:string;revision:number;stage:string;updated_at:string;conversation_id:string}
-export interface TopicReport extends TopicMeta {
+export interface TopicQuestion {id:string;title:string;options:{value:string;label:string;description?:string}[];hint?:string;error?:string}
+export interface TopicMeta {simple?:boolean;questions?:TopicQuestion[];result_summary?:string;topic_id:string;report_type:'topic';title:string;revision:number;stage:string;updated_at:string;conversation_id:string}
+export interface TopicReport extends Omit<TopicMeta,'simple'> {
+  simple?:{version:string;questions:TopicQuestion[];notes:string;warnings:string[]};
   original_question:string;created_at:string;project_ids:string[];
   sections:{section_id:string;title:string}[];
   blocks:TopicBlock[];hidden_block_ids:string[];deleted_block_ids:string[];
@@ -26,3 +28,7 @@ export const previewTopic=(id:string)=>request<{html:string}>(`${root}/${encodeU
 export const exportTopic=(id:string,print=false)=>requestBlobUrl(`${root}/${encodeURIComponent(id)}/export.html?print=${print}`);
 export const resolveTopic=(id:string,body:unknown)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/resolve`,{method:'POST',body:JSON.stringify(body)});
 export const regenerateTopicParagraph=(id:string,block:string,revision:number,connection:string)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/regenerate`,{method:'POST',body:JSON.stringify({block_id:block,expected_revision:revision,connection_id:connection})});
+
+export const answerTopic=(id:string,revision:number,answers:Record<string,string>)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/questions`,{method:'POST',body:JSON.stringify({expected_revision:revision,answers})});
+export const rebuildTopic=(id:string)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/rebuild`,{method:'POST',body:'{}'});
+export const updateTopicContent=(id:string,body:{expected_revision:number;title:string;notes:string;blocks:string[];deleted_block_ids:string[]})=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/content`,{method:'PUT',body:JSON.stringify(body)});

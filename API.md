@@ -1,5 +1,7 @@
 # 接口文档（API.md）
 
+2026-10-20：AI报告按用户要求改为“一句话、最小可用数据、直接查看结果”。吸附能有三个能量就给初步计算，质量问题仅警告；不确定时在原对话选择或自定义回答。默认不展示内部校验表。开发只做必要验证、不做无要求备份。见 [简明报告](agent-upgrade/simple-topic-report.md)；本条优先于下文历史严格草案流程。
+
 PMS吸附能空草案排查与修复（2026-10-20）：候选检索支持明确吸附物的 `PMS@model1` 命名；名称仅产生候选。未完成报告明确显示准备/计划阶段，冻结需求报告列出候选和校验缺口；可重新检查已有数据、选择单候选任务及不同计算快照。模型正文中的伪工具指令不执行并标失败。见 [修复记录](agent-upgrade/PMS-topic-report-fix.md)。
 
 ## 模型思考深度（本地完成，未部署）
@@ -1046,3 +1048,5 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 - 确认按任务族+旧job ID+服务器目标+根目录+归属绑定；新job ID/换目标不复用旧确认，新提交仍重新检查LSF。已有actions/{id}/resolve-finished的人工确认也绑定此身份，可真正解除旧作业缺失检查。
 
 2026-10-20台账同步补充（已随v1.1.2部署）：普通人工提交前和巡检异步事件后复用只读LSF对账，不改变巡检回传/频率、不新增轮询。终态与科学收敛独立；旧记录不恢复已停止作业号、不覆盖更新提交；来源变化/目录不符/查询失败保留阻塞。详见agent-upgrade/PROGRESS.md §20。
+
+简明报告接口：原AI工具新增create_topic_report；POST /api/reports/topic/quick（conversation_id、question、request，可选project_ids）；POST /{topic_id}/questions（expected_revision、answers）；PUT /{topic_id}/content（expected_revision、title、notes、blocks、deleted_block_ids）；POST /{topic_id}/rebuild生成新的简明报告。均沿用登录、所有权、no-store和revision。

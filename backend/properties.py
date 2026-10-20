@@ -58,6 +58,10 @@ RECIPES = {r.property_id:r for r in (
     PropertyRecipe('adsorption.simple', '一个中性吸附物的简单电子吸附能', '每组一个完整中性吸附物；complex = surface + adsorbate，复合体系/表面同晶胞且输入表面原子按序对应；固定参考态，不含ZPE、温熵、电位、溶剂和BSSE修正',
         ('targets[].complex','targets[].surface','targets[].adsorbate'), ('reference_conditions','adsorbate_reference_type'),
         ('stoichiometry','adsorption_relation','adsorption_cell','charge_state','convergence','theory_compatibility','adsorbate_reference_type'), 'adsorption', 'E_ads = E_complex - E_surface - E_adsorbate',version=adsorption_science.VERSION),
+    PropertyRecipe('adsorption.estimate', '基于已有三份能量的初步吸附能', '按选定的基底、吸附质、完整构型直接计算；质量问题作为警告，不作为算术门槛',
+        ('targets[].surface.energy','targets[].adsorbate.energy','targets[].complex.energy'), (),
+        ('finite_energies','role_selection'), 'adsorption', 'E_ads = E_complex - E_surface - E_adsorbate',
+        missing_data_policy='缺能量或角色时说明缺口；收敛、参数和来源问题不阻止初步计算',version='adsorption.minimum.1.0.0'),
     PropertyRecipe('neb.barrier', '读取已有NEB映像能量并比较正向能垒', '中性体系完整、收敛的既有NEB路径离散映像；不运行NEB或nebef，不等同热力学台阶',
         ('targets[].path',), (), ('image_completeness','neb_convergence','source_identity','reaction_correspondence'), 'barrier / subtract', 'E_a = max(E_images) - E_initial; delta = E_a(B) - E_a(A)'),
     PropertyRecipe('work_function.difference', '已有功函数之差', '相同真空方向、表面侧、可比理论条件与可靠真空平台的中性表面；不触发LOCPOT分析',
@@ -224,6 +228,11 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
     pid = payload.get('property_id')
     if not isinstance(pid,str) or len(pid)>100: raise ValueError('科学性质标识无效')
     if pid not in RECIPES: return {'schema_version':VERSION,'property_id':pid,'status':'UNSUPPORTED','results':[], 'reason':'未注册性质；禁止临时生成计算公式'}
+    if pid=='adsorption.estimate':
+        from adsorption_minimum import evaluate as minimum_evaluate
+        report=minimum_evaluate(db,user,payload)
+        if persist:_save(report)
+        return report
     projects = authorized_projects(db,user,payload.get('project_ids'))
     recipe = RECIPES[pid]
     targets = payload.get('targets',[])

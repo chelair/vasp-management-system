@@ -16,6 +16,8 @@ def tool(name,description,properties,required=()):
         'parameters':{'type':'object','properties':properties,'required':list(required),'additionalProperties':False}}}
 
 TOOLS=[
+    tool('create_topic_report','用户用一句话要求科研报告时优先且直接调用本工具，无需先查询和逐个计划元素。服务端自己查授权项目数据、使用注册配方与Python计算、选择现有报告元素并保存可读报告。吸附能有三个角色的能量就给初步结果；k点/未收敛等仅警告。仅多候选或无法确定角色时返回简短问题，界面自动给用户选择/自定义回答。不要求task_id，不先写文章再找数字。',
+         {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'adsorbate_query':{'type':'string','maxLength':100},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4}},('property_id','model_queries')),
     tool('list_topic_projects','查找当前用户可访问项目，只读名称/ID/任务数。专题跨项目查询须逐项目鉴权，最多4项目。默认直接使用会话项目，不要求用户手工查已有数据。',
          {'query':{'type':'string','maxLength':100},'offset':{'type':'integer','minimum':0}}),
     tool('prepare_topic_report','专题流程第一步：解析问题后给property_id和model_queries，服务端自动找任务、验证唯一结构关系/当前快照，复用R3计算，再冻结相关R2候选。DOS比较用dos.comparison（仅已有图及能量参考，不新增派生公式）。吸附能用adsorption.simple，model_queries为各表面体系如[LMR,LIC@LMR]，adsorbate_query为明确吸附物如H2；先验证同晶胞表面原子映射及一个吸附物组成。孤立/气相分子才使用isolated_molecule参考（Gamma采样），不得把它当自由能。多位点不能随机选，缺数值也继续生成缺口报告。氧参考仅可复用已有人工参考报告；common_oxygen_reference仅表示待确认的共同参考条件。原始问题由运行记录提供，不能伪造。',
@@ -51,7 +53,7 @@ def dispatch(user,conversation,run_id,name,arguments):
         if not isinstance(query,str) or len(query)>100 or type(offset) is not int or not 0<=offset<=1000:raise ValueError('项目查询/分页无效')
         projects=[p for p in permissions.visible_projects(load_db(),user) if query.casefold() in p['name'].casefold()]
         return {'items':[{'project_id':p['project_id'],'name':p['name'],'task_count':len(p.get('tasks',[]))} for p in projects[offset:offset+20]],'total':len(projects),'has_more':len(projects)>offset+20}
-    if name=='prepare_topic_report':
+    if name in ('prepare_topic_report','create_topic_report'):
         if not run_id:raise ValueError('专题工具必须绑定当前聊天运行')
         with ai_chat_store.database() as db:
             run=ai_chat_store.owned(db,'runs',run_id,str(user['user_id']))
@@ -59,6 +61,10 @@ def dispatch(user,conversation,run_id,name,arguments):
         messages=json.loads(run['snapshot'])['messages']
         if not messages or messages[-1]['role']!='user':raise ValueError('运行缺少原始用户问题')
         question=messages[-1]['content']
+        if name=='create_topic_report' or (arguments.get('property_id') in ('adsorption.simple','adsorption.estimate') and not arguments.get('targets')):
+            from topic_simple import create
+            request={k:v for k,v in arguments.items() if k in ('property_id','model_queries','adsorbate_query')}
+            return topics.summary(create(user,conversation,question,request,run_id=run_id,project_ids=arguments.get('project_ids')))
         # Candidate IDs are observations, not authorization to choose a site or
         # reservoir. Exact bindings from the model need an explicit user ID.
         for target in arguments.get('targets',[]):
@@ -75,6 +81,7 @@ def dispatch(user,conversation,run_id,name,arguments):
         return topics.summary(doc)
     doc=topics.load(user,arguments['topic_id'])
     if doc['conversation_id']!=conversation['id']:raise permissions.PermissionDenied('专题不属于当前对话')
+    if doc.get('simple'):return topics.summary(doc)
     payload={k:v for k,v in arguments.items() if k!='topic_id'}
     if name=='get_topic_report':return topics.summary(doc)
     if name=='plan_topic_report':doc=topics.plan(user,doc['topic_id'],payload)

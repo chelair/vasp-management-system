@@ -46,6 +46,16 @@ def setup(root):
                 if task['task_id']==pid+'_mol':task['current_output']={'latest_dir':'con_unknown'}
             rows[0].pop('property_evidence')
             old=copy.deepcopy(rows[-1]);old['current_output']={'latest_dir':'con0','dir':str(root/'old/con0')};rows.append(old)
+        if pid=='ads':
+            from task_paths import task_dir
+            import shutil
+            for task in p['tasks']:
+                mirror=task_dir(p['name'],task)/'files';mirror.mkdir(parents=True,exist_ok=True)
+                original=Path(task['remote_dir'])/'con1'
+                for name in ('POSCAR','CONTCAR'):
+                    source=original/name
+                    if not source.is_file():source=original/'POSCAR'
+                    shutil.copy2(source,mirror/name)
         projects.append(p);all_rows+=rows
     checks_store.CHECKS_DIR.mkdir(parents=True,exist_ok=True)
     (checks_store.CHECKS_DIR/'check_results_r4.json').write_text(json.dumps(all_rows))
@@ -71,6 +81,11 @@ class Provider(BaseHTTPRequestHandler):
         if not payload.get('tools'):
             text=json.dumps({'text':'根据冻结事实 [[F01]]，这是重新组织的段落；未验证条件仍需保留。'},ensure_ascii=False)
             event={'content':text};reason='stop'
+        elif payload['model']=='simple-report-model':
+            if count==0:
+                args={'property_id':'adsorption.simple','model_queries':['LMR'],'adsorbate_query':'H2'}
+                event={'tool_calls':[{'index':0,'id':'simple_report','type':'function','function':{'name':'create_topic_report','arguments':json.dumps(args)}}]};reason='tool_calls'
+            else:event={'content':'已整理好报告。需要确认时，在下方选择即可。'};reason='stop'
         elif payload['model'].startswith('topic-hostile'):
             if count==0:
                 args={'property_id':'oxygen_vacancy.neutral_single','model_queries':['LMR','LIC@LMR']}

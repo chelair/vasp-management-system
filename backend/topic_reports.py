@@ -130,7 +130,11 @@ def list_for(user,conversation_id=None):
             doc=json.loads(path.read_text())
             if conversation_id and doc.get('conversation_id')!=conversation_id:continue
             _authorize(user,doc)
-            result.append({k:doc.get(k) for k in ('topic_id','report_type','title','revision','stage','created_at','updated_at','conversation_id','original_question','project_ids')})
+            meta={k:doc.get(k) for k in ('topic_id','report_type','title','revision','stage','created_at','updated_at','conversation_id','original_question','project_ids','run_id')}
+            meta['questions']=(doc.get('simple') or {}).get('questions',[])
+            meta['simple']=bool(doc.get('simple'))
+            meta['result_summary']='；'.join(f"{r['label']}：{r['value']:+.6f} {r['units']}" for r in doc['data']['science'].get('results',[])) if doc.get('simple') else ''
+            result.append(meta)
         except (LookupError,ValueError,OSError,permissions.PermissionDenied):continue
     return sorted(result,key=lambda d:d['updated_at'],reverse=True)[:100]
 
@@ -432,6 +436,9 @@ def composition(doc):
 
 
 def render_html(doc,*,auto_print=False,stale=False):
+    if doc.get('simple'):
+        from topic_simple import render_html as simple_html
+        return simple_html(doc,auto_print=auto_print,stale=stale)
     output=r2.render_html(composition(doc),auto_print=auto_print)
     esc=lambda value:html.escape(str(value),quote=True)
     notes=[]
@@ -447,6 +454,8 @@ def render_html(doc,*,auto_print=False,stale=False):
 
 def summary(doc):
     data=doc['data']
+    if doc.get('simple'):
+        return {k:doc[k] for k in ('topic_id','title','revision','stage','conversation_id')} | {'report_ready':not bool(doc['simple']['questions']),'questions':doc['simple']['questions'],'results':[{k:r[k] for k in ('label','value','units')} for r in data['science'].get('results',[])],'missing_data':data['science'].get('gaps',[]),'note':'报告已自动整理并保存；有问题请让用户在对话中的选择卡回答。不必再计划元素、写草案或要求用户手工查数据。'}
     return {k:doc[k] for k in ('topic_id','report_type','title','revision','stage','conversation_id','original_question','project_ids','sections')} | {
         'preparation_status':data['preparation_status'],'property_definition':data['science'].get('recipe'),
         'currently_calculable':data['science'].get('currently_calculable',[]),'not_calculable':data['science'].get('not_calculable',[]),

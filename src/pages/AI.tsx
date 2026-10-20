@@ -253,6 +253,7 @@ export default function AI() {
                 </div>}
               </article>;
             })}
+            {detail.project_id&&<TopicReportLinks inline conversationId={detail.id} runs={detail.runs} onOpen={setTopicId} revision={topicRevision}/>}
           </div>
 
           {model&&detail.workspace_enabled&&(model.reasoning_capabilities.tool_policy==='unsupported'||model.reasoning_capabilities.tool_policy==='none_only'&&model.effective_reasoning_effort!=='none')&&<Alert type="warning" message={model.reasoning_capabilities.note}/>}

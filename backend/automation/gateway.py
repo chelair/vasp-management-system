@@ -157,7 +157,7 @@ def _record(project, task, action, actor, **fields):
             'project': project['name'], 'server': project['server'], 'action': action, 'actor': actor,
             'status': 'prepared', 'owner_pid': os.getpid(), 'owner_token': ledger.process_token(os.getpid()), 'created_at': now_iso(), 'updated_at': now_iso(), 'events': [],
             'execution_name': re.sub(r'[^A-Za-z0-9_.-]', '_', str(task.get('model_name') or 'task'))[:48] + '_vm_' + aid[4:], 'reservation': 0, 'attempted': False,
-            'submission_attempted': False, **fields}
+            'submission_attempted': False, 'source_binding': _completion_binding(project, task, job_id=''), **fields}
 
 
 def _unresolved(doc, family, exclude=None):
@@ -443,6 +443,9 @@ def safe_submit(project, task, *, dry_run=False):
         else:
             assert_remote_idle(project, task, plan['work_dir'], unknown.jobs(project['server']))
     else:
+        # 调用方已持有任务族锁；只读核实历史记录，不重放提交。
+        reconcile(task_id=task['task_id'], _lock_held=True)
+        project, task = actions.load_task(task['task_id'])
         with ledger.transaction() as doc:
             if _unresolved(doc, family):
                 raise ValueError('任务族存在活跃/UNKNOWN提交记录，请先对账')
@@ -475,55 +478,166 @@ def safe_submit(project, task, *, dry_run=False):
     return result
 
 
-def reconcile(action_id=None):
-    """只查询/绑定已有作业，绝不调用execute或bsub。启动和显式请求共用。"""
+def _verify_record_source(record, project, task):
+    binding = _completion_binding(project, task, job_id='')
+    if record.get('project') != project['name'] or record.get('server') != project['server']:
+        raise ValueError('作业来源项目/服务器已变化，需人工核实')
+    if record.get('source_binding') and record['source_binding'] != binding:
+        raise ValueError('作业来源绑定已变化，需人工核实')
+    directory = (record.get('plan') or {}).get('work_dir', '').rstrip('/')
+    root = binding['root_directory']
+    if directory and directory != root and not re.fullmatch(re.escape(root) + r'/con[0-9]+', directory):
+        raise ValueError('作业目录与任务族不符，需人工核实')
+
+
+def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
+    """只查询已有作业；支持锁内提交/停止及巡检事件复用，不重放远端动作。"""
     from automation import scheduler
     results = []
+    family = family_id(task_id) if task_id else None
+    rows_by_server = {} if _rows is None else dict(_rows)
     for record in list(ledger.read()['actions'].values()):
         if action_id and record['id'] != action_id:
             continue
-        if record.get('job_finished') or (record['status'] not in ledger.UNRESOLVED and not record.get('job_id')):
+        if family and record['family_id'] != family:
+            continue
+        if (record.get('job_finished') and not record.get('sync_error')) or (record['status'] not in ledger.UNRESOLVED and not record.get('job_id')):
             continue
         if record['status'] in {'prepared', 'running'} and ledger.owner_alive(record):
             continue
+        lock = None
         try:
-            lock = scheduler._acquire_task_lock(record['family_id'])
+            if not _lock_held:
+                lock = scheduler._acquire_task_lock(record['family_id'])
         except scheduler._TaskBusy:
             continue
         try:
             record = ledger.get(record['id'])
+            if record.get('job_finished') and not record.get('sync_error'):
+                continue
             if not record.get('attempted'):
                 results.append(ledger.update(record['id'], status='failed', reservation=0, reason='执行前中断，没有产生远端动作'))
                 continue
+            project, task = actions.load_task(record.get('continuation_task_id') or record['task_id'])
+            _verify_record_source(record, project, task)
             if record['status'] in {'prepared', 'running'}:
                 record = ledger.update(record['id'], status='interrupted', reason='原执行进程已退出，先对账，不重放')
-            match = unknown.find(record, unknown.jobs(record['server']))
+            if record.get('job_finished') and record.get('scheduler_state') in unknown.TERMINAL:
+                # 已持久化终态后仅重试本地同步，LSF历史被清理也不撤销结束事实。
+                match = {'job_id': record['job_id'], 'state': record['scheduler_state'],
+                         'directory': (record.get('plan') or {}).get('work_dir', '')}
+            else:
+                if record['server'] not in rows_by_server:
+                    rows_by_server[record['server']] = unknown.jobs(record['server'])
+                match = unknown.find(record, rows_by_server[record['server']])
             if not match:
                 results.append(ledger.update(record['id'], status='unknown', reason='LSF未能唯一识别作业，暂停并要求人工核实'))
                 continue
+            directory = (record.get('plan') or {}).get('work_dir')
+            if directory and match['directory'].rstrip('/') != directory.rstrip('/'):
+                raise ValueError('LSF作业目录与提交快照不符，需人工核实')
             if match['state'] not in unknown.ACTIVE | unknown.TERMINAL:
                 results.append(ledger.update(record['id'], status='unknown', reason='LSF状态未知'))
                 continue
-            project, task = actions.load_task(record.get('continuation_task_id') or record['task_id'])
-            with db_transaction() as db:
-                current_task = next(t for p in db['projects'] if p['name'] == project['name']
-                                    for t in p['tasks'] if t['task_id'] == task['task_id'])
-                status = current_task['status']
-                if match['state'] in unknown.ACTIVE and status != 'archived':
-                    status = 'queued' if match['state'] == 'PEND' else 'running'
-                update_task_status(db, project['name'], task['task_id'], status, {'job_id': match['job_id']})
-            fields = {'status': 'succeeded', 'job_id': match['job_id'], 'scheduler_state': match['state']}
+            fields = {'status': 'succeeded', 'reason': None, 'job_id': match['job_id'], 'scheduler_state': match['state'], 'sync_error': None}
             if match['state'] in unknown.TERMINAL:
-                # LSF未提供可信实际核时：采用申请上界计入消耗，不伪装实际计费。
                 fields.update(reservation=0, consumed_core_hours=record.get('reservation', 0) + record.get('consumed_core_hours', 0),
                               consumption_basis='reserved_upper_bound', job_finished=True)
-            results.append(ledger.update(record['id'], **fields))
+            # 先持久化远端事实；项目库失败可继续恢复，不把已结束再标成UNKNOWN。
+            result = ledger.update(record['id'], **fields)
+            results.append(result)
+            # 仅恢复当前活跃作业；终态不覆盖科学结论、不复活已停止/归档任务。
+            records = list(ledger.read()['actions'].values())
+            position = next(i for i, a in enumerate(records) if a['id'] == record['id'])
+            newer = any(a['family_id'] == record['family_id'] and a.get('submission_attempted')
+                        for a in records[position + 1:])
+            with db_transaction() as db:
+                fresh_project = next(p for p in db['projects'] if p['name'] == project['name'])
+                current_task = next(t for t in fresh_project['tasks'] if t['task_id'] == task['task_id'])
+                _verify_record_source(record, fresh_project, current_task)
+                current_id = str(current_task.get('job_id') or '')
+                same_job = current_id == str(match['job_id'])
+                if result.get('job_finished') and record.get('stop_requested_at') and same_job and not newer:
+                    if current_task['status'] in {'queued', 'running'}:
+                        update_task_status(db, project['name'], task['task_id'], 'pending', {'job_id': None, 'stop_requested_at': None, 'stop_requested_job_id': None})
+                    else:
+                        current_task.update(stop_requested_at=None, stop_requested_job_id=None)
+                elif match['state'] in unknown.ACTIVE and not newer and current_task['status'] != 'archived':
+                    if not current_id or same_job:
+                        status = 'queued' if match['state'] == 'PEND' else 'running'
+                        update_task_status(db, project['name'], task['task_id'], status, {'job_id': match['job_id']})
             strict_audit(record, 'success', '只读LSF对账：' + match['state'])
         except Exception as exc:
-            results.append(ledger.update(record['id'], status='unknown', reason='对账失败：' + str(exc)))
+            current = ledger.get(record['id'])
+            if current.get('job_finished'):
+                # 科学状态/审计落库故障不能撤销已经核实的LSF结束事实。
+                ledger.update(record['id'], sync_error=str(exc))
+            else:
+                results.append(ledger.update(record['id'], status='unknown', reason='对账失败：' + str(exc)))
         finally:
-            scheduler._release_task_lock(lock)
+            if lock is not None:
+                scheduler._release_task_lock(lock)
+    if task_id:
+        lock = None
+        try:
+            if not _lock_held:
+                lock = scheduler._acquire_task_lock(task_id)
+            project, task = actions.load_task(task_id)
+            if (task.get('stop_requested_at') and task.get('job_id')
+                    and str(task.get('stop_requested_job_id') or '') == str(task['job_id'])):
+                if project['server'] not in rows_by_server:
+                    rows_by_server[project['server']] = unknown.jobs(project['server'])
+                _sync_stop_metadata(project, task, rows_by_server[project['server']])
+        except scheduler._TaskBusy:
+            pass
+        finally:
+            if lock is not None:
+                scheduler._release_task_lock(lock)
     return results
+
+
+def sync_stopped_job(project, task):
+    """bkill已接受后锁内调用；只有LSF终态允许清号，查询失败保留阻塞。"""
+    job_id = str(task['job_id'])
+    family = family_id(task['task_id'])
+    requested_at = now_iso()
+    records = [a for a in ledger.read()['actions'].values()
+               if a['family_id'] == family and str(a.get('job_id') or '') == job_id and not a.get('job_finished')]
+    for record in records:
+        ledger.update(record['id'], stop_requested_at=requested_at)
+    with db_transaction() as db:
+        current = next(t for p in db['projects'] if p['name'] == project['name']
+                       for t in p['tasks'] if t['task_id'] == task['task_id'])
+        if str(current.get('job_id') or '') != job_id:
+            raise ValueError('停止期间任务作业号变化，保留原状态并要求对账')
+        current.update(stop_requested_at=requested_at, stop_requested_job_id=job_id)
+    rows = unknown.jobs(project['server'])
+    reconcile(task_id=task['task_id'], _lock_held=True, _rows={project['server']: rows})
+    return _sync_stop_metadata(project, task, rows)
+
+
+def _sync_stop_metadata(project, task, rows):
+    job_id = str(task['job_id'])
+    family = family_id(task['task_id'])
+    records = [a for a in ledger.read()['actions'].values()
+               if a['family_id'] == family and str(a.get('job_id') or '') == job_id]
+    matches = [r for r in rows if r['job_id'] == job_id]
+    root = _completion_binding(project, task)['root_directory']
+    terminal = len(matches) == 1 and matches[0]['state'] in unknown.TERMINAL
+    directory = matches[0]['directory'].rstrip('/') if len(matches) == 1 else ''
+    terminal = terminal and (directory == root or bool(re.fullmatch(re.escape(root) + r'/con[0-9]+', directory)))
+    # 有台账时还必须通过唯一执行名、目录和来源校验。
+    terminal = terminal and all(ledger.get(a['id']).get('job_finished') for a in records)
+    if terminal:
+        with db_transaction() as db:
+            current = next(t for p in db['projects'] if p['name'] == project['name']
+                           for t in p['tasks'] if t['task_id'] == task['task_id'])
+            if str(current.get('job_id') or '') == job_id:
+                if current['status'] in {'queued', 'running'}:
+                    update_task_status(db, project['name'], task['task_id'], 'pending', {'job_id': None, 'stop_requested_at': None, 'stop_requested_job_id': None})
+                else:
+                    current.update(stop_requested_at=None, stop_requested_job_id=None)
+    return terminal
 
 
 def prepare_legacy(job):

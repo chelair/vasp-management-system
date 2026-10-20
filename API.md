@@ -486,7 +486,7 @@ body: {
 
 | 分类 | 接口 | 备注 |
 | --- | --- | --- |
-| 作业 | `POST /jobs/tasks/{id}/stop` | `bkill`；"already finished" 按成功处理；**高风险** |
+| 作业 | `POST /jobs/tasks/{id}/stop` | 任务族锁内 `bkill`；核对LSF终态后同步提交台账、释放预留并清号；未确认返回 `stop_pending=true`，保留作业号/阻塞；**高风险** |
 | 作业 | `POST /jobs/tasks/{id}/archive` · `/unarchive` | 归档/重开（自由能主任务连带 frac） |
 | 作业 | `POST /jobs/tasks/{id}/build-ele-inputs` | ele 输入（`{source_type:"opt"/"external", source_task_id?, ...}`） |
 | 作业 | `POST /jobs/tasks/{id}/create-diff-charge` | **差分电荷分块计算**（ele 附属，v0.9.44）：`{blocks:[{label,atoms}], incar_params?}` → 见 §4.2 ④b |
@@ -902,6 +902,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 | `PATCH /api/agent-execution/grants/{id}` | 人工owner/admin；只接受`{"enabled":true/false}`，不能由Agent改预算 |
 | `POST /api/agent-execution/actions` | Agent有效write scope或项目人工身份；必须有有效grant、动作/任务白名单和幂等键 |
 | `POST /api/agent-execution/actions/{id}/reconcile` | 人工owner/admin只读对账；没有bsub或队列重放 |
+| `POST /api/agent-execution/tasks/{task_id}/reconcile` | 人工owner/admin按任务族只读对账；返回blocked/job_id/scheduler_state/reason；不重新提交、不强制解除UNKNOWN |
 | `POST /api/agent-execution/actions/{id}/resolve-not-submitted` | 人工确认未知动作没有提交；`confirmed_no_submission:true,evidence`，证据至少20字 |
 | `POST /api/agent-execution/actions/{id}/resolve-finished` | 已知Job ID但历史已清理时人工确认结束；`confirmed_finished:true,evidence`，按申请上界结算 |
 
@@ -997,3 +998,5 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 - `POST /api/agent-execution/tasks/{task_id}/prior-job/confirm-finished`：仅人工owner/admin，必须四字段 `{confirmed_finished:true, expected_job_id, review_fingerprint, evidence}`。核实依据20–4000字，确认时重查LSF并检查任务族锁、旧job ID/服务器签名/目录/归属未变化、无未完成或UNKNOWN动作；活跃或未知目录/LSF失败一律拒绝。写原agent_execution台账和严格审计，不改job_id、科学状态、预算开关，不提交/续算远端。
 - 新前端仅在提交报“原作业无法在LSF确认结束”时显示弹窗；LSF回执必须匹配旧job ID、工作目录和结束时间，才能提供“确认旧作业已结束并解除报错”按钮。用户不必另外输入依据/勾选；一次点击是明确人工确认，服务端保存展示过的依据并重新查LSF。回执不全时保持阻塞，不把查不到当作结束。
 - 确认按任务族+旧job ID+服务器目标+根目录+归属绑定；新job ID/换目标不复用旧确认，新提交仍重新检查LSF。已有actions/{id}/resolve-finished的人工确认也绑定此身份，可真正解除旧作业缺失检查。
+
+2026-10-20台账同步补充（本地完成，未部署）：普通人工提交前和巡检异步事件后复用只读LSF对账，不改变巡检回传/频率、不新增轮询。终态与科学收敛独立；旧记录不恢复已停止作业号、不覆盖更新提交；来源变化/目录不符/查询失败保留阻塞。详见agent-upgrade/PROGRESS.md §20。

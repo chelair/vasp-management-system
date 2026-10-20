@@ -211,6 +211,8 @@ export async function unarchiveTask(taskId: string): Promise<{
 export async function stopTask(taskId: string): Promise<{
   job_id: string;
   new_status: string;
+  stop_pending?: boolean;
+  sync_warning?: string;
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/stop`, {
     method: 'POST',
@@ -835,4 +837,11 @@ export async function deleteTask(
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}`, {
     method: 'DELETE',
   });
+}
+
+/** 显式只读对账任务族，不重新提交或人工强制解除。 */
+export function reconcileTask(taskId: string) {
+  return request<{blocked: boolean; job_id?: string; scheduler_state?: string; reason?: string}>(
+    `/agent-execution/tasks/${encodeURIComponent(taskId)}/reconcile`, {method: 'POST'},
+  );
 }

@@ -611,7 +611,7 @@ def _core_submit(
     try:
         with db_transaction() as db:
             update_task_status(
-                db, project["name"], task_id, "queued", {"job_id": new_job_id}
+                db, project["name"], task_id, "queued", {"job_id": new_job_id, "stop_requested_at": None, "stop_requested_job_id": None}
             )
             from parameter_history import parameters, record_in_db
             captured = {}
@@ -1533,7 +1533,16 @@ def unarchive_task(task_id: str):
 
 @router.post("/tasks/{task_id}/stop")
 def stop_task(task_id: str):
-    """停止作业：远程 bkill 终止运行中的作业，任务状态回退为待提交。"""
+    """停止与提交/续算共用任务族锁，锁内重新读取作业身份。"""
+    try:
+        with _task_action_lock(task_id):
+            return _stop_task_locked(task_id)
+    except ActionError as exc:
+        return JSONResponse(status_code=exc.status_code, content=fail(exc.message))
+
+
+def _stop_task_locked(task_id: str):
+    """bkill仅表示请求已接受；经LSF确认终态后才能回退待提交。"""
     try:
         project, task = _resolve_task(task_id)
     except LookupError as e:
@@ -1556,7 +1565,7 @@ def stop_task(task_id: str):
     try:
         result = ssh.run_remote(
             server,
-            f'bash -c "source {profile} >/dev/null 2>&1; bkill {job_id}"',
+            'bash -c ' + shlex.quote('source ' + shlex.quote(profile) + ' >/dev/null 2>&1; bkill ' + shlex.quote(str(job_id))),
             timeout=60,
         )
     except permissions.PermissionDenied:
@@ -1574,31 +1583,21 @@ def stop_task(task_id: str):
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
         return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
 
-    # 作业已终止：状态回退为待提交（可重新提交或续算），并**清掉作业号**——
-    # bkill 后 LSF 不再有该作业，若保留 job_id，续算的"运行中"判定会拿着这个
-    # 旧号去查（查不到）而误判为"可重新提交"（2026-09-29 Ag@Al2O3_I4 残留 230579）。
+    confirmed = False
+    sync_error = ''
     try:
-        with db_transaction() as db:
-            update_task_status(db, project["name"], task_id, "pending", {"job_id": None})
-    except permissions.PermissionDenied:
-        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
-    except Exception as e:  # noqa: BLE001 - 状态落库失败不影响停止事实
-        _audit_log(project["name"], task_id, str(job_id), "bkill", f"DB_WARN: {e}")
-    _audit_log(
-        project["name"],
-        task_id,
-        str(job_id),
-        "bkill",
-        "OK (already finished)" if already_finished else "OK",
-    )
-    return ok(
-        "作业已停止（作业此前已结束）" if already_finished else "作业已停止",
-        {
-            "job_id": job_id,
-            "new_status": "pending",
-            "already_finished": already_finished,
-        },
-    )
+        from automation.gateway import sync_stopped_job
+        confirmed = sync_stopped_job(project, task)
+    except Exception as exc:  # 停止请求已发出，查询/落库失败不能伪装已停止。
+        sync_error = str(exc)
+    _audit_log(project['name'], task_id, str(job_id), 'bkill',
+               ('OK; LSF结束及台账已确认' if confirmed else 'ACCEPTED; 等待LSF结束确认') +
+               (('; SYNC_WARN: ' + sync_error) if sync_error else ''))
+    _, current_task = _resolve_task(task_id)
+    return ok('作业已停止' if confirmed else '停止请求已发出，等待LSF结束确认；暂不可重新提交', {
+        'job_id': job_id, 'new_status': current_task['status'],
+        'already_finished': already_finished, 'stop_pending': not confirmed, 'sync_warning': sync_error,
+    })
 
 
 # ------------------------------------------------------------ 输入文件（v0.8.2）

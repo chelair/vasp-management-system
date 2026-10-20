@@ -96,7 +96,10 @@ def _handle(event: Dict[str, Any]) -> None:
 
     if event_type == "inspection_completed":
         task_id = str(event.get("task_id") or "")
-        from automation import opt_loop
+        from automation import gateway, opt_loop
+        # 不信任巡检的科学完成状态作为LSF终态；独立只读对账，不改变巡检回传。
+        gateway.reconcile(task_id=task_id)
+        db = load_db()
         opt_loop.inspection_event(task_id)
         for project in db.get("projects", []):
             for task in project.get("tasks", []):

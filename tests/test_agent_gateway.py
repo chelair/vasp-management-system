@@ -630,3 +630,202 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.storage.save_db(db, backup=False)
         with self.assertRaises(self.permissions.PermissionDenied): self.execute()
         self.assertEqual(self.hpc.submit_count(), 0)
+
+    def _terminal_rows(self, record, state='EXIT'):
+        return [{'job_id': record['job_id'], 'state': state,
+                 'directory': record['plan']['work_dir'], 'name': record['execution_name']}]
+
+    def _stop_with_rows(self, rows):
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={'exit_code': 0, 'stdout': 'Job <230001> is being terminated'}), \
+             patch.object(self.unknown, 'jobs', return_value=rows):
+            return self.jobs.stop_task('t1')
+
+    def test_stop_updates_ledger_and_task_after_lsf_terminal(self):
+        record = self.execute()
+        response = self._stop_with_rows(self._terminal_rows(record))
+        self.assertFalse(response['data']['stop_pending'])
+        self.assertTrue(self.ledger.get(record['id'])['job_finished'])
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        self.assertEqual(task['status'], 'pending')
+        self.assertIsNone(task['job_id'])
+        self.assertIsNone(self.gateway._unresolved(self.ledger.read(), 't1'))
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_stop_accepted_but_running_keeps_identity_until_reconcile(self):
+        record = self.execute()
+        response = self._stop_with_rows(self._terminal_rows(record, 'RUN'))
+        self.assertTrue(response['data']['stop_pending'])
+        self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+        self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], record['job_id'])
+        with patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record)):
+            self.gateway.reconcile(task_id='t1')
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        self.assertEqual(task['status'], 'pending')
+        self.assertIsNone(task['job_id'])
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_stop_query_failure_retains_blocker_and_job_id(self):
+        record = self.execute()
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={'exit_code': 0}), \
+             patch.object(self.unknown, 'jobs', side_effect=ValueError('SSH查询失败')):
+            response = self.jobs.stop_task('t1')
+        self.assertTrue(response['data']['stop_pending'])
+        self.assertIn('SSH', response['data']['sync_warning'])
+        self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], record['job_id'])
+        self.assertIsNotNone(self.gateway._unresolved(self.ledger.read(), 't1'))
+
+    def test_stop_rejected_does_not_reset_task_or_release_ledger(self):
+        record = self.execute()
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={'exit_code': 1, 'stderr': 'bkill denied'}):
+            response = self.jobs.stop_task('t1')
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], record['job_id'])
+        self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+
+    def test_stop_uses_same_family_lock_as_submit(self):
+        self.execute()
+        lock = self.scheduler._acquire_task_lock('t1')
+        try:
+            with patch.object(self.jobs.ssh, 'run_remote') as remote:
+                response = self.jobs.stop_task('t1')
+            self.assertEqual(response.status_code, 409)
+            remote.assert_not_called()
+        finally:
+            self.scheduler._release_task_lock(lock)
+
+    def test_natural_completion_releases_budget_without_changing_science_status(self):
+        record = self.execute()
+        db = self.storage.load_db(); task = db['projects'][0]['tasks'][0]
+        task.update(status='completed', last_energy=-123.45)
+        self.storage.save_db(db, backup=False)
+        with patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record, 'DONE')):
+            self.gateway.reconcile(task_id='t1')
+            self.gateway.reconcile(task_id='t1')
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        result = self.ledger.get(record['id'])
+        self.assertEqual(task['status'], 'completed')
+        self.assertEqual(task['last_energy'], -123.45)
+        self.assertEqual(result['reservation'], 0)
+        self.assertEqual(result['consumed_core_hours'], 24)
+
+    def test_manual_submit_refreshes_finished_record_before_guard(self):
+        # 普通人工提交路径不会因为旧台账仍未更新而永久阻塞。
+        record = self.execute()
+        db = self.storage.load_db(); db['projects'][0]['tasks'][0].update(status='pending', job_id=None)
+        self.storage.save_db(db, backup=False)
+        self.hpc.set_jobs([[record['job_id'], 'EXIT', record['plan']['work_dir'], record['execution_name']]])
+        with self.jobs._task_action_lock('t1'):
+            project, task = self.gateway.actions.load_task('t1')
+            result = self.jobs.core_submit(project, task)
+        self.assertTrue(self.ledger.get(record['id'])['job_finished'])
+        self.assertEqual(result['new_status'], 'queued')
+        self.assertEqual(self.hpc.submit_count(), 2)
+
+    def test_terminal_reconcile_does_not_restore_stopped_job_id(self):
+        record = self.execute()
+        db = self.storage.load_db(); db['projects'][0]['tasks'][0].update(status='pending', job_id=None)
+        self.storage.save_db(db, backup=False)
+        with patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record)):
+            self.gateway.reconcile(task_id='t1')
+        self.assertIsNone(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'])
+
+    def test_old_active_reconcile_does_not_overwrite_newer_submission_same_second(self):
+        record = self.execute()
+        with self.ledger.transaction() as doc:
+            newer = copy.deepcopy(record)
+            newer.update(id='act_newer', job_id='230002')
+            doc['actions'][newer['id']] = newer
+        db = self.storage.load_db(); db['projects'][0]['tasks'][0].update(status='queued', job_id=None)
+        self.storage.save_db(db, backup=False)
+        with patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record, 'RUN')):
+            self.gateway.reconcile(record['id'])
+        self.assertIsNone(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'])
+
+    def test_reconcile_refuses_changed_server_or_mismatched_directory(self):
+        record = self.execute()
+        with patch.object(self.gateway, 'load_servers', return_value={'server1': {'host': 'other'}}), \
+             patch.object(self.unknown, 'jobs') as remote:
+            self.gateway.reconcile(record['id'])
+            remote.assert_not_called()
+        self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+        rows = self._terminal_rows(record); rows[0]['directory'] += '/wrong'
+        with patch.object(self.unknown, 'jobs', return_value=rows):
+            self.gateway.reconcile(record['id'])
+        self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_inspection_event_reconciles_manual_job_without_enabling_execution(self):
+        from automation import events, opt_loop
+        record = self.execute()
+        self.store.save_settings({'enabled': False})
+        with patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record)), \
+             patch.object(opt_loop, 'inspection_event'):
+            events._handle({'type': 'inspection_completed', 'task_id': 't1'})
+        self.assertTrue(self.ledger.get(record['id'])['job_finished'])
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_legacy_stop_without_ledger_waits_for_lsf_confirmation(self):
+        db = self.storage.load_db(); db['projects'][0]['tasks'][0].update(status='running', job_id='751321')
+        self.storage.save_db(db, backup=False)
+        rows = [{'job_id': '751321', 'state': 'RUN', 'directory': self.paths.remote_root('server1')+'/STAGE1/T1', 'name': 'old'}]
+        response = self._stop_with_rows(rows)
+        self.assertTrue(response['data']['stop_pending'])
+        rows[0]['state'] = 'EXIT'
+        with patch.object(self.unknown, 'jobs', return_value=rows):
+            self.gateway.reconcile(task_id='t1')
+        self.assertIsNone(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'])
+        self.assertEqual(self.hpc.submit_count(), 0)
+
+    def test_terminal_sync_failure_retries_without_losing_finish_or_double_charging(self):
+        record = self.execute()
+        with patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record)), \
+             patch.object(self.gateway, 'db_transaction', side_effect=OSError('模拟项目库失败')):
+            self.gateway.reconcile(record['id'])
+        result = self.ledger.get(record['id'])
+        self.assertTrue(result['job_finished'])
+        self.assertTrue(result['sync_error'])
+        with patch.object(self.unknown, 'jobs') as query:
+            self.gateway.reconcile(record['id'])
+            query.assert_not_called()
+        result = self.ledger.get(record['id'])
+        self.assertTrue(result['job_finished'])
+        self.assertIsNone(result['sync_error'])
+        self.assertEqual(result['consumed_core_hours'], 24)
+
+    def test_task_reconcile_http_is_human_owner_only_and_never_submits(self):
+        from mock_hpc import ApplicationClient
+        import main
+        from config import save_settings
+        save_settings({'auto_inspection_enabled': False, 'auto_report_enabled': False})
+        owner_token, _ = self.auth.create_session(self.owner)
+        other_token, _ = self.auth.create_session(self.other)
+        path = '/api/agent-execution/tasks/t1/reconcile'
+        with ApplicationClient(main.app) as client:
+            record = self.execute()
+            self.assertEqual(client.post(path).status_code, 401)
+            self.assertEqual(client.post(path, headers={'Authorization':'Bearer '+other_token}).status_code, 403)
+            self.assertEqual(client.post(path, headers={'Authorization':'Bearer '+self.token}).status_code, 403)
+            self.hpc.set_jobs([[record['job_id'], 'RUN', record['plan']['work_dir'], record['execution_name']]])
+            response = client.post(path, headers={'Authorization':'Bearer '+owner_token})
+            self.assertTrue(response.json()['data']['blocked'])
+            self.hpc.set_jobs([[record['job_id'], 'EXIT', record['plan']['work_dir'], record['execution_name']]])
+            response = client.post(path, headers={'Authorization':'Bearer '+owner_token})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertFalse(response.json()['data']['blocked'])
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_stop_preserves_concurrent_scientific_completion_and_clears_intent(self):
+        record = self.execute()
+        def killed(*args, **kwargs):
+            db = self.storage.load_db()
+            db['projects'][0]['tasks'][0]['status'] = 'completed'
+            self.storage.save_db(db, backup=False)
+            return {'exit_code': 0}
+        with patch.object(self.jobs.ssh, 'run_remote', side_effect=killed), \
+             patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record)):
+            response = self.jobs.stop_task('t1')
+        self.assertFalse(response['data']['stop_pending'])
+        self.assertEqual(response['data']['new_status'], 'completed')
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        self.assertEqual(task['status'], 'completed')
+        self.assertIsNone(task.get('stop_requested_at'))

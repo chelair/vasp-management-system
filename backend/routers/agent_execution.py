@@ -126,6 +126,27 @@ def execute(request: Request, payload: dict = Body(...)):
         return _failure(exc)
 
 
+@router.post('/tasks/{task_id}/reconcile')
+def reconcile_task(task_id: str, request: Request):
+    try:
+        project, _ = actions.load_task(task_id)
+        permissions.ensure_project_owner(project, _user(request))
+        if _user(request).get('role') == 'agent':
+            raise permissions.PermissionDenied('请由人工发起对账')
+        gateway.reconcile(task_id=task_id)
+        blocker = gateway._unresolved(ledger.read(), gateway.family_id(task_id))
+        _, task = actions.load_task(task_id)
+        stop_pending = bool(task.get('stop_requested_at') and task.get('job_id'))
+        return ok('仅核对已有作业，未重新提交', {
+            'blocked': bool(blocker) or stop_pending,
+            'job_id': blocker.get('job_id') if blocker else task.get('job_id'),
+            'scheduler_state': blocker.get('scheduler_state') if blocker else None,
+            'reason': blocker.get('reason') if blocker else ('停止请求仍未确认结束，请继续核对LSF' if stop_pending else None),
+        })
+    except Exception as exc:
+        return _failure(exc)
+
+
 @router.post('/actions/{action_id}/reconcile')
 def reconcile(action_id: str, request: Request):
     try:

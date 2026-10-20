@@ -608,6 +608,9 @@ def run_inspection(
     """
     db = load_db()
     batches, skipped_projects = _plan_batches(db, project_name, task_id)
+    # 仅用于本地回填的并发保护，不改变远端manifest或巡检回传。
+    expected_tasks = {t['task_id']: _execution_snapshot(t)
+                      for p in db.get('projects', []) for t in p.get('tasks', [])}
 
     rows: List[Dict[str, Any]] = []
     archived_files: List[str] = []
@@ -626,7 +629,8 @@ def run_inspection(
             # 远端检查在事务外：任务清单已在规划阶段生成，不需要持有数据库写锁
             results = _run_server_batch(server, batch["manifest"], ts)
             batch_rows, archived = _apply_batch(
-                server, batch["project_name"], batch["task_ids"], results, ts
+                server, batch["project_name"], batch["task_ids"], results, ts,
+                expected_tasks=expected_tasks,
             )
         except Exception as e:  # noqa: BLE001 - 单批次失败不影响其他项目
             failures.append(
@@ -703,12 +707,20 @@ def run_inspection(
     return summary
 
 
+def _execution_snapshot(task):
+    return {key: task.get(key) for key in (
+        'job_id', 'status', 'remote_dir', 'continuation_dir',
+        'stop_requested_at', 'stop_requested_job_id',
+    )}
+
+
 def _apply_batch(
     server: str,
     project_name: str,
     task_ids: List[str],
     results: List[Dict[str, Any]],
     ts: str,
+    *, expected_tasks=None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """在**独立事务**内回填一个项目的巡检结果并归档（锁只在本地写入期间持有）。"""
     with db_transaction() as db:
@@ -727,7 +739,23 @@ def _apply_batch(
 
         results_by_id = {r.get("task_id"): r for r in results}
         server_rows: List[Dict[str, Any]] = []
+        stale_ids = set()
         for project, task in pairs:
+            expected = (expected_tasks or {}).get(task['task_id'])
+            if (project.get('server') != server or
+                    (expected is not None and _execution_snapshot(task) != expected)):
+                # 查询期间人工停止/提交/续算/归档：不让迟到结果覆盖新状态或结构，
+                # 也不覆盖该目录最新巡检归档。下次正常巡检再同步。
+                stale_ids.add(task['task_id'])
+                server_rows.append({
+                    'project': project['name'], 'task_id': task['task_id'],
+                    'task_type': task.get('task_type'), 'model_name': task.get('model_name'),
+                    'old_status': task.get('status'), 'new_status': task.get('status'),
+                    'status_changed': False, 'observed_changed': False, 'structure_synced': False,
+                    'notes': [], 'markers': [], 'warnings': ['巡检期间作业身份或状态已变化，跳过旧结果回填'],
+                    'rejected': '巡检期间作业身份或状态已变化，请重新巡检',
+                })
+                continue
             row = _apply_result(db, project, task, results_by_id.get(task["task_id"], {}))
             server_rows.append(row)
             # 自由能 frac 巡检完成（completed）且尚无矫正项：自动尝试计算矫正项
@@ -749,6 +777,8 @@ def _apply_batch(
         row_by_id = {r["task_id"]: r for r in server_rows}
         enriched = []
         for entry in results:
+            if entry.get('task_id') in stale_ids:
+                continue
             enriched_entry = dict(entry)
             row = row_by_id.get(entry.get("task_id"))
             if row is not None:

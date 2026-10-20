@@ -22,6 +22,7 @@ import {
   deleteTask,
   submitTask,
   stopTask,
+  reconcileTask,
   createFracFiles,
   archiveTask,
   unarchiveTask,
@@ -120,7 +121,7 @@ function makeWorkspace(task: Task): JobWorkspace {
 }
 
 export default function Jobs() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [searchParams] = useSearchParams();
   const [projects, setProjects] = useState<Project[]>([]);
   const [taskTypes, setTaskTypes] = useState<TaskTypeOption[]>([]);
@@ -835,7 +836,18 @@ export default function Jobs() {
     } catch (err) {
       const reason = err instanceof Error ? err.message : '提交作业失败';
       if (reason.includes('原作业无法在LSF确认结束')) setPriorJobTask(task);
-      else message.error(reason);
+      else if (reason.includes('请先对账') || reason.includes('未对账动作')) {
+        modal.confirm({
+          title: '提交记录需要对账', content: reason, okText: '核对作业状态', cancelText: '关闭',
+          onOk: async () => {
+            const result = await reconcileTask(task.task_id);
+            await refreshProjects();
+            if (result.blocked) {
+              message.warning(result.reason || `作业 ${result.job_id || ''} 仍未确认结束（${result.scheduler_state || '未知'}），暂不可重复提交`);
+            } else message.success('对账完成，台账阻塞已解除；未提交新作业');
+          },
+        });
+      } else message.error(reason);
     } finally {
       setSubmittingTaskId(null);
     }
@@ -883,7 +895,8 @@ export default function Jobs() {
     setStoppingTaskId(task.task_id);
     try {
       const r = await stopTask(task.task_id);
-      message.success(`作业 ${r.job_id} 已停止`);
+      if (r.stop_pending) message.warning(`作业 ${r.job_id} 停止请求已发出，等待确认结束；暂不可重新提交`);
+      else message.success(`作业 ${r.job_id} 已停止`);
       await refreshProjects();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '停止作业失败');

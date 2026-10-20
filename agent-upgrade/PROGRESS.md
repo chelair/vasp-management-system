@@ -259,3 +259,26 @@ OK
 - 业务提交2e14c8c，本轮未推送。按用户最新交互已上线：11:25:13 CST单服务切换，PID2794809→2824777，健康startedAt11:25:14。前端index-DKM8eDfw.js，旧hash与report runtime保留。私有备份data/backups/prior-job-fix-deploy/20261020-112504，含旧dist/config/执行台账和前后源码归档，不进Git。
 - 线上实际验证：匿名核实接口401；临时admin只读GET取得751321的1份回执，身份/目录/Terminated时间吻合，can_confirm=true、already_confirmed=false，验收时确认记录0条；8配置哈希未变、自主enabled=false，R2类型仍14，静态资源/新文案/健康正常，临时会话撤销。按最新交互未代用户写确认，用户在报错窗口一键确认；未提交con2，不改科学状态/输入文件。
 - 关于模型：ai_chat_service项目上下文及task_context都含calc_description/expected_results，模型可据证据分析和提出下一步建议；OPT模型仅审核确定性候选或pause，不会自主从科研目标生成结构或多任务计划。该能力边界本轮未改变。
+
+
+## 19. InCI6提交台账对账（2026-10-20）
+
+- 用户反馈“任务族存在活跃/UNKNOWN提交记录”。只读LSF确认新job824981（con2，唯一execution_name匹配）于11:29:18提交、11:29:32 EXIT，退出码130，明确TERM_OWNER（被作业所有者终止）；不认定计算收敛。stderr有Python初始化被KeyboardInterrupt打断，不能据此认定是自发计算崩溃。
+- 原因是成功提交记录仍job_finished为空；任务已恢复pending且job_id为空，但台账仍阻止重复提交。通过生产现有POST actions/act_f600c8b09db643639f5f1aee83aee9c2/reconcile完成只读远端对账，保存scheduler_state=EXIT、job_finished=true，恢复父任务job_id=824981，状态仍pending。再次只读检查_unresolved返回None，该任务族台账阻塞已解除。
+- 临时admin会话已撤销，无重新提交、无SSH写操作、无手工修改数据文件；未改业务代码、未部署/重启/推送。当前页面对此通用阻塞尚无就地对账入口，后续可复用既有接口补齐；本轮仅解决当前实例，不扩大到新功能。
+
+
+## 20. 执行台账同步链路审查与修复（本地完成，未部署）
+
+- 用户授权一并修复停止及类似状态不同步问题。本轮审查提交/停止/自然结束/巡检事件/对账/续算，复用现有ledger、任务族锁和LSF查询；不增加轮询、不改变巡检回传。仅隔离Mock测试，不自行部署/重启或推送。
+- 已确认：停止仅写项目状态与审计不写执行台账；普通人工提交遇旧记录直接阻塞；普通巡检事件不对账；既有对账可能用旧作业回写当前任务且缺少来源绑定检查。结果如下。
+
+- 修复内容：stop接口持有与提交/续算相同任务族锁，锁内二次读取；bkill接受只记stop_requested_at/stop_requested_job_id，保留作业身份，终态才能清号回pending；LSF失败/未找到/仍RUN保持阻塞，返回stop_pending提示。新bsub清除旧停止标记，停止意图写入不回滚并发巡检科学状态。
+- 普通人工提交锁内先对账旧记录；巡检仅在原异步事件消费者中先执行任务族只读对账，再交原OPT/规则处理，不改巡检频率、脚本、回传或结构同步，不新增轮询。自然终止释放台账与预留，核时沿用申请上界估计、不冒充实际值。
+- 对账按唯一执行名/作业号/实际目录核验，新记录保存项目归属/服务器指纹/任务族根目录来源绑定；旧记录校验现有来源字段，不伪造缺失历史指纹。终态不覆盖科学状态或恢复已清作业号；同秒新提交按台账插入顺序保护，活跃旧记录不覆盖新作业；已核实结束事实先持久化，本地同步/审计失败记sync_error，可仅重试本地写入且不重复记账。
+- 新增人工owner/admin任务族POST /api/agent-execution/tasks/{task_id}/reconcile，禁止Agent/越权；只返回有界阻塞摘要，不泄露计划/脚本/会话。Jobs提交报错弹窗提供核对按钮，不设常驻按钮/自动重提/UNKNOWN强制释放；停止未确认时明确提示。
+- 实测：网关58项（原43+新增15）、OPT47、基线10、结构同步13（新增4）通过；常规discover57项OK/8 skip（隔离套件另跑，不重复合计）。既有prior-job-review与job-structure-refresh两浏览器回归PASS，typecheck和/tmp/vasp-ledger-sync-build构建通过（原有大chunk提示）。测试全部隔离数据/Mock LSF/SSH；新通用报错按钮经类型/构建检查和真实HTTP权限测试，未另做该按钮浏览器端到端验收。
+- 无生产业务写入、HPC提交/停止、部署/重启/推送；只读服务核对仍active/PID2824777。本轮未发布构建到dist，AGENTS/API/process交接已更新。用户两份原删除保持不提交。
+- 边界：LSF历史缺失或来源不符仍需有证据的人工作业核实，不能凭科学完成/查不到自动放行；生产实机停止到结束闭环待部署后人工验收。系统仍单writer；不进入自主下一阶段。
+
+- 最后并发复核：巡检远端查询与回填之间原来没有作业快照比较，可能把停止/新提交后状态、作业号或结构回滚。新增仅本地execution snapshot，对job_id/status/目录/停止意图变化跳过旧回填与旧归档，返回现有rejected/warnings；同一执行不变仍按原路径同步结构。远端manifest、脚本和结构回传条件不变。13项结构同步回归含4项并发测试通过。停止与科学完成并发也保留科学completed并清除停止意图。

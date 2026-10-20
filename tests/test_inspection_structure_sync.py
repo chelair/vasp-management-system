@@ -1,6 +1,7 @@
 """最终结构同步回归；隔离数据目录，所有 SSH 均为 mock。"""
 import base64
 import copy
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import sys
@@ -148,6 +149,57 @@ class StructureTransferTests(unittest.TestCase):
                  patch.object(runner, "convert_structure_to_cif", side_effect=convert):
                 _, success = runner._sync_and_convert_structure({"name": "test", "server": "mock"}, {})
             self.assertFalse(success)
+
+
+class InspectionExecutionRaceTests(unittest.TestCase):
+    setUp = FinalStructureSyncTests.setUp
+
+    def _late_batch(self, expected):
+        self.result['task_id'] = 't'
+        with patch.object(runner, 'db_transaction', return_value=nullcontext(self.db)), \
+             patch.object(runner, 'archive_results', return_value='mock-archive') as archive, \
+             patch.object(runner, '_apply_result') as apply, \
+             patch('structure_images.schedule_for_project_tasks'):
+            rows, _ = runner._apply_batch('mock', 'test', ['t'], [self.result], 'test', expected_tasks={'t': expected})
+            apply.assert_not_called()
+            self.assertTrue(rows[0]['rejected'])
+            self.assertFalse(rows[0]['structure_synced'])
+            self.assertEqual(archive.call_args.args[0], [])
+
+    def test_late_inspection_cannot_restore_stopped_job(self):
+        expected = runner._execution_snapshot(self.task)
+        self.task.update(status='pending', job_id=None, stop_requested_at='stop')
+        self._late_batch(expected)
+        self.assertIsNone(self.task['job_id'])
+        self.assertEqual(self.task['status'], 'pending')
+
+    def test_late_inspection_cannot_overwrite_new_submission(self):
+        expected = runner._execution_snapshot(self.task)
+        self.task['job_id'] = '456'
+        self._late_batch(expected)
+        self.assertEqual(self.task['job_id'], '456')
+
+    def test_late_inspection_cannot_overwrite_changed_directory_or_archived_task(self):
+        for changes in ({'remote_dir': 'new/con5'}, {'status': 'archived'}, {'stop_requested_job_id': '123'}):
+            with self.subTest(changes=changes):
+                self.setUp()
+                expected = runner._execution_snapshot(self.task)
+                self.task.update(changes)
+                self._late_batch(expected)
+
+    def test_same_execution_snapshot_preserves_normal_inspection_apply_and_archive(self):
+        expected = runner._execution_snapshot(self.task)
+        self.result['task_id'] = 't'
+        row = {'task_id': 't', 'project': 'test', 'new_status': 'completed', 'old_status': 'running',
+               'observed_changed': True, 'structure_synced': True, 'notes': [], 'markers': []}
+        with patch.object(runner, 'db_transaction', return_value=nullcontext(self.db)), \
+             patch.object(runner, 'archive_results', return_value='mock-archive') as archive, \
+             patch.object(runner, '_apply_result', return_value=row) as apply, \
+             patch('structure_images.schedule_for_project_tasks'):
+            runner._apply_batch('mock', 'test', ['t'], [self.result], 'test', expected_tasks={'t': expected})
+            apply.assert_called_once()
+            self.assertEqual(len(archive.call_args.args[0]), 1)
+            self.assertTrue(archive.call_args.args[0][0]['analysis_needed'])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # 模型思考深度：工作台前端与真实请求
 
-2026-10-20本地完成，分支 `codex/model-reasoning-controls`，工作树 `/home/zouyuxi/projects/vasp-manager-r4`。本轮用户要求前端接入，**未部署/未推送**；生产继续运行v1.1.4/PID3131279，未修改生产数据/配置/服务/dist。不是新增科学性质，无需新PropertyRecipe或分析执行链。
+2026-10-20本地完成，开发分支 `codex/model-reasoning-controls`，工作树 `/home/zouyuxi/projects/vasp-manager-r4`。初轮用户要求前端接入时未部署；随后用户授权推送及部署，并要求直接main。现已于20:44上线v1.1.4/PID3252519，源码9d7dd9b。用户明确取消计算文件备份，已中断并清理不完整归档；上线验证见PROGRESS §27。不是新增科学性质，无需新PropertyRecipe或分析执行链。
 
 ## 使用与行为
 
@@ -46,4 +46,4 @@ DeepSeek工作区不再强制直接回答。工具轮仅在当前运行内存延
 - [GPT-5.1](https://developers.openai.com/api/docs/models/gpt-5.1)、[GPT-5.2](https://developers.openai.com/api/docs/models/gpt-5.2)、[GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)、[GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5)、[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)、[GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol)、[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol)：各型号档位和接口约束。
 - [DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Chat Completion参数](https://api-docs.deepseek.com/api/create-chat-completion/)：none/low/high/max及思考模式工具轮延续方式。
 
-未宣称思考深度能替代科学校验或保证答案质量；服务商型号可用性、实际费用/速度/答案质量尚未实测。后续若发布，需要按原部署规程备份AI SQLite（两列原地升级）、隔离构建、单writer切换和鉴权/配置/新旧资源验证。当前不部署、不推送、不移动发布tag，完成后停止。
+未宣称思考深度能替代科学校验或保证答案质量；服务商型号可用性、实际费用/速度/答案质量尚未实测。后续若发布，需要按原部署规程备份AI SQLite（两列原地升级）、隔离构建、单writer切换和鉴权/配置/新旧资源验证。本次按后续授权已部署并同步main，不移动发布tag，完成后停止。

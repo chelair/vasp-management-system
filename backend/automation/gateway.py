@@ -170,20 +170,119 @@ def snapshot_plan(project, task):
     return actions._jobs()._core_submit(project, task, dry_run=True)
 
 
-def assert_remote_idle(project, task, directory, rows):
+def _completion_binding(project, task, job_id=None):
+    family = family_id(task['task_id'])
+    root = next(t for t in project['tasks'] if t['task_id'] == family)
+    return {'family_id': family, 'project': project['name'], 'owner': project.get('owner'),
+            'server': project['server'], 'server_signature': server_signature(project['server']),
+            'root_directory': resolve_remote_path(project['server'], root['remote_dir']).rstrip('/'),
+            'job_id': str(job_id if job_id is not None else task.get('job_id') or '')}
+
+
+def _confirmed_finished(binding):
+    return next((a for a in ledger.read()['actions'].values()
+                 if a.get('job_finished') and a.get('resolved_by') and a.get('resolution_evidence')
+                 and a.get('finished_confirmation') == binding), None)
+
+
+def _receipt_confirmation_summary(binding, receipts):
+    """Suggested human attestation only. Never used to authorize execution by itself."""
+    for receipt in receipts:
+        text = receipt.get('text', '')
+        subject = re.search(r'^Subject: Job ' + re.escape(binding['job_id']) + r': .* (Done|Exited)\s*$', text, re.M)
+        ended = re.search(r'^Terminated at (.+)$', text, re.M)
+        cwd = re.search(r'^<([^\n]+)> was used as the working directory\.', text, re.M)
+        if subject and ended and cwd and cwd[1].rstrip('/') == receipt.get('directory', '').rstrip('/'):
+            return (f"用户在报错窗口确认：旧作业{binding['job_id']}的LSF回执状态为{subject[1]}，"
+                    f"工作目录{cwd[1]}，结束时间{ended[1]}。已核对本次LSF查询未发现任务族活跃作业；"
+                    '仅确认旧调度作业结束，不认定VASP收敛，不自动提交新作业。')
+    return ''
+
+
+def assert_remote_idle(project, task, directory, rows, *, allow_unconfirmed=False):
+    binding = _completion_binding(project, task)
+    root = binding['root_directory']
     candidates = {str(t.get('job_id')) for t in project.get('tasks', [])
                   if family_id(t['task_id']) == family_id(task['task_id']) and t.get('job_id')}
     for row in rows:
         if row['state'] not in unknown.TERMINAL and row['directory'] in {'', '-'}:
             raise ValueError('LSF活跃作业目录未知，不能确认无冲突')
-        if row['job_id'] in candidates or row['directory'].rstrip('/') == directory.rstrip('/'):
+        cwd = row['directory'].rstrip('/')
+        family_directory = cwd == root or re.fullmatch(re.escape(root) + r'/con[0-9]+', cwd)
+        if row['job_id'] in candidates or cwd == directory.rstrip('/') or family_directory:
             if row['state'] not in unknown.TERMINAL:
                 raise ValueError('LSF仍有活跃或未知作业，禁止新动作')
     job_id = str(task.get('job_id') or '')
-    if job_id and not any(r['job_id'] == job_id and r['state'] in unknown.TERMINAL for r in rows):
+    if job_id and not allow_unconfirmed and not any(r['job_id'] == job_id and r['state'] in unknown.TERMINAL for r in rows) and not _confirmed_finished(binding):
         raise ValueError('原作业无法在LSF确认结束，暂停并要求人工核实')
     if not job_id and task.get('status') not in {'pending', 'completed', 'unconverged'}:
         raise ValueError('缺少可信作业身份，不能自动重试')
+
+
+def prior_job_review(user, task_id):
+    project, task = actions.load_task(task_id)
+    permissions.ensure_project_owner(project, user)
+    binding = _completion_binding(project, task)
+    rows = unknown.jobs(project['server'])  # A failed query never becomes an empty queue.
+    blocker = ''
+    try:
+        assert_remote_idle(project, task, binding['root_directory'], rows, allow_unconfirmed=True)
+    except ValueError as exc:
+        blocker = str(exc)
+    unresolved = _unresolved(ledger.read(), binding['family_id'])
+    if unresolved:
+        blocker = '任务族有未完成/UNKNOWN动作，请先对账原动作：' + unresolved['id']
+    matches = [r for r in rows if r['job_id'] == binding['job_id']]
+    confirmation = _confirmed_finished(binding)
+    receipts, receipt_error = [], ''
+    if binding['job_id']:
+        try:
+            receipts = unknown.prior_job_receipts(project['server'], binding['root_directory'], binding['job_id'])
+        except (ValueError, OSError) as exc:
+            receipt_error = str(exc)
+    return {'task_id': task_id, 'job_id': binding['job_id'], 'server': project['server'],
+            'directory': binding['root_directory'], 'checked_at': now_iso(),
+            'review_fingerprint': ledger.fingerprint(binding),
+            'lsf_status': matches[0]['state'] if matches else 'NOT_FOUND',
+            'already_confirmed': bool(confirmation), 'blocker': blocker,
+            'receipts': receipts, 'receipt_error': receipt_error,
+            'confirmation_summary': _receipt_confirmation_summary(binding, receipts),
+            'can_confirm': bool(binding['job_id'] and not matches and not blocker and not confirmation),
+            'note': 'LSF查不到不代表已结束。请人工核对旧作业回执、工作目录及结束时间；确认只解除该旧作业身份阻塞，不提交作业，也不认定VASP收敛。'}
+
+
+def confirm_prior_job_finished(user, task_id, expected_job_id, review_fingerprint, evidence):
+    """Explicit human resolution for a pre-ledger job; no remote mutation or resubmission."""
+    from automation import scheduler
+    if not user or user.get('role') == 'agent':
+        raise permissions.PermissionDenied('需要人工确认，Agent不能解除旧作业身份阻塞')
+    if not isinstance(evidence, str) or not 20 <= len(evidence.strip()) <= 4000:
+        raise ValueError('请填写20至4000字的人工核实依据（作业回执、目录与结束时间）')
+    project, task = actions.load_task(task_id)
+    permissions.ensure_project_owner(project, user)
+    lock = scheduler._acquire_task_lock(family_id(task_id))
+    try:
+        review = prior_job_review(user, task_id)
+        if not expected_job_id or str(expected_job_id) != review['job_id'] or review_fingerprint != review['review_fingerprint']:
+            raise ValueError('作业身份或服务器/目录已变化，请重新核实')
+        if not review['can_confirm']:
+            raise ValueError(review['blocker'] or '当前无需或不能人工确认，请重新核对LSF状态')
+        project, task = actions.load_task(task_id)
+        binding = _completion_binding(project, task)
+        if ledger.fingerprint(binding) != review_fingerprint:
+            raise ValueError('作业身份发生变化，请重新核实')
+        record = _record(project, task, 'task.prior_job_confirmation', permissions.username_of(user),
+                         status='succeeded', job_id=review['job_id'], job_finished=True,
+                         resolved_by=permissions.username_of(user), resolution_evidence=evidence.strip(),
+                         finished_confirmation=binding, trigger='human_resolution',
+                         reason='人工确认旧调度作业已结束；未提交作业，不代表VASP收敛')
+        strict_audit(record, 'human_confirmed_finished', evidence.strip())
+        with ledger.transaction() as doc:
+            doc['actions'][record['id']] = record
+        return {'action_id': record['id'], 'job_id': review['job_id'], 'job_finished': True,
+                'message': record['reason']}
+    finally:
+        scheduler._release_task_lock(lock)
 
 
 def execute(*, user, session, grant_id, action, task_id, idempotency_key, params=None,
@@ -353,8 +452,8 @@ def safe_submit(project, task, *, dry_run=False):
             strict_audit(record, 'running', '提交前记录，防止响应丢失后重复提交')
             plan = snapshot_plan(project, task)
             assert_remote_idle(project, task, plan['work_dir'], unknown.jobs(project['server']))
-        except Exception:
-            ledger.update(record['id'], status='failed', reservation=0)
+        except Exception as exc:
+            ledger.update(record['id'], status='failed', reservation=0, reason=str(exc))
             raise
     ledger.update(record['id'], plan=plan, status='running', attempted=True, submission_attempted=True)
     try:
@@ -506,6 +605,7 @@ def resolve_finished(user, action_id, evidence):
                              consumed_core_hours=record.get('reservation', 0) + record.get('consumed_core_hours', 0),
                              reservation=0, consumption_basis='reserved_upper_bound',
                              resolved_by=permissions.username_of(user), resolution_evidence=evidence.strip(),
+                             finished_confirmation=_completion_binding(project, actions.load_task(record['task_id'])[1], job_id=record['job_id']),
                              reason='人工确认调度作业已结束；不代表VASP收敛或科学通过')
     finally:
         scheduler._release_task_lock(lock)

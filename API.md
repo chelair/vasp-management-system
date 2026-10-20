@@ -989,3 +989,11 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 - 14类已接本地Adapter：基本信息/参数/能量力/收敛/结构、自由能/NEB、PDOS/Bader/功函数/差分图、对照/分析文字/方法来源。原始DOSCAR等没有本地分析产物时保持unparsed，不执行分析、作业或SSH。CIF转换仅写系统临时目录，不回写模型；Bader只用分析时已有冻结CIF，缺失不冒充当前结构。
 - 上限40块（含可恢复删除）、50份活动组合/项目、文字4000字；拒绝跨项目路径/符号链接，单读取文件超过24MiB返回说明。HTML使用既有安全Markdown/SVG、内联报告运行时/3Dmol，外部连接受CSP限制，iframe预览沙箱隔离。隐藏或删除块的独占证据不出现在导出来源附录。
 - 元素恢复由deleted_block_ids控制；整份组合DELETE仅供脚本软删除，本阶段UI不提供整份删除/恢复。3D需WebGL；缺少现成结构PNG时PDF只有已有表格/数值和说明，不生成假的结构图。缺少报告运行时降级静态图。
+
+
+## 旧作业历史缺失的人工处理（2026-10-20）
+
+- `GET /api/agent-execution/tasks/{task_id}/prior-job`：项目owner/admin/已有归属Agent只读，返回当前LSF状态、task族阻塞、可确认标志、身份review_fingerprint、固定旧job_id.out回执摘要和建议核实依据。只在报错弹窗打开时查询，无定时轮询。读取任务根目录/最多100个conN目录的最多3份定名回执，每份只取头尾有界文本；回执不直接提供执行授权。
+- `POST /api/agent-execution/tasks/{task_id}/prior-job/confirm-finished`：仅人工owner/admin，必须四字段 `{confirmed_finished:true, expected_job_id, review_fingerprint, evidence}`。核实依据20–4000字，确认时重查LSF并检查任务族锁、旧job ID/服务器签名/目录/归属未变化、无未完成或UNKNOWN动作；活跃或未知目录/LSF失败一律拒绝。写原agent_execution台账和严格审计，不改job_id、科学状态、预算开关，不提交/续算远端。
+- 新前端仅在提交报“原作业无法在LSF确认结束”时显示弹窗；LSF回执必须匹配旧job ID、工作目录和结束时间，才能提供“确认旧作业已结束并解除报错”按钮。用户不必另外输入依据/勾选；一次点击是明确人工确认，服务端保存展示过的依据并重新查LSF。回执不全时保持阻塞，不把查不到当作结束。
+- 确认按任务族+旧job ID+服务器目标+根目录+归属绑定；新job ID/换目标不复用旧确认，新提交仍重新检查LSF。已有actions/{id}/resolve-finished的人工确认也绑定此身份，可真正解除旧作业缺失检查。

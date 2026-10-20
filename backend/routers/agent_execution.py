@@ -161,3 +161,23 @@ def resolve_finished(action_id: str, request: Request, payload: dict = Body(...)
             _user(request), action_id, payload.get('evidence')))
     except Exception as exc:
         return _failure(exc)
+
+
+@router.get('/tasks/{task_id}/prior-job')
+def prior_job(task_id: str, request: Request):
+    try:
+        return ok('仅查询调度状态，未修改作业', gateway.prior_job_review(_user(request), task_id))
+    except Exception as exc:
+        return _failure(exc)
+
+
+@router.post('/tasks/{task_id}/prior-job/confirm-finished')
+def confirm_prior_job(task_id: str, request: Request, payload: dict = Body(...)):
+    try:
+        allowed = {'confirmed_finished', 'expected_job_id', 'review_fingerprint', 'evidence'}
+        if set(payload) != allowed or payload.get('confirmed_finished') is not True:
+            raise ValueError('必须明确人工确认已核实旧作业结束，并提供作业身份及核实依据')
+        return ok('已记录人工核实；未提交作业', gateway.confirm_prior_job_finished(
+            _user(request), task_id, payload['expected_job_id'], payload['review_fingerprint'], payload['evidence']))
+    except Exception as exc:
+        return _failure(exc)

@@ -496,6 +496,102 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertEqual(resolved['consumed_core_hours'], 24)
         self.assertEqual(resolved['reservation'], 0)
         self.assertEqual(self.hpc.submit_count(), 1)
+        project, task = self.gateway.actions.load_task('t1')
+        self.gateway.assert_remote_idle(project, task, self.paths.resolve_remote_path('server1', task['remote_dir']), [])
+
+    def _old_job(self):
+        self.db['projects'][0]['tasks'][0]['job_id'] = '751321'
+        self.storage.save_db(self.db, backup=False)
+        return self.db['projects'][0], self.db['projects'][0]['tasks'][0]
+
+    def _confirm_old_job(self):
+        review = self.gateway.prior_job_review(self.owner, 't1')
+        return self.gateway.confirm_prior_job_finished(self.owner, 't1', review['job_id'], review['review_fingerprint'],
+            '核对旧作业751321的LSF结束回执、工作目录和结束时间，确认已经结束；未声称VASP收敛。')
+
+    def test_preledger_job_confirmation_unlocks_only_missing_old_identity(self):
+        project, task = self._old_job()
+        directory = self.paths.resolve_remote_path('server1', task['remote_dir'])
+        with self.assertRaisesRegex(ValueError, '原作业无法'):
+            self.gateway.assert_remote_idle(project, task, directory, [])
+        (self.remote/'751321.out').write_text(f'Subject: Job 751321: <T1> in cluster <fixture> Done\n<{directory}> was used as the working directory.\nTerminated at test time\n<script>never execute</script>')
+        review = self.gateway.prior_job_review(self.owner, 't1')
+        self.assertTrue(review['can_confirm'])
+        self.assertTrue(review['receipts'])
+        self.assertIn('结束时间test time', review['confirmation_summary'])
+        foreign = [{'directory': directory, 'text': f'Subject: Job 751322: <T1> in cluster <fixture> Done\n<{directory}> was used as the working directory.\nTerminated at test time'}]
+        self.assertEqual(self.gateway._receipt_confirmation_summary(self.gateway._completion_binding(project, task), foreign), '')
+        self._confirm_old_job()
+        self.gateway.assert_remote_idle(project, task, directory, [])
+        self.assertEqual(self.hpc.submit_count(), 0)
+        self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], '751321')
+        self.assertFalse(self.gateway.prior_job_review(self.owner, 't1')['can_confirm'])
+
+    def test_old_confirmation_cannot_bypass_new_or_active_family_jobs(self):
+        project, task = self._old_job(); self._confirm_old_job()
+        directory = self.paths.resolve_remote_path('server1', task['remote_dir'])
+        with self.assertRaises(ValueError):
+            self.gateway.assert_remote_idle(project, task, directory, [{'job_id':'751321','state':'RUN','directory':directory,'name':'old'}])
+        with self.assertRaises(ValueError):
+            self.gateway.assert_remote_idle(project, task, directory+'/con2', [{'job_id':'999','state':'RUN','directory':directory+'/con9','name':'unregistered'}])
+        with self.assertRaises(ValueError):
+            self.gateway.assert_remote_idle(project, task, directory, [{'job_id':'999','state':'RUN','directory':'-','name':'unknown'}])
+        with self.assertRaises(ValueError):
+            self.gateway.assert_remote_idle(project, {**task,'job_id':'751322'}, directory, [])
+        with patch.object(self.gateway, 'server_signature', return_value='changed-target'):
+            with self.assertRaises(ValueError): self.gateway.assert_remote_idle(project, task, directory, [])
+
+    def test_old_job_confirmation_rechecks_lsf_and_rejects_stale_dialog(self):
+        project, task = self._old_job()
+        review = self.gateway.prior_job_review(self.owner, 't1')
+        self.hpc.set_jobs([['751321','RUN',str(self.remote),'T1']])
+        with self.assertRaises(ValueError):
+            self.gateway.confirm_prior_job_finished(self.owner, 't1', review['job_id'], review['review_fingerprint'], '已核对原作业的回执和运行目录及其结束时间，人工确认结束。')
+        self.hpc.set_jobs([])
+        task['job_id'] = '751322'; self.storage.save_db(self.db, backup=False)
+        with self.assertRaisesRegex(ValueError, '身份'):
+            self.gateway.confirm_prior_job_finished(self.owner, 't1', review['job_id'], review['review_fingerprint'], '已核对原作业的回执和运行目录及其结束时间，人工确认结束。')
+
+    def test_old_job_confirmation_permissions_evidence_and_audit_failure(self):
+        self._old_job()
+        review = self.gateway.prior_job_review(self.owner, 't1')
+        evidence = '已核对旧作业LSF回执、运行目录和结束时间，人工确认已经结束。'
+        for user in (self.agent, self.other):
+            with self.assertRaises(self.permissions.PermissionDenied):
+                self.gateway.confirm_prior_job_finished(user, 't1', review['job_id'], review['review_fingerprint'], evidence)
+        with self.assertRaises(ValueError):
+            self.gateway.confirm_prior_job_finished(self.owner, 't1', review['job_id'], review['review_fingerprint'], '查不到')
+        with patch('automation.audit.write', side_effect=OSError('audit failure')):
+            with self.assertRaises(OSError): self._confirm_old_job()
+        self.assertFalse(any(a.get('finished_confirmation') for a in self.ledger.read()['actions'].values()))
+        with patch.object(self.unknown, 'jobs', side_effect=ValueError('LSF query failed')):
+            with self.assertRaises(ValueError): self._confirm_old_job()
+        self.assertEqual(self.hpc.submit_count(), 0)
+
+    def test_prior_job_http_requires_explicit_human_confirmation(self):
+        from mock_hpc import ApplicationClient
+        import main
+        from config import save_settings
+        self._old_job()
+        save_settings({'auto_inspection_enabled': False, 'auto_report_enabled': False})
+        owner_token, _ = self.auth.create_session(self.owner)
+        other_token, _ = self.auth.create_session(self.other)
+        path = '/api/agent-execution/tasks/t1/prior-job'
+        with ApplicationClient(main.app) as client:
+            self.assertEqual(client.get(path).status_code, 401)
+            self.assertEqual(client.get(path, headers={'Authorization':'Bearer '+other_token}).status_code, 403)
+            headers = {'Authorization':'Bearer '+owner_token}
+            response = client.get(path, headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            review = response.json()['data']
+            payload = {'confirmed_finished': True, 'expected_job_id': review['job_id'], 'review_fingerprint': review['review_fingerprint'],
+                       'evidence': '人工核对旧作业的LSF结束回执、工作目录和结束时间，确认作业结束。'}
+            self.assertEqual(client.post(path+'/confirm-finished', headers={'Authorization':'Bearer '+self.token}, json=payload).status_code, 403)
+            self.assertEqual(client.post(path+'/confirm-finished', headers=headers, json={**payload,'confirmed_finished':False}).status_code, 409)
+            response = client.post(path+'/confirm-finished', headers=headers, json=payload)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()['data']['job_finished'])
+        self.assertEqual(self.hpc.submit_count(), 0)
 
     def test_bsub_receives_immutable_budgeted_script(self):
         original = (self.remote/'vasp.lsf').read_text()

@@ -2,6 +2,7 @@
 import base64
 import re
 import shlex
+import json
 
 import ssh
 from config import load_servers
@@ -54,6 +55,39 @@ def find(record, rows):
     if len(matches) != 1:
         return None
     return matches[0]
+
+
+def prior_job_receipts(server, root, job_id):
+    """Bounded read of the named LSF receipt in root/conN; never execution authority."""
+    if not re.fullmatch(r'[0-9]+', str(job_id)):
+        return []
+    script = r'''
+import json,sys,re
+from pathlib import Path
+root=Path(sys.argv[1]).resolve(); job=sys.argv[2]
+dirs=[root]+sorted([p for p in root.iterdir() if re.fullmatch(r'con[0-9]+',p.name) and p.is_dir()],key=lambda p:int(p.name[3:]),reverse=True)[:100]
+rows=[]
+for directory in dirs:
+    path=directory/(job+'.out')
+    if not path.is_file(): continue
+    try: path.resolve().relative_to(root)
+    except ValueError: continue
+    with path.open('rb') as f:
+        head=f.read(4096).decode('utf-8','replace').splitlines()[:14]
+        f.seek(max(0,path.stat().st_size-4096))
+        tail=f.read(4096).decode('utf-8','replace').splitlines()[-22:]
+    rows.append({'directory':str(directory),'file':path.name,'size':path.stat().st_size,'text':'\n'.join(head+['…']+tail)})
+    if len(rows)>=3: break
+print(json.dumps(rows))
+'''
+    output = remote(server, f"python3 - {shlex.quote(root)} {shlex.quote(str(job_id))} <<'PRIOR_JOB_READ_ONLY'\n{script}\nPRIOR_JOB_READ_ONLY")
+    rows = json.loads(output)
+    if ssh.mock_enabled():
+        prefix = str(ssh._mock_root())
+        for row in rows:
+            if row['directory'].startswith(prefix):
+                row['directory'] = row['directory'][len(prefix):]
+    return rows
 
 
 def termination_reason(server, row):

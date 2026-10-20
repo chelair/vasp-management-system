@@ -37,6 +37,7 @@ import PageTransition from '../components/common/PageTransition';
 import JobsTree from '../components/jobs/JobsTree';
 import NewTaskModal from '../components/jobs/NewTaskModal';
 import TaskOverview from '../components/jobs/TaskOverview';
+import PriorJobReviewDialog from '../components/jobs/PriorJobReviewDialog';
 import PoscarPanel from '../components/jobs/PoscarPanel';
 import IncarEditor from '../components/jobs/IncarEditor';
 import KpointsPanel from '../components/jobs/KpointsPanel';
@@ -135,6 +136,7 @@ export default function Jobs() {
   const [clusterSnapshot, setClusterSnapshot] = useState<ClusterSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [submittingTaskId, setSubmittingTaskId] = useState<string | null>(null);
+  const [priorJobTask, setPriorJobTask] = useState<Task | null>(null);
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const [fracCreatingId, setFracCreatingId] = useState<string | null>(null);
   const [eleBuildTask, setEleBuildTask] = useState<Task | null>(null);
@@ -831,7 +833,9 @@ export default function Jobs() {
       message.success(`作业 ${r.job_id} 已提交到队列`);
       await refreshProjects();
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '提交作业失败');
+      const reason = err instanceof Error ? err.message : '提交作业失败';
+      if (reason.includes('原作业无法在LSF确认结束')) setPriorJobTask(task);
+      else message.error(reason);
     } finally {
       setSubmittingTaskId(null);
     }
@@ -1309,6 +1313,7 @@ export default function Jobs() {
 
   return (
     <PageTransition>
+      {priorJobTask && <PriorJobReviewDialog key={priorJobTask.task_id} taskId={priorJobTask.task_id} onClose={() => setPriorJobTask(null)}/>}
       <PageHeader
         title="作业管理"
         subtitle="管理项目子项、VASP 输入文件、续算流程与提交脚本生成"

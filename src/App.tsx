@@ -10,7 +10,6 @@ import Dashboard from './pages/Dashboard';
 import Inspection from './pages/Inspection';
 import Jobs from './pages/Jobs';
 import Login from './pages/Login';
-import Managed from './pages/Managed';
 import Report from './pages/Report';
 import SSH from './pages/SSH';
 import ErrorBoundary from './components/common/ErrorBoundary';
@@ -68,7 +67,6 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="/inspection" element={<Inspection />} />
           <Route path="/jobs" element={<Jobs />} />
-          <Route path="/managed" element={<Managed />} />
           <Route path="/ai" element={<ErrorBoundary title="AI 工作台加载失败"><AI /></ErrorBoundary>} />
           <Route path="/report" element={
             <ErrorBoundary title="报告加载失败" hint="可点击重试，或切换到其他页面。">

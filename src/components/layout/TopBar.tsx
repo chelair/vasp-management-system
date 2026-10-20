@@ -19,7 +19,6 @@ const TITLES: Record<string, string> = {
   '/': '总览',
   '/inspection': '巡检中心',
   '/jobs': '作业管理',
-  '/managed': '项目托管',
   '/report': '智能报告',
   '/ai': 'AI 工作台',
   '/ssh': 'SSH 连接',

@@ -10,22 +10,20 @@ import {
   RobotOutlined,
   StopOutlined,
 } from '@ant-design/icons';
-import PageHeader from '../components/common/PageHeader';
-import PageTransition from '../components/common/PageTransition';
 import {
   fetchManagedPlans,
   fetchResourcePlan,
   fetchScriptPreview,
   patchManagedPlan,
   setManagedStatus,
-} from '../api/managed';
+} from '../../api/managed';
 import type {
   ManagedCandidate,
   ManagedPlan,
   ManagedPlanItem,
   ManagedStage,
   ResourcePlanResult,
-} from '../api/managed';
+} from '../../api/managed';
 
 const STATUS_LABEL: Record<ManagedPlan['status'], string> = {
   active: '进行中',
@@ -165,7 +163,7 @@ function ResourceSuggestion({ result }: { result: ResourcePlanResult }) {
   );
 }
 
-export default function Managed() {
+export function ManagedPanel() {
   const { message } = AntApp.useApp();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
@@ -292,17 +290,11 @@ export default function Managed() {
   ];
 
   return (
-    <PageTransition>
-      <PageHeader
-        title="项目托管"
-        subtitle="一句话生成的计划、任务优先级与资源规则；本页只保存意图，不会自动提交作业"
-        extra={
-          <Space>
-            <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-            <Button icon={<RobotOutlined />} onClick={() => navigate('/ai')}>去 AI 工作台</Button>
-          </Space>
-        }
-      />
+    <>
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
+        <Button icon={<RobotOutlined />} onClick={() => navigate('/ai')}>去 AI 工作台</Button>
+      </Space>
 
       {!executionEnabled && (
         <Alert
@@ -433,6 +425,6 @@ export default function Managed() {
           <pre style={{ maxHeight: '60vh', overflow: 'auto', fontSize: 12, margin: 0 }}>{script?.text}</pre>
         </Space>
       </Modal>
-    </PageTransition>
+    </>
   );
 }

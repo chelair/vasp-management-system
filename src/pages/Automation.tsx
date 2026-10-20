@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, App, Button, Card, Empty, Popconfirm, Space, Switch, Table, Tag, Tooltip } from 'antd';
+import { Alert, App, Button, Card, Empty, Popconfirm, Space, Switch, Table, Tabs, Tag, Tooltip } from 'antd';
 import { PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
+import { ManagedPanel } from '../components/managed/ManagedPanel';
 import RuleModal from '../components/automation/RuleModal';
 import { fetchProjects } from '../api/projects';
 import { cronToSchedule, describeDelay, describeSchedule } from '../utils/schedule';
@@ -106,7 +107,7 @@ function RunCountTag({ progress, action }: { progress?: RuleProgress; action?: s
  * 自动化页（v0.9.6，仅 admin）：全局开关 / 规则开关 / 定时任务 / 决策日志 / 运行记录。
  * 后端是防线（403），这里只是入口与可视化。
  */
-export default function Automation() {
+function AutomationRules() {
   const { message } = App.useApp();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -571,46 +572,36 @@ export default function Automation() {
   ];
 
   return (
-    <PageTransition>
-      <PageHeader
-        title="自动化"
-        subtitle="巡检事件与定时触发 → 规则匹配 → 动作执行 → 审计留痕（仅管理员可见）"
-        extra={
-          <Space>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => {
-                setEditingRule(null);
-                setModalOpen(true);
-              }}
-            >
-              新建规则
-            </Button>
-            <Button
-              icon={<ReloadOutlined />}
-              loading={loading}
-              onClick={() => void load(true)}
-            >
-              刷新
-            </Button>
-            <Button
-              icon={<ThunderboltOutlined />}
-              onClick={async () => {
-                try {
-                  const r = await reloadAutomation();
-                  message.success(`配置已重载（${r.rules} 条规则，改 cron 无需重启）`);
-                  void load();
-                } catch (err) {
-                  message.error(err instanceof Error ? err.message : '重载失败');
-                }
-              }}
-            >
-              重载配置
-            </Button>
-          </Space>
-        }
-      />
+    <>
+      <Space wrap style={{ marginBottom: 14 }}>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={() => {
+            setEditingRule(null);
+            setModalOpen(true);
+          }}
+        >
+          新建规则
+        </Button>
+        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load(true)}>
+          刷新
+        </Button>
+        <Button
+          icon={<ThunderboltOutlined />}
+          onClick={async () => {
+            try {
+              const r = await reloadAutomation();
+              message.success(`配置已重载（${r.rules} 条规则，改 cron 无需重启）`);
+              void load();
+            } catch (err) {
+              message.error(err instanceof Error ? err.message : '重载失败');
+            }
+          }}
+        >
+          重载配置
+        </Button>
+      </Space>
 
       {paused && (
         <Alert
@@ -749,6 +740,28 @@ export default function Automation() {
           const target = rules.find((r) => r.id === ruleId);
           if (target) void resetRuleRuns(target);
         }}
+      />
+    </>
+  );
+}
+
+/**
+ * 自动化页（2026-10-20 合并）：同一入口下用标签页管理「项目托管」与「自动化规则」。
+ * 两块暂时都只对管理员开放；后端仍各自鉴权，前端只是入口。
+ */
+export default function Automation() {
+  return (
+    <PageTransition>
+      <PageHeader
+        title="自动化"
+        subtitle="项目托管计划与自动化规则（本页仅管理员可见；执行开关关闭时都不会自动推进）"
+      />
+      <Tabs
+        defaultActiveKey="managed"
+        items={[
+          { key: 'managed', label: '项目托管', children: <ManagedPanel /> },
+          { key: 'rules', label: '自动化规则', children: <AutomationRules /> },
+        ]}
       />
     </PageTransition>
   );

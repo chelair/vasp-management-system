@@ -16,7 +16,6 @@ const NAV_ITEMS = [
   { to: '/', label: '总览', icon: <AppstoreOutlined />, end: true },
   { to: '/inspection', label: '巡检中心', icon: <SafetyCertificateOutlined /> },
   { to: '/jobs', label: '作业管理', icon: <FolderOpenOutlined /> },
-  { to: '/managed', label: '项目托管', icon: <ThunderboltOutlined /> },
   { to: '/report', label: '智能报告', icon: <FileTextOutlined /> },
   { to: '/ai', label: 'AI 工作台', icon: <RobotOutlined /> },
 ];

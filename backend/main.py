@@ -131,7 +131,7 @@ async def lifespan(_: FastAPI):
         pass
 
 
-app = FastAPI(title="VASP 计算项目管理系统 API", version="1.1.3", lifespan=lifespan)
+app = FastAPI(title="VASP 计算项目管理系统 API", version="1.1.4", lifespan=lifespan)
 
 # 认证中间件（第 2 步）：除白名单（POST /api/auth/login、GET /api/health）外，
 # /api/** 与 /docs、/openapi.json 一律要求登录

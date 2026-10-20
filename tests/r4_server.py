@@ -37,6 +37,9 @@ def setup(root):
     electronic=seed_science(root,dos)
     row=copy.deepcopy(all_rows[0]);row.update(task_id='t_ele',task_type='ele',project_name=dos['name'],remote_dir='R4_DOS/ele/Electronic',job_id=None)
     row['current_output']={'latest_dir':'','dir':'R4_DOS/ele/Electronic'};all_rows.append(row);projects.append(dos)
+    from adsorption_fixtures import seed as seed_adsorption
+    for pid,kwargs in [('ads',{}),('ads_multi',{'multiple':True}),('ads_missing',{'missing_reference':True}),('ads_gas',{'isolated':True})]:
+        p,rows=seed_adsorption(root/pid,pid,**kwargs);projects.append(p);all_rows+=rows
     checks_store.CHECKS_DIR.mkdir(parents=True,exist_ok=True)
     (checks_store.CHECKS_DIR/'check_results_r4.json').write_text(json.dumps(all_rows))
     checks_store.invalidate_cache()
@@ -74,11 +77,14 @@ class Provider(BaseHTTPRequestHandler):
                 args={'property_id':'dos.comparison' if 'DOS' in question else 'oxygen_vacancy.neutral_single',
                       'model_queries':['Electronic'] if 'DOS' in question else ['NoExistingModel'] if '无数据' in question else ['LMR','LIC@LMR']}
                 if 'DOS' not in question:args['common_oxygen_reference']=True
+                if '吸附' in question:
+                    args={'property_id':'adsorption.simple','model_queries':['LMR','LIC@LMR'],'adsorbate_query':'H2'}
+                    if '气相' in question:args['adsorbate_reference_type']='isolated_molecule'
                 name='prepare_topic_report'
             elif count==1:
                 prior=history[-1]
                 name='plan_topic_report'
-                args={'topic_id':prior['topic_id'],'expected_revision':prior['revision'],'title':'氧空位比较科研报告' if prior['property_definition'].get('definition')!='已有DOS/PDOS曲线比较' else 'DOS比较专题',
+                args={'topic_id':prior['topic_id'],'expected_revision':prior['revision'],'title':'吸附能比较专题' if prior['request']['property_id']=='adsorption.simple' else '氧空位比较科研报告' if prior['property_definition'].get('definition')!='已有DOS/PDOS曲线比较' else 'DOS比较专题',
                       'selections':[{'block_id':c['block_id'],'reason':'提供当前问题所需的计算事实与条件','section':'results' if c['type'] in ('task.energy_force','ele.pdos') else 'sources','order':i,'essential':c.get('science_status') in ('AVAILABLE','VISUAL_ONLY')} for i,c in enumerate(prior['candidates']) if c['type'] in ('task.params','task.energy_force','ele.pdos')]}
             elif count==2:
                 prior=history[-1];prepared=history[0]

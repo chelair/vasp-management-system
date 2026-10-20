@@ -96,7 +96,7 @@ export default function Sidebar({ open, onNavigate }: Props) {
         <div className="storage-badge">
           <div>本地存储：JSON / SQLite</div>
           <div style={{ marginTop: 4, color: 'var(--color-text-muted)', fontSize: 11 }}>
-            v1.1.3
+            v1.1.4
           </div>
         </div>
       </div>

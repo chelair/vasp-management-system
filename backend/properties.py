@@ -14,6 +14,7 @@ import os
 import re
 import uuid
 
+import adsorption_science
 import permissions
 from ai_inspections import query_inspections, task_for, _age, participation
 from checks_store import collect_task_observations
@@ -54,9 +55,9 @@ RECIPES = {r.property_id:r for r in (
         'formation / subtract', 'E_f(V_O) = E_defect - E_pristine + mu_O; delta = E_f(B) - E_f(A)'),
     PropertyRecipe('relative_energy', '相同组成模型的相对总能量', '首版为中性且相同组成/理论设置；不是不同组成的反应能或自由能',
         ('targets[].reference','targets[].model'), (), ('composition','charge_state','convergence','theory_compatibility'), 'subtract', 'delta_E = E_model - E_reference'),
-    PropertyRecipe('adsorption.simple', '一个中性吸附物的简单电子吸附能', 'complex = surface + adsorbate的组成平衡；固定参考态，不含ZPE、温熵、电位、溶剂和BSSE修正',
-        ('targets[].complex','targets[].surface','targets[].adsorbate'), ('reference_conditions',),
-        ('stoichiometry','charge_state','convergence','theory_compatibility'), 'adsorption', 'E_ads = E_complex - E_surface - E_adsorbate'),
+    PropertyRecipe('adsorption.simple', '一个中性吸附物的简单电子吸附能', '每组一个完整中性吸附物；complex = surface + adsorbate，复合体系/表面同晶胞且输入表面原子按序对应；固定参考态，不含ZPE、温熵、电位、溶剂和BSSE修正',
+        ('targets[].complex','targets[].surface','targets[].adsorbate'), ('reference_conditions','adsorbate_reference_type'),
+        ('stoichiometry','adsorption_relation','adsorption_cell','charge_state','convergence','theory_compatibility','adsorbate_reference_type'), 'adsorption', 'E_ads = E_complex - E_surface - E_adsorbate',version=adsorption_science.VERSION),
     PropertyRecipe('neb.barrier', '读取已有NEB映像能量并比较正向能垒', '中性体系完整、收敛的既有NEB路径离散映像；不运行NEB或nebef，不等同热力学台阶',
         ('targets[].path',), (), ('image_completeness','neb_convergence','source_identity','reaction_correspondence'), 'barrier / subtract', 'E_a = max(E_images) - E_initial; delta = E_a(B) - E_a(A)'),
     PropertyRecipe('work_function.difference', '已有功函数之差', '相同真空方向、表面侧、可比理论条件与可靠真空平台的中性表面；不触发LOCPOT分析',
@@ -199,12 +200,12 @@ def _input(db,user,projects,selector,role):
     return result
 
 
-def _result(key,label,value,formula,inputs,checks,reference=None,conditions=None):
+def _result(key,label,value,formula,inputs,checks,reference=None,conditions=None,version=VERSION):
     value = number(value)
     unverified = ['ENCUT/k网格等数值收敛性、磁态/基态和模型物理适用性未由本次运算证明；结果为所选DFT模型下的值']
     if any(i.get('data',{}).get('geometry_state') == 'fixed_geometry_without_relaxation_verification' for i in inputs):
         unverified.append('含NSW=0的固定几何电子能；尚未证明这些几何已完成离子弛豫')
-    return {'key':key,'label':label,'value':value,'units':'eV','formula':formula,'formula_version':VERSION,
+    return {'key':key,'label':label,'value':value,'units':'eV','formula':formula,'formula_version':version,
             'validation_status':'PASS','formal_conclusion_allowed':False, 'numerical_reliability':'NOT_TESTED', 'scientific_conclusion':'NOT_TESTED',
             'sources':[i.get('source') for i in inputs], 'checks':checks,
             'reference_state':reference, 'conditions':conditions or [],
@@ -212,13 +213,14 @@ def _result(key,label,value,formula,inputs,checks,reference=None,conditions=None
 
 
 def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
-    if not isinstance(payload,dict) or set(payload)-{'property_id','project_ids','targets','mu_O','common_oxygen_reference','reference_conditions','surface_side','reaction_correspondence'}:
+    if not isinstance(payload,dict) or set(payload)-{'property_id','project_ids','targets','mu_O','common_oxygen_reference','reference_conditions','surface_side','reaction_correspondence','adsorbate_reference_type'}:
         raise ValueError('只接受注册性质及任务/参考态绑定，不接受自定义公式或替代数值')
     for key in ('reference_conditions','reaction_correspondence'):
         if key in payload and (not isinstance(payload[key],str) or not payload[key].strip() or len(payload[key])>2000):
             raise ValueError('参考条件与反应对应必须是明确文本')
     if 'surface_side' in payload and payload['surface_side'] not in ('start','end'):
         raise ValueError('表面侧必须是start或end')
+    if payload.get('adsorbate_reference_type','periodic') not in ('periodic','isolated_molecule'):raise ValueError('吸附物参考类型必须为periodic或isolated_molecule')
     pid = payload.get('property_id')
     if not isinstance(pid,str) or len(pid)>100: raise ValueError('科学性质标识无效')
     if pid not in RECIPES: return {'schema_version':VERSION,'property_id':pid,'status':'UNSUPPORTED','results':[], 'reason':'未注册性质；禁止临时生成计算公式'}
@@ -256,11 +258,14 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
             if _state(group['checks']) == 'AVAILABLE':
                 results.append(_result(f'{index}.relative_energy',label,subtract(bound['model']['data']['energy_ev'],bound['reference']['data']['energy_ev']),recipe.formula,values,group['checks']))
         elif pid == 'adsorption.simple':
-            from collections import Counter
-            comp = Counter(bound['surface']['data']['structure']['composition']); comp.update(bound['adsorbate']['data']['structure']['composition'])
-            group['checks'] = compatibility(data)+[check('stoichiometry','AVAILABLE' if dict(comp) == bound['complex']['data']['structure']['composition'] else 'INVALID','复合体系组成=表面+一个吸附物')]
+            reference_type=payload.get('adsorbate_reference_type','periodic')
+            group['checks'],group['site']=adsorption_science.validate(*(bound[r]['data'] for r in roles),reference_type)
             if _state(group['checks']) == 'AVAILABLE':
-                results.append(_result(f'{index}.adsorption',label,adsorption(*(bound[r]['data']['energy_ev'] for r in roles)),recipe.formula,values,group['checks'],conditions=[recipe.scope,payload.get('reference_conditions') or '未提供温压环境；仅电子能']))
+                ref={'type':'adsorbate_calculation','reference_type':reference_type,'source':bound['adsorbate']['source'],
+                     'composition':bound['adsorbate']['data']['structure']['composition'],'energy_ev':bound['adsorbate']['data']['energy_ev'],
+                     'conditions':('参考条件声明（未验证）：'+payload['reference_conditions']) if payload.get('reference_conditions') else '仅电子能；参考盒尺寸与自旋基态仍需独立验证'}
+                results.append(_result(f'{index}.adsorption',label,adsorption(*(bound[r]['data']['energy_ev'] for r in roles)),recipe.formula,values,group['checks'],ref,
+                    conditions=[recipe.scope,ref['conditions'],'负值表示所选电子能参考下放热；不等同于吸附自由能。'],version=recipe.version))
         # NEB and work function are handled by dedicated source adapters below.
         elif pid in ('neb.barrier','work_function.difference'):
             try:
@@ -304,6 +309,21 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
                         ['两体系中性且各移除一个O；相同氧化学势和条件，mu_O精确消去。','差值方向为后一个体系减第一个体系。']))
         # The intermediate E_def-E_pris is not an absolute vacancy formation energy.
         for g in groups: g.pop('energy_cost_without_reference_ev',None)
+    if pid == 'adsorption.simple' and len(results)>1:
+        original=list(results);base=original[0]
+        for other in original[1:]:
+            base_index,other_index=base['key'].split('.')[0],other['key'].split('.')[0]
+            involved=[i for i in inputs if i['role'].split('.')[0] in (base_index,other_index)]
+            ref_sources=[r['reference_state']['source'] for r in (base,other)]
+            shared=all(ref_sources[0].get(k)==ref_sources[1].get(k) for k in ('project_id','task_id','observation_id','row_sha256'))
+            pair_checks=compatibility([i['data'] for i in involved if not i['role'].endswith('.adsorbate')])
+            pair_checks.append(check('common_adsorbate_reference','AVAILABLE' if shared else 'UNKNOWN','吸附能差值要求同一个吸附物参考任务及同一观测；不默认不同参考态等价'))
+            checks+=pair_checks
+            if _state(pair_checks)=='AVAILABLE':
+                results.append(_result(other_index+'-'+base_index+'.adsorption_difference',other['label']+' − '+base['label'],subtract(other['value'],base['value']),
+                    'delta_E_ads = (E_complex_B - E_surface_B) - (E_complex_A - E_surface_A)',involved,pair_checks,
+                    {'type':'shared_adsorbate_reference_cancelled','source':ref_sources[0]},
+                    ['同一个吸附物参考精确消去 −E_adsorbate + E_adsorbate；差值为后一个体系减第一个体系。','表面积、覆盖度、固定层和磁态的科学可比性仍需独立验证。',recipe.scope],version=recipe.version))
     if pid == 'neb.barrier' and len(results)>1:
         original = list(results)
         for r in original[1:]:
@@ -333,7 +353,7 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
               'status':'PARTIAL' if results and gaps else 'AVAILABLE' if results else 'BLOCKED',
               'inputs':inputs,'targets':groups,'reference_state':reference,'checks':checks,'gaps':gaps,'results':results,
               'currently_calculable':[r['key'] for r in results],
-              'not_calculable':(['absolute_formation_energy'] if pid == 'oxygen_vacancy.neutral_single' and reference is None else []) + [g['label'] for g in groups if g['status'] != 'AVAILABLE'],
+              'not_calculable':(['absolute_formation_energy'] if pid == 'oxygen_vacancy.neutral_single' and reference is None else []) + (['adsorption_energy_difference'] if pid=='adsorption.simple' and any(c['check']=='common_adsorbate_reference' and c['status']!='AVAILABLE' for c in checks) else []) + [g['label'] for g in groups if g['status'] != 'AVAILABLE'],
               'recommendations':list(dict.fromkeys(c['detail'] for c in gaps)), 'supplemental_suggestions':suggestions,
               'report_elements':_report_elements(inputs,results,projects),
               'execution_policy':'只读发现与确定性运算；补算仅建议，不创建或提交作业。'}

@@ -359,10 +359,10 @@ def edit(user,topic_id,payload):
 
 def resolve(user,topic_id,payload):
     doc=load(user,topic_id)
-    if set(payload)-{'expected_revision','targets','reference_report_id','common_oxygen_reference'}:raise ValueError('仅可选择已发现任务或明确参考报告')
+    if set(payload)-{'expected_revision','targets','reference_report_id','common_oxygen_reference','adsorbate_reference_type'}:raise ValueError('仅可选择已发现任务或明确参考报告')
     request=copy.deepcopy(doc['request'])
     if 'targets' in payload:request['targets']=payload['targets']
-    for key in ('reference_report_id','common_oxygen_reference'):
+    for key in ('reference_report_id','common_oxygen_reference','adsorbate_reference_type'):
         if key in payload:request[key]=payload[key]
     data=topic_discovery.prepare(user,doc['project_ids'],request)
     doc.update(request=request,data=data,evidence_fingerprint=digest(data),stage='prepared',selections=[],narratives={},hidden_block_ids=[],deleted_block_ids=[])
@@ -440,8 +440,9 @@ def summary(doc):
         'preparation_status':data['preparation_status'],'property_definition':data['science'].get('recipe'),
         'currently_calculable':data['science'].get('currently_calculable',[]),'not_calculable':data['science'].get('not_calculable',[]),
         'supplemental_suggestions':data['science'].get('supplemental_suggestions',[])[:20],
+        'request':doc['request'],
         'facts':data['facts'],'gaps':data['gaps'][:30],'gaps_truncated':len(data['gaps'])>30,
-        'choices':[{**c, **{k:c[k][:12] for k in ('relations','tasks') if k in c},'truncated':any(len(c.get(k,[]))>12 for k in ('relations','tasks'))} for c in data['choices']],'reference_candidates':data['reference_candidates'],'candidates':data['candidates'],
+        'choices':[{**c, **{k:c[k][:12] for k in ('relations','adsorption_relations','tasks') if k in c},'truncated':any(len(c.get(k,[]))>12 for k in ('relations','adsorption_relations','tasks'))} for c in data['choices']],'reference_candidates':data['reference_candidates'],'candidates':data['candidates'],
         'assumptions':data['assumptions'],'selected_blocks':doc['selections'],
         'narratives':doc['narratives'],'note':'先数据后文字。用[[Fxx]]插入可信数值，[Fxx]引用来源；不能自行填写数字或计算公式。'}
 

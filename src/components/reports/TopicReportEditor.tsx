@@ -22,6 +22,7 @@ export default function TopicReportEditor({topicId,connectionId,onClose,onSaved}
   const [selected,setSelected]=useState<string>();
   const [relations,setRelations]=useState<Record<string,number>>({});
   const [tasks,setTasks]=useState<Record<string,string>>({});
+  const [adsReference,setAdsReference]=useState<string>();
   const [reference,setReference]=useState<string>();
   const alive=useRef(true);
   useEffect(()=>{
@@ -54,8 +55,9 @@ export default function TopicReportEditor({topicId,connectionId,onClose,onSaved}
   const chooseRelations=()=>doc&&run(async()=>{
     const targets=structuredClone(doc.data.targets);
     for(const choice of doc.data.choices){const index=relations[choice.label];if(index==null||!choice.relations)continue;const item=choice.relations[index];const ti=targets.findIndex(t=>t.label===choice.label);if(ti>=0)targets[ti]={label:choice.label,pristine:item.pristine,defect:item.defect,removed_oxygen_index:item.removed_oxygen_index};}
-    for(const choice of doc.data.choices){const tid=tasks[choice.label];const item=choice.tasks?.find(t=>t.task_id===tid);const ti=targets.findIndex(t=>t.label===choice.label);if(item&&ti>=0&&choice.role)targets[ti]={...targets[ti],[choice.role]:item.selector};}
-    await accept(await resolveTopic(topicId,{expected_revision:doc.revision,targets,...(reference?{reference_report_id:reference}:{})}));
+    for(const choice of doc.data.choices){const tid=tasks[choice.label];const item=choice.tasks?.find(t=>t.task_id===tid);const ti=targets.findIndex(t=>t.label===(choice.target_label||choice.label));if(item&&ti>=0&&choice.role)targets[ti]={...targets[ti],[choice.role]:item.selector};}
+    for(const choice of doc.data.choices){const index=relations[choice.label];const item=index==null?undefined:choice.adsorption_relations?.[index];const ti=targets.findIndex(t=>t.label===choice.label);if(item&&ti>=0)targets[ti]={label:choice.label,complex:item.complex,surface:item.surface,adsorbate:item.adsorbate};}
+    await accept(await resolveTopic(topicId,{expected_revision:doc.revision,targets,...(reference?{reference_report_id:reference}:{}),...(adsReference?{adsorbate_reference_type:adsReference}:{})}));
     message.info('已按明确选择更新数据，旧版本保留；可继续在原对话请求组织报告文字。');
   });
   return <Drawer open title="专题科研报告" width="94vw" onClose={close} destroyOnClose>
@@ -74,11 +76,13 @@ export default function TopicReportEditor({topicId,connectionId,onClose,onSaved}
           {key:'question',label:'原始研究问题与数据缺口',children:<><Typography.Paragraph>{doc.original_question}</Typography.Paragraph>{doc.data.gaps.map((g,i)=><p key={i}><Tag>{g.status}</Tag>{g.detail}</p>)}</>},
           {key:'sections',label:'编辑章节标题',children:draft.sections.map((section,i)=><Input key={section.section_id} aria-label={`章节标题-${section.section_id}`} value={section.title} onChange={e=>change({...draft,sections:draft.sections.map((s,j)=>i===j?{...s,title:e.target.value}:s)})}/>)},
         ]}/>
-        {(doc.data.choices.some(c=>(c.relations&&c.relations.length>1)||(c.role&&c.tasks&&c.tasks.length>1))||doc.data.reference_candidates.length>1)&&<Card size="small" title="确认任务位点或氧参考">
+        {(doc.data.choices.some(c=>(c.relations&&c.relations.length>1)||(c.role&&c.tasks&&c.tasks.length>1))||doc.data.reference_candidates.length>1||doc.request.property_id==='adsorption.simple')&&<Card size="small" title="确认任务、位点和参考态">
           {doc.data.choices.filter(c=>c.relations&&c.relations.length>1).map(choice=><Select key={choice.label} aria-label={`${choice.label}-氧位点`} style={{width:'100%',marginBottom:8}} placeholder={`${choice.label}：选择完整/缺陷任务和氧位点`} value={relations[choice.label]}
             options={choice.relations!.map((r,i)=>({value:i,label:`${r.pristine.task_id} → ${r.defect.task_id} · O原子 ${r.removed_oxygen_index} · ${r.site.fractional.join(', ')}`}))}
             onChange={value=>setRelations(old=>({...old,[choice.label]:value}))}/>)}
           {doc.data.choices.filter(c=>c.role&&c.tasks&&c.tasks.length>1).map(choice=><Select key={choice.label} aria-label={`${choice.label}-候选任务`} style={{width:'100%',marginBottom:8}} placeholder={`${choice.label}：选择候选任务`} value={tasks[choice.label]} onChange={value=>setTasks(old=>({...old,[choice.label]:value}))} options={choice.tasks!.map(t=>({value:t.task_id,label:`${t.model_name} · ${t.task_id}`}))}/>)}
+          {doc.data.choices.filter(c=>c.adsorption_relations&&c.adsorption_relations.length>1).map(choice=><Select key={choice.label} aria-label={`${choice.label}-吸附位点`} style={{width:'100%',marginBottom:8}} placeholder={`${choice.label}：选择复合体系、表面及吸附物参考`} value={relations[choice.label]} options={choice.adsorption_relations!.map((r,i)=>({value:i,label:`${r.complex.task_id} − ${r.surface.task_id} − ${r.adsorbate.task_id} · 吸附原子 ${r.site.adsorbate_atom_indices.join(', ')}`}))} onChange={value=>setRelations(old=>({...old,[choice.label]:value}))}/>)}
+          {doc.request.property_id==='adsorption.simple'&&<Select aria-label="专题吸附物参考类型" style={{width:'100%',marginBottom:8}} value={adsReference||doc.request.adsorbate_reference_type||'periodic'} onChange={setAdsReference} options={[{value:'periodic',label:'严格模式：参考使用相同k网格'},{value:'isolated_molecule',label:'确认孤立/气相分子参考：Gamma单点网格'}]}/>}
           {doc.data.reference_candidates.length>1&&<Select aria-label="专题氧参考" style={{width:'100%',marginBottom:8}} placeholder="选择已有明确设置的氧参考" value={reference} onChange={setReference}
             options={doc.data.reference_candidates.map(r=>({value:r.report_id,label:`${r.reference.value_ev_per_O} eV/O · ${r.reference.source} · ${r.reference.conditions}`}))}/>}
           <Button disabled={dirty||busy} onClick={()=>void chooseRelations()}>应用明确选择</Button>

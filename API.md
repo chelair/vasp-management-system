@@ -1,5 +1,13 @@
 # 接口文档（API.md）
 
+## v1.1.4候选：R4与吸附能增强
+
+沿用下面R4接口。`prepare_topic_report`/`POST /api/reports/topic/prepare` 的request增加：`adsorbate_query`（明确吸附物名称/参考任务ID）、`adsorbate_reference_type`（periodic严格相同k网格，或明确isolated_molecule的Gamma分子参考）、`reference_conditions`（未验证的条件声明）。`model_queries`在此模式是1至4个表面体系；原complex/surface/adsorbate三查询兼容。`/api/properties/evaluate`与原evaluate_property工具支持`adsorbate_reference_type`。
+
+吸附配方版本adsorption.1.1.0：固定三能量公式、同晶胞表面输入映射、中性/收敛/理论设置验证、独立分子参考取样；共用同一参考观测时给B−A差值并记录消去项。多位点返回`choices[].adsorption_relations`（complex/surface/adsorbate/site、total/truncated），人工 `POST /{id}/resolve`可选targets和adsorbate_reference_type，保留历史。未指定参考/不满足关系不产生对应数值；不同参考不默认抵消。
+
+新增功能统一规范见 [ANALYSIS_FEATURES.md](ANALYSIS_FEATURES.md)，复制 [设计验收模板](docs/templates/analysis-feature.md) 后沿用原R3→R2→AI专题链路；科学范围与完整请求见 [吸附能接入](agent-upgrade/adsorption-analysis.md)。发布结果以PROGRESS §25为准。
+
 ## R4 专题报告（本地完成，未部署）
 
 复用原 `/api/ai/chat` 会话、连接凭据与SSE。项目会话启用原工作区后增加6个受限工具：`list_topic_projects`、`prepare_topic_report`、`plan_topic_report`、`write_topic_draft`、`save_topic_report`、`get_topic_report`；已有 `get_property_recipes` 提供配方定义。工具只保存专题文档，不新增计算/SSH/输入操作。

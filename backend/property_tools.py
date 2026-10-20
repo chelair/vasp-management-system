@@ -10,7 +10,7 @@ TOOLS = [
         'parameters':{'type':'object','properties':{'query':{'type':'string','maxLength':200},'task_type':{'type':'string','enum':['opt','ele','neb','frac']},'task_id':{'type':'string'}},'additionalProperties':False}}},
     {'type':'function','function':{'name':'evaluate_property','description':'按注册配方只读验证精确任务/观测，并由Python计算及保存数据需求报告。禁止自行算最终数值。氧参考缺失仅在明确共同参考条件成立时给差值；绝对mu_O必须由用户在面板明确设置。缺口、未验证条件及候选必须呈现。工具不创建/提交作业。',
         'parameters':{'type':'object','properties':{'property_id':{'type':'string'},'targets':{'type':'array','items':TARGET,'minItems':1,'maxItems':8},
-            'common_oxygen_reference':{'type':'boolean'},'reference_conditions':{'type':'string'},'surface_side':{'type':'string','enum':['start','end']},'reaction_correspondence':{'type':'string'}},
+            'common_oxygen_reference':{'type':'boolean'},'reference_conditions':{'type':'string'},'surface_side':{'type':'string','enum':['start','end']},'reaction_correspondence':{'type':'string'},'adsorbate_reference_type':{'type':'string','enum':['periodic','isolated_molecule']}},
             'required':['property_id','targets'],'additionalProperties':False}}},
 ]
 
@@ -28,7 +28,7 @@ def dispatch(project,user,name,arguments):
     if name == 'discover_property_tasks':
         if set(arguments)-{'query','task_type','task_id'}: raise ValueError('不支持的任务发现参数')
         return properties.discover(db,user,[project['project_id']],**arguments)
-    if name != 'evaluate_property' or set(arguments)-{'property_id','targets','common_oxygen_reference','reference_conditions','surface_side','reaction_correspondence'}:
+    if name != 'evaluate_property' or set(arguments)-{'property_id','targets','common_oxygen_reference','reference_conditions','surface_side','reaction_correspondence','adsorbate_reference_type'}:
         raise ValueError('模型不能设置公式、能量、氧化学势或跨项目参数')
     # Reject nested project injection, even if that project would be authorized.
     for target in arguments.get('targets',[]):

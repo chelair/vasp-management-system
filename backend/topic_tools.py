@@ -18,10 +18,11 @@ def tool(name,description,properties,required=()):
 TOOLS=[
     tool('list_topic_projects','查找当前用户可访问项目，只读名称/ID/任务数。专题跨项目查询须逐项目鉴权，最多4项目。默认直接使用会话项目，不要求用户手工查已有数据。',
          {'query':{'type':'string','maxLength':100},'offset':{'type':'integer','minimum':0}}),
-    tool('prepare_topic_report','专题流程第一步：解析问题后给property_id和model_queries，服务端自动找任务、验证唯一结构关系/当前快照，复用R3计算，再冻结相关R2候选。DOS比较用dos.comparison（仅已有图及能量参考，不新增派生公式）。多位点不能随机选，缺数值也继续生成缺口报告。氧参考仅可复用已有人工参考报告；common_oxygen_reference仅表示待确认的共同参考条件。原始问题由运行记录提供，不能伪造。',
+    tool('prepare_topic_report','专题流程第一步：解析问题后给property_id和model_queries，服务端自动找任务、验证唯一结构关系/当前快照，复用R3计算，再冻结相关R2候选。DOS比较用dos.comparison（仅已有图及能量参考，不新增派生公式）。吸附能用adsorption.simple，model_queries为各表面体系如[LMR,LIC@LMR]，adsorbate_query为明确吸附物如H2；先验证同晶胞表面原子映射及一个吸附物组成。孤立/气相分子才使用isolated_molecule参考（Gamma采样），不得把它当自由能。多位点不能随机选，缺数值也继续生成缺口报告。氧参考仅可复用已有人工参考报告；common_oxygen_reference仅表示待确认的共同参考条件。原始问题由运行记录提供，不能伪造。',
          {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},
           'project_ids':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'targets':{'type':'array','items':TARGET,'maxItems':4},
-          'common_oxygen_reference':{'type':'boolean'},'reference_report_id':{'type':'string'},'surface_side':{'type':'string','enum':['start','end']},'reaction_correspondence':{'type':'string'}},
+          'common_oxygen_reference':{'type':'boolean'},'reference_report_id':{'type':'string'},'surface_side':{'type':'string','enum':['start','end']},'reaction_correspondence':{'type':'string'},
+          'adsorbate_query':{'type':'string','maxLength':100},'adsorbate_reference_type':{'type':'string','enum':['periodic','isolated_molecule']},'reference_conditions':{'type':'string','maxLength':2000}},
          ('property_id','model_queries')),
     tool('plan_topic_report','数据检查之后构建报告计划。只选prepare返回的现有block_id，每项写原因、章节、顺序及必要/补充标志；不加入无关进度/集群/全部路径。结构镜像只能补充证据。默认章节可通过sections调整；缺数据允许空元素列表。',
          {'topic_id':{'type':'string'},'expected_revision':{'type':'integer'},'title':{'type':'string'},
@@ -67,6 +68,8 @@ def dispatch(user,conversation,run_id,name,arguments):
                     raise ValueError('任务或位点须由用户明确选择；请先不带targets自动发现并返回候选，不得替用户随机绑定')
         if arguments.get('reference_report_id') and arguments['reference_report_id'] not in question:
             raise ValueError('多个氧参考须由用户明确选择；模型不能自行确认参考报告')
+        if arguments.get('adsorbate_reference_type')=='isolated_molecule' and not any(word in question.casefold() for word in ('孤立','气相','分子','isolated','gas','molecular','molecule')):
+            raise ValueError('孤立分子参考类型需用户明确说明或在报告中选择，不能由模型假定')
         request={k:v for k,v in arguments.items() if k!='project_ids'}
         doc=topics.prepare(user,conversation,messages[-1]['content'],request,run_id=run_id,project_ids=arguments.get('project_ids'))
         return topics.summary(doc)

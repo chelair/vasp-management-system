@@ -1,5 +1,8 @@
 # VASP 项目管理系统 · 项目交接文档（process.md）
 
+本轮v1.1.4候选包含R4与吸附能完整链路：原AI项目会话可比较已有吸附体系/洁净表面/分子参考，多位点明确选择，同参考差值由Python计算。新增分析必须遵守 [统一规范](ANALYSIS_FEATURES.md) 并使用 [设计验收模板](docs/templates/analysis-feature.md)。科学边界与验收见 [吸附能接入](agent-upgrade/adsorption-analysis.md)；发布实际结果见PROGRESS §25。
+
+
 R4 AI工作台专题科研报告已完成本地实现与隔离验收（2026-10-20，**未部署、未推送**）：项目会话中直接提出研究问题，先复用R3检查/计算，再选择R2元素和生成文字；可编辑、独立保存、重新打开与HTML/PDF导出。生产仍为已发布的v1.1.3。实现、验收和边界见 [R4交接](agent-upgrade/R4-topic-reports.md)。
 
 

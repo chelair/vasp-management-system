@@ -29,6 +29,7 @@ export default function ScientificPropertiesPanel({projectRef, projects, onClose
   const [muSource,setMuSource] = useState('');
   const [conditions,setConditions] = useState('');
   const [side,setSide] = useState<string>();
+  const [adsReference,setAdsReference]=useState('periodic');
   const [reaction,setReaction] = useState('');
   const [report,setReport] = useState<PropertyReport>();
   const [dirty,setDirty] = useState(false);
@@ -74,7 +75,7 @@ export default function ScientificPropertiesPanel({projectRef, projects, onClose
           ...(hasMu ? {mu_O:{value_ev:mu,source:muSource,conditions}} : {})} : {}),
         ...(pid === 'work_function.difference' && side ? {surface_side:side} : {}),
         ...(pid === 'neb.barrier' && reaction ? {reaction_correspondence:reaction} : {}),
-        ...(pid === 'adsorption.simple' && conditions ? {reference_conditions:conditions} : {})});
+        ...(pid === 'adsorption.simple' ? {adsorbate_reference_type:adsReference,...(conditions?{reference_conditions:conditions}:{})} : {})});
       if (version === generation.current) {setReport(value);setDirty(false);}
     } catch (e) {if (version === generation.current) message.error((e as Error).message);}
     finally {if (version === generation.current) setBusy(false);}
@@ -126,6 +127,7 @@ export default function ScientificPropertiesPanel({projectRef, projects, onClose
       </>}
       {pid === 'work_function.difference' && <Select aria-label="真空表面侧" placeholder="选择相同真空表面侧" value={side} options={[{value:'start',label:'坐标起始侧'},{value:'end',label:'坐标末端侧'}]} onChange={v => {changed();setSide(v);}}/>}
       {pid === 'neb.barrier' && <Input aria-label="反应路径对应" placeholder="比较能垒时，明确各路径的反应、方向和初末态对应" value={reaction} onChange={e => {changed();setReaction(e.target.value);}}/>}
+      {pid === 'adsorption.simple' && <Select aria-label="吸附物参考类型" value={adsReference} onChange={v=>{changed();setAdsReference(v);}} options={[{value:'periodic',label:'严格模式：参考使用相同k网格'},{value:'isolated_molecule',label:'孤立/气相分子参考：Gamma单点网格'}]}/>}
       {pid === 'adsorption.simple' && <Input aria-label="吸附参考条件" placeholder="吸附物参考态及适用条件" value={conditions} onChange={e => {changed();setConditions(e.target.value);}}/>}
       <Space><Button aria-label="验证数据并计算" type="primary" loading={busy} onClick={calculate} disabled={hasMu && pid==='oxygen_vacancy.neutral_single' && (mu===null || !muSource.trim() || !conditions.trim())}>验证数据并计算</Button>
         <Button disabled={!report || dirty} onClick={download}>下载数据需求与结果</Button></Space>
@@ -136,7 +138,7 @@ export default function ScientificPropertiesPanel({projectRef, projects, onClose
         <Table size="small" rowKey="key" pagination={false} dataSource={report.results} columns={[
           {title:'性质 / 比较方向',dataIndex:'label'},{title:'结果',render:(_,r) => `${r.value} ${r.units}`},{title:'公式',dataIndex:'formula'},
         ]}/>
-        {report.targets.filter(t=>t.site).map((t,i)=><Typography.Text key={i}>{t.label}：移除第 {t.site!.removed_oxygen_index} 个原子（O），分数坐标 {t.site!.fractional.join(', ')}。</Typography.Text>)}
+        {report.targets.filter(t=>t.site&&pid==='oxygen_vacancy.neutral_single').map((t,i)=><Typography.Text key={i}>{t.label}：移除第 {t.site!.removed_oxygen_index} 个原子（O），分数坐标 {t.site!.fractional.join(', ')}。</Typography.Text>)}
         {report.results.map(r => <Alert key={r.key} type="info" message={r.label+'：适用条件'} description={[...r.conditions,...r.unverified_conditions].join('；')}/>)}
         <Table size="small" rowKey="role" pagination={false} dataSource={report.inputs} columns={[
           {title:'输入',dataIndex:'role'},{title:'绑定任务',render:(_,i) => i.task?.model_name || '尚未选择'},

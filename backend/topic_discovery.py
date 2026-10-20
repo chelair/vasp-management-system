@@ -112,7 +112,7 @@ def r2_observation_project(project,raw):
 
 
 def prepare(user,project_ids,request):
-    if not isinstance(request,dict) or set(request)-{'property_id','model_queries','targets','common_oxygen_reference','reference_report_id','surface_side','reaction_correspondence'}:
+    if not isinstance(request,dict) or set(request)-{'property_id','model_queries','targets','common_oxygen_reference','reference_report_id','surface_side','reaction_correspondence','adsorbate_query','adsorbate_reference_type','reference_conditions'}:
         raise ValueError('专题数据请求只接受已注册性质、目标与受限参考，不接受公式、数值或文件路径')
     db = load_db()
     if len(project_ids)>MAX_PROJECTS: raise ValueError('每次专题最多检索4个项目')
@@ -138,7 +138,11 @@ def prepare(user,project_ids,request):
                 'gaps':[{'check':'property_recipe','status':'UNSUPPORTED','detail':'性质未注册，不能临时编造公式或数值'}],
                 'targets':[],'reference_candidates':[],'preparation_status':'UNSUPPORTED','assumptions':[]}
     pools = [_matches(projects,q.strip(),pid) for q in queries]
+    adsorbate_query=request.get('adsorbate_query')
+    if adsorbate_query is not None and (pid!='adsorption.simple' or not isinstance(adsorbate_query,str) or not adsorbate_query.strip() or len(adsorbate_query)>100):raise ValueError('吸附物查询只供吸附能配方使用，须为1至100字符名称或任务ID')
+    reference_pool=_matches(projects,adsorbate_query.strip(),pid) if adsorbate_query else []
     all_pairs = {(p['project_id'],t['task_id']):(p,t) for pool in pools for p,t in pool}
+    all_pairs.update({(p['project_id'],t['task_id']):(p,t) for p,t in reference_pool})
     if len(all_pairs)>MAX_TASKS: raise ValueError('匹配超过24个任务，请缩小模型查询或明确绑定')
     # Exact user bindings may point to a task whose name does not match the query.
     # It remains relevant only if the user explicitly bound the recipe role.
@@ -203,8 +207,13 @@ def prepare(user,project_ids,request):
         if len(pools)!=2: raise ValueError('差值比较需要两个模型查询词或明确角色绑定')
         targets=[{'label':queries[1]+' − '+queries[0],'reference':unique(pools[0],queries[0]),'model':unique(pools[1],queries[1])}]
     elif pid=='adsorption.simple':
-        if len(pools)!=3: raise ValueError('简单吸附能需要复合体系、表面、一个吸附物三个查询词或明确角色绑定')
-        targets=[{'label':'吸附能',**{r:unique(pool,q) for r,pool,q in zip(ROLES[pid],pools,queries)}}]
+        if adsorbate_query or len(pools)!=3:
+            from adsorption_discovery import find
+            targets,choices,ads_gaps=find(queries,pools,reference_pool,selectors,inspected,projects[0]['project_id'])
+            gaps+=ads_gaps
+            if not adsorbate_query:gaps.append({'check':'adsorbate_query','status':'MISSING','detail':'请明确吸附物名称/参考态；不给缺失的吸附物猜测公式或能量。'})
+        else:
+            targets=[{'label':'吸附能',**{r:unique(pool,q) for r,pool,q in zip(ROLES[pid],pools,queries)}}]
     elif pid=='neb.barrier':
         targets=[{'label':q,'path':unique(pool,q)} for q,pool in zip(queries,pools)]
     assumptions=[]
@@ -223,7 +232,7 @@ def prepare(user,project_ids,request):
         science={'property_id':pid,'status':'VISUAL_ONLY','results':[],'inputs':[],
                  'recipe':{'definition':'已有DOS/PDOS曲线比较','scope':'只展示已有曲线、费米能级及计算条件；未注册的派生DOS指标不计算','formula':'无新增计算公式'},'gaps':[]}
     else:
-        kwargs={k:request[k] for k in ('surface_side','reaction_correspondence') if k in request}
+        kwargs={k:request[k] for k in ('surface_side','reaction_correspondence','adsorbate_reference_type','reference_conditions') if k in request}
         payload={'property_id':pid,'project_ids':project_ids,'targets':targets,**kwargs}
         if pid=='oxygen_vacancy.neutral_single':
             # A comparison without a reservoir value may be stated conditionally;

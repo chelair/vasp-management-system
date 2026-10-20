@@ -131,6 +131,26 @@ class TopicHTTPTests(unittest.TestCase):
             _,items=self.api('/api/reports/topic?conversation_id='+cid)
             self.assertEqual(items['items'],[])
 
+    def test_adsorption_natural_language_pipeline(self):
+        _,doc=self.report('ads','比较 LMR 与 LIC@LMR 对 H2 的吸附能，生成科研报告。')
+        self.assertEqual([r['value'] for r in doc['data']['science']['results']],[-2,-3,-1])
+        self.assertEqual(doc['request']['adsorbate_query'],'H2')
+        self.assertEqual(doc['stage'],'saved')
+        status,output=self.api('/api/reports/topic/'+doc['topic_id']+'/export.html',raw=True)
+        self.assertEqual(status,200);self.assertIn('-2.0 eV',output)
+        self.assertIn('不等同于吸附自由能',output)
+
+    def test_adsorption_missing_reference_and_multi_site(self):
+        _,missing=self.report('ads_missing','比较 LMR 与 LIC@LMR 对 H2 的吸附能并生成报告。')
+        self.assertEqual(missing['data']['science']['results'],[])
+        self.assertTrue(any(g['check']=='adsorbate_reference' for g in missing['data']['gaps']))
+        _,multiple=self.report('ads_multi','比较 LMR 与 LIC@LMR 对 H2 的吸附能并生成报告。')
+        self.assertEqual(multiple['data']['preparation_status'],'NEEDS_SELECTION')
+        self.assertEqual(len(multiple['data']['choices'][0]['adsorption_relations']),2)
+        _,gas=self.report('ads_gas','比较 LMR 与 LIC@LMR 对气相 H2 分子的吸附能并生成报告。')
+        self.assertEqual([r['value'] for r in gas['data']['science']['results']],[-2,-3,-1])
+        self.assertEqual(gas['request']['adsorbate_reference_type'],'isolated_molecule')
+
     def test_auth_revision_and_science_override_protection(self):
         self.assertEqual(self.api('/api/reports/topic',token=False)[0],401)
         _,doc=self.report()

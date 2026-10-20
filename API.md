@@ -1,6 +1,6 @@
 # 接口文档（API.md）
 
-## v1.1.4候选：R4与吸附能增强
+## v1.1.4已部署：R4与吸附能增强
 
 沿用下面R4接口。`prepare_topic_report`/`POST /api/reports/topic/prepare` 的request增加：`adsorbate_query`（明确吸附物名称/参考任务ID）、`adsorbate_reference_type`（periodic严格相同k网格，或明确isolated_molecule的Gamma分子参考）、`reference_conditions`（未验证的条件声明）。`model_queries`在此模式是1至4个表面体系；原complex/surface/adsorbate三查询兼容。`/api/properties/evaluate`与原evaluate_property工具支持`adsorbate_reference_type`。
 
@@ -8,7 +8,7 @@
 
 新增功能统一规范见 [ANALYSIS_FEATURES.md](ANALYSIS_FEATURES.md)，复制 [设计验收模板](docs/templates/analysis-feature.md) 后沿用原R3→R2→AI专题链路；科学范围与完整请求见 [吸附能接入](agent-upgrade/adsorption-analysis.md)。发布结果以PROGRESS §25为准。
 
-## R4 专题报告（本地完成，未部署）
+## R4 专题报告（随v1.1.4已部署）
 
 复用原 `/api/ai/chat` 会话、连接凭据与SSE。项目会话启用原工作区后增加6个受限工具：`list_topic_projects`、`prepare_topic_report`、`plan_topic_report`、`write_topic_draft`、`save_topic_report`、`get_topic_report`；已有 `get_property_recipes` 提供配方定义。工具只保存专题文档，不新增计算/SSH/输入操作。
 
@@ -36,7 +36,7 @@
 
 新增 `/api/properties/recipes`、`GET /discover`、`POST /evaluate`、`GET /reports/{report_id}`。五类固定PropertyRecipe、七类输入状态、跨项目逐项权限、同次观测来源/时效检查与Python确定性计算。未知性质UNSUPPORTED；不接受自定义公式或替代能量。氧空位必须验证中性、单O差异/位点及理论设置；缺mu_O不出绝对值，明确共同参考时可计算B−A。人工mu_O必须给每O数值、来源和条件；聊天工具不能设置该数值。
 
-完整请求/状态/科学边界与实例见 [R3合同](agent-upgrade/R3-properties.md)。这些接口只读原始数据并保存独立派生报告，不创建/提交HPC，不自动生成结构。原报告schema和R2组合接口保持兼容；新接口已部署，生产为v1.1.3。
+完整请求/状态/科学边界与实例见 [R3合同](agent-upgrade/R3-properties.md)。这些接口只读原始数据并保存独立派生报告，不创建/提交HPC，不自动生成结构。原报告schema和R2组合接口保持兼容；R3接口于v1.1.3部署，当前生产为v1.1.4。
 
 R1 报告 AI 注解（2026-10-19已部署）：原项目新增/更新支持 `ai_report_notes_enabled`（默认 false）；`GET /api/reports/project/{id}/notes/ai-status` 查询开关与目标，`POST .../notes/ai-preview` 接收 `{key, connection_id}`，仅返回草稿。复用发起用户私有工作台连接，不接收密钥、命令或前端自报科研结果。原 `PUT .../notes` 兼容人工编辑，可加 `draft_token` 保存经确认的草稿、`expected_revision` 防覆盖、`restore_previous=true` 恢复一次生成前保存文本。普通 `/generate` 不等待或调用模型。报告 schema 为1.2.0（兼容旧字段/布局），详细边界见 [R1 交接](./agent-upgrade/R1-report-notes.md)。
 

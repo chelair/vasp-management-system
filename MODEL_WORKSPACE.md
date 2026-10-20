@@ -1,9 +1,9 @@
 # 模型项目工作区与目录地图
 
-本轮v1.1.4候选包含R4与吸附能完整链路：原AI项目会话可比较已有吸附体系/洁净表面/分子参考，多位点明确选择，同参考差值由Python计算。新增分析必须遵守 [统一规范](ANALYSIS_FEATURES.md) 并使用 [设计验收模板](docs/templates/analysis-feature.md)。科学边界与验收见 [吸附能接入](agent-upgrade/adsorption-analysis.md)；发布实际结果见PROGRESS §25。
+v1.1.4已于2026-10-20部署，包含R4与吸附能完整链路：原AI项目会话可比较已有吸附体系/洁净表面/分子参考，多位点明确选择，同参考差值由Python计算。新增分析必须遵守 [统一规范](ANALYSIS_FEATURES.md) 并使用 [设计验收模板](docs/templates/analysis-feature.md)。科学边界与验收见 [吸附能接入](agent-upgrade/adsorption-analysis.md)；发布实际结果见PROGRESS §25。
 
 
-R4 AI工作台专题科研报告已完成本地实现与隔离验收（2026-10-20，**未部署、未推送**）：项目会话中直接提出研究问题，先复用R3检查/计算，再选择R2元素和生成文字；可编辑、独立保存、重新打开与HTML/PDF导出。生产仍为已发布的v1.1.3。实现、验收和边界见 [R4交接](agent-upgrade/R4-topic-reports.md)。
+R4 AI工作台专题科研报告已于2026-10-20随v1.1.4部署发布：项目会话中直接提出研究问题，先复用R3检查/计算，再选择R2元素和生成文字；可编辑、独立保存、重新打开与HTML/PDF导出。当前生产为v1.1.4。实现、验收和边界见 [R4交接](agent-upgrade/R4-topic-reports.md)。
 
 
 R3（v1.1.3，2026-10-20已部署）：新增只读科学工具get_property_recipes、discover_property_tasks和evaluate_property。按当前用户/会话项目重查，名称只生成候选，task_id/observation_id精确绑定。固定Python配方计算并保存独立数据需求报告；禁止模型覆盖公式/任务能量/氧化学势，未支持性质UNSUPPORTED。大原子数据和原始证据冻结在报告，工具只返回紧凑摘要。没有新增SSH/建模/HPC提交权限，跨项目比较和人工mu_O设置使用科学性质面板。详见[R3](agent-upgrade/R3-properties.md)。

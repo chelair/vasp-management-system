@@ -1603,30 +1603,49 @@ def _stop_task_locked(task_id: str):
     # LSF：对已结束/不存在的作业执行 bkill 会输出 "Job <id>: Job has already
     # finished" 且退出码非 0 —— 作业实际上已停止，按停止成功处理（归档为待提交）
     already_finished = bool(re.search(r"already finished", raw, re.IGNORECASE))
-    if result.get("exit_code") != 0 and not already_finished:
+    # bkill 的返回值就是用户要的 "killed 结果"：rc=0 或明确终止/已结束的文案。
+    killed = result.get("exit_code") == 0 or already_finished or bool(re.search(
+        r"being\s+(?:terminated|killed|dequeued)|has\s+been\s+killed|Job\s*<\d+>.*?(?:terminated|killed|dequeued)",
+        raw, re.IGNORECASE))
+    if not killed:
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
         return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
 
     confirmed = False
+    confirmed_by = ''
     sync_error = ''
-    try:
-        from automation.gateway import sync_stopped_job
-        confirmed = sync_stopped_job(project, task)
-    except Exception as exc:  # 停止请求已发出，查询/落库失败不能伪装已停止。
-        sync_error = str(exc)
+    from automation.gateway import confirm_killed, sync_stopped_job
+    # LSF 有时要几秒才把终态反映到 bjobs：先短轮询，能拿到终态就按原有证据链收尾。
+    for attempt in range(3):
+        try:
+            if sync_stopped_job(project, task):
+                confirmed, confirmed_by = True, 'lsf'
+                break
+        except Exception as exc:  # 查询/落库失败不能伪装已停止
+            sync_error = str(exc)
+        if attempt < 2:
+            time.sleep(0.8)
+    if not confirmed:
+        # 拿不到终态就用 bkill 的 killed 结果确认停止；同目录并发仍由实时 bjobs 拦截。
+        try:
+            confirmed_by = 'bkill'
+            confirmed = confirm_killed(project, task, str(job_id), raw)
+        except Exception as exc:
+            sync_error = str(exc)
     _audit_log(project['name'], task_id, str(job_id), 'bkill',
-               ('OK; LSF结束及台账已确认' if confirmed else 'ACCEPTED; 等待LSF结束确认') +
+               (f'OK; {confirmed_by} 确认停止' if confirmed else 'ACCEPTED; 等待LSF结束确认') +
                (('; SYNC_WARN: ' + sync_error) if sync_error else ''))
     _, current_task = _resolve_task(task_id)
     return ok('作业已停止' if confirmed else '停止请求已发出，等待LSF结束确认；暂不可重新提交', {
-        'job_id': job_id, 'new_status': current_task['status'],
-        'already_finished': already_finished, 'stop_pending': not confirmed, 'sync_warning': sync_error,
+        'job_id': job_id, 'new_status': current_task['status'], 'already_finished': already_finished,
+        'stop_pending': not confirmed, 'sync_warning': sync_error,
+        'confirmed_by': confirmed_by, 'bkill_output': raw[:2000],
     })
 
 
 # ------------------------------------------------------------ 输入文件（v0.8.2）
 # 三层职责：远端 conN（运行真相）→ 本地镜像 files/（同步副本，v0.8.7 前是 inputs/）
-# → 草稿（下次续算生效）。方案与口径见 process.md §6.11；
+# → 草稿（下次续算生效）。方案与口径见 process.md 的输入、巡检与提交要点；
 # 同步成本 = 1 次 exec + 4 次 SFTP 小文件。
 
 

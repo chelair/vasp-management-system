@@ -659,6 +659,33 @@ def _sync_stop_metadata(project, task, rows):
     return terminal
 
 
+def confirm_killed(project, task, job_id, raw=''):
+    """bkill 已明确返回终止/已结束：以它作为停止证据，立即回退本地状态。
+
+    用户口径（2026-10-21）：拿到 bkill 的 killed 结果就刷新，不再一直停在"等待确认"。
+    LSF 终态通常几秒后才反映到 bjobs；同目录并发仍由 assert_remote_idle 用实时 bjobs 兜底。
+    """
+    requested = now_iso()
+    family = family_id(task['task_id'])
+    for record in ledger.read()['actions'].values():
+        if (record['family_id'] == family and str(record.get('job_id') or '') == str(job_id)
+                and not record.get('job_finished')):
+            ledger.update(record['id'], job_finished=True, scheduler_state='EXIT',
+                          stop_confirmed_by='bkill', stop_requested_at=requested,
+                          reason='bkill 已确认终止' + (f'：{raw[:200]}' if raw else ''))
+    with db_transaction() as db:
+        current = next(t for p in db['projects'] if p['name'] == project['name']
+                       for t in p['tasks'] if t['task_id'] == task['task_id'])
+        if str(current.get('job_id') or '') != str(job_id):
+            raise ValueError('停止期间任务作业号变化，保留原状态并要求对账')
+        if current['status'] in {'queued', 'running'}:
+            update_task_status(db, project['name'], task['task_id'], 'pending',
+                               {'job_id': None, 'stop_requested_at': None, 'stop_requested_job_id': None})
+        else:
+            current.update(job_id=None, stop_requested_at=None, stop_requested_job_id=None)
+    return True
+
+
 def prepare_legacy(job):
     """为已有规则建立可恢复记录；不授予预算或新增自动权限。"""
     project, task = actions.load_task(job['task_id'])

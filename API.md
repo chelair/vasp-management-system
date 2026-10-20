@@ -1,5 +1,11 @@
 # 接口文档（API.md）
 
+## 模型思考深度（本地完成，未部署）
+
+原私有连接POST/PUT增加 `reasoning_api=auto|openai|deepseek` 与 `reasoning_effort=default|none|minimal|low|medium|high|xhigh|max`。后端按型号/协议验证可选档位，未知接口自动模式只允许默认；明确兼容模式按服务商参数传递。旧thinking_mode/密钥/会话保留，旧客户端省略新字段不覆盖现有值。
+
+新增人工鉴权 `GET /api/ai/chat/reasoning-capabilities?base_url=...&model=...&reasoning_api=auto`，只读本地能力表，无模型请求。公开连接附 `reasoning_capabilities`/`effective_reasoning_effort`，聊天快照保存所选配置；`verified`仅表示内置型号文档匹配，不是账号实测。DeepSeek思考工具轮内容仅当前运行内存延续，不保存或回传。报告/OPT仍受原输出和时限上限；不兼容的Chat工具组合在请求前拒绝，不自动降低深度或重试。详见 [思考配置合同](agent-upgrade/model-reasoning.md)。
+
 ## v1.1.4已部署：R4与吸附能增强
 
 沿用下面R4接口。`prepare_topic_report`/`POST /api/reports/topic/prepare` 的request增加：`adsorbate_query`（明确吸附物名称/参考任务ID）、`adsorbate_reference_type`（periodic严格相同k网格，或明确isolated_molecule的Gamma分子参考）、`reference_conditions`（未验证的条件声明）。`model_queries`在此模式是1至4个表面体系；原complex/surface/adsorbate三查询兼容。`/api/properties/evaluate`与原evaluate_property工具支持`adsorbate_reference_type`。
@@ -858,7 +864,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 上下文接口现在返回完整项目概览：项目说明/目标/预期、全部主任务的类型/状态/分组/作业/目录/能量/力/NEB结果摘要、最近巡检与操作记录。附属续算和分块不重复列为主任务，其操作仍可出现在项目日志。聚合只读本地、共用巡检缓存，不逐个任务读取大文件。发送模型时遵循字符预算，任务较多先转为 task_table（columns/rows），保留覆盖数量；确实超预算时由 summary.included_task_count / omitted_task_count 和 budget_note 明确说明。侧栏展示完整本地概览，“本轮依据”展示实际发给模型的版本。
 
-**DeepSeek 官方接口**：模型连接中点击“填入 DeepSeek 官方配置”，基础地址为 `https://api.deepseek.com`，默认 `deepseek-flash`、8192 tokens、直接回答；也可选择 `deepseek-v4-pro` 或手填服务商返回的模型名。连接新增 `thinking_mode=default|enabled|disabled`；仅对 DeepSeek 官方域名的当前型号发送 `thinking.type`，其他兼容接口不附加该参数。官方连接请求包含 `stream_options.include_usage=true`。思考片段不作为最终回答保存或回传；启用工作区时强制直接回答，避免工具多轮依赖未保留的思考链。关闭工作区仍使用原有模式配置。只有思考、没有最终答案时提示提高输出上限或改用直接回答。旧连接自动增加默认模式字段，密文及关联会话保留。参考 [DeepSeek 官方接入说明](https://api-docs.deepseek.com/)、[思考模式](https://api-docs.deepseek.com/guides/thinking_mode) 与 [Chat Completion 参数](https://api-docs.deepseek.com/api/create-chat-completion)。
+**DeepSeek 官方接口（v1.1.4历史行为，新深度配置见本文顶部）**：模型连接中点击“填入 DeepSeek 官方配置”，基础地址为 `https://api.deepseek.com`，默认 `deepseek-flash`、8192 tokens、直接回答；也可选择 `deepseek-v4-pro` 或手填服务商返回的模型名。连接新增 `thinking_mode=default|enabled|disabled`；仅对 DeepSeek 官方域名的当前型号发送 `thinking.type`，其他兼容接口不附加该参数。官方连接请求包含 `stream_options.include_usage=true`。思考片段不作为最终回答保存或回传；启用工作区时强制直接回答，避免工具多轮依赖未保留的思考链。关闭工作区仍使用原有模式配置。只有思考、没有最终答案时提示提高输出上限或改用直接回答。旧连接自动增加默认模式字段，密文及关联会话保留。参考 [DeepSeek 官方接入说明](https://api-docs.deepseek.com/)、[思考模式](https://api-docs.deepseek.com/guides/thinking_mode) 与 [Chat Completion 参数](https://api-docs.deepseek.com/api/create-chat-completion)。
 
 **上下文**：工作台使用上文的项目级聚合，按需读取本地任务元数据、共用巡检缓存与项目操作日志；通用会话不附加任何项目数据。每次发问重建观测快照，任务结果与结构来源目录不一致时明确提示。原有 `/api/ai/tasks/{task_id}/context` 仍保留单任务接口契约，工作台不再以它作为唯一附加单位。
 

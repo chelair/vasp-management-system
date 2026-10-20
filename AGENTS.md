@@ -2,6 +2,8 @@
 
 ## 当前接手任务（优先于下文历史阶段任务，2026-10-20）
 
+- **模型思考深度已本地完成（2026-10-20，未部署/未推送）**：复用原私有模型连接/工作台；补齐DeepSeek/OpenAI及显式兼容接口的能力识别、保存、实际请求与界面说明。隔离分支codex/model-reasoning-controls开发，不改生产数据/服务/dist；用户本轮未要求部署新功能。已核对官方参数并统一后端能力/校验/实际payload；DeepSeek工具轮仅内存延续思考，GPT-6当前Chat工具限制明确提示。127项Python、两浏览器、类型/隔离构建通过，交接见agent-upgrade/model-reasoning.md；完成后停止。
+
 - **本轮已完成（2026-10-20，v1.1.4已部署）**：用户要求部署推送R4、增加吸附能支持和统一分析功能模板。已在隔离工作树补齐吸附参考/关系发现/比较与测试，合并R4及增量，经备份/隔离构建/单writer上线；源码892c776，生产PID3131279。本次按授权推送main/v1.1.4，完成后停止。原“不部署R4”是上一轮停止点，已被本次明确部署授权更新。不得新增模型构建或HPC提交。见PROGRESS §25、ANALYSIS_FEATURES.md及docs/templates/analysis-feature.md。
 
 - **R4已随v1.1.4部署**：用户要求复用AI工作台/R2/R3生成可编辑、独立保存/导出topic报告。R3发布后在 `/home/zouyuxi/projects/vasp-manager-r4` 隔离Git工作树、分支 `codex/r4-topic-reports` 开发；初轮不部署；本次按明确新授权已合并生产，保留历史数据。交付与实际验收见 `agent-upgrade/R4-topic-reports.md` 及PROGRESS §24；按用户要求完成后停止。

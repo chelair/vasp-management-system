@@ -377,11 +377,12 @@ class ReportAINotesTests(unittest.TestCase):
 
     def test_deepseek_uses_existing_payload_and_private_connection(self):
         with connections.database() as db:
-            db.execute("UPDATE connections SET base_url=?,model=? WHERE id=?",
-                       ("https://api.deepseek.com", "deepseek-flash", self.connection["id"]))
+            db.execute("UPDATE connections SET base_url=?,model=?,reasoning_effort=? WHERE id=?",
+                       ("https://api.deepseek.com", "deepseek-flash", "high",self.connection["id"]))
         original = service._open
         def mock_upstream(connection, key, path, payload):
-            self.assertEqual(payload["thinking"], {"type": "disabled"})
+            self.assertEqual(payload["thinking"], {"type": "enabled"})
+            self.assertEqual(payload["reasoning_effort"],"high")
             self.assertNotIn("tools", payload)
             return original({**connection, "base_url": f"http://127.0.0.1:{self.provider.server_port}"}, key, path, payload)
         with patch.object(service, "_open", side_effect=mock_upstream):

@@ -1,15 +1,19 @@
 import { clearToken, getToken, request } from './client';
 
 const ROOT = '/ai/chat';
+export type ReasoningEffort='default'|'none'|'minimal'|'low'|'medium'|'high'|'xhigh'|'max';
+export interface ReasoningCapabilities {provider:string;verified:boolean;options:{value:ReasoningEffort;label:string}[];tool_policy:'supported'|'none_only'|'unsupported';note:string}
 export interface AIConnection {
   id: string; name: string; base_url: string; model: string; max_tokens: number;
   is_default: boolean; key_configured: boolean; created_at: string; updated_at: string;
   thinking_mode: 'default' | 'enabled' | 'disabled';
+  reasoning_api:'auto'|'openai'|'deepseek';reasoning_effort:ReasoningEffort;effective_reasoning_effort:ReasoningEffort;reasoning_capabilities:ReasoningCapabilities;
 }
 export interface AIConnectionInput {
   name: string; base_url: string; model: string; api_key?: string;
   max_tokens: number; is_default: boolean;
   thinking_mode?: 'default' | 'enabled' | 'disabled';
+  reasoning_api?:'auto'|'openai'|'deepseek';reasoning_effort?:ReasoningEffort;
 }
 export interface AITarget {
   id: string; name: string; closed: boolean;
@@ -107,3 +111,5 @@ export async function watchAIRun(id: string, signal: AbortSignal, onUpdate: (dat
     if (!finished && !signal.aborted) throw new Error('回答连接已断开');
   } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
 }
+
+export const fetchReasoningCapabilities=(base:string,model:string,api='auto')=>request<ReasoningCapabilities>(`${ROOT}/reasoning-capabilities?${new URLSearchParams({base_url:base,model,reasoning_api:api})}`);

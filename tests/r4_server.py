@@ -133,6 +133,9 @@ def main():
         app=FastAPI();install(app);app.include_router(ai_chat.router,prefix='/api');app.include_router(topic_reports.router,prefix='/api')
         @app.exception_handler(permissions.PermissionDenied)
         async def denied(request,exc):return JSONResponse(status_code=403,content={'success':False,'message':str(exc)})
+        @app.get('/api/__test/provider-requests')
+        def provider_requests():
+            return [{'model':p['model'],'effort':p.get('reasoning_effort'),'thinking':p.get('thinking'),'tools':bool(p.get('tools'))} for p in provider.requests]
         @app.post('/__test/mutate')
         def mutate():
             path=root/'checks/check_results_r4.json';rows=json.loads(path.read_text());rows[1]['last_energy']=-1;path.write_text(json.dumps(rows));return {'ok':True}

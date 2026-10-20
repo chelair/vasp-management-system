@@ -1,5 +1,8 @@
 # VASP 计算项目管理系统 · 前端框架
 
+模型思考深度前端接入已本地完成（2026-10-20，未部署/未推送）：模型连接与聊天快捷选择按型号显示档位，后端真实请求沿用；DeepSeek工具轮/报告不再强制关闭，原始思考仅运行内存使用。使用、接口、官方依据与实际验收见 [模型思考配置](agent-upgrade/model-reasoning.md)。生产仍v1.1.4。
+
+
 v1.1.4已于2026-10-20部署，包含R4与吸附能完整链路：原AI项目会话可比较已有吸附体系/洁净表面/分子参考，多位点明确选择，同参考差值由Python计算。新增分析必须遵守 [统一规范](ANALYSIS_FEATURES.md) 并使用 [设计验收模板](docs/templates/analysis-feature.md)。科学边界与验收见 [吸附能接入](agent-upgrade/adsorption-analysis.md)；发布实际结果见PROGRESS §25。
 
 

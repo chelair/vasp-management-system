@@ -60,7 +60,9 @@ class Provider(BaseHTTPRequestHandler):
         if payload["model"] == "redirect-model":
             self.send_response(307); self.send_header("Location", "/stolen"); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
-        if payload["model"] in ("workspace-model", "workspace-loop", "workspace-blocked", "inspection-model", "parameter-model"):
+        if payload['model']=='deepseek-workspace':
+            self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"PRIVATE_TOOL_REASONING"}}]}\n\n')
+        if payload["model"] in ("deepseek-workspace","workspace-model", "workspace-loop", "workspace-blocked", "inspection-model", "parameter-model"):
             count = sum(m.get("role") == "tool" for m in payload["messages"])
             if count < (4 if payload["model"] == "inspection-model" else 3) or payload["model"] == "workspace-loop":
                 choices = [
@@ -357,10 +359,80 @@ class AIChatTests(unittest.TestCase):
                 db.execute("INSERT INTO connections VALUES (?,?,?,?,?,?,?,?,?,?)", ("old", "alice", "old", "https://api.deepseek.com", "deepseek-flash", secret, 2048, 1, "old", "old"))
             migrated = store.connections("alice")[0]
             self.assertEqual(migrated["thinking_mode"], "default")
+            self.assertEqual(migrated["reasoning_api"],"auto")
+            self.assertEqual(migrated["reasoning_effort"],"default")
             with store.database() as db:
                 row = store.owned(db, "connections", "old", "alice")
                 self.assertEqual(row["secret"], secret)
                 self.assertEqual(store.decrypt(row["secret"]), KEY)
+
+    def test_reasoning_connection_save_request_snapshot_and_key_retention(self):
+        connection=self.connection('gpt-5.2')
+        body={k:connection[k] for k in ('name','base_url','model','max_tokens','is_default')}
+        body.update(reasoning_api='openai',reasoning_effort='xhigh')
+        status,updated=self.api('/connections/'+connection['id'],'PUT',body)
+        self.assertEqual(status,200,updated);self.assertEqual(updated['reasoning_effort'],'xhigh')
+        self.assertTrue(updated['key_configured'])
+        _,run=self.send(self.conversation(updated));run=self.wait_run(run)
+        self.assertEqual(run['status'],'completed',run)
+        self.assertEqual(REQUESTS[-1]['reasoning_effort'],'xhigh')
+        self.assertEqual(run['snapshot']['connection']['effective_reasoning_effort'],'xhigh')
+        self.assertNotIn(KEY,json.dumps(updated))
+        legacy={k:body[k] for k in ('name','base_url','model','max_tokens','is_default')}
+        self.assertEqual(self.api('/connections/'+connection['id'],'PUT',legacy)[1]['reasoning_effort'],'xhigh')
+        body['reasoning_effort']='max'
+        self.assertEqual(self.api('/connections/'+connection['id'],'PUT',body)[0],400)
+        self.assertEqual(next(c for c in self.api('/connections')[1]['items'] if c['id']==connection['id'])['reasoning_effort'],'xhigh')
+
+    def test_deepseek_tools_honor_depth_but_reasoning_stays_ephemeral(self):
+        connection=self.connection('deepseek-workspace')
+        body={k:connection[k] for k in ('name','base_url','model','max_tokens','is_default')}
+        body.update(reasoning_api='deepseek',reasoning_effort='max')
+        status,connection=self.api('/connections/'+connection['id'],'PUT',body)
+        self.assertEqual(status,200)
+        _,run=self.send(self.conversation(connection,'task-alice'));run=self.wait_run(run)
+        self.assertEqual(run['status'],'completed',run)
+        self.assertEqual(len(run['tool_events']),3)
+        self.assertEqual(REQUESTS[-1]['reasoning_effort'],'max')
+        self.assertEqual(REQUESTS[-1]['thinking'],{'type':'enabled'})
+        assistants=[m for m in REQUESTS[-1]['messages'] if m.get('tool_calls')]
+        self.assertTrue(all(m['reasoning_content']=='PRIVATE_TOOL_REASONING' for m in assistants))
+        self.assertNotIn('PRIVATE_TOOL_REASONING',json.dumps(run))
+        _,detail=self.api('/conversations/'+run['conversation_id'])
+        self.assertNotIn('PRIVATE_TOOL_REASONING',json.dumps(detail))
+
+    def test_readonly_report_json_honors_depth_without_persisting_thoughts(self):
+        import io
+        connection=self.connection('deepseek-flash')
+        body={k:connection[k] for k in ('name','base_url','model','max_tokens','is_default')}
+        body.update(reasoning_api='deepseek',reasoning_effort='max')
+        self.assertEqual(self.api('/connections/'+connection['id'],'PUT',body)[0],200)
+        frames=[{'choices':[{'delta':{'reasoning_content':'PRIVATE_JSON_REASONING'}}]},
+                {'choices':[{'delta':{'content':json.dumps({'text':'safe paragraph'})},'finish_reason':'stop'}]}]
+        raw=(''.join('data: '+json.dumps(frame)+'\n\n' for frame in frames)+'data: [DONE]\n\n').encode()
+        with patch.object(service,'_open',return_value=io.BytesIO(raw)) as opened:
+            result,model=service.readonly_json_completion('alice',connection['id'],[{'role':'user','content':'return JSON'}])
+        self.assertEqual(result,{'text':'safe paragraph'})
+        payload=opened.call_args.args[-1]
+        self.assertEqual(payload['reasoning_effort'],'max');self.assertEqual(payload['thinking'],{'type':'enabled'})
+        self.assertNotIn('tools',payload);self.assertNotIn('PRIVATE_JSON_REASONING',json.dumps(result))
+
+    def test_capability_endpoint_and_unsupported_tool_combination(self):
+        from urllib.parse import urlencode
+        status,caps=self.api('/reasoning-capabilities?'+urlencode({'base_url':'https://api.deepseek.com','model':'deepseek-v4-pro'}))
+        self.assertEqual(status,200);self.assertEqual([o['value'] for o in caps['options']],['default','none','low','high','max'])
+        with self.assertRaises(ValueError):service.ai_reasoning.validate_tools({'base_url':'https://api.openai.com/v1','model':'gpt-6.1-sol'},True)
+        with self.assertRaises(ValueError):service.ai_reasoning.validate_tools({'base_url':'https://api.openai.com/v1','model':'gpt-6-sol','reasoning_effort':'high'},True)
+        service.ai_reasoning.validate_tools({'base_url':'https://api.openai.com/v1','model':'gpt-6-sol','reasoning_effort':'none'},True)
+        connection=self.connection('gpt-6.1-sol')
+        body={k:connection[k] for k in ('name','base_url','model','max_tokens','is_default')}
+        body.update(reasoning_api='openai',reasoning_effort='high')
+        _,connection=self.api('/connections/'+connection['id'],'PUT',body)
+        conversation=self.conversation(connection,'task-alice')
+        before=len(REQUESTS)
+        status,error=self.api('/conversations/'+conversation['id']+'/messages','POST',{'content':'研究项目','request_id':store.uid()})
+        self.assertEqual(status,400,error);self.assertIn('工作区',error['message'])
+        self.assertEqual(len(REQUESTS),before)
 
     def test_deepseek_without_final_answer_explains_output_budget(self):
         conversation = self.conversation(self.connection("deepseek-only-thinking"))

@@ -11,7 +11,7 @@ import TopicReportEditor from '../components/reports/TopicReportEditor';
 import {
   createAIConversation, deleteAIConversation, getAIContext, getAIConversation, getAIRun,
   isActiveRun, listAIConnections, listAIConversations, listAITargets, sendAIMessage,
-  stopAIRun, updateAIConversation, watchAIRun,
+  stopAIRun, updateAIConversation, watchAIRun,saveAIConnection,
 } from '../api/aiChat';
 import type { AIConnection, AIContext, AIConversation, AIConversationDetail, AIRun, AITarget } from '../api/aiChat';
 import '../styles/ai.css';
@@ -225,7 +225,11 @@ export default function AI() {
               try { const result = await updateAIConversation(id, { title: detail.title, prompt: detail.prompt, connection_id: value }); if (selectedRef.current === id) setDetail(result); await reloadList(); }
               catch (e) { void message.error(errorText(e)); }
               finally { setBusy(false); }
-            }} /></div>
+            }} />
+            {model&&<Select aria-label="当前模型思考深度" style={{width:'100%',marginTop:6}} value={model.effective_reasoning_effort} options={model.reasoning_capabilities.options} disabled={!!active||busy||model.reasoning_capabilities.options.length<2} onChange={async effort=>{
+              setBusy(true);try{await saveAIConnection({name:model.name,base_url:model.base_url,model:model.model,max_tokens:model.max_tokens,is_default:model.is_default,reasoning_api:model.reasoning_api,reasoning_effort:effort,thinking_mode:effort==='default'?'default':effort==='none'?'disabled':'enabled'},model.id);await reloadConnections();void message.success('已更新此连接的默认思考深度，后续请求生效');}catch(e){void message.error(errorText(e));}finally{setBusy(false);}
+            }}/>}
+          </div>
           <div className="ai-messages" ref={messagesRef} onScroll={() => {
             const box = messagesRef.current; if (box) autoScroll.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100;
           }}>
@@ -252,6 +256,8 @@ export default function AI() {
               </article>;
             })}
           </div>
+          {model&&<p className="ai-muted" style={{margin:'4px 16px'}}>思考深度：{model.reasoning_capabilities.options.find(o=>o.value===model.effective_reasoning_effort)?.label||model.effective_reasoning_effort} · 调整后作为此连接的默认设置，后续请求生效。</p>}
+          {model&&detail.workspace_enabled&&(model.reasoning_capabilities.tool_policy==='unsupported'||model.reasoning_capabilities.tool_policy==='none_only'&&model.effective_reasoning_effort!=='none')&&<Alert type="warning" message={model.reasoning_capabilities.note}/>}
           <div className="ai-composer"><Input.TextArea aria-label="输入 AI 对话消息" value={draft} maxLength={16000} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="输入问题，Enter 发送，Shift + Enter 换行" disabled={busy}
             onChange={(e) => { setDraft(e.target.value); drafts.current[detail.id] = e.target.value; }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }} />
@@ -317,7 +323,7 @@ export default function AI() {
       catch (e) { void message.error(errorText(e)); }
     }}><Form form={form} layout="vertical"><Form.Item name="title" label="会话名称" rules={[{ required: true, whitespace: true }]}><Input maxLength={120} /></Form.Item>
       <Form.Item name="prompt" label="会话提示词" extra="可描述研究角色、目标和回答偏好。保存后增加版本，已有回答仍保留原版本记录。"><Input.TextArea rows={7} maxLength={8000} showCount placeholder="例如：重点检查几何结构和收敛证据，区分事实与假设。" /></Form.Item>
-      {detail?.project_id && <Form.Item name="workspace_enabled" label="项目文件工作区" valuePropName="checked" extra="模型可查询最近三个计算目录各自的最新巡检结果（最多五个目录，同目录更新覆盖）、读取项目文件并创建独立草稿；不能执行代码、改正式文件或提交作业。不兼容工具的接口可关闭。DeepSeek 工作区使用直接回答模式。"><Switch /></Form.Item>}
+      {detail?.project_id && <Form.Item name="workspace_enabled" label="项目文件工作区" valuePropName="checked" extra="模型可查询最近三个计算目录各自的最新巡检结果（最多五个目录，同目录更新覆盖）、读取项目文件并创建独立草稿；不能执行代码、改正式文件或提交作业。不兼容工具的接口可关闭。支持工具的模型沿用连接中的思考深度。"><Switch /></Form.Item>}
       <p className="ai-muted">系统规则固定要求证据与来源，禁止编造或声称已执行操作。</p>
     </Form></Modal>
     <Modal title="本轮回答依据" open={!!inspecting} onCancel={() => setInspecting(null)} footer={null} width={900}>

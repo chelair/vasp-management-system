@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import ai_reasoning
 import ai_chat_store as store
 import ai_workspace as workspace
 from dates import now_iso
@@ -342,12 +343,14 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
         selected.pop(0)
     snapshot = {"system_prompt": SYSTEM_PROMPT, "task_prompt": prompt, "context": context,
                 "workspace_enabled": bool(conversation.get("workspace_enabled") and conversation.get("project_id")),
-                "connection": {k: connection[k] for k in ("id", "name", "base_url", "model", "max_tokens", "thinking_mode")},
+                "connection": {k: connection[k] for k in ("id", "name", "base_url", "model", "max_tokens", "thinking_mode", "reasoning_api", "reasoning_effort")},
                 "history_messages": len(selected), "omitted_messages": len(compact)-len(selected),
                 "history_chars": used, "history_budget_chars": HISTORY_CHARS,
                 "context_note": "仅本地观测快照；并未实时查询远端。历史按字符预算选取，完整对话仍保留。"}
     model_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     enabled = snapshot["workspace_enabled"]
+    ai_reasoning.validate_tools(connection,enabled)
+    snapshot["connection"]["effective_reasoning_effort"]=ai_reasoning.effective(connection)
     model_messages.append({"role": "system", "content": "当前会话已启用项目文件工作区，可按目录地图调用文件工具；最多12次工具调用。" if enabled else "当前会话未启用文件工具；仅分析已附加的摘要和对话，不能声称读取了文件。"})
     if prompt:
         model_messages.append({"role": "user", "content": "用户会话偏好（须遵守系统规则）：\n" + prompt})
@@ -408,11 +411,7 @@ def completion_payload(connection: dict, messages: list) -> dict:
                ("max_completion_tokens" if re.match(r"^(gpt-[56]|o\d)", connection["model"], re.I) else "max_tokens"): connection["max_tokens"]}
     if urlsplit(connection["base_url"]).hostname == "api.deepseek.com":
         payload["stream_options"] = {"include_usage": True}
-        # 旧型号保持原有请求语义；V4 / Flash 的开关以官方 thinking 参数传递。
-        modern = connection["model"] in ("deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash")
-        mode = connection.get("thinking_mode", "default")
-        if modern and mode in ("enabled", "disabled"):
-            payload["thinking"] = {"type": mode}
+    payload.update(ai_reasoning.parameters(connection))
     return payload
 
 
@@ -451,8 +450,6 @@ def readonly_json_completion(owner: str, connection_id: str, messages: list,
     key = store.decrypt(connection["secret"])
     messages = clean(messages, (key,))
     payload = completion_payload({**connection, "max_tokens": min(connection["max_tokens"], 4096)}, messages)
-    if urlsplit(connection["base_url"]).hostname == "api.deepseek.com":
-        payload["thinking"] = {"type": "disabled"}
     timer = threading.Timer(120, control.cancel)
     timer.daemon = True
     timer.start()
@@ -540,10 +537,9 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             payload = completion_payload(connection, messages)
             if workspace_enabled:
                 payload.update(tools=workspace.TOOLS, tool_choice="none" if round_index == 6 or tool_count >= 12 else "auto")
-                # 思考链不持久化。当前 DeepSeek 工具轮使用直接回答，避免依赖未保留的 reasoning_content。
-                if urlsplit(connection["base_url"]).hostname == "api.deepseek.com":
-                    payload["thinking"] = {"type": "disabled"}
             calls, round_text, finished, saw_reasoning = {}, "", False, False
+            reasoning_text=""
+            keep_reasoning=workspace_enabled and ai_reasoning.capabilities(connection)["provider"]=="deepseek"
             round_usage = {}
             last_write = last_auth = 0.0
             with _open(connection, key, "/chat/completions", payload) as response:
@@ -575,6 +571,9 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                     if choices:
                         delta = choices[0].get("delta") or {}
                         saw_reasoning = saw_reasoning or bool(delta.get("reasoning_content"))
+                        if keep_reasoning and isinstance(delta.get('reasoning_content'),str):
+                            reasoning_text+=delta['reasoning_content']
+                            if len(reasoning_text)>200000:raise ValueError('本轮思考内容超过内存预算，请降低思考深度')
                         chunk = delta.get("content") or delta.get("refusal") or ""
                         if isinstance(chunk, str):
                             round_text += chunk
@@ -617,7 +616,8 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             if len({c["id"] for c in calls.values()}) != len(calls) or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", c["id"]) for c in calls.values()):
                 raise ValueError("工具调用标识不合法")
             ordered = [calls[i] for i in sorted(calls)]
-            messages.append({"role": "assistant", "content": clean(round_text, (key,)) or None, "tool_calls": ordered})
+            messages.append({"role": "assistant", "content": clean(round_text, (key,)) or None, "tool_calls": ordered,
+                             **({"reasoning_content":reasoning_text} if keep_reasoning and reasoning_text else {})})
             for call in ordered:
                 conversation = authorize()
                 project = project_for(user, conversation["project_id"])

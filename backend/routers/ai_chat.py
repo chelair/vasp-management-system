@@ -60,6 +60,8 @@ class ConnectionBody(BaseModel):
     max_tokens: int = Field(default=2048, ge=128, le=32768)
     is_default: bool = False
     thinking_mode: Literal["default", "enabled", "disabled"] = "default"
+    reasoning_api: Literal["auto","openai","deepseek"] = "auto"
+    reasoning_effort: Literal["default","none","minimal","low","medium","high","xhigh","max"] = "default"
 
 
 class ConversationBody(BaseModel):
@@ -94,6 +96,8 @@ def list_connections(request: Request):
 
 def connection_values(body: ConnectionBody):
     values = body.model_dump()
+    for field in ("reasoning_api","reasoning_effort"):
+        if field not in body.model_fields_set:values.pop(field,None)
     values["base_url"] = service.normalize_url(body.base_url)
     for key in ("name", "model"):
         values[key] = values[key].strip()
@@ -104,6 +108,15 @@ def connection_values(body: ConnectionBody):
         if any(ord(c) < 33 or ord(c) > 126 for c in values["api_key"]):
             raise ValueError("API Key 格式不合法")
     return values
+
+
+@router.get("/reasoning-capabilities")
+@guard
+def reasoning_capabilities(request:Request,base_url:str='',model:str='',reasoning_api:Literal['auto','openai','deepseek']='auto'):
+    actor(request)
+    if len(base_url)>2000 or len(model)>200:raise ValueError('接口地址或模型名过长')
+    import ai_reasoning
+    return ok('本地能力定义',ai_reasoning.capabilities({'base_url':base_url,'model':model,'reasoning_api':reasoning_api}))
 
 
 @router.post("/connections")

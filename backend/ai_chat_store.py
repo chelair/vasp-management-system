@@ -11,6 +11,7 @@ import uuid
 
 from cryptography.fernet import Fernet, InvalidToken
 
+import ai_reasoning
 from config import DATA_DIR
 from dates import now_iso
 from permissions import PermissionDenied
@@ -73,6 +74,8 @@ def database():
         columns = {row[1] for row in db.execute("PRAGMA table_info(connections)")}
         if "thinking_mode" not in columns:
             db.execute("ALTER TABLE connections ADD COLUMN thinking_mode TEXT NOT NULL DEFAULT 'default'")
+        for column,default in (('reasoning_api','auto'),('reasoning_effort','default')):
+            if column not in columns:db.execute(f"ALTER TABLE connections ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'")
         conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
         if "project_id" not in conversation_columns:
             db.execute("ALTER TABLE conversations ADD COLUMN project_id TEXT")
@@ -131,7 +134,8 @@ def owned(db, table: str, item_id: str, owner: str) -> dict:
 
 
 def public_connection(row) -> dict:
-    return {**{k: row[k] for k in ("id", "name", "base_url", "model", "max_tokens", "thinking_mode", "created_at", "updated_at")},
+    return {**{k: row[k] for k in ("id", "name", "base_url", "model", "max_tokens", "thinking_mode", "reasoning_api", "reasoning_effort", "created_at", "updated_at")},
+            "reasoning_capabilities":ai_reasoning.capabilities(dict(row)),"effective_reasoning_effort":ai_reasoning.effective(dict(row)),
             "is_default": bool(row["is_default"]), "key_configured": bool(row["secret"])}
 
 
@@ -142,8 +146,12 @@ def connections(owner: str) -> list:
 
 
 def save_connection(owner: str, values: dict, item_id: str | None = None) -> dict:
+    values=dict(values)
     with database() as db:
         old = owned(db, "connections", item_id, owner) if item_id else None
+        for key,default in (('reasoning_api','auto'),('reasoning_effort','default')):
+            values.setdefault(key,old[key] if old else default)
+        ai_reasoning.validate(values)
         if old and not values.get("api_key"):
             if values["base_url"] != old["base_url"]:
                 raise ValueError("更换 API 地址时请重新输入密钥，避免将原密钥发送给其他服务")
@@ -159,13 +167,13 @@ def save_connection(owner: str, values: dict, item_id: str | None = None) -> dic
             db.execute("UPDATE connections SET is_default=0 WHERE owner=?", (owner,))
         now = now_iso()
         db.execute("""INSERT INTO connections
-            (id,owner,name,base_url,model,secret,max_tokens,is_default,created_at,updated_at,thinking_mode)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            (id,owner,name,base_url,model,secret,max_tokens,is_default,created_at,updated_at,thinking_mode,reasoning_api,reasoning_effort)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET name=excluded.name, base_url=excluded.base_url,
             model=excluded.model, secret=excluded.secret, max_tokens=excluded.max_tokens,
-            is_default=excluded.is_default, updated_at=excluded.updated_at, thinking_mode=excluded.thinking_mode""",
+            is_default=excluded.is_default, updated_at=excluded.updated_at, thinking_mode=excluded.thinking_mode,reasoning_api=excluded.reasoning_api,reasoning_effort=excluded.reasoning_effort""",
             (item_id, owner, values["name"], values["base_url"], values["model"], secret,
-             values["max_tokens"], int(default), old["created_at"] if old else now, now, values.get("thinking_mode", "default")))
+             values["max_tokens"], int(default), old["created_at"] if old else now, now, values.get("thinking_mode", "default"),values.get("reasoning_api","auto"),values.get("reasoning_effort","default")))
         return public_connection(owned(db, "connections", item_id, owner))
 
 

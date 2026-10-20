@@ -16,13 +16,14 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from checks_store import merged_results
-from cif_convert import read_or_convert_cif
+from checks_store import merged_results, collect_task_observations
 from dates import now_iso
 from task_paths import is_auxiliary_task, task_files_dir
+from report_block_science import checked_path, file_sources, structure, electronic, source_paths
 
 # 复用报告构建器的事实提取与分类口径（同一份数据，避免两套口径）
 from report_builder import (
@@ -47,9 +48,7 @@ MAX_TEXT_CHARS = 4000
 #: 标题最大字符数
 MAX_TITLE_CHARS = 200
 #: 超过多少小时算 stale
-FRESH_HOURS = 24
-#: 力收敛阈值（现有曲线图口径；未从 INCAR 反推时按默认 EDIFFG 0.02 eV/Å）
-DEFAULT_FORCE_THRESHOLD = 0.02
+FRESH_HOURS = 4
 
 #: Block 类型 → (renderer, evidence_kind, scope, 中文名, 是否已接入解析器)
 #: scope: task / group / project / text
@@ -65,17 +64,17 @@ BLOCK_TYPES: Dict[str, Dict[str, Any]] = {
     "task.structure": {"renderer": "structure", "evidence": "task.structure", "scope": "task",
                        "label": "结构可视化", "resolvable": True},
     "group.free_energy": {"renderer": "path_panel", "evidence": "group.path", "scope": "group",
-                          "label": "自由能路径", "resolvable": False},
+                          "label": "自由能路径", "resolvable": True},
     "group.neb": {"renderer": "neb_panel", "evidence": "group.neb", "scope": "group",
-                  "label": "NEB 能垒", "resolvable": False},
+                  "label": "NEB 能垒", "resolvable": True},
     "ele.pdos": {"renderer": "pdos_panel", "evidence": "ele.pdos", "scope": "task",
-                 "label": "PDOS", "resolvable": False},
+                 "label": "PDOS", "resolvable": True},
     "ele.bader": {"renderer": "bader_table", "evidence": "ele.bader", "scope": "task",
-                  "label": "Bader 电荷", "resolvable": False},
+                  "label": "Bader 电荷", "resolvable": True},
     "ele.work_function": {"renderer": "work_function_panel", "evidence": "ele.work_function",
-                          "scope": "task", "label": "功函数", "resolvable": False},
+                          "scope": "task", "label": "功函数", "resolvable": True},
     "ele.charge_diff": {"renderer": "image_panel", "evidence": "ele.charge_diff", "scope": "task",
-                        "label": "差分电荷图", "resolvable": False},
+                        "label": "差分电荷图", "resolvable": True},
     "project.comparison": {"renderer": "comparison_table", "evidence": "project.comparison",
                            "scope": "project", "label": "对照表", "resolvable": True},
     "method.source": {"renderer": "method_table", "evidence": "project.method", "scope": "project",
@@ -161,26 +160,38 @@ def payload_version(kind: str, payload: Any, provenance: Iterable[Dict[str, Any]
     报告生成时间更不能冒充数据版本。
     """
     source = [
-        {key: item.get(key) for key in ("task_id", "directory", "attempt", "archive", "local_files")}
+        {key: item.get(key) for key in ("task_id", "directory", "attempt", "hash", "hash_scope")}
         for item in (provenance or [])
     ]
-    basis = {"kind": str(kind), "payload": payload, "provenance": source}
+    # Observation times and elapsed runtime describe collection, not scientific content.
+    content = {k: v for k, v in payload.items()
+               if k not in ("inspection_checked_at", "runtime_hours")} if isinstance(payload, dict) else payload
+    basis = {"kind": str(kind), "payload": content, "provenance": source}
     return "sha256:" + hashlib.sha256(_canonical(basis).encode("utf-8")).hexdigest()[:32]
 
 
 # ------------------------------------------------------------------ 状态判定
 
 
-def _freshness(checked_at: Any, now: datetime) -> Dict[str, Any]:
+def _freshness(checked_at: Any, now: datetime, project=None, task=None) -> Dict[str, Any]:
     parsed = _parse_time(checked_at)
     if parsed is None:
         return {"state": "unknown", "basis": "没有可用的巡检时间"}
     if parsed.tzinfo is None:
         parsed = parsed.astimezone()
     age_hours = (now - parsed).total_seconds() / 3600.0
+    if age_hours < -0.1:
+        return {"state": "unknown", "basis": "巡检时间在未来，请核对来源时钟"}
+    if project is not None and task is not None:
+        from ai_inspections import participation
+        included = participation(project, task)
+        if not included["included"]:
+            return {"state": "unknown", "basis": "未参与自动巡检，不套用4小时更新阈值",
+                    "participation": included}
     state = "fresh" if age_hours <= FRESH_HOURS else "stale"
     return {
         "state": state,
+        "threshold_hours": FRESH_HOURS,
         "basis": f"最近巡检 {checked_at}（{age_hours:.1f} 小时前，阈值 {FRESH_HOURS}h）",
     }
 
@@ -216,7 +227,7 @@ def _validation(kind: str, fact: Optional[Dict[str, Any]], *, available: bool = 
         if precision.get("ok") is False:
             items.append({"rule": "precision", "status": "WARNING", "detail": "精度检查未通过"})
             return {"status": "WARNING", "items": items}
-        return {"status": "PASS", "items": items}
+        return {"status": "NOT_TESTED", "items": items + [{"rule": "scientific_precision", "status": "NOT_TESTED", "detail": "存在快照不等于数值精度或科学结论已验证"}]}
     # 其余类型：数据存在但没有本阶段的科学规则 → NOT_TESTED
     items.append({"rule": "science", "status": "NOT_TESTED", "detail": "R2-A 未接入该类型的科学校验规则"})
     return {"status": "NOT_TESTED", "items": items}
@@ -225,9 +236,9 @@ def _validation(kind: str, fact: Optional[Dict[str, Any]], *, available: bool = 
 def _visibility(fact: Dict[str, Any], opt_index: Optional[int], converged: bool) -> str:
     """完整报告是否展示这个元素（与"有没有数据"是两件事）。"""
     if fact.get("task_type") == "opt" and _task_category(fact) == "结构优化":
-        if fact.get("status") == "archived":
-            return "shown"
-        if not converged:
+        if not fact.get("force_history"):
+            return "omitted_no_history"
+        if not converged and fact.get("status") != "archived":
             return "omitted_unconverged"
         if opt_index is not None and opt_index >= MAX_STRUCTURE_TASKS:
             return "omitted_limit"
@@ -236,11 +247,11 @@ def _visibility(fact: Dict[str, Any], opt_index: Optional[int], converged: bool)
 
 def _local_files(project: Dict[str, Any], task: Dict[str, Any]) -> List[str]:
     try:
-        directory = task_files_dir(str(project.get("name") or ""), task)
+        directory = checked_path(project, task, task_files_dir(str(project.get("name") or ""), task))
         if not directory.is_dir():
             return []
-        return sorted(item.name for item in directory.iterdir() if item.is_file())
-    except OSError:
+        return sorted(item.name for item in directory.iterdir() if item.is_file() and not item.is_symlink())
+    except (OSError, ValueError):
         return []
 
 
@@ -258,7 +269,7 @@ def _availability(
             return "available"
         return "unparsed" if "INCAR" in files else "missing"
     if kind == "task.energy":
-        if (fact or {}).get("last_energy") is not None or (fact or {}).get("force_history"):
+        if any((fact or {}).get(k) is not None for k in ("last_energy", "force_max", "force_rms")) or (fact or {}).get("force_history"):
             return "available"
         return "unparsed" if "OUTCAR" in files else "missing"
     if kind == "task.structure":
@@ -287,6 +298,9 @@ def _opt_indices(facts: List[Dict[str, Any]]) -> Dict[str, int]:
     for fact in facts:
         if fact.get("task_type") != "opt" or _task_category(fact) != "结构优化":
             continue
+        converged = fact.get("converged") if fact.get("converged") is not None else fact.get("status") in STATUS_DONE
+        if not fact.get("force_history") or not (converged or fact.get("status") == "archived"):
+            continue
         indices[str(fact.get("task_id"))] = counter
         counter += 1
     return indices
@@ -310,8 +324,17 @@ def _candidate(
     spec = BLOCK_TYPES[block_type]
     project_id = str(project.get("project_id") or project.get("name") or "")
     task_id = str((fact or {}).get("task_id") or (task or {}).get("task_id") or "")
+    if spec["scope"] == "group" and group_id:
+        task_id = ""
     files = _local_files(project, task) if task else []
     availability = _availability(block_type, fact, files)
+    if block_type.startswith("ele.") and task:
+        try:
+            paths = source_paths(project, task, block_type)
+            exists = any(checked_path(project, task, p).is_file() for p in paths)
+            availability = "unparsed" if exists or files else "missing"
+        except (OSError, ValueError):
+            availability = "unknown"
     checked_at = (fact or {}).get("inspection_checked_at") or (fact or {}).get("last_check_time")
     return {
         "block_id": block_id(project_id, block_type, task_id=task_id, group_id=group_id),
@@ -330,7 +353,7 @@ def _candidate(
         "resolvable": bool(spec["resolvable"]),
         "availability": availability,
         "validation": _validation(spec["evidence"], fact, available=availability == "available"),
-        "freshness": _freshness(checked_at, now),
+        "freshness": _freshness(checked_at, now, project, task) if task else _freshness(checked_at, now),
         "full_report_visibility": visibility,
         "summary": _summary(block_type, fact, availability),
         "detail": "" if availability == "available" else _availability_note(block_type, availability),
@@ -403,12 +426,12 @@ def list_candidates(
             types += ["task.energy_force", "task.convergence_curve"]
         if task_type in ("opt", "neb"):
             types.append("task.structure")
+        if task_type == "neb" and not (fact.get("group") or {}).get("group_id"):
+            types.append("group.neb")
         if task_type == "ele":
-            subtype = str(fact.get("subtype") or "")
-            types += ["ele.pdos"] if subtype in ("", "pdos") else []
-            types += ["ele.bader"] if subtype == "bader" else []
-            types += ["ele.work_function"] if subtype == "work_function" else []
-            types += ["ele.charge_diff"] if subtype in ("diff_charge", "charge_diff") else []
+            # Integrated analysis can coexist on one electronic task; enumerate all,
+            # then indicate whether each local result exists (without parsing it).
+            types += ["ele.pdos", "ele.bader", "ele.work_function", "ele.charge_diff"]
         for block_type in types:
             candidates.append(
                 _candidate(project, block_type, fact=fact, task=task, visibility=visibility, now=moment)
@@ -465,6 +488,23 @@ def list_candidates(
     )
 
     counts: Dict[str, int] = {}
+    names = Counter(str(f.get("task_name") or "") for f in facts)
+    facts_by_id = {str(f.get("task_id")): f for f in facts}
+    for candidate in candidates:
+        keys = []
+        if candidate["type"] not in ("task.summary", "method.source", "project.comparison"):
+            keys.append("section:science")
+            fact = facts_by_id.get(candidate["task_id"], {})
+            category = _task_category(fact) if fact else ""
+            if category:
+                keys += ["type:science:" + category, "task:science:" + category]
+            name = str(fact.get("task_name") or "")
+            # Never map an ordinal or ambiguous task title to a different model.
+            if name and names[name] == 1:
+                keys.append("task:science:" + name)
+                if fact.get("task_type") == "ele":
+                    keys.append("etask:science:" + name)
+        candidate["legacy_hidden_keys"] = keys
     for item in candidates:
         counts[item["type"]] = counts.get(item["type"], 0) + 1
 
@@ -497,7 +537,7 @@ def list_candidates(
 # ------------------------------------------------------------------ Evidence 解析
 
 
-class UnsupportedEvidence(Exception):
+class UnsupportedEvidence(ValueError):
     """该类型在 R2-A 还没接入解析器（不是"没有数据"）。"""
 
 
@@ -508,12 +548,19 @@ def _provenance(
     parsed_at: str,
 ) -> List[Dict[str, Any]]:
     latest = fact.get("latest_output_dir") or ""
+    base = str(task.get("remote_dir") or fact.get("remote_dir") or "").rstrip("/")
+    directory = (latest if "/" in latest else base + "/" + latest) if latest and latest not in ("MAIN", "main", ".") else base
+    observations = collect_task_observations(str(fact.get("task_id") or ""), limit=5)
+    matching = [o for o in observations if (o.get("data") or {}).get("checked_at") == fact.get("inspection_checked_at")]
+    source = matching[0] if matching else {}
     return [
         {
             "task_id": fact.get("task_id"),
-            "directory": latest or str(task.get("remote_dir") or ""),
+            "directory": directory,
             "attempt": (latest.rsplit("/", 1)[-1] if latest else "main"),
-            "archive": "data/checks（巡检归档合并结果）",
+            "archive": source.get("archive"),
+            "observation_id": source.get("observation_id"),
+            "source": "task database + merged inspection fields; fields may originate from different observations",
             "observed_at": fact.get("inspection_checked_at") or fact.get("last_check_time"),
             "parsed_at": parsed_at,
             "hash": None,
@@ -550,6 +597,8 @@ def _payload_task_fact(fact: Dict[str, Any]) -> Dict[str, Any]:
 
 def _payload_params(fact: Dict[str, Any]) -> Dict[str, Any]:
     return {
+        "task_id": fact.get("task_id"),
+        "task_name": fact.get("task_name"),
         "incar": fact.get("incar_snapshot") or {},
         "kpoints": fact.get("kpoints_snapshot") or {},
         "parameter_sources": fact.get("parameter_sources") or {},
@@ -560,6 +609,11 @@ def _payload_params(fact: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _payload_energy(fact: Dict[str, Any]) -> Dict[str, Any]:
+    ediffg = (fact.get("incar_snapshot") or {}).get("EDIFFG")
+    try:
+        threshold = abs(float(ediffg)) if float(ediffg) < 0 else None
+    except (TypeError, ValueError):
+        threshold = None
     series = [
         {
             "step": point.get("step"),
@@ -576,31 +630,9 @@ def _payload_energy(fact: Dict[str, Any]) -> Dict[str, Any]:
         "converged": fact.get("converged"),
         "ionic_steps": fact.get("steps"),
         "series": series,
-        "force_threshold_ev_per_a": DEFAULT_FORCE_THRESHOLD,
+        "force_threshold_ev_per_a": threshold,
         "units": dict(_UNITS),
-        "note": "曲线点为巡检归档的离子步记录；阈值取默认 EDIFFG 口径",
-    }
-
-
-def _payload_structure(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
-    poscar = contcar = None
-    errors: List[str] = []
-    for name, key in (("POSCAR", "poscar_cif"), ("CONTCAR", "contcar_cif")):
-        try:
-            value = read_or_convert_cif(project, task, name)
-        except Exception as exc:  # noqa: BLE001 - 单个结构失败不影响另一份
-            value = None
-            errors.append(f"{name}: {exc}")
-        if key == "poscar_cif":
-            poscar = value
-        else:
-            contcar = value
-    return {
-        "poscar_cif": poscar,
-        "contcar_cif": contcar,
-        "structure_source": "local_mirror",
-        "errors": errors,
-        "note": "只读本地镜像；本地没有结构文件时不生成假图",
+        "note": "能量来自任务记录，力与曲线来自合并巡检；阈值仅在参数快照存在负 EDIFFG 时显示，不代表已完成科学验证",
     }
 
 
@@ -684,12 +716,17 @@ def resolve_evidence(
     )
     by_id = _task_by_id(project)
     kind = spec["evidence"]
+    source_facts = []
+    paths = []
 
     if spec["scope"] == "task":
         fact = next((f for f in facts if str(f.get("task_id")) == str(task_id)), None)
         if fact is None:
             raise LookupError(f"任务不存在或不属于该项目：{task_id}")
         task = by_id.get(str(task_id)) or {}
+        if kind.startswith("ele.") and fact.get("task_type") != "ele":
+            raise UnsupportedEvidence("电子结构元素需要选择电子结构任务")
+        source_facts = [fact]
         files = _local_files(project, task)
         availability = _availability(block_type, fact, files)
         if kind == "task.fact":
@@ -699,36 +736,55 @@ def resolve_evidence(
         elif kind == "task.energy":
             payload = _payload_energy(fact)
         elif kind == "task.structure":
-            payload = _payload_structure(project, task)
+            payload, paths = structure(project, task)
+            availability = "available" if payload.get("contcar_cif") or payload.get("poscar_cif") else "unparsed" if files else "missing"
+        elif kind.startswith("ele."):
+            try:
+                payload, paths, availability = electronic(project, task, kind)
+            except Exception as exc:
+                # Isolate corrupt/incomplete local analysis; never turn it into a fact.
+                payload, paths, availability = {"errors": [str(exc)]}, [], "unparsed"
         else:  # pragma: no cover - 新增类型必须在这里显式接入
             raise UnsupportedEvidence(f"证据种类 {kind} 没有解析实现")
         title = _task_title(fact)
     elif spec["scope"] == "group":
         members = [
             f for f in facts
-            if str((f.get("group") or {}).get("group_id") or "") == str(group_id)
+            if (group_id and str((f.get("group") or {}).get("group_id") or "") == str(group_id))
+            or (not group_id and task_id and str(f.get("task_id")) == task_id and f.get("task_type") == "neb")
         ]
         if not members:
             raise LookupError(f"组不存在或没有成员：{group_id}")
         fact = members[0]
-        payload = {
-            "group_id": group_id,
-            "members": [
-                {
-                    "task_id": m.get("task_id"),
-                    "task_name": m.get("task_name"),
-                    "status": m.get("status"),
-                    "final_energy_ev": m.get("last_energy"),
-                    "force_max_ev_per_a": m.get("force_max"),
-                }
-                for m in members
-            ],
-            "note": "组级证据在 R2-A 只给成员清单，路径/能垒面板 R2-D 接入",
-        }
+        source_facts = members
+        from report_builder import _free_energy_paths, _neb_details
+        from report_panels import free_energy_panel, neb_panel
+        if block_type == "group.free_energy":
+            items = _free_energy_paths(project, members)
+            member_map = {f["task_id"]: f for f in members}
+            for path in items:
+                for item in path["structures"]:
+                    item["converged"] = member_map.get(item.get("opt_task_id"), {}).get("converged")
+            payload = {"items": items, "charts": [free_energy_panel(p, title=p["group_name"]).replace("存在未收敛中间体", "存在未收敛或未验证中间体") for p in items],
+                       "note": "沿用已登记的频率修正；缺失修正保留空值，收敛结论仅为原报告口径，未另作科学验证"}
+            availability = "available" if any(s.get("free_energy_ev") is not None for p in items for s in p["structures"]) else "unparsed"
+        else:
+            items = _neb_details(members)
+            # Correct incomplete-image transition-state selection locally; do not invent force convergence.
+            for item in items:
+                valid = [i for i in item["images"] if i.get("relative_energy_ev") is not None]
+                peak = max(valid, key=lambda i: i["relative_energy_ev"]) if valid else None
+                item["transition_state_image"] = peak["label"] if peak else None
+                item["converged_images"] = [i["label"] for i in item["images"] if i.get("max_force_ev_per_a") is not None and i["max_force_ev_per_a"] < .05]
+            payload = {"items": items, "charts": [neb_panel(i, title=i["task_name"]) for i in items if i["images"]],
+                       "note": "能量/力来自巡检映像结果；收敛映像计数沿用原看板0.05 eV/Å参考阈值，未核验本次INCAR，缺失力不计为已收敛。"}
+            availability = "available" if payload["charts"] else "unparsed"
+        if availability == "unparsed" and not any(m.get("last_energy") is not None or m.get("force_history") or _local_files(project, by_id.get(m["task_id"], {})) for m in members):
+            availability = "missing"
         files = []
-        availability = "unparsed"
         title = group_id
     else:  # project
+        source_facts = facts
         if block_type == "project.comparison":
             payload = _comparison_payload(facts)
             availability = "available" if len(payload["rows"]) >= 2 else "missing"
@@ -741,10 +797,19 @@ def resolve_evidence(
             raise UnsupportedEvidence(f"项目级类型没有解析实现：{block_type}")
         fact = {"task_id": "", "inspection_checked_at": None}
         files = []
-        by_id = {}
 
     task_obj = by_id.get(str(fact.get("task_id") or ""), {}) if spec["scope"] == "task" else {}
-    provenance = _provenance(fact, task_obj, files, now_iso())
+    parsed_at = now_iso()
+    provenance = [p for f in source_facts for p in _provenance(f, by_id.get(str(f.get("task_id")), {}), files if len(source_facts) == 1 else [], parsed_at)]
+    if not provenance:
+        provenance = _provenance(fact, task_obj, files, parsed_at)
+    if paths:
+        provenance[0]["files"] = file_sources(project, task_obj, paths)
+        provenance[0]["hash"] = hashlib.sha256(_canonical(provenance[0]["files"]).encode()).hexdigest()
+        provenance[0]["hash_scope"] = "listed_local_files"
+    if kind == "task.params":
+        provenance[0]["parameters_sha256"] = hashlib.sha256(_canonical({"incar": payload["incar"], "kpoints": payload["kpoints"]}).encode()).hexdigest()
+        provenance[0]["parameters_hash_scope"] = "inspection_parameter_snapshot_not_current_input_files"
     version = payload_version(kind, payload, provenance)
 
     return {
@@ -760,7 +825,7 @@ def resolve_evidence(
         "provenance": provenance,
         "availability": availability,
         "validation": _validation(kind, fact, available=availability == "available"),
-        "freshness": _freshness(fact.get("inspection_checked_at") or fact.get("last_check_time"), moment),
+        "freshness": _freshness(fact.get("inspection_checked_at") or fact.get("last_check_time"), moment, project, task_obj) if task_obj else _freshness(None, moment),
         "observed_at": fact.get("inspection_checked_at") or fact.get("last_check_time"),
         "parsed_at": provenance[0]["parsed_at"],
     }

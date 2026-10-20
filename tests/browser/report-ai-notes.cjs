@@ -35,7 +35,7 @@ const { execFileSync } = require('node:child_process');
     import {App} from 'antd';import {MemoryRouter} from 'react-router-dom';
     import Report from './src/pages/Report';
     createRoot(document.getElementById('root')).render(<MemoryRouter><App><Report/></App></MemoryRouter>);
-  `, loader: 'tsx', resolveDir: path.resolve('.') }, bundle: true, write: false, format: 'iife', jsx: 'automatic',
+  `, loader: 'tsx', resolveDir: path.resolve('.') }, bundle: true, write: false, outfile: '/tmp/vasp-r1-browser-full.js', format: 'iife', jsx: 'automatic',
     define: { 'process.env.NODE_ENV': '"development"' } });
   let regenerated = false;
   const meta = (id = 'fixture') => ({ report_id: id, project_id: id, project_name: id,

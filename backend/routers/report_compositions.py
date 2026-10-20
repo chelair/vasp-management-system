@@ -128,6 +128,31 @@ def composition_list(project_ref: str, request: Request):
         return JSONResponse(status_code=500, content=fail(f"读取组合失败：{e}"))
 
 
+@router.post("/{project_ref}/preview")
+def composition_preview(project_ref: str, request: Request, payload: dict = Body(default={})):
+    try:
+        project = _authorized(project_ref, request)
+        doc = compositions.preview(project, payload)
+        return ok("预览成功", {"document": doc, "html": compositions.render_html(doc)})
+    except compositions.RevisionConflict as e:
+        return JSONResponse(status_code=409, content=fail(str(e), {"code": "revision_conflict", "current_revision": e.current}))
+    except compositions.EvidenceStale as e:
+        return JSONResponse(status_code=409, content=fail(str(e), {"code": "evidence_stale", "changes": e.changes}))
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except (ValueError, KeyError) as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+
+
+@router.post("/{project_ref}/compositions/{composition_id}/check")
+def composition_check(project_ref: str, composition_id: str, request: Request):
+    try:
+        project = _authorized(project_ref, request)
+        return ok("检查完成", {"changes": compositions.check_updates(project, compositions.load(project, composition_id))})
+    except LookupError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+
+
 @router.post("/{project_ref}/compositions")
 def composition_create(project_ref: str, request: Request, payload: dict = Body(default={})):
     """新建组合：blocks 按提交顺序保存；科学数据由后端按 ID 解析后冻结。"""

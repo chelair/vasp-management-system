@@ -137,7 +137,7 @@ def energy_force_chart(
     points: Sequence[Dict[str, Any]],
     *,
     title: str = "能量 / 最大力 - 离子步",
-    force_threshold: float = 0.02,
+    force_threshold: Optional[float] = 0.02,
     width: int = 620,
     height: int = 260,
 ) -> str:
@@ -178,7 +178,7 @@ def energy_force_chart(
             e_hi = e_lo + 1.0
     else:
         e_lo, e_hi = 0.0, 1.0
-    f_hi = (max(forces + [force_threshold]) if forces else force_threshold) * 1.15
+    f_hi = max(forces + [force_threshold or 0.02, 0.0001]) * 1.15
 
     def px(x: float) -> float:
         return M["left"] + (x - x_min) / (x_max - x_min) * plot_w
@@ -219,15 +219,16 @@ def energy_force_chart(
         f'y2="{M["top"] + plot_h}" stroke="#9CA3AF"/>'
     )
     # 力阈值（与巡检一致的红虚线 + 标注）
-    ty = py_f(force_threshold)
-    body.append(
-        f'<line x1="{M["left"]}" y1="{ty:.1f}" x2="{width - M["right"]}" y2="{ty:.1f}" '
-        f'stroke="#D9535B" stroke-width="1.5" stroke-dasharray="6,4"/>'
-    )
-    body.append(
-        f'<text x="{width - M["right"] - 4}" y="{ty - 5:.1f}" font-size="10" fill="#D9535B" '
-        f'text-anchor="end" {FONT}>阈值 {force_threshold:.3f}</text>'
-    )
+    if force_threshold is not None:
+        ty = py_f(force_threshold)
+        body.append(
+            f'<line x1="{M["left"]}" y1="{ty:.1f}" x2="{width - M["right"]}" y2="{ty:.1f}" '
+            f'stroke="#D9535B" stroke-width="1.5" stroke-dasharray="6,4"/>'
+        )
+        body.append(
+            f'<text x="{width - M["right"] - 4}" y="{ty - 5:.1f}" font-size="10" fill="#D9535B" '
+            f'text-anchor="end" {FONT}>阈值 {force_threshold:.3f}</text>'
+        )
 
     def path_for(index: int, mapper) -> str:
         chunks: List[str] = []

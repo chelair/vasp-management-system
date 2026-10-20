@@ -56,9 +56,11 @@ class ReportBlocksTest(unittest.TestCase):
     def test_catalog_covers_every_task_beyond_report_limit(self):
         summaries = self.candidates("task.summary")
         self.assertEqual(len(summaries), fixtures.OPT_COUNT, "10 个 OPT 任务都应出现在候选目录")
-        # 完整报告只展示前 6 个；第 7 个起必须仍可发现，且标成 omitted_limit
-        for task_id in ("task_opt_07", "task_opt_08", "task_opt_09", "task_opt_10"):
+        # Only eligible tasks count against the cap (03 unconverged; 05/06 no history).
+        for task_id in ("task_opt_10",):
             self.assertEqual(self.by_task("task.summary", task_id)["full_report_visibility"], "omitted_limit")
+        self.assertEqual(self.by_task("task.summary", "task_opt_07")["full_report_visibility"], "shown")
+        self.assertEqual(self.by_task("task.summary", fixtures.NO_CHECK_TASK)["full_report_visibility"], "omitted_no_history")
         self.assertEqual(self.by_task("task.summary", "task_opt_01")["full_report_visibility"], "shown")
 
     def test_auxiliary_continuation_task_is_not_a_candidate(self):
@@ -88,6 +90,14 @@ class ReportBlocksTest(unittest.TestCase):
         self.assertEqual(first["title"], second["title"], "两个任务同名")
         self.assertNotEqual(first["block_id"], second["block_id"], "ID 必须按任务区分，不能只按标题")
         self.assertNotEqual(first["evidence_id"], second["evidence_id"])
+
+    def test_legacy_hidden_aliases_do_not_guess_ambiguous_names_or_ordinals(self):
+        first = self.by_task("task.energy_force", "task_opt_01")
+        self.assertIn("task:science:Model01", first["legacy_hidden_keys"])
+        for tid in ("task_opt_04", fixtures.SHARED_NAME_TASK):
+            keys = self.by_task("task.energy_force", tid)["legacy_hidden_keys"]
+            self.assertNotIn("task:science:Model04", keys)
+            self.assertFalse(any(key.startswith("figure:") for key in keys))
 
     def test_catalog_is_deterministic(self):
         again = self.blocks.list_candidates(self.project, force=True)

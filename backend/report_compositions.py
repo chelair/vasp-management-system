@@ -9,8 +9,8 @@
 - 预览与导出都用**存下来的同一份** Evidence（导出不重新解析）；
 - 文本元素走既有安全 Markdown（R1 已加固），不接受 HTML/脚本。
 
-尚未覆盖（明确留给 R2-C/D）：前端编辑器、拖拽/画布、3Dmol 交互视图、NEB/自由能/
-PDOS/Bader/功函数的组合渲染与导出。
+前端编辑器与首批科学Adapter已接入；此模块输出同一冻结数据的预览/导出HTML，
+复用原报告运行时与安全Markdown。复杂布局和AI自动编排不在本阶段范围。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import uuid
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -38,7 +39,6 @@ from report_blocks import (
     new_text_block_id,
     normalize_options,
     resolve_evidence,
-    UnsupportedEvidence,
 )
 from report_charts import energy_force_chart
 from report_export import markdown_to_html
@@ -59,7 +59,10 @@ class EvidenceStale(Exception):
 
 def _safe_name(value: str) -> str:
     keep = [c if (c.isalnum() or c in "-_@.") else "_" for c in str(value)]
-    return "".join(keep) or "project"
+    result = "".join(keep) or "project"
+    if result in (".", ".."):
+        raise ValueError("项目名称非法")
+    return result
 
 
 def _project_dir(project_name: str) -> Path:
@@ -110,6 +113,7 @@ def build_composition(
     created_at: str = "",
     merged: Optional[Dict[str, Dict[str, Any]]] = None,
     now: Optional[datetime] = None,
+    existing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """按提交的顺序重建组合；证据一律由后端解析，客户端只提供 ID 与展示选项。"""
     if not isinstance(payload, dict):
@@ -123,13 +127,41 @@ def build_composition(
 
     project_id = str(project.get("project_id") or project.get("name") or "")
     project_name = str(project.get("name") or "")
-    refresh_evidence = bool(payload.get("refresh_evidence"))
+    refresh_evidence = payload.get("refresh_evidence", False)
+    if type(refresh_evidence) is not bool:
+        raise ValueError("refresh_evidence 必须是布尔值")
     moment = now or datetime.now().astimezone()
 
     blocks: List[Dict[str, Any]] = []
     evidence_map: Dict[str, Dict[str, Any]] = {}
     seen_ids: set[str] = set()
     stale: List[Dict[str, Any]] = []
+    aliases = {}
+    saved_blocks = {b["block_id"]: b for b in (existing or {}).get("blocks", [])}
+    frozen = (existing or {}).get("evidence", {}) if not refresh_evidence else {}
+
+    def obtain(kind, tid="", gid="", raw=None, bid=""):
+        # Existing display edits use server-owned snapshots, never client payloads.
+        prior = saved_blocks.get(bid)
+        if prior and not refresh_evidence:
+            refs = prior.get("source_refs") or []
+            ref = next((r for r in refs if frozen.get(r["evidence_id"], {}).get("task_id", "") == tid), None)
+            if ref:
+                value = deepcopy(frozen[ref["evidence_id"]])
+                evidence_map[value["evidence_id"]] = value
+                return value
+        value = resolve_evidence(project, kind, task_id=tid, group_id=gid, merged=merged, now=moment)
+        eid = value["evidence_id"]
+        claimed = _claimed_version(raw or {}, eid)
+        if claimed and claimed != value["version"]:
+            stale.append({"block_id": bid, "evidence_id": eid, "claimed": claimed, "current": value["version"]})
+        if eid in frozen:
+            # A newly added view sharing an existing Evidence must keep the frozen version.
+            if claimed and claimed != frozen[eid]["version"]:
+                stale.append({"block_id": bid, "evidence_id": eid, "claimed": claimed, "current": frozen[eid]["version"]})
+            value = deepcopy(frozen[eid])
+        evidence_map[eid] = value
+        return value
 
     for raw in raw_blocks:
         if not isinstance(raw, dict):
@@ -148,7 +180,7 @@ def build_composition(
             if not text.strip():
                 raise ValueError("文本元素不能为空")
             bid = str(raw.get("block_id") or "") or new_text_block_id()
-            if not bid.startswith("blk_txt_"):
+            if not re.fullmatch(r"blk_txt_[0-9a-f]{32}", bid):
                 raise ValueError("文本元素的 block_id 非法")
             if bid in seen_ids:
                 raise ValueError(f"重复的元素 ID：{bid}")
@@ -176,6 +208,14 @@ def build_composition(
         task_id = str(raw.get("task_id") or "")
         group_id = str(raw.get("group_id") or "")
         variant = str(raw.get("variant") or "")
+        task_ids = raw.get("task_ids") or []
+        if task_ids:
+            if block_type != "project.comparison" or not isinstance(task_ids, list):
+                raise ValueError("task_ids 仅用于所选模型参数对照")
+            task_ids = sorted(set(str(t) for t in task_ids))
+            if not 2 <= len(task_ids) <= 12:
+                raise ValueError("参数对照请选择2至12个模型")
+            variant = "params:" + ",".join(task_ids)
         expected_id = block_id(
             project_id, block_type, task_id=task_id, group_id=group_id, variant=variant
         )
@@ -185,48 +225,32 @@ def build_composition(
         if expected_id in seen_ids:
             raise ValueError(f"重复的元素 ID：{expected_id}（同一元素只能添加一次）")
         seen_ids.add(expected_id)
+        client_id = raw.get("client_id")
+        if client_id:
+            if not isinstance(client_id, str) or not client_id.startswith("draft_") or len(client_id) > 100 or client_id in aliases:
+                raise ValueError("client_id 非法或重复")
+            aliases[client_id] = expected_id
 
-        try:
-            evidence = resolve_evidence(
-                project,
-                block_type,
-                task_id=task_id,
-                group_id=group_id,
-                merged=merged,
-                now=moment,
-            )
-        except UnsupportedEvidence as exc:
-            raise ValueError(str(exc)) from exc
-
-        claimed = _claimed_version(raw, str(evidence["evidence_id"]))
-        if claimed and claimed != evidence["version"]:
-            stale.append(
-                {
-                    "block_id": expected_id,
-                    "evidence_id": evidence["evidence_id"],
-                    "claimed": claimed,
-                    "current": evidence["version"],
-                }
-            )
-        evidence_map[str(evidence["evidence_id"])] = evidence
+        values = [obtain("task.params", tid, raw=raw, bid=expected_id) for tid in task_ids] if task_ids else [
+            obtain(block_type, task_id, group_id, raw, expected_id)]
+        evidence = values[0]
         blocks.append(
             {
                 "block_id": expected_id,
                 "type": block_type,
                 "type_label": spec["label"],
-                "title": block_title or str(evidence.get("title") or spec["label"]),
+                "title": block_title or (str(evidence.get("title") or "") + " · " + spec["label"]).strip(" ·"),
                 "project_id": project_id,
                 "task_id": task_id,
                 "group_id": group_id,
                 "variant": variant,
+                "task_ids": task_ids,
                 "renderer": spec["renderer"],
                 "options": options,
                 "text": "",
-                "source_refs": [
-                    {"evidence_id": evidence["evidence_id"], "version": evidence["version"]}
-                ],
-                "data_status": evidence["availability"],
-                "validation_status": (evidence.get("validation") or {}).get("status") or "UNKNOWN",
+                "source_refs": [{"evidence_id": v["evidence_id"], "version": v["version"]} for v in values],
+                "data_status": "available" if all(v["availability"] == "available" for v in values) else evidence["availability"] if len(values) == 1 else "unparsed",
+                "validation_status": (evidence.get("validation") or {}).get("status") or "UNKNOWN" if len(values) == 1 else "NOT_TESTED",
             }
         )
 
@@ -234,9 +258,14 @@ def build_composition(
         raise EvidenceStale(stale)
 
     block_ids = [item["block_id"] for item in blocks]
-    hidden = _id_list(payload.get("hidden_block_ids"), "hidden_block_ids", block_ids)
-    deleted = _id_list(payload.get("deleted_block_ids"), "deleted_block_ids", block_ids)
-    groups = _groups(payload.get("groups"), block_ids, set(deleted))
+    def remap(values):
+        return [aliases.get(v, v) if isinstance(v, str) else v for v in values] if isinstance(values, list) else values
+    hidden = _id_list(remap(payload.get("hidden_block_ids")), "hidden_block_ids", block_ids)
+    deleted = _id_list(remap(payload.get("deleted_block_ids")), "deleted_block_ids", block_ids)
+    raw_groups = payload.get("groups")
+    if isinstance(raw_groups, list):
+        raw_groups = [{**g, "block_ids": remap(g.get("block_ids"))} if isinstance(g, dict) else g for g in raw_groups]
+    groups = _groups(raw_groups, block_ids, set(deleted))
 
     doc = {
         "schema_version": SCHEMA_VERSION,
@@ -280,6 +309,7 @@ def _groups(value: Any, block_ids: List[str], deleted: set) -> List[Dict[str, An
     allowed = {item for item in block_ids}
     groups: List[Dict[str, Any]] = []
     seen: set[str] = set()
+    assigned: set[str] = set()
     for index, raw in enumerate(value):
         if not isinstance(raw, dict):
             raise ValueError("groups 里的分组必须是对象")
@@ -288,6 +318,9 @@ def _groups(value: Any, block_ids: List[str], deleted: set) -> List[Dict[str, An
             raise ValueError(f"重复的分组 ID：{group_id}")
         seen.add(group_id)
         members = _id_list(raw.get("block_ids"), "groups.block_ids", block_ids)
+        if assigned.intersection(members):
+            raise ValueError("每个元素只能属于一个分组")
+        assigned.update(members)
         groups.append(
             {
                 "group_id": group_id,
@@ -319,10 +352,14 @@ def save(
             existing = _read(_path(project_name, composition_id))
             if existing is None:
                 raise LookupError(f"组合不存在：{composition_id}")
+            if existing.get("project_name") != project_name or existing.get("project_id") != str(project.get("project_id") or project_name):
+                raise LookupError(f"组合不存在：{composition_id}")
             if int(existing.get("deleted_revision") or 0):
                 raise ValueError("组合已删除，不能直接覆盖")
             revision = int(existing.get("revision") or 1)
-            if expected_revision is not None and int(expected_revision) != revision:
+            if type(expected_revision) is not int:
+                raise ValueError("更新组合必须提供整数 expected_revision")
+            if expected_revision != revision:
                 raise RevisionConflict(revision)
             doc = build_composition(
                 project,
@@ -331,6 +368,7 @@ def save(
                 revision=revision + 1,
                 created_at=str(existing.get("created_at") or ""),
                 merged=merged,
+                existing=existing,
             )
         else:
             if len(list_for(project)) >= MAX_COMPOSITIONS_PER_PROJECT:
@@ -366,7 +404,7 @@ def list_for(project: Dict[str, Any]) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for path in directory.glob("cmp_*.json"):
         doc = _read(path)
-        if doc is None or int(doc.get("deleted_revision") or 0):
+        if doc is None or int(doc.get("deleted_revision") or 0) or doc.get("project_name") != str(project.get("name")):
             continue
         items.append(
             {
@@ -420,7 +458,7 @@ def _kv_table(payload: Dict[str, Any]) -> str:
     return _table(["参数", "值"], rows)
 
 
-def _block_body(block: Dict[str, Any], evidence: Dict[str, Any]) -> str:
+def _block_body(block: Dict[str, Any], evidence: Dict[str, Any], values=None) -> str:
     renderer = str(block.get("renderer") or "")
     if renderer == "text":
         return markdown_to_html(_strip_images(str(block.get("text") or "")))
@@ -442,16 +480,22 @@ def _block_body(block: Dict[str, Any], evidence: Dict[str, Any]) -> str:
         svg = energy_force_chart(
             series,
             title=str(block.get("title") or "能量 / 最大力"),
-            force_threshold=float(payload.get("force_threshold_ev_per_a") or 0.02),
+            force_threshold=payload.get("force_threshold_ev_per_a"),
         )
         return svg
     if renderer == "param_table":
         incar = payload.get("incar") or {}
-        if not incar:
-            return "<p class='rb-note'>没有 INCAR 快照</p>"
         rows = [[k, v] for k, v in incar.items()]
-        return _table(["INCAR 参数", "值"], rows)
+        rows.append(["KPOINTS", json.dumps(payload.get("kpoints") or {}, ensure_ascii=False)])
+        return _table(["计算参数", "值"], rows) + "<p class='rb-note'>" + _esc(payload.get("note")) + "</p>"
     if renderer == "comparison_table":
+        if block.get("task_ids"):
+            params = [e.get("payload") or {} for e in (values or [])]
+            keys = sorted({key for p in params for key in (p.get("incar") or {})})
+            rows = [[key] + [p.get("incar", {}).get(key, "—") for p in params] for key in keys]
+            rows.append(["KPOINTS"] + [json.dumps(p.get("kpoints") or {}, ensure_ascii=False) for p in params])
+            rows.append(["参数来源"] + [json.dumps(p.get("parameter_sources") or {}, ensure_ascii=False) for p in params])
+            return _table(["计算参数"] + [str(p.get("task_name") or p.get("task_id")) for p in params], rows)
         rows = payload.get("rows") or []
         return _table(
             ["任务", "状态", "总能 (eV)", "最大力 (eV/Å)", "收敛"],
@@ -469,21 +513,72 @@ def _block_body(block: Dict[str, Any], evidence: Dict[str, Any]) -> str:
     if renderer == "method_table":
         rows = payload.get("rows") or []
         return _table(
-            ["任务", "ENCUT", "状态", "输出目录"],
+            ["任务", "ENCUT", "KPOINTS", "状态", "输出目录"],
             [
-                [row.get("task_name"), row.get("encut"), row.get("status"), row.get("latest_output_dir")]
+                [row.get("task_name"), row.get("encut"), json.dumps(row.get("kpoints") or {}, ensure_ascii=False), row.get("status"), row.get("latest_output_dir")]
                 for row in rows
             ],
         )
     if renderer == "facts":
         return _kv_table(payload)
     if renderer == "structure":
-        has_cif = bool(payload.get("poscar_cif") or payload.get("contcar_cif"))
-        return (
-            "<p class='rb-note'>结构数据已固定（CIF 可用），交互 3D 视图在 R2-C 接入；"
-            f"当前 {'有' if has_cif else '没有'}本地结构文件。</p>"
-        )
-    return "<p class='rb-note'>该元素类型的组合渲染尚未接入（R2-D）</p>"
+        return _widget(block, "structure-3d") + _images(payload) + "<p class='rb-note'>" + _esc(payload.get("note")) + "；PDF只包含已有结构图片，交互3D请用HTML查看。</p>"
+    if renderer in ("path_panel", "neb_panel"):
+        charts = "".join(payload.get("charts") or [])
+        return (charts or "<p class='rb-note'>缺少可绘图的路径/映像数据</p>") + "<p class='rb-note'>" + _esc(payload.get("note")) + "</p>"
+    if renderer in ("pdos_panel", "work_function_panel"):
+        chart = "".join(payload.get("charts") or [])
+        kind = "pdos-chart" if renderer == "pdos_panel" else "work-function-chart"
+        return ("<figure>" + chart + "</figure>" if chart else "") + _widget(block, kind)
+    if renderer == "bader_table":
+        summary = payload.get("summary") or {}
+        atoms = summary.get("atoms") or []
+        return (_kv_table({k: summary.get(k) for k in ("n_atoms", "total_charge", "n_electrons", "net_charge_available", "net_charge_reason")})
+                + (_widget(block, "structure-3d", " data-source='bader'") if payload.get("cif") else "")
+                + _table(["原子", "元素", "电荷 (e)", "ZVAL", "净电荷 (e)"],
+                         [[a.get(k) for k in ("index", "element", "charge", "zval", "net_charge")] for a in atoms]))
+    if renderer == "image_panel":
+        return _images(payload) or "<p class='rb-note'>本地没有已生成的差分电荷图片</p>"
+    return "<p class='rb-note'>该元素没有可渲染数据</p>"
+
+
+def _widget(block, kind, extra=""):
+    return f"<div class='report-widget' data-report-widget='{kind}' data-block-id='{_esc(block['block_id'])}' data-task-id='{_esc(block['block_id'])}'{extra}></div>"
+
+
+def _images(payload):
+    return "".join("<figure><img alt='" + _esc(image.get("title")) + "' src='" + _esc(image["data"]) + "'><figcaption>" + _esc(image.get("title")) + "</figcaption></figure>"
+                   for image in payload.get("images", []) if str(image.get("data", "")).startswith("data:image/png;base64,"))
+
+
+def _interactive(doc):
+    from report_interactive import runtime_js, mol_js, data_script
+    data = {"structure": {}, "bader": {}, "pdos": {}, "work_function": {}}
+    for block in doc.get("blocks", []):
+        if block["block_id"] in doc.get("hidden_block_ids", []) + doc.get("deleted_block_ids", []):
+            continue
+        refs = block.get("source_refs") or []
+        if not refs:
+            continue
+        payload = doc.get("evidence", {}).get(refs[0]["evidence_id"], {}).get("payload", {})
+        key = block["block_id"]  # Instance identity, never mutable task title/order.
+        if block["renderer"] == "structure":
+            data["structure"][key] = payload
+        elif block["renderer"] == "bader_table" and payload.get("cif"):
+            data["bader"][key] = {"cif": payload["cif"], "atoms": payload.get("summary", {}).get("atoms", [])}
+        elif block["renderer"] == "pdos_panel" and payload.get("view"):
+            data["pdos"][key] = payload["view"]
+        elif block["renderer"] == "work_function_panel" and payload.get("summary"):
+            data["work_function"][key] = payload["summary"]
+    if not any(data.values()):
+        return ""
+    runtime = runtime_js()
+    if not runtime:
+        return "<p class='rb-note'>交互运行时不可用，显示冻结的静态图表和数值。</p>"
+    mol = mol_js() if data["structure"] or data["bader"] else ""
+    def script(value):
+        return "<script>" + value.replace("</script", "<\\/script") + "</script>"
+    return script("window.__VASP_REPORT_DATA__=" + data_script(data)) + script(mol) + script(runtime)
 
 
 _CSS = """
@@ -499,8 +594,19 @@ margin:0;padding:32px;color:#1f2329;background:#fff;line-height:1.65}
 .rb-table th{background:#f5f7fa;font-weight:600}
 .rb-note{color:#6b7280;font-size:13px;background:#f9fafb;border-left:3px solid #d1d5db;padding:8px 12px}
 .rb-evidence{font-family:ui-monospace,Consolas,monospace;font-size:12px}
-@media print{body{padding:12mm}.rb-block{page-break-inside:avoid}}
+svg,img{max-width:100%;height:auto}figure{margin:12px 0}.report-widget{min-height:80px}
+.rb-table{overflow-wrap:anywhere}.rb-group{border-bottom:1px solid #ddd;padding-top:18px}
+@media print{body{padding:12mm}.rb-block{page-break-inside:avoid}.report-widget{display:none!important}.report-static-taken-over{display:block!important}}
 """
+
+
+def _freshness_basis(evidence):
+    from report_blocks import _freshness
+    old = evidence.get("freshness") or {}
+    if old.get("threshold_hours"):
+        current = _freshness(evidence.get("observed_at"), datetime.now().astimezone())
+        return str(current.get("basis") or "")
+    return str(old.get("basis") or "")
 
 
 def render_html(doc: Dict[str, Any], *, auto_print: bool = False) -> str:
@@ -509,33 +615,47 @@ def render_html(doc: Dict[str, Any], *, auto_print: bool = False) -> str:
     hidden = set(doc.get("hidden_block_ids") or [])
     deleted = set(doc.get("deleted_block_ids") or [])
     parts: List[str] = []
+    membership = {bid: group for group in doc.get("groups", []) for bid in group.get("block_ids", [])}
+    previous_group = None
+    visible_evidence_ids = set()
     for block in doc.get("blocks") or []:
         block_number = str(block.get("block_id"))
         if block_number in hidden or block_number in deleted:
             continue
         refs = block.get("source_refs") or []
-        evidence = evidence_map.get(str((refs[0] or {}).get("evidence_id"))) if refs else None
+        visible_evidence_ids.update(str(r.get("evidence_id")) for r in refs)
+        values = [evidence_map.get(str(r.get("evidence_id")), {}) for r in refs]
+        evidence = values[0] if values else None
+        group = membership.get(block_number)
+        if group and group.get("group_id") != previous_group:
+            parts.append("<h2 class='rb-group'>" + _esc(group.get("title")) + "</h2>")
+        previous_group = group.get("group_id") if group else None
         parts.append(
             "<section class='rb-block' id='{bid}'>"
             "<h2>{title}</h2>{body}<p class='rb-note'>{status}</p></section>".format(
                 bid=_esc(block_number),
                 title=_esc(block.get("title")),
-                body=_block_body(block, evidence or {}),
+                body=(_block_body(block, evidence or {}, values)
+                      + "".join("<p class='rb-note'>" + _esc(error) + "</p>" for value in values for error in (value.get("payload", {}).get("errors") or []))
+                      + "".join("<p class='rb-note'>" + _esc(block.get("options", {}).get(key)) + "</p>" for key in ("caption", "note") if block.get("options", {}).get(key))),
                 status=_esc(
-                    f"数据 {block.get('data_status')} · 校验 {block.get('validation_status')}"
+                    f"数据 {block.get('data_status')} · 校验 {block.get('validation_status')} · "
+                    + "；".join(str(rule.get("detail") or "") for v in values for rule in (v.get("validation") or {}).get("items", [])) + " · "
+                    + "；".join(_freshness_basis(v) for v in values)
                 ),
             )
         )
 
     versions = "".join(
         f"<tr><td>{_esc(item.get('evidence_id'))}</td><td>{_esc(item.get('kind'))}</td>"
-        f"<td>{_esc(item.get('version'))}</td></tr>"
-        for item in evidence_map.values()
+        f"<td>{_esc(item.get('version'))}</td><td>{_esc(json.dumps(item.get('provenance') or [], ensure_ascii=False))}</td></tr>"
+        for eid, item in evidence_map.items() if eid in visible_evidence_ids
     )
+
     project = _esc(doc.get("project_name"))
     title = _esc(doc.get("title"))
     meta = _esc(
-        f"项目 {project} · 组合 {doc.get('composition_id')} · revision {doc.get('revision')} · "
+        f"项目 {doc.get('project_name')} · 组合 {doc.get('composition_id')} · revision {doc.get('revision')} · "
         f"生成 {doc.get('updated_at')}"
     )
     script = (
@@ -545,11 +665,35 @@ def render_html(doc: Dict[str, Any], *, auto_print: bool = False) -> str:
     )
     return (
         "<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>"
+        "<meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; font-src data:; base-uri 'none'; form-action 'none'\">"
         f"<title>{title} · {project}</title><style>{_CSS}</style></head><body>"
         f"<header class='rb-head'><h1>{title}</h1><p class='rb-meta'>{meta}</p></header>"
         f"{''.join(parts)}"
         "<section class='rb-block'><h2>证据版本</h2>"
         "<table class='rb-table rb-evidence'><thead><tr><th>Evidence</th><th>类型</th>"
-        f"<th>版本</th></tr></thead><tbody>{versions}</tbody></table></section>"
-        f"{script}</body></html>"
+        f"<th>版本</th><th>来源</th></tr></thead><tbody>{versions}</tbody></table></section>"
+        f"{_interactive(doc)}{script}</body></html>"
     )
+
+def preview(project, payload):
+    """Validate draft against server snapshots without writing or changing its revision."""
+    cid = str(payload.get("composition_id") or "")
+    existing = load(project, cid) if cid else None
+    if existing and payload.get("expected_revision") != existing["revision"]:
+        raise RevisionConflict(existing["revision"])
+    return build_composition(project, payload, composition_id=cid,
+                             revision=existing["revision"] if existing else 1,
+                             created_at=existing.get("created_at", "") if existing else "", existing=existing)
+
+
+def check_updates(project, doc, *, merged=None):
+    changes = []
+    for eid, previous in doc.get("evidence", {}).items():
+        try:
+            current = resolve_evidence(project, previous["block_type"], task_id=previous.get("task_id", ""),
+                                       group_id=previous.get("group_id", ""), merged=merged, force=True)
+            if current["version"] != previous["version"]:
+                changes.append({"evidence_id": eid, "previous": previous["version"], "current": current["version"]})
+        except (ValueError, LookupError, KeyError) as exc:
+            changes.append({"evidence_id": eid, "error": str(exc)})
+    return changes

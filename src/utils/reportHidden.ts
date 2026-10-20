@@ -34,6 +34,13 @@ export interface HiddenBlock {
   buttonTitle?: string;
 }
 
+/** Explicitly imported legacy choices only. Ordinal/ambiguous aliases stay unmapped. */
+export function mapLegacyHiddenBlocks(blockIds: string[], candidates: {block_id: string; legacy_hidden_keys?: string[]}[], keys: string[]): string[] {
+  const hidden = new Set(keys);
+  const allowed = new Set(blockIds);
+  return candidates.filter(c => allowed.has(c.block_id) && c.legacy_hidden_keys?.some(key => hidden.has(key))).map(c => c.block_id);
+}
+
 /** 标题纯文本：排除运行时追加的「隐藏」按钮 */
 function headingLabel(el: HTMLElement): string {
   const clone = el.cloneNode(true) as HTMLElement;

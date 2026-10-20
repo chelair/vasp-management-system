@@ -1,6 +1,6 @@
 # R2 · 细粒度、可复用报告元素：任务与接续交接
 
-状态：**R2-A / R2-B 已实现（后端闭环 + 26 项隔离测试）；R2-C 前端编辑、R2-D 余下元素类型未开始**。实现、改动清单与下一步见 `R2-blocks-implementation.md`；本文件保留完整任务合同与验收标准，并作为 R2 的唯一任务定义。R1 已部署；R2 不属于自主计算阶段3/4，不接入 AI 自动编排，**未部署、未推送**。
+状态：**R2-A/B合同缺口已收敛，R2-C手工编辑/冻结证据预览导出及R2-D首批14类元素适配已实现并通过本地验收**（2026-10-20）。见实现记录§14、PROGRESS §16。本文件下文保留原始任务合同和历史接续顺序，标有“未开始/待做”的旧节不能覆盖本状态。R1生产仍运行；R2本轮**未部署、未推送**，不进入AI自动编排。
 
 本文件是下一位开发者的完整任务合同与工作清单；`AGENTS.md` 为总入口，`PROGRESS.md` 记录验收，`process.md` 记录生产部署。以当前 Git 和源码为准，开始/停止时更新交接，不能只在聊天中汇报。
 
@@ -161,7 +161,7 @@ Evidence/Block/组合合同的实际定义与设计偏差：
   version 排除 observed_at/parsed_at（时间不冒充版本）；availability/validation/freshness/visibility 四分
   evidence 去重映射 + source_refs 引用；保存时重算 ID 并校验版本，伪造 400、过期 409
   偏差：R2-A 只接入 6 类证据解析（fact/params/energy/structure/comparison/method），
-        其余 10 类候选标 unparsed 且 resolvable=false，resolve 抛 UnsupportedEvidence（不伪造）
+        其余6种Block类型候选为 resolvable=false，可用性仍按文件情况标 unparsed/missing，resolve 抛 UnsupportedEvidence（不伪造）
 真实运行的测试命令、结果、未覆盖内容：见 R2-blocks-implementation.md §9（13+13 新增全绿；194 既有回归全绿）
 是否部署/推送；生产PID、版本、备份：未部署、未推送、未重启服务；生产 PID/版本/备份均未变化
 已知缺陷 / 当前阻塞 / 下一步第一条可执行任务：
@@ -169,3 +169,7 @@ Evidence/Block/组合合同的实际定义与设计偏差：
   下一步：R2-C 前端 ReportCompositionEditor + 同一冻结证据预览 + 浏览器/PDF 回归
 保留的用户改动与敏感文件边界：待办.md、问题.md 两处删除未提交、未恢复；data/配置/密钥/dist/备份不进 Git
 ```
+
+## 8. 续开发结果（2026-10-20）
+
+已实现用户的两模型人工组合验收流程，页面入口「智能报告→专题报告」。A/B缺口、C/D实现、测试、生产边界与限制统一记录在 `R2-blocks-implementation.md` §14，PROGRESS §16同步；本文件§1的完整任务要求保留。后续先核对Git日志与上述最新节，部署须另有用户授权，不重做历史§4的已完成步骤。

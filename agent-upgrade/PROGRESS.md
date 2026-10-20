@@ -8,6 +8,8 @@
 - 基线版本：v1.0.1 / `099dfcb`
 - 最近更新：2026-10-20
 
+当前状态（2026-10-20）：用户“你继续开发吧”后，R2合同修复+C手工编辑/冻结预览导出+D首批14类元素适配已本地验收，详见§16及实现记录§14。未部署、未推送，生产仍R1。历史§14/15待办已由本轮最新节替代。
+
 ---
 
 ## 1. 阶段总表
@@ -15,7 +17,7 @@
 - 2026-10-19 用户授权部署并推送 R1（维持应用 v1.1.0），本轮先备份/部署/验证，再发布 Git；R2 仅启动源码审查与可接续交接，不实现元素编排，不启用 AI 自动编排或阶段3/4。
 
 - R1（现有完整项目报告 AI 注解）：✅ Mock验收完成并于2026-10-19 23:56部署；默认关闭，20项专项与174项既有回归通过，详见 §12/13 和 `R1-report-notes.md`。
-- R2（细粒度ReportBlock/Evidence）：🟡 仅源码审查/设计交接（2026-10-20），没有R2业务代码/接口/迁移/测试；下一步 R2-A 全候选目录及稳定身份/来源状态。完整需求、审查证据、实施顺序和交回模板见 `R2-report-blocks.md`；不进入自主阶段3/4。
+- R2（细粒度ReportBlock/Evidence）：🟡 A/B后端初版已实现，C前端与D剩余面板待做；本地提交 `dd807cf`、`8601bab`，未推送/部署。2026-10-20本助手接回并重跑26项专项通过；接手发现与待核对合同见 §15 及 `R2-blocks-implementation.md` §13，不重复开发A/B，不进入自主阶段3/4。
 
 | 阶段 | 内容 | 状态 | 验收证据 |
 |---|---|---|---|
@@ -210,6 +212,24 @@ OK
 - **R2-B 完成**：新增 `backend/report_compositions.py` + `backend/routers/report_compositions.py`。两模型最小闭环（两条能量 + 参数对照 + 一条曲线 + 用户文字）；Evidence 去重冻结、Block 只存 `source_refs`；保存时后端重算 ID（伪造 400）、版本不一致返回 409 `evidence_stale`（显式 `refresh_evidence` 才接受）；组合 CRUD + 乐观锁 + 软删除/恢复 + 自包含 HTML 导出（内联 SVG/表格、转义脚本、剥离外链图片）。
 - 存储：`data/reports/compositions/<项目>/cmp_<12hex>.json`，与完整报告索引/单份清理隔离；旧 `report.json/md/notes/edits/HTML` 与报告 schema 1.2.0 未改。
 - 新增测试 26 项：`tests/r2_fixtures.py`、`tests/test_report_blocks.py`（13）、`tests/test_report_compositions.py`（13）。实测：两套各 `OK`；既有回归 53 常规（7 skip 为隔离容器）+ 10/38/47/26/20 逐套件全 `OK`，**合计 220 项通过**（194 既有 + 26 新增）。
-- 未做：R2-C 前端编辑器/页面预览/浏览器与 PDF 回归；R2-D 余下 10 类（NEB/自由能/PDOS/Bader/功函数/差分/结构 3D）解析与渲染、旧隐藏 key 映射。R2-A 对这 10 类只给候选并标 `resolvable=false`，解析请求明确拒绝而不是伪造。
+- 未做：R2-C 前端编辑器/页面预览/浏览器与 PDF 回归；R2-D 剩余6种Block类型（NEB/自由能/PDOS/Bader/功函数/差分）解析渲染及结构3D、旧隐藏 key 映射。R2-A 对这6类只给候选并标 `resolvable=false`，解析请求明确拒绝而不是伪造。
 - **未部署、未推送、未重启服务**：生产 `vasp-manager.service`、`dist/`、`data/` 均未变动；前端无改动。用户原有 `待办.md`、`问题.md` 删除保持未暂存。
 - 交接文档：`agent-upgrade/R2-blocks-implementation.md`（摘要 + 详细改动 + 坑 + 下一步）；`R2-report-blocks.md` 状态与 §7 已回填；`AGENTS.md` 当前任务/进度、`API.md` R2 章节已更新。代码提交 `dd807cf`（本地 main，未推送）。下一条任务：**R2-C 前端组合编辑器 + 同一冻结证据预览**。
+
+## 15. 本助手接回R2（2026-10-20）
+
+- 接手HEAD `8601bab`，代码 `dd807cf`，A/B后端初版已在本地；C前端与D剩余6种Block/结构3D等未实现。线上仍为R1，PID2409520未变。没有在本轮开始新功能、改业务代码、推送或部署。
+- 实际重跑 `test_report_blocks.py` 13项、`test_report_compositions.py` 13项，均OK；此前220项为上一位的执行记录，本轮不冒称重跑全部。
+- 临时DATA_DIR探针：14种注册、8种可解析（含文本）、6种未接入；单独未接入/evidence请求实测500（组合保存为400）；只改checked_at会使task.summary版本变化。未操作生产科研数据/配置。
+- 源码核对另确认：选定两模型参数对照尚未实现、groups未用于导出呈现、expected_revision/旧source_refs仍可缺省、来源仅payload指纹未到原文件证据、24h时效/展示上限口径与原系统未完全统一、整份组合删除无恢复入口。详情与下一步在 `R2-blocks-implementation.md` §13，均只记录未修复。
+- README/process/PROGRESS旧“R2无业务实现”摘要与API类型计数/保证已修正；AGENTS指向当前真实状态。下一步先收敛关键后端合同，再推进R2-C，不重复实现A/B，不进入自主阶段3/4或AI自动编排。
+- 本轮交接文档未提交；原 `待办.md`、`问题.md` 删除保留。后续核对git状态，不将文档更新混成已部署功能。
+
+
+## 16. R2续开发：本地手工闭环验收（2026-10-20）
+
+- 从8601bab接续，收敛A/B版本、修订、参数对照、来源/时效、正文上限和400/409合同；实现报告页「专题报告」Drawer、14类元素Adapter、排序/分组/标题/隐藏/删除恢复、同一冻结证据预览/HTML/PDF。实现合同/文件与完整限制见 `R2-blocks-implementation.md` §14，API.md已更新。
+- 真正执行：普通Python discover Ran53 OK（8个需要独立数据的套件占位Skip），再独立执行baseline10、gateway38、OPT47、参数26、R1 20、R2 14+18+8，全部OK；报告呈现6另跑OK但不重复计数。R1与R2两套Playwright均PASS，包括实际HTML/PDF、真实本地API认证及并发/冻结/显式刷新。typecheck、/tmp最终Vite构建、diff检查通过。
+- 未改生产数据、服务或dist。只读systemctl确认active/PID2409520/启动2026-10-19 23:56:56 CST；不部署、不推送、不接AI自动编排/自主下一阶段。Git提交见本轮R2 commit，基线dd807cf/8601bab；原用户两份文档删除保留未提交。
+- 遗留边界：真实项目上线验收待用户部署授权；旧图序号/同名歧义需手工核对；PDF不自动生成缺失结构PNG；未解析原始电子文件不触发科学计算；多进程写/复杂布局/AI编排不在本阶段。整份组合软删除无恢复UI/API（元素可恢复）。
+- 接手下一步：先读AGENTS与实现§14，不重做历史缺口；部署若获授权需备份、构建两种前端产物、单writer重启与回归。当前待用户 review/部署指令，不自行进入下一阶段。

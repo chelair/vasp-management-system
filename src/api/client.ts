@@ -7,6 +7,13 @@
  */
 export const MOCK_DELAY = 600;
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number, public readonly data?: { code?: string; [key: string]: unknown }) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 /** token 在 localStorage 中的键（前端唯一来源；后端只存 sha256） */
 export const TOKEN_STORAGE_KEY = 'vasp.auth.token';
 
@@ -95,14 +102,14 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       lastForbiddenAt = now;
       forbiddenHandler?.(message);
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status, body?.data);
   }
   if (!res.ok || !body || body.success === false) {
     const detail: string[] | undefined = body?.data?.errors;
     const message = detail?.length
       ? detail.join('；')
       : (body?.message ?? `请求失败（HTTP ${res.status}）`);
-    throw new Error(message);
+    throw new ApiError(message, res.status, body?.data);
   }
   return body.data as T;
 }

@@ -164,20 +164,20 @@ class ReportCompositionTest(unittest.TestCase):
         import report_blocks
 
         fresh = report_blocks.merged_results(force=True)
-        with self.assertRaises(self.compositions.EvidenceStale) as ctx:
-            self.compositions.save(
+        frozen = self.compositions.save(
                 self.project,
                 {"title": "版本", "blocks": first["blocks"]},
                 composition_id=first["composition_id"],
                 expected_revision=1,
                 merged=fresh,
             )
-        self.assertTrue(ctx.exception.changes)
+        self.assertEqual(frozen["evidence"], first["evidence"], "display edits never change scientific evidence")
+        self.assertTrue(self.compositions.check_updates(self.project, frozen, merged=fresh))
         refreshed = self.compositions.save(
             self.project,
             {"title": "版本", "blocks": first["blocks"], "refresh_evidence": True},
             composition_id=first["composition_id"],
-            expected_revision=1,
+            expected_revision=2,
             merged=fresh,
         )
         new_version = refreshed["evidence"][
@@ -187,6 +187,52 @@ class ReportCompositionTest(unittest.TestCase):
             report_blocks.evidence_id(first["project_id"], "task.energy", task_id="task_opt_01")
         ]["version"]
         self.assertNotEqual(new_version, old_version)
+
+    def test_missing_revision_rejected_and_omitted_refs_keep_frozen(self):
+        doc = self.save({"title": "锁", "blocks": _blocks_for_loop(self.blocks)})
+        with self.assertRaises(ValueError):
+            self.save(doc, composition_id=doc["composition_id"])
+        stripped = [{k: v for k, v in b.items() if k != "source_refs"} for b in doc["blocks"]]
+        saved = self.save({"title": "改名", "blocks": stripped, "evidence": {"fake": 999}},
+                          composition_id=doc["composition_id"], expected_revision=1)
+        self.assertEqual(saved["evidence"], doc["evidence"])
+
+    def test_selected_parameter_comparison_reuses_task_evidence(self):
+        doc = self.save({"title": "参数比较", "blocks": [
+            {"type": "task.params", "task_id": "task_opt_01"},
+            {"type": "project.comparison", "task_ids": ["task_opt_02", "task_opt_01"]}]})
+        self.assertEqual(len(doc["evidence"]), 2)
+        comparison = doc["blocks"][1]
+        self.assertEqual(len(comparison["source_refs"]), 2)
+        self.assertEqual(comparison["source_refs"][0], doc["blocks"][0]["source_refs"][0])
+        output = self.compositions.render_html(doc)
+        self.assertIn("ENCUT", output)
+        self.assertIn("KPOINTS", output)
+        self.assertIn("Model02", output)
+        self.assertNotIn("Model04", output)
+        updated = self.save(doc, composition_id=doc["composition_id"], expected_revision=1)
+        self.assertEqual(updated["blocks"][1]["block_id"], comparison["block_id"])
+
+    def test_group_and_preview_do_not_write(self):
+        from unittest.mock import patch
+        payload = {"title": "分组", "blocks": [{"type": "text.analysis", "text": "事实", "block_id": "blk_txt_" + "a"*32}],
+                   "groups": [{"group_id": "g", "title": "科研结果", "block_ids": ["blk_txt_" + "a"*32]}]}
+        with patch.object(self.compositions, "_write", side_effect=AssertionError("preview must not write")):
+            doc = self.compositions.preview(self.project, payload)
+        self.assertIn("科研结果", self.compositions.render_html(doc))
+        payload["groups"].append({"group_id": "h", "block_ids": ["blk_txt_" + "a"*32]})
+        with self.assertRaises(ValueError):
+            self.save(payload)
+
+    def test_draft_comparison_alias_survives_group_hide_delete(self):
+        payload = {"title": "草稿身份", "blocks": [{"type": "project.comparison", "task_ids": ["task_opt_01", "task_opt_02"], "client_id": "draft_temp"}],
+                   "hidden_block_ids": ["draft_temp"], "deleted_block_ids": ["draft_temp"],
+                   "groups": [{"group_id": "g", "block_ids": ["draft_temp"]}]}
+        doc = self.save(payload)
+        bid = doc["blocks"][0]["block_id"]
+        self.assertEqual(doc["groups"][0]["block_ids"], [bid])
+        self.assertEqual(doc["hidden_block_ids"], [bid])
+        self.assertEqual(doc["deleted_block_ids"], [bid])
 
     # ---------------------------------------------------------------- 拒绝伪造
 
@@ -278,6 +324,12 @@ class ReportCompositionTest(unittest.TestCase):
         html_text = self.compositions.render_html(doc)
         self.assertNotIn(f"id='{hidden}'", html_text)
         self.assertIn("id='%s'" % first["blocks"][1]["block_id"], html_text)
+
+    def test_hidden_only_source_not_in_export_provenance(self):
+        doc = self.save({"title": "隐藏来源", "blocks": [{"type": "task.energy_force", "task_id": "task_opt_01"}]})
+        doc["hidden_block_ids"] = [doc["blocks"][0]["block_id"]]
+        output = self.compositions.render_html(doc)
+        self.assertNotIn(next(iter(doc["evidence"])), output)
 
     # ---------------------------------------------------------------- 存储与权限
 

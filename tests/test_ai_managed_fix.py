@@ -30,6 +30,10 @@ DSML = """我先看一下现有计划。
 
 ALTERNATE = """<|tool_calls|><|invoke name="get_managed_plans"><|parameter name="plan_id">p1</|parameter></|invoke></|tool_calls|>"""
 
+SINGLE_BAR = """<｜DSML｜tool_calls><｜DSML｜invoke name="get_managed_plans"></｜DSML｜invoke></｜DSML｜tool_calls>"""
+
+JSON_PAYLOAD = """好的，我来建计划。{"tool_calls":[{"function":{"name":"set_task_priority","arguments":{"plan_id":"p1","revision":1,"task_id":"t1","priority":90}}}]}"""
+
 
 class PseudoToolTests(unittest.TestCase):
     def test_detects_known_markup(self):
@@ -51,6 +55,18 @@ class PseudoToolTests(unittest.TestCase):
         calls = service._pseudo_tool_calls(ALTERNATE)
         self.assertEqual([c["function"]["name"] for c in calls], ["get_managed_plans"])
         self.assertEqual(__import__("json").loads(calls[0]["function"]["arguments"]), {"plan_id": "p1"})
+
+    def test_parses_single_bar_and_json_payload(self):
+        self.assertEqual(service._pseudo_tool_calls(SINGLE_BAR)[0]["function"]["name"], "get_managed_plans")
+        calls = service._pseudo_tool_calls(JSON_PAYLOAD)
+        self.assertEqual(calls[0]["function"]["name"], "set_task_priority")
+        self.assertEqual(__import__("json").loads(calls[0]["function"]["arguments"])["task_id"], "t1")
+
+    def test_requires_declared_required_arguments(self):
+        bad = {"type": "function", "function": {"name": "save_topic_report", "arguments": "{}"}}
+        self.assertFalse(service._pseudo_args_ok(bad))
+        ok = {"type": "function", "function": {"name": "get_managed_plans", "arguments": "{}"}}
+        self.assertTrue(service._pseudo_args_ok(ok))
 
     def test_garbage_returns_empty(self):
         self.assertEqual(service._pseudo_tool_calls("<||DSML||tool_calls>not really"), [])

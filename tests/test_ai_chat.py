@@ -584,16 +584,18 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(self.wait_run(next_run)["status"], "completed")
         self.assertIn("tools", REQUESTS[-1])
 
-    def test_tool_markup_in_text_is_failed_not_executed_or_shown(self):
+    def test_tool_markup_in_text_is_noted_not_executed_or_shown(self):
         conversation=self.conversation(self.connection('malformed-tools'),'task-alice')
         _,run=self.send(conversation)
         result=self.wait_run(run)
-        self.assertEqual(result['status'],'failed')
-        self.assertIn('模型把工具调用写成了正文',result['error'])
+        # 收尾不再把已完成的工作标成失败：保留正文 + 说明未执行的那一步。
+        self.assertEqual(result['status'],'completed',result)
         self.assertEqual(result['tool_events'],[])
         _,detail=self.api(f"/conversations/{conversation['id']}")
-        self.assertNotIn('DSML',detail['messages'][-1]['content'])
-        self.assertIn('准备报告',detail['messages'][-1]['content'])
+        content=detail['messages'][-1]['content']
+        self.assertNotIn('DSML',content)
+        self.assertIn('准备报告',content)
+        self.assertIn('没有按标准格式发出',content)
 
     def test_workspace_tool_loop_and_forbidden_read_are_bounded(self):
         conversation = self.conversation(self.connection("workspace-blocked"), "task-alice")

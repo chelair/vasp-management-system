@@ -29,7 +29,7 @@ SYSTEM_PROMPT = """你是 VASP 科研计算助手，用中文与用户协作。
 用户是报告的最终审核者。用户的最新明确研究意图、别名解释、给定数据和展示要求优先于默认报告模板与建议；不要拿模板/科学质量门槛反复否决用户。你是用户与报告之间的翻译官：输入不必规范，先理解语义，必要时search_report_data查看授权任务后自行映射角色，通过targets传入；只有真正无法判断才问用户。用户在历史对话提供的气体/参考能量，即使没有任务也可用energy_ev或energy_value+energy_unit传入，并附用户原话source_quote。没有计算记录不是拒绝使用用户给定值的理由。区分计算事实、用户给定、AI解释和假设，缺来源时如实提示，不把假设伪装成验证事实。用户可要求隐藏风险提示，使用show_warnings；隐藏展示不会删除底层记录。上述研究和报告权力不扩展跨用户权限、私有凭据访问或HPC执行权限。
 用户要求生成科研报告时：理解问题后使用create_topic_report；可先search_report_data理解不规范命名并自行绑定，不要求用户先规范输入。默认当前项目，不反复让用户手工查数据、选元素或操作草案。服务器自动查数据并用Python运算。吸附能只需基底、吸附质、完整构型三份能量，有k点差异、未收敛或来源不完整也生成初步结果，把问题作为警告；不能假称已验证。若返回questions，界面会像选择卡一样让用户选择或自定义回答，简短说明需要确认即可，不在聊天中堆任务ID、校验状态和参考标签。工具已经保存报告，不重复执行plan/write/save。结果缺失时直说缺哪项能量及如何同步或补算。正文简明，所有数值以工具结果为准，不自行手算或编造。
 独立的正式科学校验可查询get_property_recipes/discover_property_tasks/evaluate_property；报告优先使用create_topic_report，由你理解语义并匹配角色。最终派生数值来自服务端Python函数，用户给定的原始数值可以作为输入；AI推断、用户给定和计算记录分别标明，不把未验证内容冒充验证事实。无需为了生成初步报告额外完成正式校验，未支持的公式不临时编造。
-用户要求“托管项目/排优先级/自动接着跑/按阶段交付”时：用create_managed_plan把这句话保存成计划（阶段、任务级优先级、允许的CPU队列与额度上限），之后用update_managed_plan或set_task_priority调整。计划只写意图，不提交作业；用户没说清的交付时间、可用队列、额度不要编造，先简短提问。人工锁定的任务优先级你不能覆盖；结束托管需用户在前端操作。托管请求不需要读POSCAR/OUTCAR等大文件，也不要生成科研报告：先用get_managed_plans看现有计划，必要时用find_project_tasks定位任务，然后直接创建或更新计划；用户说某些体系暂不做，就不要把它们写进阶段或优先级。工具轮次有限，托管类请求通常1-2轮就能完成。
+用户要求“托管项目/排优先级/自动接着跑/按阶段交付”时：用create_managed_plan把这句话保存成计划（阶段、任务级优先级、允许的CPU队列与额度上限），之后用update_managed_plan或set_task_priority调整。计划只写意图，不提交作业；用户没说清的交付时间、可用队列、额度不要编造，先简短提问。人工锁定的任务优先级你不能覆盖；结束托管需用户在前端操作。托管请求不需要读POSCAR/OUTCAR等大文件，也不要生成科研报告：先用get_managed_plans看现有计划，必要时用find_project_tasks定位任务，然后直接创建或更新计划；用户说某些体系暂不做，就不要把它们写进阶段或优先级。工具轮次有限，托管类请求通常1-2轮就能完成。计划建好后不要为了同一目的继续读结构文件：直接用文字说明计划内容、以及仍不确定、需要用户确认的点；已经明确的排除项不要再问一遍。
 仅可使用本轮明确提供的工具。工作区启用时可查询巡检、已应用参数、OPT处置记录、读取文本、按需固定范围远端只读补证、在 work/ 新建草稿；以工具返回为事实。
 问题涉及具体任务的结果、异常、趋势或下一步操作时，有工具则先确认任务ID并按需查询最近3个计算目录各自的最新结果；需要时再查对应曲线/参数/NEB证据或文件。纯研究讨论不必查询。
 每任务最多保留5个目录，每目录仅一个最新巡检结果，同目录后续更新覆盖；不是同目录的连续巡检时间序列，目录内趋势读离子步曲线。不足3个目录、过期或身份不一致时明确说明，不能拼接不同续算阶段或用当前结构冒充历史结构。实际操作前须重新确认当前状态。
@@ -525,22 +525,68 @@ def readonly_json_completion(owner: str, connection_id: str, messages: list,
 
 _INVOKE_RE = re.compile(r'<[^<>]{0,80}?invoke[^<>]{0,200}?name\s*=\s*"([A-Za-z0-9_]{1,64})"[^<>]*>(.*?)</[^<>]{0,80}?invoke>', re.S)
 _PARAM_RE = re.compile(r'<[^<>]{0,80}?parameter[^<>]{0,200}?name\s*=\s*"([^"]{1,80})"[^<>]*>(.*?)</[^<>]{0,80}?parameter>', re.S)
-_PSEUDO_RE = re.compile(r'<(?:｜｜DSML｜｜|\|\|DSML\|\||[|｜]tool[▁_]?calls)')
+_PSEUDO_RE = re.compile(r'<(?:｜｜DSML｜｜|｜DSML｜|\|\|DSML\|\||[|｜]tool[▁_]?calls)')
+
+
+def _pseudo_call(name: str, arguments: dict, index: int) -> dict:
+    return {"id": f"call_pseudo_{index}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
 
 
 def _pseudo_tool_calls(text: str) -> list:
-    """模型把工具调用写成正文（DSML/伪 XML）时，尽量还原成标准 tool_calls。
+    """模型把工具调用写成正文（DSML/伪 XML/JSON）时，尽量还原成标准 tool_calls。
 
     只做格式还原，不扩大权限：还原出的调用仍走 workspace.dispatch 的参数合同校验。
     """
+    body = text or ""
+    marker = _PSEUDO_RE.search(body)
+    if marker:
+        body = body[marker.end():]
     calls = []
-    for index, (name, body) in enumerate(_INVOKE_RE.findall(text or "")[:12]):
-        arguments = {}
-        for key, value in _PARAM_RE.findall(body):
-            arguments[str(key)[:80]] = value.strip()
-        calls.append({"id": f"call_pseudo_{index}", "type": "function",
-                      "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}})
+    for name, block in _INVOKE_RE.findall(body)[:12]:
+        arguments = {str(key)[:80]: value.strip() for key, value in _PARAM_RE.findall(block)}
+        calls.append(_pseudo_call(name, arguments, len(calls)))
+    if calls:
+        return calls
+    # 有的接口直接给 JSON：{"tool_calls":[{"function":{"name":..,"arguments":{..}}}]}
+    start = body.find("{")
+    if start >= 0:
+        depth = 0
+        for index in range(start, len(body)):
+            depth += body[index] == "{"
+            depth -= body[index] == "}"
+            if depth == 0:
+                try:
+                    data = json.loads(body[start:index + 1])
+                except ValueError:
+                    break
+                items = data.get("tool_calls") if isinstance(data, dict) else None
+                if isinstance(items, list):
+                    for item in items[:12]:
+                        function = (item or {}).get("function") or item or {}
+                        name = function.get("name")
+                        arguments = function.get("arguments")
+                        if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_]{1,64}", name):
+                            calls.append(_pseudo_call(name, arguments if isinstance(arguments, dict) else {}, len(calls)))
+                elif isinstance(data, dict) and isinstance(data.get("name"), str):
+                    arguments = data.get("arguments")
+                    calls.append(_pseudo_call(data["name"], arguments if isinstance(arguments, dict) else {}, len(calls)))
+                break
     return calls
+
+
+def _pseudo_args_ok(call: dict) -> bool:
+    """还原出的调用至少要满足工具声明的必填参数，避免把残片当调用执行。"""
+    function = call.get("function") or {}
+    spec = next((t["function"]["parameters"] for t in workspace.TOOLS
+                 if t["function"]["name"] == function.get("name")), None)
+    if spec is None:
+        return False
+    try:
+        arguments = json.loads(function.get("arguments") or "{}")
+    except ValueError:
+        return False
+    return isinstance(arguments, dict) and set(spec.get("required") or []) <= set(arguments)
 
 
 def _generate(run_id: str, connection: dict, key: str, messages: list, user: dict, workspace_enabled: bool = False):
@@ -612,8 +658,10 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                         if isinstance(chunk, str):
                             round_text += chunk
                         if not pseudo and _PSEUDO_RE.search(round_text):
-                            # 伪工具标记：结束本轮，按上下文决定是还原执行还是给出可操作说明。
-                            pseudo, finished = True, True
+                            # 标记可能只到一半：继续读，收完整个调用再决定执行/收尾。
+                            pseudo = True
+                        if pseudo and len(round_text) > 20000:
+                            finished = True
                             break
                         for item in delta.get("tool_calls") or []:
                             index = item.get("index")
@@ -645,11 +693,14 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             if pseudo:
                 # 伪工具标记之前的正文仍要保留（用户至少能看到模型已经写到哪）。
                 text += round_text.split('<', 1)[0]
-                parsed = _pseudo_tool_calls(round_text)
-                if not parsed:
-                    raise ValueError("模型把工具调用写成了正文，本轮没有执行；已完成的工具结果保留，请回复“继续”重试。")
-                if round_index == 8 or tool_count + len(parsed) > 14:
-                    raise ValueError("本轮工具调用次数已达上限，模型把后续调用写成了正文；已完成的结果已保留，请回复“继续”推进。")
+                parsed = [call for call in _pseudo_tool_calls(round_text) if _pseudo_args_ok(call)]
+                if not parsed or round_index == 8 or tool_count + len(parsed) > 14:
+                    # 工具是模型的双手，但收尾不能把已完成的工作变成“失败”：保留正文、说明未执行的那一步。
+                    note = ("（本轮有一次工具调用没有按标准格式发出，未执行；已完成的工具结果与计划都已保留。"
+                            "如仍需继续，请回复“继续”。）")
+                    store.update_answer(run_id, clean((text + note).strip(), (key,)), status="completed",
+                                        usage=usage, reasoning=reasoning_total)
+                    return
                 round_text = ""
                 calls = {index: call for index, call in enumerate(parsed)}
             text += round_text

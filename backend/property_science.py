@@ -79,7 +79,7 @@ DEFAULTS = {'LDAU': False, 'LHFCALC': False, 'METAGGA': 'NONE', 'IVDW': 0,
             'LDAUTYPE': 2, 'LMAXMIX': 2, 'AEXX': 0.25, 'HFSCREEN': 0,
             'AGGAX': 1, 'AGGAC': 1, 'ALDAC': 1, 'LUSE_VDW': False,
             'GGA_COMPAT': True, 'LNONCOLLINEAR': False, 'LREAL': False,
-            'EFIELD': 0, 'LDIPOL': False, 'IDIPOL': 0} 
+            'EFIELD': 0, 'LDIPOL': False, 'IDIPOL': 0}
 GLOBAL_KEYS = ('ENCUT', 'GGA', *DEFAULTS)
 VECTOR_DEFAULTS = {'DIPOL':[0.5,0.5,0.5], 'SAXIS':[0,0,1], 'EFIELD_PEAD':[0,0,0]}
 

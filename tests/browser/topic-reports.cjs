@@ -47,6 +47,15 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   const gasAds=await generate('ads_gas','比较 LMR 与 LIC@LMR 对 H2 的吸附能，生成科研报告。');assert.equal(gasAds.data.science.results.length,0);
   await page.getByRole('combobox',{name:'专题吸附物参考类型',exact:true}).focus();await page.getByRole('combobox',{name:'专题吸附物参考类型',exact:true}).press('ArrowDown');await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').filter({hasText:'确认孤立/气相分子参考'}).click();
   await page.getByRole('button',{name:'应用明确选择',exact:true}).click();await page.getByText('已检查数据',{exact:true}).waitFor();const gasChosen=await api('/reports/topic/'+gasAds.topic_id);assert.deepEqual(gasChosen.data.science.results.map(r=>r.value),[-2,-3,-1]);
+  const pending=await api('/reports/topic/prepare','POST',{conversation_id:fixture.conversations.ads_pending,question:'查看 H2 在 LMR 上的吸附能',request:{property_id:'adsorption.simple',model_queries:['LMR'],adsorbate_query:'H2'}});
+  assert.equal(pending.stage,'prepared');assert.equal(pending.data.science.results.length,0);
+  await page.goto(url+'/?scenario=ads_pending');await page.getByRole('button',{name:'打开专题报告',exact:true}).first().click();
+  await page.getByText('报告尚未生成完成',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'重新检查已有数据',exact:true}).click();await page.getByText('版本 2',{exact:false}).waitFor();
+  const pick=async(name,label)=>{const control=page.getByRole('combobox',{name,exact:true});await control.focus();await control.press('ArrowDown');await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option').filter({hasText:label}).last().click();};
+  await pick('LMR · complex-候选任务','H2@LMR');await pick('LMR · surface-候选任务','ads_pending_a_s');
+  await pick('0.adsorbate-计算快照','con1');await page.getByRole('button',{name:'应用明确选择',exact:true}).click();await page.getByText('版本 3',{exact:false}).waitFor();
+  const checked=await api('/reports/topic/'+pending.topic_id);assert.equal(checked.data.targets[0].complex.task_id,'ads_pending_a_c');assert.equal(checked.data.targets[0].surface.task_id,'ads_pending_a_s');assert.ok(checked.data.targets[0].adsorbate.observation_id);assert.equal(checked.data.science.results.length,0);assert.equal((await api('/reports/topic/'+pending.topic_id+'?revision=1')).revision,1);
   assert.deepEqual(errors,[]);console.log('PASS R4 browser: existing AI chat/SSE, complete values, edit/delete/reorder/save/reopen, HTML/PDF, private paragraph regeneration, explicit multi-site choice, relevant DOS, adsorption comparison and site/reference selection; zero page errors');
  }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));python?.kill();await fs.rm(dir,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);process.exitCode=1;});

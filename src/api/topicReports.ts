@@ -9,7 +9,7 @@ export interface TopicReport extends TopicMeta {
   blocks:TopicBlock[];hidden_block_ids:string[];deleted_block_ids:string[];
   narratives:Record<string,{ai_text:string;user_text:string|null;kind:string;model:string}>;
   request:{property_id:string;model_queries:string[];adsorbate_reference_type?:string};
-  data:{facts:TopicFact[];gaps:{check:string;status:string;detail:string}[];targets:Record<string,unknown>[];
+  data:{science?:{inputs:{role:string;task?:{task_id:string;model_name?:string};observations?:{observation_id:string;archive:string;directory:{path:string|null}}[]}[]};facts:TopicFact[];gaps:{check:string;status:string;detail:string}[];targets:Record<string,unknown>[];
     candidates:TopicCandidate[];library:{blocks:TopicBlock[]};preparation_status:string;
     choices:{label:string;target_label?:string;role?:string;adsorption_relations?:{complex:Record<string,string>;surface:Record<string,string>;adsorbate:Record<string,string>;site:{adsorbate_atom_indices:number[];fractional:number[][]}}[];relations?:{pristine:Record<string,string>;defect:Record<string,string>;removed_oxygen_index:number;site:{fractional:number[]}}[];tasks?:{task_id:string;model_name:string;selector:Record<string,string>}[]}[];
     reference_candidates:{report_id:string;reference:{value_ev_per_O:number;source:string;conditions:string}}[];

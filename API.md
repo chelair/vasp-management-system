@@ -1,5 +1,7 @@
 # 接口文档（API.md）
 
+PMS吸附能空草案排查与修复（2026-10-20）：候选检索支持明确吸附物的 `PMS@model1` 命名；名称仅产生候选。未完成报告明确显示准备/计划阶段，冻结需求报告列出候选和校验缺口；可重新检查已有数据、选择单候选任务及不同计算快照。模型正文中的伪工具指令不执行并标失败。见 [修复记录](agent-upgrade/PMS-topic-report-fix.md)。
+
 ## 模型思考深度（本地完成，未部署）
 
 原私有连接POST/PUT增加 `reasoning_api=auto|openai|deepseek` 与 `reasoning_effort=default|none|minimal|low|medium|high|xhigh|max`。后端按型号/协议验证可选档位，未知接口自动模式只允许默认；明确兼容模式按服务商参数传递。旧thinking_mode/密钥/会话保留，旧客户端省略新字段不覆盖现有值。

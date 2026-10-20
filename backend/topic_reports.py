@@ -158,6 +158,15 @@ def _facts_text(data):
     for item in data['science'].get('inputs',[]):
         task=item.get('task') or {};source=item.get('source') or {}
         text+='- '+str(item.get('role'))+'：'+str(task.get('task_id') or '未绑定')+'；'+str(item.get('status'))+'；观测 '+str(source.get('observation_id') or '缺失')+'\n'
+    for gap in data.get('gaps',[]):
+        text+='\n**数据检查**：'+str(gap.get('status'))+' · '+str(gap.get('detail'))+'\n'
+    for choice in data.get('choices',[]):
+        for task in choice.get('tasks',[]):
+            text+='\n**候选（未确认科学关系）**：'+str(choice.get('label'))+' · '+str(task.get('model_name'))+' · '+str(task.get('task_id'))+'\n'
+            for item in task.get('checks',[]):
+                if item.get('status')!='AVAILABLE':text+='- '+str(item.get('status'))+' · '+str(item.get('detail'))+'\n'
+            for observation in task.get('observations',[]):
+                text+='- 快照 '+str(observation.get('observation_id'))+' · '+str((observation.get('directory') or {}).get('path') or '目录身份未知')+'\n'
     if data['science'].get('not_calculable'):text+='\n**尚不能计算**：'+'；'.join(data['science']['not_calculable'])+'\n'
     suggestions=list(dict.fromkeys(s['advice'] for s in data['science'].get('supplemental_suggestions',[])))
     if suggestions:text+='\n**必要补充建议（仅建议，不自动执行）**：\n\n'+'\n'.join('- '+s for s in suggestions)+'\n\n'
@@ -410,6 +419,7 @@ def freshness(user,doc):
 def composition(doc):
     blocks=copy.deepcopy(doc['blocks'])
     for block in blocks:
+        if block['origin']=='property_fact':block['text']=_facts_text(doc['data'])
         if block['origin']=='ai_text':
             note=doc['narratives'].get(block['block_id'],{})
             text=note.get('user_text') if note.get('user_text') is not None else note.get('ai_text','')
@@ -430,6 +440,7 @@ def render_html(doc,*,auto_print=False,stale=False):
     for result in doc['data']['science'].get('results',[]):
         for value in result.get('conditions',[])+result.get('unverified_conditions',[]):notes.append('<li>'+esc(value)+'</li>')
     footer="<section class='rb-block'><h2>科学校验与局限</h2><p>性质数值来自确定性程序；AI解释和用户文字不改变原始科学数据。没有充分验证的条件不能用于正式结论。</p><ul>"+''.join(notes)+'</ul></section>'
+    if doc['stage'] in ('prepared','planned'):footer="<aside class='rb-note'>报告尚未生成完成：当前仅有数据检查与需求说明，尚无AI科研正文。请先确认候选和参考态，或在原对话继续生成缺口报告。</aside>"+footer
     if stale:footer="<aside class='rb-note'>上游数据可能过期；本报告保留生成时冻结证据。</aside>"+footer
     return output.replace('</body>',footer+'</body>')
 

@@ -9,7 +9,7 @@ def find(queries,pools,references,selectors,inspected,project_id):
     def data(pair):
         p,t=pair;return inspected[(p['project_id'],t['task_id'])]['data']
     def candidate(pair):
-        p,t=pair;return {'task_id':t['task_id'],'model_name':t.get('model_name'),'project_id':p['project_id'],'selector':selector(pair)}
+        p,t=pair;return {'task_id':t['task_id'],'model_name':t.get('model_name'),'project_id':p['project_id'],'selector':selector(pair), **{k:inspected[(p['project_id'],t['task_id'])].get(k,[]) for k in ('status','checks','observations')}}
     for query,pool in zip(queries,pools):
         relations=[];total=0
         for ref in references:

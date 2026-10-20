@@ -142,4 +142,25 @@ class AdsorptionTests(unittest.TestCase):
         self.payload['adsorbate_reference_type']='unknown'
         with self.assertRaises(ValueError):self.evaluate()
 
+    def test_adsorbate_at_surface_names_discovered_but_not_assumed(self):
+        for task in self.project['tasks']:
+            if task['task_id']=='ads_a_c':task['model_name']='H2@LMR'
+            if task['task_id']=='ads_b_c':task['model_name']='H2@LIC@LMR'
+        self.write()
+        data=self.discovery.prepare(self.user,['ads'],self.request)
+        self.assertEqual([r['value'] for r in data['science']['results']],[-2,-3,-1])
+        self.rows[0].pop('property_evidence')
+        self.write()
+        doc=self.topics.prepare(self.user,self.conversation,'比较 H2 在 LMR 上吸附能',self.request)
+        choice=next(c for c in doc['data']['choices'] if c.get('role')=='complex')
+        self.assertIn('ads_a_c',[t['task_id'] for t in choice['tasks']])
+        self.assertTrue(any(t['checks'] for t in choice['tasks']))
+        self.assertIn('ads_a_s',{c['task_id'] for c in doc['data']['candidates']})
+        self.assertFalse(any(r['label']=='LMR' for r in doc['data']['science']['results']))
+        html=self.topics.render_html(doc)
+        self.assertIn('报告尚未生成完成',html)
+        self.assertIn('H2@LMR',html)
+        self.assertIn('候选（未确认科学关系）',html)
+        self.assertEqual(self.topics.load(self.user,doc['topic_id'])['revision'],1)
+
 if __name__=='__main__':unittest.main()

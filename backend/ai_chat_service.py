@@ -577,6 +577,9 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                         chunk = delta.get("content") or delta.get("refusal") or ""
                         if isinstance(chunk, str):
                             round_text += chunk
+                        if re.search(r'<(?:｜｜DSML｜｜|[|]tool_calls|｜tool▁calls)',round_text):
+                            text+=round_text.split('<',1)[0]
+                            raise ValueError('模型把工具指令写进正文，报告未完成；请继续生成。已准备的数据和已有草案保留，未执行正文中的指令。')
                         for item in delta.get("tool_calls") or []:
                             index = item.get("index")
                             if not workspace_enabled or type(index) is not int or not 0 <= index < 12:

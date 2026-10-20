@@ -104,6 +104,8 @@ class Provider(BaseHTTPRequestHandler):
             text = f"已按需查询{evidence['returned']}个目录的最新结果；最近目录{evidence['observations'][0]['output_dir']}，存在阶段切换，计划仅保存草稿。" + KEY
         if payload["model"] == "deepseek-only-thinking":
             text = ""
+        if payload["model"] == "malformed-tools":
+            text = '准备报告。<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="save_topic_report">伪造参数</｜｜DSML｜｜ invoke>'
         if payload["model"] == "slow-model":
             text *= 8
         try:
@@ -570,6 +572,17 @@ class AIChatTests(unittest.TestCase):
         _, next_run = self.send(conversation)
         self.assertEqual(self.wait_run(next_run)["status"], "completed")
         self.assertNotIn("tools", REQUESTS[-1])
+
+    def test_tool_markup_in_text_is_failed_not_executed_or_shown(self):
+        conversation=self.conversation(self.connection('malformed-tools'),'task-alice')
+        _,run=self.send(conversation)
+        result=self.wait_run(run)
+        self.assertEqual(result['status'],'failed')
+        self.assertIn('模型把工具指令写进正文',result['error'])
+        self.assertEqual(result['tool_events'],[])
+        _,detail=self.api(f"/conversations/{conversation['id']}")
+        self.assertNotIn('DSML',detail['messages'][-1]['content'])
+        self.assertIn('准备报告',detail['messages'][-1]['content'])
 
     def test_workspace_tool_loop_and_forbidden_read_are_bounded(self):
         conversation = self.conversation(self.connection("workspace-blocked"), "task-alice")

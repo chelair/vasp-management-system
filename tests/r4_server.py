@@ -38,8 +38,15 @@ def setup(root):
     row=copy.deepcopy(all_rows[0]);row.update(task_id='t_ele',task_type='ele',project_name=dos['name'],remote_dir='R4_DOS/ele/Electronic',job_id=None)
     row['current_output']={'latest_dir':'','dir':'R4_DOS/ele/Electronic'};all_rows.append(row);projects.append(dos)
     from adsorption_fixtures import seed as seed_adsorption
-    for pid,kwargs in [('ads',{}),('ads_multi',{'multiple':True}),('ads_missing',{'missing_reference':True}),('ads_gas',{'isolated':True})]:
-        p,rows=seed_adsorption(root/pid,pid,**kwargs);projects.append(p);all_rows+=rows
+    for pid,kwargs in [('ads',{}),('ads_multi',{'multiple':True}),('ads_missing',{'missing_reference':True}),('ads_gas',{'isolated':True}),('ads_pending',{})]:
+        p,rows=seed_adsorption(root/pid,pid,**kwargs)
+        if pid=='ads_pending':
+            for task in p['tasks']:
+                if task['task_id']==pid+'_a_c':task['model_name']='H2@LMR'
+                if task['task_id']==pid+'_mol':task['current_output']={'latest_dir':'con_unknown'}
+            rows[0].pop('property_evidence')
+            old=copy.deepcopy(rows[-1]);old['current_output']={'latest_dir':'con0','dir':str(root/'old/con0')};rows.append(old)
+        projects.append(p);all_rows+=rows
     checks_store.CHECKS_DIR.mkdir(parents=True,exist_ok=True)
     (checks_store.CHECKS_DIR/'check_results_r4.json').write_text(json.dumps(all_rows))
     checks_store.invalidate_cache()

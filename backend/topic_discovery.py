@@ -45,7 +45,7 @@ def _selector(project,task):
     return selector
 
 
-def _matches(projects,query,property_id):
+def _matches(projects,query,property_id,adsorbate_query=None):
     result = []
     for project in projects:
         for task in project.get('tasks',[]):
@@ -55,7 +55,10 @@ def _matches(projects,query,property_id):
             q = query.casefold()
             # Prefix token matching keeps LMR distinct from LIC@LMR, but does not
             # establish a pristine/defect scientific relation.
-            if not (name == q or any(name.startswith(q+sep) for sep in ('_','-',' ','/','.')) or task.get('task_id') == query): continue
+            tokens=[name]
+            if property_id=='adsorption.simple' and adsorbate_query and name.startswith(adsorbate_query.casefold()+'@'):
+                tokens.append(name[len(adsorbate_query)+1:])
+            if not (any(token==q or any(token.startswith(q+sep) for sep in ('_','-',' ','/','.')) for token in tokens) or task.get('task_id') == query): continue
             if property_id == 'dos.comparison' and task.get('task_type') != 'ele': continue
             if property_id == 'neb.barrier' and task.get('task_type') != 'neb': continue
             result.append((project,task))
@@ -137,9 +140,9 @@ def prepare(user,project_ids,request):
                 'library':{'blocks':[],'evidence':{}},'candidates':[],'facts':[],
                 'gaps':[{'check':'property_recipe','status':'UNSUPPORTED','detail':'性质未注册，不能临时编造公式或数值'}],
                 'targets':[],'reference_candidates':[],'preparation_status':'UNSUPPORTED','assumptions':[]}
-    pools = [_matches(projects,q.strip(),pid) for q in queries]
     adsorbate_query=request.get('adsorbate_query')
     if adsorbate_query is not None and (pid!='adsorption.simple' or not isinstance(adsorbate_query,str) or not adsorbate_query.strip() or len(adsorbate_query)>100):raise ValueError('吸附物查询只供吸附能配方使用，须为1至100字符名称或任务ID')
+    pools = [_matches(projects,q.strip(),pid,adsorbate_query.strip() if isinstance(adsorbate_query,str) else None) for q in queries]
     reference_pool=_matches(projects,adsorbate_query.strip(),pid) if adsorbate_query else []
     all_pairs = {(p['project_id'],t['task_id']):(p,t) for pool in pools for p,t in pool}
     all_pairs.update({(p['project_id'],t['task_id']):(p,t) for p,t in reference_pool})
@@ -260,7 +263,8 @@ def prepare(user,project_ids,request):
     # Relevant tasks are the bound recipe roles; unresolved choices remain candidate
     # evidence and cannot be mistaken for a scientific relation.
     chosen_ids={s['task_id'] for t in targets for s in t.values() if isinstance(s,dict) and s.get('task_id')}
-    related_ids=chosen_ids or {t['task_id'] for _,t in all_pairs.values()}
+    unbound=any(not isinstance(target.get(role),dict) or not target[role].get('task_id') for target in targets for role in ROLES[pid])
+    related_ids=(chosen_ids | {t['task_id'] for _,t in all_pairs.values()}) if unbound else chosen_ids
     library={'blocks':[],'evidence':{}}
     candidates=[]
     budget=0

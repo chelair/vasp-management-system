@@ -160,9 +160,24 @@ def _record(project, task, action, actor, **fields):
             'submission_attempted': False, 'source_binding': _completion_binding(project, task, job_id=''), **fields}
 
 
-def _unresolved(doc, family, exclude=None):
-    return next((a for a in doc['actions'].values() if a['family_id'] == family and a['id'] != exclude
-                 and (a['status'] in ledger.UNRESOLVED or a.get('reservation', 0) > 0 or (a.get('job_id') and not a.get('job_finished')))), None)
+def _unresolved(doc, family, exclude=None, directory=None):
+    """同族里尚未收尾的动作；给了 directory 时只拦同一作业目录。
+
+    2026-10-21 用户口径：并发冲突只认“同一目录”，root 运行中不应阻止 conN 续算。
+    没有 plan.work_dir 的早期动作无法判断目录，仍按族保守拦截。
+    """
+    target = str(directory or '').rstrip('/')
+    for action in doc['actions'].values():
+        if action['family_id'] != family or action['id'] == exclude:
+            continue
+        if target:
+            work_dir = str((action.get('plan') or {}).get('work_dir') or '').rstrip('/')
+            if work_dir and work_dir != target:
+                continue
+        if (action['status'] in ledger.UNRESOLVED or action.get('reservation', 0) > 0
+                or (action.get('job_id') and not action.get('job_finished'))):
+            return action
+    return None
 
 
 def snapshot_plan(project, task):
@@ -200,23 +215,23 @@ def _receipt_confirmation_summary(binding, receipts):
 
 
 def assert_remote_idle(project, task, directory, rows, *, allow_unconfirmed=False):
-    binding = _completion_binding(project, task)
-    root = binding['root_directory']
-    candidates = {str(t.get('job_id')) for t in project.get('tasks', [])
-                  if family_id(t['task_id']) == family_id(task['task_id']) and t.get('job_id')}
+    """唯一的并发约束：同一作业目录（精确匹配，不含子目录）不能同时运行两个作业。
+
+    2026-10-21 用户口径：不再按任务族（root / conN）扩散，也不要求旧作业身份先确认，
+    只看 bjobs 的 exec_cwd 是否等于本次目标目录。`allow_unconfirmed` 仅为调用方兼容保留。
+    """
+    target = str(directory or '').rstrip('/')
+    if not target:
+        raise ValueError('缺少目标作业目录，无法确认并发冲突')
     for row in rows:
-        if row['state'] not in unknown.TERMINAL and row['directory'] in {'', '-'}:
-            raise ValueError('LSF活跃作业目录未知，不能确认无冲突')
-        cwd = row['directory'].rstrip('/')
-        family_directory = cwd == root or re.fullmatch(re.escape(root) + r'/con[0-9]+', cwd)
-        if row['job_id'] in candidates or cwd == directory.rstrip('/') or family_directory:
-            if row['state'] not in unknown.TERMINAL:
-                raise ValueError('LSF仍有活跃或未知作业，禁止新动作')
-    job_id = str(task.get('job_id') or '')
-    if job_id and not allow_unconfirmed and not any(r['job_id'] == job_id and r['state'] in unknown.TERMINAL for r in rows) and not _confirmed_finished(binding):
-        raise ValueError('原作业无法在LSF确认结束，暂停并要求人工核实')
-    if not job_id and task.get('status') not in {'pending', 'completed', 'unconverged'}:
-        raise ValueError('缺少可信作业身份，不能自动重试')
+        if row['state'] in unknown.TERMINAL:
+            continue
+        cwd = str(row.get('directory') or '').rstrip('/')
+        if cwd and cwd == target:
+            raise ValueError(
+                f"目录 {target} 已有活跃作业（{row['job_id']} {row['state']}）；"
+                '同一作业目录下不能同时运行两个作业'
+            )
 
 
 def prior_job_review(user, task_id):
@@ -446,9 +461,10 @@ def safe_submit(project, task, *, dry_run=False):
         # 调用方已持有任务族锁；只读核实历史记录，不重放提交。
         reconcile(task_id=task['task_id'], _lock_held=True)
         project, task = actions.load_task(task['task_id'])
+        target_dir = resolve_remote_path(project['server'], task.get('remote_dir') or '').rstrip('/')
         with ledger.transaction() as doc:
-            if _unresolved(doc, family):
-                raise ValueError('任务族存在活跃/UNKNOWN提交记录，请先对账')
+            if _unresolved(doc, family, directory=target_dir):
+                raise ValueError('该作业目录存在活跃/UNKNOWN提交记录，请先对账')
             record = _record(project, task, 'task.submit', permissions.context_username() or 'automation')
             doc['actions'][record['id']] = record
         try:

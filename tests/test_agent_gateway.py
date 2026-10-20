@@ -509,37 +509,33 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         return self.gateway.confirm_prior_job_finished(self.owner, 't1', review['job_id'], review['review_fingerprint'],
             '核对旧作业751321的LSF结束回执、工作目录和结束时间，确认已经结束；未声称VASP收敛。')
 
-    def test_preledger_job_confirmation_unlocks_only_missing_old_identity(self):
+    def test_old_job_identity_does_not_gate_the_directory_check(self):
         project, task = self._old_job()
         directory = self.paths.resolve_remote_path('server1', task['remote_dir'])
-        with self.assertRaisesRegex(ValueError, '原作业无法'):
-            self.gateway.assert_remote_idle(project, task, directory, [])
+        # 新口径：只认目录冲突，旧作业身份不再阻止提交。
+        self.gateway.assert_remote_idle(project, task, directory, [])
         (self.remote/'751321.out').write_text(f'Subject: Job 751321: <T1> in cluster <fixture> Done\n<{directory}> was used as the working directory.\nTerminated at test time\n<script>never execute</script>')
         review = self.gateway.prior_job_review(self.owner, 't1')
-        self.assertTrue(review['can_confirm'])
         self.assertTrue(review['receipts'])
         self.assertIn('结束时间test time', review['confirmation_summary'])
         foreign = [{'directory': directory, 'text': f'Subject: Job 751322: <T1> in cluster <fixture> Done\n<{directory}> was used as the working directory.\nTerminated at test time'}]
         self.assertEqual(self.gateway._receipt_confirmation_summary(self.gateway._completion_binding(project, task), foreign), '')
-        self._confirm_old_job()
-        self.gateway.assert_remote_idle(project, task, directory, [])
-        self.assertEqual(self.hpc.submit_count(), 0)
-        self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], '751321')
-        self.assertFalse(self.gateway.prior_job_review(self.owner, 't1')['can_confirm'])
 
-    def test_old_confirmation_cannot_bypass_new_or_active_family_jobs(self):
+    def test_only_the_exact_directory_blocks_a_new_job(self):
         project, task = self._old_job(); self._confirm_old_job()
         directory = self.paths.resolve_remote_path('server1', task['remote_dir'])
-        with self.assertRaises(ValueError):
+        # 同一目录有活跃作业 → 阻止
+        with self.assertRaisesRegex(ValueError, '同一作业目录'):
             self.gateway.assert_remote_idle(project, task, directory, [{'job_id':'751321','state':'RUN','directory':directory,'name':'old'}])
-        with self.assertRaises(ValueError):
-            self.gateway.assert_remote_idle(project, task, directory+'/con2', [{'job_id':'999','state':'RUN','directory':directory+'/con9','name':'unregistered'}])
-        with self.assertRaises(ValueError):
-            self.gateway.assert_remote_idle(project, task, directory, [{'job_id':'999','state':'RUN','directory':'-','name':'unknown'}])
-        with self.assertRaises(ValueError):
-            self.gateway.assert_remote_idle(project, {**task,'job_id':'751322'}, directory, [])
+        with self.assertRaisesRegex(ValueError, '同一作业目录'):
+            self.gateway.assert_remote_idle(project, task, directory+'/con2', [{'job_id':'999','state':'RUN','directory':directory+'/con2','name':'unregistered'}])
+        # 父目录/兄弟续算目录/未知目录都不再扩散阻止
+        self.gateway.assert_remote_idle(project, task, directory+'/con2', [{'job_id':'999','state':'RUN','directory':directory,'name':'root'}])
+        self.gateway.assert_remote_idle(project, task, directory+'/con2', [{'job_id':'999','state':'RUN','directory':directory+'/con9','name':'sibling'}])
+        self.gateway.assert_remote_idle(project, task, directory, [{'job_id':'999','state':'RUN','directory':'-','name':'unknown'}])
+        self.gateway.assert_remote_idle(project, {**task,'job_id':'751322'}, directory, [])
         with patch.object(self.gateway, 'server_signature', return_value='changed-target'):
-            with self.assertRaises(ValueError): self.gateway.assert_remote_idle(project, task, directory, [])
+            self.gateway.assert_remote_idle(project, task, directory, [])
 
     def test_old_job_confirmation_rechecks_lsf_and_rejects_stale_dialog(self):
         project, task = self._old_job()
@@ -681,6 +677,18 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertEqual(response.status_code, 500)
         self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], record['job_id'])
         self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+
+    def test_unresolved_actions_only_block_their_own_directory(self):
+        doc = {'actions': {'a1': {
+            'id': 'a1', 'family_id': 't1', 'status': 'running',
+            'plan': {'work_dir': '/remote/T1'}, 'reservation': 24, 'job_id': '751321',
+            'job_finished': False}}}
+        # 同族但不同目录：允许 conN 与 root 同时存在
+        self.assertIsNone(self.gateway._unresolved(doc, 't1', directory='/remote/T1/con1'))
+        # 同一目录：仍然拦截
+        self.assertIsNotNone(self.gateway._unresolved(doc, 't1', directory='/remote/T1'))
+        # 不传目录时保持保守的家庭级拦截
+        self.assertIsNotNone(self.gateway._unresolved(doc, 't1'))
 
     def test_stop_uses_same_family_lock_as_submit(self):
         self.execute()

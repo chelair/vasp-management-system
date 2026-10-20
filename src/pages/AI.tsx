@@ -5,6 +5,7 @@ import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined
 import PageHeader from '../components/common/PageHeader';
 import ConnectionSettings from '../components/ai/ConnectionSettings';
 import StreamingAnswer from '../components/ai/StreamingAnswer';
+import ThinkingText from '../components/ai/ThinkingText';
 import WorkspacePanel from '../components/ai/WorkspacePanel';
 import TopicReportLinks from '../components/ai/TopicReportLinks';
 import TopicReportEditor from '../components/reports/TopicReportEditor';
@@ -254,7 +255,7 @@ export default function AI() {
                       {run.tool_events?.length ? ` · ${run.tool_events.length} 次` : ''}
                       {isActiveRun(run) ? '（生成中）' : ''}
                     </summary>
-                    {run.reasoning ? <div className="ai-reasoning__body">{run.reasoning}</div> : null}
+                    {run.reasoning ? <ThinkingText text={run.reasoning} active={isActiveRun(run)} /> : null}
                     {run.tool_events?.length ? (
                       <div className="ai-tool-events">
                         {run.tool_events.map((event) => (

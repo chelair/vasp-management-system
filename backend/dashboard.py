@@ -28,7 +28,7 @@ import checks_store
 from checks_store import CHECKS_DIR, list_runs, merged_results, to_frontend_rows
 from config import DATA_DIR, load_servers, load_settings
 from storage import load_db
-from task_paths import is_auxiliary_task, is_continuation_task
+from task_paths import is_auxiliary_task
 
 DASHBOARD_DIR = DATA_DIR / "dashboard"
 HISTORY_FILE = DASHBOARD_DIR / "core_history.json"
@@ -436,22 +436,42 @@ def _completed_stats(db: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 
 def _task_index(db: Dict[str, Any]) -> Tuple[Dict[str, Tuple[Dict, Dict]], Dict[str, Tuple[Dict, Dict]]]:
-    """按 job_id 与作业名建立 task 索引（作业名回退匹配，LSF 名可能被截断）。"""
+    """按 job_id 与作业名建立 task 索引（作业名回退匹配，LSF 名可能被截断）。
+
+    续算子任务也参与索引：自动化提交后作业号会登记在 conN 子任务上，跳过它们
+    会让总览把真实作业显示成"未登记任务"（2026-10-21 用户反馈 FS@Kaolin_con8）。
+    另外执行台账里的 `execution_name`（`模型_vm_动作ID`）才是 LSF 里看到的作业名，
+    这里补一层 action → task 的映射，避免受控提交的作业匹配不到。
+    """
     by_job: Dict[str, Tuple[Dict, Dict]] = {}
     by_name: Dict[str, Tuple[Dict, Dict]] = {}
+    task_pairs: Dict[str, Tuple[Dict, Dict]] = {}
     for project in db.get("projects", []):
         for task in project.get("tasks", []):
-            # 这里只排除续算子任务（它们不单独登记作业号），差分电荷分块**要保留** ——
-            # 分块作业在 LSF 里是真实作业，缺了这条索引，总览「正在运行的作业」的
-            # 所属项目就会显示成"未登记任务"（2026-10-13 用户反馈 model2_diff1）。
-            if is_continuation_task(task):
-                continue
+            pair = (project, task)
+            task_pairs[str(task.get("task_id") or "")] = pair
             job_id = str(task.get("job_id") or "").strip()
             if job_id:
-                by_job.setdefault(job_id, (project, task))
+                by_job.setdefault(job_id, pair)
             name = str(task.get("model_name") or "").strip()
             if name:
-                by_name.setdefault(name, (project, task))
+                by_name.setdefault(name, pair)
+    try:
+        from automation import ledger
+
+        actions = list(ledger.read().get("actions", {}).values())
+    except Exception:  # noqa: BLE001 - 台账不可用不影响其它统计
+        actions = []
+    for action in actions:
+        pair = task_pairs.get(str(action.get("task_id") or ""))
+        if pair is None:
+            continue
+        execution_name = str(action.get("execution_name") or "").strip()
+        if execution_name:
+            by_name.setdefault(execution_name, pair)
+        job_id = str(action.get("job_id") or "").strip()
+        if job_id:
+            by_job.setdefault(job_id, pair)
     return by_job, by_name
 
 

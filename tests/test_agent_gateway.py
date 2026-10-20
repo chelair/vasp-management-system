@@ -690,6 +690,18 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         # 不传目录时保持保守的家庭级拦截
         self.assertIsNotNone(self.gateway._unresolved(doc, 't1'))
 
+    def test_running_jobs_match_automation_execution_names(self):
+        from dashboard import build_running_tasks
+        record = self.execute()
+        snapshot = {'jobs': [
+            {'job_id': '999999', 'name': record['execution_name'], 'status': 'RUN', 'queue': 'normal', 'cores': 24},
+            {'job_id': '888888', 'name': 'unknown-job', 'status': 'RUN', 'queue': 'normal', 'cores': 24},
+        ]}
+        rows = {row['job_name']: row for row in build_running_tasks(self.storage.load_db(), snapshot)}
+        self.assertEqual(rows[record['execution_name']]['task_id'], 't1')
+        self.assertEqual(rows[record['execution_name']]['project_name'], 'STAGE1')
+        self.assertEqual(rows['unknown-job']['project_name'], '未登记任务')
+
     def test_stop_uses_same_family_lock_as_submit(self):
         self.execute()
         lock = self.scheduler._acquire_task_lock('t1')

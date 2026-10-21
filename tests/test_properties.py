@@ -158,7 +158,7 @@ class PropertyTests(unittest.TestCase):
 
     def test_L_missing_energy_not_filled_from_task_db(self):
         f = self.rows[1]['property_evidence']['files']['OUTCAR']
-        f['text'] = f['text'].replace('free energy TOTEN','missing energy')
+        f['text'] = f['text'].replace('free  energy   TOTEN','missing energy')
         self.project['tasks'][1]['last_energy'] = -92
         result = self.evaluate()
         self.assertIsNone(result['inputs'][1]['data']['energy_ev'])

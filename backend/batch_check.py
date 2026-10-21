@@ -13,7 +13,7 @@ force_rms / force_converged / force_history / error_messages。
 - job_id 非空 -> bjobs -l（5 秒超时），PEND->queued、RUN->running（不读 OUTCAR）；
   DONE/EXIT/COMPLETED/FAILED/CANCELLED/作业不存在/超时(UNKNOWN) -> 进入 OUTCAR 分析；
 - OUTCAR 成功标记 -> completed；错误关键词 -> zombied；无标记且作业已结束 -> zombied；
-- 能量：取所有 "free energy TOTEN =" 的最后一个值；
+- 能量：取最后一个已输出的离子步总能（含色散修正），不取电子迭代中的 TOTEN；
 - 结构优化：解析 POSCAR Selective dynamics，统计每个 TOTAL-FORCE 块（离子步）的
   最大力，生成力收敛历史；最后一步计算 force_max / force_rms / force_converged；
 - 单任务异常只写入该任务 error_messages，不影响其他任务。
@@ -779,28 +779,47 @@ def force_thresholds_from_incar(
         "registry",
     )
 
-def extract_toten(text: str) -> Optional[float]:
-    """提取所有 TOTEN 能量行中的最后一个值。"""
-    last_value: Optional[float] = None
-    for line in text.splitlines():
-        if "free" not in line or "TOTEN" not in line or "=" not in line:
+IONIC_ENERGY_HEADER = "FREE ENERGIE OF THE ION-ELECTRON SYSTEM"
+TOTEN_LINE = re.compile(
+    r"^[ \t]*free(?P<gap>[ \t]+)energy[ \t]+TOTEN[ \t]*=[ \t]*"
+    r"(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?)[ \t]+eV(?:[ \t]|$)"
+)
+
+
+def _ionic_toten_values(lines: Iterable[str]) -> Iterable[float]:
+    in_summary = False
+    for line in lines:
+        if IONIC_ENERGY_HEADER in line:
+            in_summary = True
             continue
-        parts = line.split()
-        for index, part in enumerate(parts):
-            if part == "=" and index + 1 < len(parts):
-                try:
-                    last_value = float(parts[index + 1])
-                except ValueError:
-                    pass
-                break
-    return round(last_value, 8) if last_value is not None else None
+        if "Iteration" in line:
+            in_summary = False
+        match = TOTEN_LINE.match(line)
+        if match:
+            # VASP's ionic summary uses `free  energy`, SCF uses `free energy`.
+            # The header also permits compact formatting. Keep the spacing test
+            # for old scientific samples that retained energy lines only.
+            if in_summary or len(match["gap"]) >= 2:
+                value = float(match["value"].replace("D", "E").replace("d", "e"))
+                if math.isfinite(value):
+                    yield round(value, 8)
+            in_summary = False
+
+
+def extract_toten(text: str) -> Optional[float]:
+    """Last completed ionic-step free energy, never an unfinished SCF energy."""
+    last_value = None
+    for value in _ionic_toten_values(text.splitlines()):
+        last_value = value
+    return last_value
 
 
 def parse_total_force_blocks(text: str) -> List[Dict[str, Any]]:
     """解析 OUTCAR 中所有 TOTAL-FORCE 块，返回 [{energy, forces: [...]}]。
 
     VASP OUTCAR 中每个离子步先输出力块，随后才输出该步的 TOTEN 能量行，
-    因此力块能量采用向后扫描：取力块之后、下一个力块之前的第一个 TOTEN 行。
+    因此力块能量采用向后扫描：取力块之后、下一个力块之前的第一个离子步总能，
+    不把下一轮电子迭代的 TOTEN 配给尚未完成的力块。
     """
     blocks: List[Dict[str, Any]] = []
     lines = text.splitlines()
@@ -819,16 +838,10 @@ def parse_total_force_blocks(text: str) -> List[Dict[str, Any]]:
                 except ValueError:
                     break
                 index += 1
-            energy: Optional[float] = None
             scan = index
-            while scan < len(lines):
-                candidate = lines[scan]
-                if FORCE_HEADER in candidate:
-                    break
-                if "free" in candidate and "TOTEN" in candidate and "=" in candidate:
-                    energy = extract_toten(candidate)
-                    break
+            while scan < len(lines) and FORCE_HEADER not in lines[scan]:
                 scan += 1
+            energy = next(_ionic_toten_values(lines[index:scan]), None)
             blocks.append({"energy": energy, "forces": forces})
             continue
         index += 1
@@ -1410,7 +1423,7 @@ def capture_property_evidence(work_dir):
     if 'text' in out:
         out['text_basis'] = 'selected_scientific_lines_from_hashed_sample'
         out['text'] = '\n'.join(line for line in out['text'].splitlines() if
-            re.search(r'\b(?:ENCUT|GGA|GGA_COMPAT|LDAU\w*|LHFCALC|METAGGA|IVDW|ISPIN|LSORBIT|LASPH|ISMEAR|SIGMA|LMAXMIX|NELECT|EDIFF|EDIFFG|NELM|NSW|IBRION|ISIF|IMAGES|AEXX|HFSCREEN|AGGAX|AGGAC|ALDAC|LUSE_VDW|LNONCOLLINEAR|LREAL|EFIELD|LDIPOL|IDIPOL|DIPOL|SAXIS|EFIELD_PEAD)\s*=|free\s+energy\s+TOTEN|generate k-points for:|shift:|POTCAR:|reached required accuracy|General timing and accounting|VERY BAD NEWS|ZBRENT:|BRMIX:', line))
+            re.search(r'\b(?:ENCUT|GGA|GGA_COMPAT|LDAU\w*|LHFCALC|METAGGA|IVDW|ISPIN|LSORBIT|LASPH|ISMEAR|SIGMA|LMAXMIX|NELECT|EDIFF|EDIFFG|NELM|NSW|IBRION|ISIF|IMAGES|AEXX|HFSCREEN|AGGAX|AGGAC|ALDAC|LUSE_VDW|LNONCOLLINEAR|LREAL|EFIELD|LDIPOL|IDIPOL|DIPOL|SAXIS|EFIELD_PEAD)\s*=|FREE ENERGIE OF THE ION-ELECTRON SYSTEM|free\s+energy\s+TOTEN|generate k-points for:|shift:|POTCAR:|reached required accuracy|General timing and accounting|VERY BAD NEWS|ZBRENT:|BRMIX:', line))
     # A file replaced during the collection invalidates this observation.
     for name, record in result['files'].items():
         if 'mtime_ns' in record:

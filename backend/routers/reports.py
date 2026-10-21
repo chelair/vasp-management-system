@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from batch_check import extract_toten
 from config import PROJECTS_DIR
 from aux_molecules import get_aux, list_aux_molecules
 from envelope import fail, ok
@@ -26,7 +27,7 @@ F_ENERGY_RE = re.compile(r"F=\s*([-+]?\d+\.\d+)")
 
 
 def last_energy(task_path: Path) -> Optional[float]:
-    """从 OSZICAR 末行提取 F= 能量；无则尝试 OUTCAR 的最后一个 TOTEN。"""
+    """从 OSZICAR 末行提取 F= 能量；无则尝试 OUTCAR 的最后一个离子步总能。"""
     files_dir = task_files_dir("", {"dir_path": str(task_path)})
     oszicar = files_dir / "OSZICAR"
     if oszicar.is_file():
@@ -42,12 +43,7 @@ def last_energy(task_path: Path) -> Optional[float]:
     if outcar.is_file():
         try:
             text = outcar.read_text(encoding="utf-8", errors="replace")
-            values = [
-                float(m)
-                for m in re.findall(r"free\s+energy\s+TOTEN\s*=\s*([-+]?\d+\.\d+)", text)
-            ]
-            if values:
-                return round(values[-1], 8)
+            return extract_toten(text)
         except OSError:
             pass
     return None

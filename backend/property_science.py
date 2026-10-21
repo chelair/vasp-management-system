@@ -8,7 +8,7 @@ import math
 import re
 
 from input_state import parse_incar_text
-from batch_check import parse_poscar_layout
+from batch_check import extract_toten, parse_poscar_layout
 
 VERSION = 'r3.1.0'
 NUMBER = r'[-+]?\d*\.?\d+(?:[EeDd][-+]?\d+)?'
@@ -173,8 +173,7 @@ def normalize(evidence, row, *, neb_image=False):
         # All inputs must predate the observed output; later drafts cannot be used as run inputs.
         good_order = all(files[n]['mtime_ns'] <= files['OUTCAR']['mtime_ns'] for n in ('POSCAR','INCAR','KPOINTS')) and pot.get('mtime_ns', math.inf) <= files['OUTCAR']['mtime_ns']
         checks.append(check('input_output_order', 'AVAILABLE' if good_order else 'INVALID', '输入修改不得晚于输出；不把新草稿当已执行参数'))
-        energies = re.findall(r'free\s+energy\s+TOTEN\s*=\s*('+NUMBER+')', out)
-        data['energy_ev'] = number(energies[-1]) if energies else None
+        data['energy_ev'] = extract_toten(out)
         osz = files['OSZICAR']['text'].split('@@R3_TAIL@@')[-1]
         ionic = list(re.finditer(r'^\s*(\d+)\s+F=\s*('+NUMBER+r').*?E0=\s*('+NUMBER+r')[^\n]*', osz, re.M))
         electronic = None
@@ -187,7 +186,7 @@ def normalize(evidence, row, *, neb_image=False):
                 electronic = not osz[last.end():].strip() and int(scf[-1][0]) < nelm and abs(number(scf[-1][2])) < ediff and abs(number(scf[-1][3])) < ediff
             consistent = data['energy_ev'] is not None and abs(number(last[2])-data['energy_ev']) < 1e-5
         else: consistent = False
-        checks.append(check('energy', 'MISSING' if data['energy_ev'] is None else 'AVAILABLE' if consistent else 'INVALID', 'OUTCAR最后TOTEN与OSZICAR最后完整离子步F一致；不混用E0'))
+        checks.append(check('energy', 'MISSING' if data['energy_ev'] is None else 'AVAILABLE' if consistent else 'INVALID', 'OUTCAR最后离子步总能与OSZICAR最后完整离子步F一致；不混用电子迭代能或E0'))
         observed = row.get('last_energy')
         if not neb_image and observed is not None:
             checks.append(check('observation_energy','AVAILABLE' if data['energy_ev'] is not None and abs(number(observed)-data['energy_ev'])<1e-5 else 'INVALID','观测总能量与同次输出采样一致'))

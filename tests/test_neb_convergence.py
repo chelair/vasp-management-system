@@ -30,7 +30,7 @@ class NebConvergenceTests(unittest.TestCase):
         (root / image / "OUTCAR").write_text(
             " POSITION TOTAL-FORCE (eV/Angst)\n -----------\n"
             f" 0 0 0 {force} 0 0\n 0 0 0 9 0 0\n -----------\n"
-            " free energy TOTEN = -10 eV\n" + summary + "\n" +
+            " free  energy   TOTEN = -10 eV\n" + summary + "\n" +
             (" General timing and accounting informations for this job\n" if finished else ""))
 
     def analyze(self):

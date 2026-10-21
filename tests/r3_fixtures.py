@@ -27,7 +27,7 @@ def write_run(root,text,energy,charge=0,encut=500,scf=True,ionic=True):
     out = '\n'.join('POTCAR: '+POT[el].split('TITEL = ')[1].splitlines()[0] for el in p['species'])
     out += f'\nENCUT = {encut}; GGA = PE; EDIFF = 1E-6; NELM = 60; NSW = 100; NELECT = {electrons}\n'
     out += 'generate k-points for: 2 2 1\nshift: 0 0 0\n'
-    out += f'free energy TOTEN = {energy:.8f} eV\n'
+    out += f'free  energy   TOTEN = {energy:.8f} eV\n'
     if ionic: out += 'reached required accuracy\n'
     out += 'General timing and accounting\n'
     root.joinpath('OSZICAR').write_text(f'DAV: {3 if scf else 60} {energy} {"1E-8" if scf else "1E-2"} 1E-9\n 1 F= {energy:.8f} E0= {energy:.8f}\n')

@@ -55,7 +55,7 @@ class OptTests(unittest.TestCase):
         out, osz = [], []
         for i, force in enumerate(forces,1):
             out += [f'Iteration {i}( 2)', ' POSITION TOTAL-FORCE (eV/Angst)', ' ----------------',
-                    f'0 0 0 {force} 0 0', ' ----------------', f' free energy TOTEN = {-10-i:.8f} eV']
+                    f'0 0 0 {force} 0 0', ' ----------------', f' free  energy   TOTEN = {-10-i:.8f} eV']
             osz += [f'DAV: {60 if kind == "scf" else 3} -10.0 {"1E-2" if kind == "scf" else "1E-8"} 1E-9 10 0.0',
                     f' {i} F= {-10-i:.8f} E0= {-10-i:.8f} d E = 0.0']
         if kind == 'converged':

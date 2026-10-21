@@ -71,7 +71,7 @@ export default function ConnectionSettings({ open, close, connections, reload }:
       onOk={() => { void save(); }} confirmLoading={busy} okButtonProps={{ disabled: !secure||capLoading||!!capError }} forceRender afterClose={() => form.resetFields()}>
       {!secure && <Alert type="error" showIcon message="请通过 HTTPS 或本机端口转发访问后配置密钥" style={{ marginBottom: 16 }} />}
       <Form form={form} layout="vertical" preserve={false} autoComplete="off">
-        <div style={{ marginBottom: 16 }}><Button onClick={() => form.setFieldsValue({ name: 'DeepSeek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', api_key: '', max_tokens: 8192, thinking_mode: 'disabled',reasoning_api:'auto',reasoning_effort:'none' })}>填入 DeepSeek 官方配置</Button></div>
+        <div style={{ marginBottom: 16 }}><Button onClick={() => form.setFieldsValue({ name: 'DeepSeek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', api_key: '', max_tokens: 393216, thinking_mode: 'disabled',reasoning_api:'auto',reasoning_effort:'none' })}>填入 DeepSeek 官方配置</Button></div>
         <Form.Item name="name" label="连接名称" rules={[{ required: true, whitespace: true }]}><Input aria-label="连接名称" maxLength={80} placeholder="例如：科研助手" /></Form.Item>
         <Form.Item name="base_url" label="API 基础地址" extra="OpenAI 兼容接口，通常以 /v1 结尾。更换地址时须重新输入密钥。" rules={[{ required: true, whitespace: true }]}><Input aria-label="API 基础地址" maxLength={2000} placeholder="https://example.com/v1" /></Form.Item>
         <Form.Item name="model" label="模型名称" rules={[{ required: true, whitespace: true }]} extra={isDeepSeek ? <span>
@@ -83,7 +83,7 @@ export default function ConnectionSettings({ open, close, connections, reload }:
         ]}/></Form.Item>
         <Form.Item name="reasoning_effort" label="思考深度" initialValue="default" extra={cap?.note}><Select aria-label="思考深度" loading={capLoading} disabled={capLoading||!cap} options={cap?.options||[{value:'default',label:'跟随模型默认'}]}/></Form.Item>
         {capError&&<Alert type="error" message={capError}/>}
-        <Form.Item name="max_tokens" label="单次输出上限（tokens）" extra="思考与最终回答共用此额度，深度较高时可适当提高。报告段落另有输出额度上限。"><InputNumber min={128} max={32768} style={{ width: '100%' }} /></Form.Item>
+        <Form.Item name="max_tokens" label="单次输出上限（tokens）" extra="思考与最终回答共用此额度，深度较高时可适当提高。报告段落另有输出额度上限。"><InputNumber min={128} max={393216} style={{ width: '100%' }} /></Form.Item>
         <Form.Item name="is_default" label="设为新会话的默认连接" valuePropName="checked"><Switch /></Form.Item>
       </Form>
     </Modal>

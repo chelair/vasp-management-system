@@ -57,7 +57,9 @@ class ConnectionBody(BaseModel):
     base_url: str = Field(min_length=1, max_length=2000)
     model: str = Field(min_length=1, max_length=200)
     api_key: str | None = Field(default=None, max_length=512)
-    max_tokens: int = Field(default=2048, ge=128, le=32768)
+    # 上限对齐 DeepSeek /models 为 deepseek-flash 声明的 max_output_tokens（393216）；
+    # 具体连接仍由用户按模型填写，服务端只拦明显越界值。
+    max_tokens: int = Field(default=2048, ge=128, le=393216)
     is_default: bool = False
     thinking_mode: Literal["default", "enabled", "disabled"] = "default"
     reasoning_api: Literal["auto","openai","deepseek"] = "auto"

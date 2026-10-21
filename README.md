@@ -1,608 +1,76 @@
-# VASP 计算项目管理系统 · 前端框架
+# VASP Manager
 
-2026-10-20：AI报告按用户要求改为“一句话、最小可用数据、直接查看结果”。吸附能有三个能量就给初步计算，质量问题仅警告；不确定时在原对话选择或自定义回答。默认不展示内部校验表。开发只做必要验证、不做无要求备份。见 [简明报告](agent-upgrade/simple-topic-report.md)；本条优先于下文历史严格草案流程。
+管理 VASP 项目、巡检、作业、科学分析和科研报告的 Web 应用。仓库：[chelair/vasp-management-system](https://github.com/chelair/vasp-management-system)。当前应用版本 **1.1.4**；源码和发布状态见 [交接与运维](process.md)，历史见 [主要变更](docs/changelog.md)。
 
-PMS吸附能空草案排查与修复（2026-10-20）：候选检索支持明确吸附物的 `PMS@model1` 命名；名称仅产生候选。未完成报告明确显示准备/计划阶段，冻结需求报告列出候选和校验缺口；可重新检查已有数据、选择单候选任务及不同计算快照。模型正文中的伪工具指令不执行并标失败。见 [修复记录](agent-upgrade/PMS-topic-report-fix.md)。
+## 现有功能
 
-模型思考深度前端接入已部署并推送main（2026-10-20）：模型连接与聊天快捷选择按型号显示档位，后端真实请求沿用；DeepSeek工具轮/报告不再强制关闭，原始思考仅运行内存使用。使用、接口、官方依据与实际验收见 [模型思考配置](agent-upgrade/model-reasoning.md)。生产仍v1.1.4。
-
-
-v1.1.4已于2026-10-20部署，包含R4与吸附能完整链路：原AI项目会话可比较已有吸附体系/洁净表面/分子参考，多位点明确选择，同参考差值由Python计算。新增分析必须遵守 [统一规范](ANALYSIS_FEATURES.md) 并使用 [设计验收模板](docs/templates/analysis-feature.md)。科学边界与验收见 [吸附能接入](agent-upgrade/adsorption-analysis.md)；发布实际结果见PROGRESS §25。
-
-
-R4 AI工作台专题科研报告已于2026-10-20随v1.1.4部署发布：项目会话中直接提出研究问题，先复用R3检查/计算，再选择R2元素和生成文字；可编辑、独立保存、重新打开与HTML/PDF导出。当前生产为v1.1.4。实现、验收和边界见 [R4交接](agent-upgrade/R4-topic-reports.md)。
-
-
-R3 科学性质（v1.1.3，2026-10-20已部署）：智能报告→科学性质，按项目/模型查候选、精确绑定任务及计算快照，验证中性单氧空位形成能、相对能量、简单吸附能、已有NEB能垒与功函数差异。Python计算，缺口/过期/歧义明确保留；可冻结下载数据需求与结果，不自动建模或提交HPC。见 [R3实现与限制](agent-upgrade/R3-properties.md)。
-
-v1.1.2（2026-10-20已部署）：修复停止/自然结束与提交台账同步、旧记录覆盖新作业、迟到巡检结果回滚状态等问题；报错弹窗支持只读对账。未知远端状态仍阻止重复提交，不新增轮询、不改变结构回传条件。部署与验证见[PROGRESS §20/21](./agent-upgrade/PROGRESS.md)。
-
-R2 报告元素系统已完成本地手工闭环：智能报告→专题报告，选择已有结果、参数对照与文字，排序/分组/隐藏/恢复，同一冻结证据预览及HTML/PDF导出。首批14类元素已适配；普通编辑保留证据，显式刷新才更新计算数据。**2026-10-20已部署，源码发布main**。任务见 [R2](./agent-upgrade/R2-report-blocks.md)，实现、验证与限制见 [实现记录§14](./agent-upgrade/R2-blocks-implementation.md)，接手从 [AGENTS.md](./AGENTS.md) 进入。
-
-R1（2026-10-19已部署）：完整项目报告支持项目级 AI 撰写开关，复用工作台私有模型连接；单条/缺失批量生成草稿，预览、人工编辑、明确保存、单次恢复与过期提示。普通报告生成独立可用，已有人工注解不会自动覆盖；不新增作业/结构/SSH 能力。使用与验收见 [R1 交接](./agent-upgrade/R1-report-notes.md)。
-
-**v1.1.0**：新增默认关闭的受控执行底座与单OPT有限自主闭环，补齐预算、幂等、UNKNOWN对账及人工接管；实际参数记录保留最近5次，AI可按需核对参数差异、来源、4小时时效和远端固定范围只读证据；巡检后作业页同步读取已回传的结构。174项Python回归通过；真实生产自主计算与完整科学精度仍未验证。
-
-Agent升级：阶段1执行底座已部署且默认关闭；阶段2单OPT有限自主闭环已完成Mock验收并于2026-10-19部署，自主执行保持关闭。范围、用法和科学边界见[阶段2交接](./agent-upgrade/02-opt-loop.md)及[开发进度](./agent-upgrade/PROGRESS.md)。聊天模型仍通过只读工具查询处置记录，实际动作由人工授权后的后端循环执行。
-
-阶段2补充（2026-10-19已部署）：实际上传/应用/提交参数按任务族保留5次（草稿不计），AI可查询具体差异；巡检证据采用固定4小时时效和参与范围判断，必要时使用独立远端只读补证并核对LSF。详见[参数证据链](./agent-upgrade/03-parameter-evidence.md)。
-
-**v1.0.1（历史）**：新增 AI 工作台、DeepSeek / OpenAI 兼容接口、私有会话与项目上下文，以及项目文件工作区和按需目录地图；支持项目分组、逐字回复及按需巡检证据查询，巡检每任务保留最近5个计算目录各自的最新结果。密钥后端加密保存；正式文件只读，模型仅能创建独立草稿，尚未开放代码、SSH 或计算操作。详见 [工作区说明](./MODEL_WORKSPACE.md) 与 [交接记录](./process.md)。
-
-基于 **React 18 + TypeScript + Vite 7 + Ant Design 5 + Framer Motion** 的 VASP 第一性原理计算项目管理系统前端。
-当前版本（**v1.1.4**；主要功能与版本标识均已部署）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面（**v0.9.0 起需登录**：账号/会话 + 登录页 + token 鉴权；**v0.9.2 起按项目归属隔离**：普通用户只能看到自己创建的项目，越权 403，admin 全可见；**v0.9.3 起前端按角色隐藏入口**：普通用户看不到 SSH/全局配置与全局巡检入口，403 只弹轻提示不跳登录）；**v0.9.6 新增自动/定时执行动作系统**（巡检事件 + cron 触发 → 规则 → 冷却/上限/幂等/熔断 → 四个动作：续算/提交/NEB/频率矫正 → 五态审计，前端「自动化」页仅 admin）；作业管理含自研集群节点看板、输入文件草稿与逐项撤销、任务选择弹窗（分组折叠 / 搜索 / 已关闭项目折到最后）、POSCAR 选中原子坐标与固定原子、vasp.lsf 脚本生成与提交前非空检查，巡检结论在作业管理同步显示；
-早期版本（**v0.8.8**，运行在 Linux 生产机）：四个核心模块（总览 / 巡检中心 / 作业管理 / 智能报告）+ SSH 连接配置界面；作业管理已含自研集群节点看板、输入文件「同步到远端」、POSCAR 同步/生成 POTCAR/固定原子（Selective Dynamics）、vasp.lsf 八段式脚本生成与提交前非空检查，巡检结论（低精度收敛、力未收敛等）在作业管理同步显示；
-**项目 CRUD、巡检、作业提交/停止/续算、文件构建、SSH 连接池、结构 3D 视图与分项目报告生成均已接入真实后端**
-（Python + FastAPI + Paramiko，流程对齐参考实现 `add_project.py` / `check_remote.py`），
-总览页已是集群实时视图（bjobs 作业、blimits 核数配额、bhosts/bqueues 节点队列、df 存储），
-接口文档（面向自动化 / 智能体接入，含观测面与执行面、调用参数与前置条件）见 [`API.md`](./API.md)；跨窗口交接说明见 [`process.md`](./process.md)。
-
-**AI 接入地基（v0.9.42）**：智能体用**受限身份**接入 —— agent 账号带 `delegate_to`（继承某用户的可见范围）、token 带 `scope`
-（`read` 只读 / `propose` 只能提案 / `write` 可直接执行动作）；危险动作走**待确认队列**（AI 提案 → 人工批准，`/api/pending-actions`）；
-统一入口 `GET /api/ai`（含数据契约、任务上下文 `task_context`、OUTCAR 尾部）。另外从本版起积累**知识层**（`data/knowledge/`：
-VASP 错误对照表 / INCAR 速查 / 错误案例库）与**报告结构化副本**（`data/reports/structured/`）。
-详见 [`API.md`](./API.md) §2.4 / §4.5 / §4.6 / §4.7。
-
-**前端不再有 Mock 数据**（`src/data/mock/` 仅保留编辑器默认参数与 VASP 输入文件模板）。
-
-> 跨窗口交接看 `process.md`（版本、改动记录、已知坑、待办）；`TODO.md` 为历史清单，个别条目已过时。
-> **部署与运维（Linux 生产机）看 `process.md` §11**：目录与服务、`systemctl` 命令、常驻检查项、Linux 特有的坑（大小写、SecureLink 干扰）、nginx 反代与回滚。
-
-> 注意：本项目在生产机上位于 `/home/zouyuxi/projects/vasp-manager`（旧机 Windows 路径 `D:\Skill\vasp-project-manager-web` 已停用）。旧项目 `vasp-project-manager` 仅作为**功能迁移参考**，
-> **运行时不依赖旧项目目录**——真实数据（项目库、配置、本地项目目录、备份、巡检结果）已全部迁入本项目
-> `data/`，系统自包含，打包部署不会漏文件。
-
----
-
-## 技术栈
-
-| 层 | 选型 |
+| 入口 | 能做什么 |
 | --- | --- |
-| 框架 | React 18 + TypeScript |
-| 构建 | Vite 7（已配置 `host: true`，支持局域网访问） |
-| UI | Ant Design 5 + 自定义设计令牌（主色 `#5B8DEF`，辅助色 `#67C6B0`） |
-| 图表 | ECharts 6（按需注册：圆环/折线/柱/散点，见 `src/components/dashboard/useEcharts.ts`） |
-| 动画 | Framer Motion（页面切换淡入淡出 + 卡片悬停上浮） |
-| 路由 | React Router 7 |
-| 后端 | Python + FastAPI（Uvicorn 运行，端口 3001，自带 Swagger 文档 `/docs`） |
-| SSH | Paramiko（密钥认证远程目录同步） |
-| 存储 | 文件型 JSON：`data/projects.json` + 本地目录 + 自动备份（不用数据库） |
-| 数据 | 项目 / 巡检 / 作业 / SSH 走真实后端（`data/` 文件型 JSON）；仅智能报告为 Mock（`src/data/mock/`） |
+| 总览 | 项目进度、交付风险、真实集群作业/额度/节点/队列/存储 |
+| 巡检中心 | 自动/手动巡检、能量力曲线、收敛和异常、NEB/自由能及分析详情 |
+| 作业管理 | 输入查看/参数草稿、已有构型续算、脚本生成/写入、提交/停止及参数来源记录 |
+| 智能报告 | 完整项目报告、人工元素组合、科学性质验证、独立 AI 专题与 HTML/PDF |
+| AI 工作台 | 用户私有模型连接、思考深度、项目会话、按需查证、报告和托管计划工具 |
+| 自动化/项目托管 | 固定规则动作；M0 项目目标/阶段/任务优先级、资源评分及脚本预览 |
 
-## 开发约定
+**项目托管 M0 尚未接通自动执行**，保存计划或启用计划不等于自动提交。已有单 OPT 有限执行循环需单独授权，真实无人值守项目验收仍有边界，详见 [托管](docs/managed-compute.md) 和 [执行](docs/execution.md)。
 
-### SSH：统一走连接池，禁止自行创建客户端
+## 一句话生成报告
 
-所有远端命令 / 文件操作（执行命令、上传、下载、递归建目录）**必须**通过统一 SSH 模块
-`backend/ssh.py` 的连接池完成，禁止在业务代码里直接 `paramiko.SSHClient()`：
+在 AI 工作台的项目会话中提出问题，例如：“看看 PMS 在 model1 上的吸附能，生成报告。”AI 自动理解别名、找任务与能量，必要时给出选择或接受自定义回答。
 
-- `run_remote(server, cmd, timeout)`：执行远端命令，返回 `{stdout, stderr, exit_code}`；
-- `upload_file` / `download_file` / `mkdir_remote`：文件传输与建目录；
-- 连接池行为：常驻连接 + 每 30s 传输层 keepalive + 每 60s 应用层保活（echo ok 实测
-  往返延迟，经 `/api/ssh/status` 的 `latencyMs` 实时回传前端展示）+ 空闲 5 分钟自动回收
-  + 断线自动重连（3 次重试），
-  同一服务器命令串行化（避免并发抢占一条连接）；
-  `upload_file` / `download_file` / `mkdir_remote` 与命令执行共用同一条常驻连接，
-  **不要**自行新建/关闭连接（早期版本每次新建连接，单次上传就要 3s 左右）。
+吸附能有基底、吸附质、完整构型三个能量即可计算初步结果。你也可以直接告诉 AI 以前算过的气体能量，不必先创建气体任务。未收敛/设置差异等会提示风险，缺数值会说清缺什么，不生成虚构结果。
 
-新增任何需要访问远端的功能（巡检、续算、提交、停止、文件构建等）都必须复用 `ssh.py`，
-不要在各自模块里另起连接逻辑。
+报告包含结果与计算方式、构型/能量/收敛信息，可编辑标题/文字、排序删除元素、隐藏风险提示，保存后预览与导出保持一致。底层计算与来源不会被文字编辑改变。[报告说明](docs/reports.md)
 
-### 批量远端操作：合并为一次 exec
+## 启动与开发
 
-实测 HPC 登录节点每条 `exec_command` 通道都有约 1.3-2s 的 shell 启动开销（即使命令只是
-`true`）。因此**多步远端文件操作必须合并进单次调用**，不要把“查目录 → 检查文件 → 复制 →
-回传内容 → 列目录”拆成多次 SSH。参考实现：`continuation.py` 用
-`_remote_script(server, bash_script)` 把整段 bash 脚本 base64 后一次执行，脚本内用
-`===STATE===` / `===FILES===` 等标记输出分段，本地解析后再用池化 SFTP 上传修改后的文件
-（续算实测从 10-15s 降到约 3.5s）。
+前端使用 React 18、TypeScript、Vite 7、Ant Design 5、ECharts；后端为 Python/FastAPI/Paramiko，项目与巡检主要为 JSON 文件，AI 私有会话为 SQLite。
 
-### 远端命令写法
-
-- **默认使用 `bash -c`（非登录 shell）**；不要用 `bash -lc`——登录 shell 会加载用户
-  `.bashrc` 等环境，实测慢 4 秒以上且带出 conda 等噪音输出。
-- 需要 LSF 环境（`bsub` / `bkill` / `bjobs`）时显式 `source <profile.lsf>`（路径取
-  `servers.json` 的 `lsf_profile`，缺省 `/opt/ibm/lsfsuite/lsf/conf/profile.lsf`）。
-- **远端路径必须统一正斜杠**：Windows 上 `str(Path(...))` 会输出反斜杠，远程命令会把它
-  当成文件名字符（曾导致服务器误建 `\data\...` 目录）；统一用
-  `resolve_remote_path(server, rel)` 解析，必要时 `.replace("\\", "/")`。
-- 命令通过 `exec_command` 按 UTF-8 编码发送，输出按 UTF-8 解码，中文路径/输出安全。
-
-## 快速开始
-
-环境要求：**Node.js ≥ 20.19**（生产机为 22.22.1）+ **Python ≥ 3.11**（生产机为 3.14.4，已实测 core 依赖可装）。
+需要 Node.js ≥20.19（或符合 Vite 要求的 22.x）和 Python ≥3.11。先在独立开发目录安装：
 
 ```bash
-# 生产机（Linux）：仓库 + venv + 前端构建
-cd /home/zouyuxi/projects/vasp-manager
+npm ci
 python3 -m venv .venv
-.venv/bin/pip install "fastapi>=0.115" "uvicorn[standard]>=0.32" "paramiko>=3.4"   # 核心依赖
-npm ci && npm run build          # 产出 dist/，由后端单端口托管
-sudo systemctl start vasp-manager # 常驻服务（等价于 .venv/bin/python backend/run.py）
-
-# 开发时（可选）
-npm run dev                      # Vite 5173（前端热更新）
+.venv/bin/pip install 'fastapi>=0.115' 'uvicorn[standard]>=0.32' 'paramiko>=3.4' 'cryptography>=43'
 ```
 
-浏览器打开 `http://<生产机IP>:3001`（局域网 `http://192.168.1.20:3001`，ZeroTier `http://10.147.20.10:3001`）即可使用；
-开发模式用 http://localhost:5173。「新增项目」会真实调用后端完成校验、优先级计算、本地目录创建与数据库写入。
-
-真实数据已迁移到本项目 `data/`（`projects.json` + `config/` + `projects/` + `backups/` + `checks/`），
-默认 `npm run server` 即为真实数据模式：总览 / 巡检 / 新增项目都作用于真实项目（如 Ag_20260830）。
-
-> 数据目录可用 `python backend/run.py --data-dir <目录>` 覆盖（测试隔离 / 其他机器部署时使用）。
-> `data/` 为运行时数据（已 gitignore），**打包部署时需连同 `data/` 一起复制或单独备份**，否则会丢失项目数据。
-
-首次使用后端前安装 Python 依赖（核心依赖 fastapi / uvicorn / paramiko）：
+后端可用 `--data-dir` 隔离数据；生产目录已有服务时，不要再启动写同一 data 的实例。
 
 ```bash
-python -m pip install -r requirements.txt
+PORT=3002 .venv/bin/python backend/run.py --data-dir /tmp/vasp-manager-dev-data
 ```
 
-后端启动时会**在后台检查依赖**：核心依赖缺失会提示安装命令，可选依赖（pymatgen / ase /
-apscheduler / openai）缺失只提示、不影响当前功能；前端顶部也会显示同样的提示条。
+前端开发运行 `npm run dev`（默认 5173）；若后端用独立端口，使用 `VITE_API_TARGET=http://localhost:3002 npm run dev` 指定代理目标。正式构建 `npm run build` 生成 dist 和报告交互运行时；日常验证须构建到临时目录，详见 [运维](process.md)。
 
-> 未启动后端时页面显示空数据（已清理演示项目，不再回退 Mock 项目/巡检数据）。
-> 后端在线时可直接打开 http://localhost:3001/docs 查看 FastAPI 自动生成的接口文档。
+默认后端端口 3001，同时提供 API 与 dist 单端口页面。首次初始化的管理员信息以启动日志/账号工具为准；API 和文档访问需登录。模型服务请求由原工作台后端执行，不依赖 openai SDK。外部分析器和 VESTA 等按需安装，见 [依赖](DEPENDENCIES.md)。
 
-## 在 A 电脑运行，B 电脑通过局域网访问
-
-1. 在 A 电脑启动 `npm run dev`（Vite 已配置监听 `0.0.0.0`，启动时会打印 Network 地址）。
-2. 在 A 电脑查询局域网 IP：
-
-   ```powershell
-   ipconfig
-   ```
-
-   例如本机局域网 IP 为 `172.18.83.222`，则启动日志会显示：
-
-   ```text
-   Local:   http://localhost:5173/
-   Network: http://172.18.83.222:5173/
-   ```
-
-3. B 电脑（同一局域网 / 同一 Wi-Fi，且未开启访客网络隔离）直接访问：
-
-   ```text
-   http://172.18.83.222:5173
-   ```
-
-4. 如果 B 电脑无法访问，通常是 Windows 防火墙拦截了 Node.js。在 A 电脑以管理员身份打开 PowerShell，放行 5173 端口：
-
-   ```powershell
-   netsh advfirewall firewall add rule name="VASP Web 5173" dir=in action=allow protocol=TCP localport=5173
-   ```
-
-   或者：防火墙 → 允许应用通过防火墙 → 勾选 Node.js（专用网络）。
-
-## 不在同一局域网时：内网穿透
-
-任选一种工具，把 A 电脑的 5173 端口映射为公网地址，B 电脑通过公网地址访问：
-
-**cpolar**（推荐，国内访问快）
-
-```bash
-cpolar http 5173
-```
-
-**ngrok**
-
-```bash
-ngrok http 5173
-```
-
-**frp（自建服务器）**
-
-frpc.ini：
-
-```ini
-[common]
-server_addr = 你的服务器IP
-server_port = 7000
-
-[vasp-web]
-type = tcp
-local_ip = 127.0.0.1
-local_port = 5173
-remote_port = 5173
-```
-
-> 安全提示：当前为演示版本、无用户认证，公网暴露时建议仅临时使用，或为隧道增加访问密码 / 认证。
-
-## 构建与部署（生产模式）
-
-```bash
-cd /home/zouyuxi/projects/vasp-manager
-npm run build                    # 产出 dist/
-.venv/bin/python backend/run.py  # FastAPI 同时托管 API 和 dist/，单端口 3001
-# 常驻：sudo systemctl restart vasp-manager（单元见 process.md §11）
-# 改了 backend/*.py 必须重启；只改前端则 build 后刷新页面即可
-```
-
-此时浏览器直接访问 `http://<生产机IP>:3001`（或 `http://localhost:3001`）；
-也可用 `npm run preview` 只预览前端（4173 端口），或将 `dist/` 放到 Nginx / IIS 托管并单独反代 `/api`。
-
-> 生产机部署细节（目录、systemd 单元、日常操作对照、nginx 反代示例）见 `process.md` §11。
-
-## 目录结构
+## 目录
 
 ```text
-vasp-project-manager-web/
-├── index.html
-├── vite.config.ts          # host:true（局域网）+ /api 代理 + 分包优化
-├── package.json
-├── requirements.txt        # Python 依赖（核心 + 可选，运行时检查缺失）
-├── backend/                # ★ 后端 API（Python + FastAPI）
-│   ├── run.py              #   启动入口：python backend/run.py
-│   ├── main.py             #   FastAPI 应用（统一信封/错误翻译/静态托管 dist）
-│   ├── routers/            #   /api/projects、/api/servers、/api/task-types、/api/deps
-│   │                       #   + /api/ssh/config、/api/inspections
-│   ├── models.py           #   Pydantic 输入模型（对齐 schemas.py 校验规则）
-│   ├── priority.py         #   工作量/紧急度/优先级象限（对齐 priority.py）
-│   ├── storage.py          #   文件型数据库（原子写入 + 自动备份 20 份）
-│   │                       #   + 任务状态机（对齐 project_db.py）
-│   ├── ssh.py              #   远程执行/上传/下载（Paramiko，含本地模拟模式）
-│   ├── batch_check.py      #   服务器端批量检查脚本（自动上传，解析 bjobs/OUTCAR/力收敛）
-│   ├── inspection_runner.py#   巡检编排（筛选→上传→远程解析→回填→归档）
-│   ├── checks_store.py     #   巡检结果存取（data/checks/）与前端行映射
-│   ├── dependencies.py     #   运行时依赖检查（后台执行 + 提示安装）
-│   └── defaults/           #   服务器/设置/任务类型默认配置
-├── data/                   # ★ 运行时数据（默认空库，不再写入演示项目；已 gitignore）
-│   ├── projects.json       #   项目数据库（存在 project_db.json 时优先读真实系统库）
-│   ├── config/             #   servers.json / settings.json / task_registry.json
-│   ├── projects/           #   每个项目的本地目录结构
-│   ├── backups/            #   数据库自动备份（保留 20 份）
-│   └── checks/             #   巡检结果 check_results_*.json + runs.json
-├── scripts/
-│   └── make_mock_fixtures.py # 生成本地模拟远程目录夹具（离线测试巡检用）
-└── src/
-    ├── main.tsx            # 入口（ConfigProvider + Router + 动画容器）
-    ├── App.tsx             # 路由 + AnimatePresence 页面切换动画
-    ├── styles/global.css   # 全局设计令牌与样式（颜色/字体/间距/响应式）
-    ├── theme/index.ts      # Ant Design 5 主题令牌
-    ├── types/index.ts      # 类型定义（与后端字段对齐）+ 文案映射
-    ├── utils/format.ts
-    ├── hooks/              # useClock（顶栏时钟）
-    ├── context/SSHContext.tsx  # SSH 全局状态（连接/测试/配置，供顶栏实时联动）
-    ├── api/                # ★ 数据访问层：项目/巡检/作业/报告/SSH 全部走真实后端
-    │   ├── client.ts       #   统一延迟/请求封装位置
-    │   ├── projects.ts
-    │   ├── inspections.ts
-    │   ├── reports.ts
-    │   └── ssh.ts          #   SSH 服务器配置 + 真实握手测试（POST /api/ssh/test）
-    ├── data/mock/          # ★ 编辑器默认参数 + VASP 输入文件模板（无业务 Mock 数据）
-    ├── components/
-    │   ├── layout/         # 侧边栏、顶栏、整体布局、Logo
-    │   ├── common/         # 统计卡片、状态标签、进度条、页面头等
-    │   └── dashboard/      # 总览：运行任务/核数圆环/集群健康/风险预警/趋势/项目四象限（useEcharts）
-    └── pages/              # 模块页面
-        ├── Dashboard.tsx   # 总览
-        ├── Inspection.tsx  # 巡检中心
-        ├── Jobs.tsx        # 作业管理
-        ├── Report.tsx      # 智能报告
-        └── SSH.tsx         # SSH 连接配置
+backend/          API、SSH、巡检、自动化、性质计算与报告
+src/              页面、现有交互组件与报告运行时
+scripts/          转换、分析、构建与账号工具
+tests/           隔离测试、Mock证据与必要浏览器用例
+docs/             专题说明、变更摘要和功能模板
+data/             运行时数据（不进Git；knowledge例外）
 ```
 
-## 模块说明
+本地/远端具体任务路径以 `backend/task_paths.py`、`backend/paths.py` 和当前数据为准；AI 工作区地图见 [工作台](docs/ai-workspace.md)，不要从模型名称猜科学关系。
 
-### 总览 Dashboard
+## 文档导航
 
-v0.6.0 按「状态 → 资源 → 趋势 → 明细」四层重构，数据全部来自真实后端 `/api/dashboard/*`：
+| 文档 | 用途 |
+| --- | --- |
+| [开发准则](AGENTS.md) | 用户偏好、最小开发/验证、发布与文档维护规则 |
+| [交接与运维](process.md) | 当前能力、未完成项、服务、数据、发布和排查 |
+| [API](API.md) | HTTP 合同和工具边界；在线 OpenAPI 以当前代码为准 |
+| [依赖](DEPENDENCIES.md) | 核心/可选依赖及远端科学工具、VESTA/Xvfb经验 |
+| [AI工作台](docs/ai-workspace.md) | 会话、模型深度、文件/巡检/参数证据 |
+| [科研报告](docs/reports.md) | 简明报告、R1/R2/R4、冻结证据和导出 |
+| [科学分析规范](ANALYSIS_FEATURES.md) | 配方/公式、初步与正式验证、输入发现和接入模板 |
+| [受控执行](docs/execution.md) | 自动化、预算、幂等、对账与单OPT边界 |
+| [项目托管](docs/managed-compute.md) | M0已实现内容、执行缺口及后续构建提示词 |
+| [主要变更](docs/changelog.md) | 重要发布结果；完整历史使用Git |
 
-- **顶部状态栏**：项目总数 / 异常警告项（点卡片跳巡检中心）/ 今日完成（含较昨日）/ 运行中任务（点卡片展开下方列表）
-- **快捷操作**：新建项目、触发全局巡检、刷新集群状态（强制重新 SSH 查询，带 loading 反馈）
-- **运行中任务**（核心新增）：`bjobs` 实时作业表——任务名 / 所属项目 / 队列 / 核数（悬停看节点分布）/ 作业号 / 状态，点行跳转 `/jobs?task=`
-  ；表格**固定高度 320px 内部滚动**（作业变多不会把模块撑高）
-- **核数占用**：ECharts 圆环，中心 `已用 / 总核数`（如 `144 / 200`）+ 剩余核数，外圈按项目着色，
-  使用率 ≥90% 橙色、≥100% 红色闪烁；上限取 `blimits` 配额（`settings.json: dashboard_total_cores` 可手动覆盖），
-  取不到时退回 bjobs 汇总
-- **计算资源趋势（近 7 天）**：核数占用（面积线，左轴）+ 运行中任务（线，右轴）+ 每日提交作业数（柱）
-- **集群健康与资源**：节点状态灯（正常 / 满载 / 关闭 / 宕机）、队列拥堵（PEND/RUN + 占比条）、
-  项目根所在文件系统容量（剩余 <15% 变红告警）
-- **任务健康与风险预警**：未收敛需续算、Zombie 需重新提交、巡检发现异常，点条目跳作业管理 / 巡检中心
-- **项目进度**：四象限气泡图（横轴时间进度、纵轴完成度、气泡大小=任务数、对角线为预期进度）+ 进度列表（逾期/落后提示）
-  已关闭项目收进「已关闭项目（N）」折叠区（灰显，可重新打开）；项目下可见任务全部归档后可在此「关闭项目」
-- **最近更新的任务**：按项目轮转取样，点行跳转作业管理
-
-刷新策略：打开页面加载一次 → 每 30 分钟自动刷新；集群查询在服务端缓存 5 分钟（`settings.json: dashboard_cache_seconds`）。
-集群命令可在 `servers.json` 覆盖（`node_status_cmd` / `queue_status_cmd` / `user_used_cores_cmd` /
-`user_total_cores_cmd` / `storage_check_cmd`，`{storage_path}` 会替换为项目远程根）。
-
-### 巡检中心 Inspection
-- 状态筛选胶囊（全部/正常/警告/错误，带计数）
-- 关键词搜索 + 类别筛选（收敛性/资源/文件/SSH/队列）+ **分析范围筛选**（全部 / 需结构分析）
-- 「立即巡检」按钮：真实调用后端（筛选任务 → 上传 batch_check → 服务器批量解析 → 状态机回填 → 归档）
-- **按项目分块展示**（v0.6.2）：每个项目一个分组表头（错误/警告/未检/状态变化计数），
-  组内保持自由能/NEB 组顺序；**已关闭项目排最后、默认折叠、灰显**，点击表头展开
-- **排序规则**（v0.6.6）：按状态优先级排（错误 > 警告 > 未检 > 正常 > 关闭）；
-  自由能 / NEB 同一组作为一个整体、用组内最高优先级状态参与排序（组员始终相邻）；
-  归档任务沉到其他任务下面；同状态内仍是「类别 → 组名 → 组内结构顺序 → 任务名」
-- **详情弹窗可直接关闭（归档）任务**（v0.6.3）：footer 提供「关闭（归档）」/「重新打开」，
-  未正常结束时弹窗提醒当前状态；自由能主结构归档会**连带归档频率矫正**，频率矫正未完成时额外 ⚠️ 警告（v0.6.4）
-- **自动巡检**（v0.6.2）：后端后台线程每 60 秒判定，距上次巡检超过间隔（默认 2 小时）自动执行全局巡检；
-  顶部开关可随时启停（写 `settings.json`），旁边显示调度器实时状态（进行中 / 上次 / 下次 / 失败原因）
-- **已关闭（归档）任务**（v0.6.5）：状态列显示「关闭」、信息列「任务已关闭（归档）」，
-  不计入「未检」计数；「单独巡检」按钮置灰（归档任务需先在作业管理里重新打开才能巡检）
-- **INCAR 精度检查**（v0.8.0）：巡检在已读的最新输出目录里顺手读 `INCAR`/`KPOINTS`/`POSCAR`
-  （不增加额外 SSH 开销）——**结构优化的力收敛阈值改由 INCAR 的 `EDIFFG` 决定**；
-  另按三项要求判精度：k 网格密度系数（k × 晶格常数）**> 20**、力收敛精度 `EDIFFG ≤ -0.02`、
-  电子步收敛 `EDIFF ≤ 1E-5`（要求可在 `backend/check_registry.json` 的 `precision` 段调整）。
-  任一项不满足 → 显示 **「低精度收敛」**（归档状态 `low_precision`，任务库状态仍记 completed，
-  进度口径不变；报告「异常与关注项」会列为 medium 关注项）
-- **巡检提速**（v0.8.0）：`bjobs` 从「每任务 2-3 次子进程」降到「每轮 2-3 次」（全量 cwd 表 +
-  批量明细 + 缓存）；OUTCAR 不再整文件读入（尾部 8KB 判结束 + 分块计数带阈值提前退出，
-  NEB 每映像合并成一次扫描）。实测 45 任务场景 24.8s → 1.3s，判定结果逐字段一致
-- 结果表格 + **详情抽屉**：能量 / 最大力随离子步曲线（带收敛阈值基准线）、
-  结构分析（**3Dmol 交互结构视图**（并排/叠加/球棍/空间填充/视角/选中联动）、
-  力收敛历史表）、收敛判定徽标与分析范围标记；结构 CIF 由 `scripts/vasp2cif.py`
-  在巡检触发时生成（每 25 离子步一桶 + 目录变化重置）；
-  结构分析按 **ISIF** 智能切换：ISIF=2（默认，晶格固定）显示 POSCAR→CONTCAR
-  **原子位移分析**（最大 / RMS / 平均位移），ISIF 为其他值时显示晶格参数与体积对比
-- **NEB 能垒看板**（v0.6.8 重做）：顶部统计卡（映像数 / 能垒 Ea / 最大受力 / 末态相对能）+
-  能垒曲线（相对能垒直线连接不插值、鞍点红色标注、渐变面积、悬停按映像出信息卡）+
-  映像明细列表（初态/中间态/鞍点/末态徽标）；曲线从左绘制、数据点依次弹出、列表错峰入场
-- **NEB 映像结构分析**（v0.6.9）：IS → 中间态 → FS **横向 3D 对比**（只展示优化后结构，
-  优先 CONTCAR），拖动/滚轮联动所有面板视角，支持球棍/空间填充、自动旋转、缩放、重置与元素图例，
-  鞍点映像高亮；结构由巡检按与结构优化相同的「25 离子步一桶」规则自动从远端抓取并转 CIF
-- 结果持久化：每次巡检归档到 `data/checks/check_results_*.json`，**重新打开网站无需重新巡检即显示上次结果**
-- **自由能路径看板**（v0.6.7 重做）：点巡检列表里自由能组的组名打开——顶部统计卡（中间体数 / 矫正完成度 /
-  收敛情况 / 最高相对能）+ **相对能台阶图**（渐变台阶与面积、未收敛/未矫正琥珀色标记、缺数据灰色虚线、
-  悬停浮起与信息卡、点击台阶或明细行直达该结构巡检详情）+ 中间体明细列表（DFT / 矫正项 / 自由能 / 相对 ΔE / 状态徽标）；
-  入场有台阶依次滑入、连接线淡入、列表错峰上浮动画（`prefers-reduced-motion` 下自动关闭）
-
-### 作业管理 Jobs
-- 左侧项目列表（进度、子任务数、剩余时间），右侧子任务表格
-- **关闭（归档）/ 重新打开**：任务快捷操作区可关闭任务（未正常结束时弹窗提醒；关闭只改状态、不动文件），
-  已归档任务可「重新打开」恢复到归档前状态；**自由能结构优化主任务与频率矫正成对归档/恢复**（v0.6.4）
-- **已关闭项目排到最后**（v0.6.2）：灰色显示且不提供新建入口；项目下可见任务全部归档后，
-  可在总览「项目进度」里关闭项目
-  已关闭项目**默认折叠**（子树不展开，可手动展开）
-- 每项展示本地路径 / 远程路径 / 作业号 / 最近能量 / 状态
-- 右侧标签页：概览 / POSCAR / INCAR / KPOINTS / 提交脚本（真实读写本地 `files/`；POTCAR 仍占位）
-- **输入文件参数自动同步（v0.8.2）**：提交作业后后台自动从远端最新 conN 取回
-  INCAR / KPOINTS / POSCAR / CONTCAR（1 次 exec + 4 次小文件下载），也可手动「同步最新参数」；
-  页面顶部显示来源（conN · 作业号 · 同步时间）
-- **改参数不碰远端（v0.8.2）**：编辑器默认只读，点「修改参数」解锁 → 「确认修改」才记为**待生效修改**
-  （高亮 + 原值提示 + 可逐项撤销），**只在下次续算时写入新 conN**（不写注释）；POSCAR 永不覆盖（续算 POSCAR 来自 CONTCAR）。
-  **只有真的改了参数才会写文件**：上传远端前先与本次计算的快照比对，一致就跳过
-- **POSCAR 页（v0.8.2 重构 / v0.8.3 增强）**：460px 3Dmol 大窗口，可切换**输入结构（POSCAR）/
-  最新结果（CONTCAR）**且**切换保持同一视角**；**单击选中原子**、**Ctrl/⌘ 多选**、**Shift 拖拽框选**
-  （Ctrl/⌘+Shift 并入），选中标签按 POSCAR 序号自动合并区间（`Al1-3 Al6-7`，序号与 POSCAR 坐标行一致、从 1 开始）；
-  另有结构数据（元素组成/原子数/晶格）+ 球棍/空间填充、原子缩放、自动旋转、a/b/c 视角、重置视角。
-  POSCAR **不参与远端修改**（后续只有"固定原子"会写它，功能搁置）
-- **KPOINTS 页（v0.8.2）**：直接改 k1/k2/k3（同样只读闸门 + 确认 + 待生效高亮），
-  并显示网格密度系数 k×a（巡检精度检查要求 > 20）
-- **概览的「文件结构」= 同步状态（v0.8.3；状态口径 v0.9.50 统一）**：**最新**（绿，远端最新目录有 + 本地有）/
-  **待同步**（灰，远端有、本地还没有 → 点「同步最新参数」拉回）/ **过时**（琥珀，本地有、远端最新目录没有）/
-  **未生成**（灰，远端和本地都还没有）/ **有修改待提交**（橙）；每个状态鼠标悬停都有"下一步做什么"。
-  POTCAR / vasp.lsf 只显示 **已生成 / 未生成**（不走同步覆盖），标注"不参与同步"；不再显示 WAVECAR。
-  **同一个"没有这份文件"以前有两套长相**（同步文件叫「未同步」且图标继承深色、POTCAR/vasp.lsf 叫「未生成」且灰），
-  现已统一成上面这套（图标颜色跟状态走）。
-- **参数识别（v0.8.3）**：布尔支持 `.T./.F.` 等等价写法（`LWAVE = .T.` 会正确勾选、且不会误判为已修改）；
-  含空格的参数值（`DIPOL = 0.5 0.5 0.18`、`MAGMOM = 5*2.0`）完整保留
-- INCAR 编辑器：分类表单 + **其他参数**（不在预设表单里的参数，来自本次计算的 INCAR）+ 低/中/高精度 + 上传远端
-- 「续算」确认操作（占位）
-- 续算（opt/NEB，真实创建 conN）、create-frac、创建 NEB 文件、ele 输入构建
-
-### 智能报告 Report（v0.8.0：排版重构 + 看板与巡检详情同版式）
-- **以单个项目为报告单位**，后端生成三份产物：结构化数据 `report.json`（schema 1.1.0，可直接喂大模型）
-  + Markdown `report.md` + SVG 图表 `charts/*.svg`，按项目分目录存 `data/reports/`，索引 `data/reports/index.json`；
-  **同项目重新生成直接覆盖旧报告**（报告 ID 稳定为 `rpt_<project_id>`，索引里只保留一条）
-- **正文章节 4 章**：基本信息（项目 / 时间 / 状态色标 / **分块项目进度条** + 一句话概览）/ 重点科学结果分析 /
-  异常与关注项（模板生成，最多 6 条）/ 下一步建议（最多 5 条）；
-  其余数据（tasks / resources / risks / llm_context / appendix）保留在结构化数据里供大模型消费
-- **项目进度按任务类型分块**：块宽 = 该类型任务**当量占比**（结构优化/频率矫正 1、NEB 5、电子结构 0.4），
-  块内显示该类型自身完成比例；上方另有一条**当量加权主进度**（大数字 + 进度条）
-- **重点科学结果分析**（看板版式与巡检详情页一致）：
-  结构优化只统计**独立** opt 任务，每个任务出**一张横向面板图**（左侧 a/b/c 三视图 + 右侧能量与最大力双纵轴曲线，同一基线对齐）；
-  自由能按路径出**自由能路径看板**（统计卡 + 相对能台阶图 + 中间体表：DFT 能量 / 矫正项 / 自由能 / 相对 ΔE / 状态）；
-  NEB 按组出**能垒看板**（统计卡 + 能垒曲线 + 映像明细表 + 映像结构对比矩阵）；电子结构为占位说明
-- **风险规则外置**（`data/config/report_rules.json`，默认模板在 `backend/defaults/`）：声明式条件 + 严重程度 + 建议模板，
-  当前 13 条规则（未收敛、异常中断、续算过多、输出缺失、频率矫正缺失、电子结构未分析、逾期、进度落后、存储不足、核数超限、队列拥堵、依赖未完成）
-- 图表为纯 Python 生成的 SVG（零第三方依赖，本机无 matplotlib 且不引入），数据同时以数组提供
-- **每天自动生成**：复用巡检调度线程（`auto_report_enabled` + `report_interval_hours`，默认 24h），
-  可在巡检中心开关与调整间隔
-- **工作量与工期按当量折算**：1 当量 = 1728 核时（24 核 × 24h × 3 天），有效算力 = 200 核 × 24h × 70%
-  （`settings.json` 的 `core_hours_per_weight` / `cluster_max_cores` / `cluster_utilization`），
-  主进度 = 完成当量 / 总当量，**预计完成 = 今天 + 剩余核时 ÷ 有效算力**
-- 前端：按项目生成 / 一键生成所有项目、项目报告列表（每项目一份）、章节导航、
-  **正文只渲染图片（报告所见即所得，不再有交互式 3D 与结构化数据视图）**、
-  **导出按钮在「报告内容」标题行**，点击后才展开章节勾选（如取消风险分析），
-  可导出 HTML（自包含、图表内联）与 PDF（浏览器打印，按勾选章节）
-- **结构三视图进报告（2026-10-07）**：opt/ele 已收敛或已归档、NEB 已完成/已归档的任务
-  由巡检与归档同步**自动触发** VESTA 渲染 a/b/c 三视图到 `<任务目录>/images/`
-  （NEB 为 `images/<映像号>/`），报告把它们 **base64 内联**进单文件 HTML；
-  点自由能表格的「结构 N」、NEB 表格的「映像 N」会弹出 `<dialog>` 三视图
-  （手机全屏、ESC/遮罩关闭）；未收敛的 opt 任务不展开。
-  单文件 HTML 同时落盘在 `data/reports/<项目>/report_<日期>.html`，断网也能打开。
-  报告页与导出的单文件 HTML 里，**每张结构图/图表都可点开看原图**（放大缩小：桌面滚轮/双击、
-  手机双指捏合，拖拽平移，ESC/遮罩关闭，小屏全屏）。
-- **项目管理（2026-10-12）**：总览页「项目管理」面板列出/编辑项目基础信息（名称只读、交付日期、描述）
-  与两个报告辅助字段「计算内容描述 / 预期结果」（会写进报告的「基本信息」章节）；
-  编辑用原生 `<dialog>`，手机全屏
-- **报告注记与编辑（2026-10-13 定稿）**：「结果分析与论文参考」**只在「重点科学结果分析」章节内**，
-  分四种落点 —— 每个类型一条总的（结构优化 / 自由能路径 / NEB / 电子结构）、结构优化每个子项一条、NEB 每个组一条、
-  自由能路径每个组一条；空着显示「＋ 添加分析」按钮，填了直接看内容并可「编辑」「删除」
-  （原生 `<dialog>` 编辑、支持 **加粗** 与 - 列表），落 `data/reports/notes/`，导出 HTML 同步带上；
-- **差分电荷分块计算（2026-10-13，电子结构第一个落地的后处理）**：作业管理电子结构任务页点
-  「差分电荷计算」→ 复用 POSCAR 页的点选/Ctrl 多选/Shift 框选把原子划成若干分块（默认两块，
-  可加到 C/D；分块按颜色预览，"选中其余原子"可一次把剩下的归入下一块）→ 各分块在
-  `ele/<任务>/1|2|…` 下独立提交（POSCAR 只保留本块原子，KPOINTS/vasp.lsf 复制主任务，
-  INCAR 校验 `LCHARG=.TRUE.`/`IBRION=-1`/`ISTART=0`/`ICHARG=2` 且**除 LCHARG 外不带其它输出参数**
-  （INCAR 页对分块也不显示/不写回这些字段），POTCAR 由远端 `pos2pot` 递归生成）；分块是**附属任务**：
-  巡检列表不单独成行（ele 详情里用一张表看状态）、不计当量、归档/重开跟随主任务；
-  报告「电子结构」章节同步出这张表与差分结果；
-- **差分电荷计算与三视图（2026-10-14，v0.9.46）**：入口在**巡检详情 →「电子结构分析 → 差分电荷」标签**
-  （不再挂在归档上）。第一次点击依次：① 远端校验文件完整性（完整结构 + 各分块 `CHGCAR`，
-  **大小差别 < 1%**，不通过带具体原因拒绝）② 在**远端主目录**用 VTST `chgsum.pl` + `chgdiff.pl`
-  算差分 ③ 只回传 `diffcharge_files/chgfiles/CHGCAR_diff.vasp`（不再把各分块/完整 CHGCAR 都拉到本地，
-  本机无需装 VTST，脚本路径可用 `servers.json: vtst_dir` 覆盖）④ 导入 VESTA 导出 a/b/c 三轴图
-  直接显示在详情页（`vesta_render.render_volume_axes`：与结构图同一套视角定义，但**直接打开体积文件**
-  再 `-rotate_*` 转到目标朝向 —— 不经模板，否则 VESTA 的 `IMPORT_DENSITY` 重导入会让等值面
-  只剩最强的那层，和手动打开该文件看到的不一样）。
-  之后每次加载按阶梯 **本地图 → 本地差分文件 → 远端差分文件 → 远端可算**；中断（关页面 / 断网 /
-  重启服务）后再点一次只补缺的那步。链路全异步 + 阶段上报（校验 / 计算 / 回传进度 / 出图），
-  全局同时只跑一条，VESTA 渲染与结构图渲染用 `data/locks/vesta_render.lock` **跨进程串行**，
-  避免百 MB 体积数据 + VESTA 把生产机拖卡；长任务与大文件走**专用连接**（v0.9.47：
-  `download_file` 超过 32MB、`run_remote(dedicated=True)` 的长命令都不占常驻连接池的串行锁，
-  期间巡检 / bjobs / 提交照常跑）；报告「电子结构」章节同步给出差分结果与
-  **VESTA 三视图弹窗**（`images/dlg_chgdiff_*`，网页可点开、导出 HTML base64 内联）；
-  报告页可隐藏章节/任务块/结构图（右上角「已隐藏 N 项」可恢复），状态落 `data/reports/edits/`，
-  导出 HTML 时同步排除
-- **已关闭项目的报告折叠**到列表底部（默认折叠、灰显、带「已关闭」标签），与总览 / 巡检中心 / 作业管理一致
-
-### SSH 连接 SSH
-- 服务器列表：连接状态指示、主机/端口/用户名、认证方式、延迟、测试/连接/编辑/删除
-- 新建 / 编辑弹窗：主机、端口、用户名、认证方式（密钥文件 / 密码）、队列系统、
-  **项目远程根目录**（后续新增项目都建在此根目录下）、高级设置（用户主目录）
-- 「测试连接」：真实 SSH 握手（`POST /api/ssh/test`），返回实测延迟并写入最近测试时间
-- 「连接 / 断开」：同一时间仅一个服务器处于连接状态，顶部状态栏实时联动
-- 配置（含项目远程根目录）**实时同步到后端** `data/config/servers.json`；连接/延迟等 UI 状态保存在浏览器
-
-## 后续如何接入真实后端
-
-**已完成：新增项目**
-
-- 后端：`backend/`（Python + FastAPI），`POST /api/projects` 复刻 `add_project.py` 全流程——
-  输入校验 → 服务器/任务类型配置校验 → 工作量/紧急度/优先级象限计算 →
-  本地目录创建（失败回滚）→ 可选远程同步目录 → 原子写库 + 自动备份
-- 数据：`data/projects.json`（真实库已迁移自旧项目）+ `data/projects/` 目录结构 +
-  `data/backups/`（保留 20 份），`data/config/` 存放服务器/设置/任务类型配置
-- 前端：`src/api/projects.ts` 的 `createProject` / `fetchProjects` 已接真实接口；
-  「新增项目」表单含服务器下拉与子任务动态列表（任务类型 + 模型名）
-- **新建项目可直接建组**（v0.8.1）：结构优化 / 电子结构仍是单个任务；**自由能路径 = 组名 + 结构数**
-  （每个结构自动登记「结构优化 + 频率矫正」两个任务，频率矫正作为子项），**NEB = 组名 + 映像数**
-  （自动登记初态/末态优化 + NEB 计算任务）；提交顺序为"先建项目 → 再逐个建组"
-- **INCAR 默认参数**：`IVDW = 11`（DFT-D3(BJ)）；**参数框留空即不写入 INCAR**（如 NCORE 清空后不会生成 `NCORE = `）
-
-**其余模块接入方式**
-
-1. 巡检 / 作业管理 / 智能报告均已接入真实接口（见上），前端无 Mock 数据。
-2. **SSH 状态**：`src/context/SSHContext.tsx` 已把连接状态做成全局状态，顶部状态栏实时联动；
-   接入后端时替换 `src/api/ssh.ts` 中的 `fetchServerConfigs` / `persistServerConfigs` / `testRemoteConnection`
-   为 `GET/PUT /api/ssh/config`、`POST /api/ssh/test` 即可，页面与顶栏无需改动。
-3. **自动巡检**：后端定时任务每 2 小时触发巡检脚本，前端巡检页改为从 `/api/inspections` 拉取。
-4. **报告增强（后续）**：读取报告结构化数据与 `llm_context`，调用大模型 API 生成增强版风险分析与行动建议，
-   并按既定输出结构校验后展示（当前报告的风险与建议由规则引擎 + 模板生成）。
-
-## 新增项目 API 说明
-
-### 接口
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/projects` | 项目列表（含派生字段 progress / remainingHours / local_dir） |
-| POST | `/api/projects` | 新增项目（`{action:"add_project", project:{name,deadline,server,tasks,...}}`） |
-| GET | `/api/servers` | 服务器下拉选项 |
-| GET | `/api/task-types` | 任务类型下拉选项（含 workload_weight） |
-| GET | `/api/deps` | 运行时依赖检查（缺失项 + 安装提示） |
-| GET/PUT | `/api/ssh/config` | SSH 服务器配置读写（含项目远程根目录） |
-| GET | `/api/inspections` | 巡检结果列表（按任务合并最近一次结果） |
-| POST | `/api/inspections/run` | 立即巡检（可选 project_name / task_id 限定范围） |
-| GET | `/api/inspections/meta` | 自动巡检调度信息（间隔 / 上次 / 下次执行） |
-| GET | `/api/inspections/{task_id}` | 单任务巡检详情（力历史 + 结构分析 + 3Dmol 结构视图） |
-| GET | `/docs` | FastAPI 自动生成的 Swagger 接口文档 |
-
-### 校验规则（Pydantic 模型，对齐参考实现 `schemas.py`）
-
-- `name`：`^[A-Za-z0-9][A-Za-z0-9_]*$`；`deadline`：`^\d{4}-\d{2}-\d{2}$` 且必须是合法日期
-- `server` 必须存在于 `data/config/servers.json`；`task_type` 必须注册于 `task_registry.json`
-- `tasks` 至少 1 项，每项含 `task_type`、`model_name`（同 name 规则），状态可选（默认 `pending`）
-- `frequency`（频率计算）与 `free_energy` 绑定：**不能在新项目中直接创建**，前端下拉已隐藏，后端也会拒绝
-- Web 端扩展字段：`description`、`estimated_hours`（原 Schema `additionalProperties=false` 之外显式放行）
-
-### 优先级计算（与参考实现 `priority.py` 一致）
-
-- 工作量 = 任务权重之和，取自 `data/config/task_registry.json` 的 `workload_weight`：
-  `opt=1` / `frac=1` / `neb=5` / `ele=0.4`（自由能由 opt + frac 组合而成，不再单独计权）
-- 工作量 ≥ 20 为 `large`，否则 `small`；剩余天数 < 15 为 `urgent`，否则 `not_urgent`
-- 优先级象限 = `<urgency>_<workload>`（如 `urgent_large`）
-
-### 远程同步目录
-
-`data/config/settings.json` 中 `sync_remote_dirs: true` 时，创建项目会用 Paramiko（密钥认证）
-在服务器上 `mkdir -p` 每个任务目录，失败则回滚本地目录并报错。
-**默认关闭**（避免未配置密钥时误连真实集群）；确认 SSH 可用后手动开启，或用环境变量
-`VASP_SYNC_REMOTE_DIRS=1` 临时覆盖。
-
-## 巡检系统（已实现，对齐参考实现 check_remote.py）
-
-### 流程
-
-1. 筛选待巡检任务（跳过 `pending` / `archived`），按服务器分组；
-2. 自动上传 `backend/batch_check.py` 与 `check_registry.json` 到服务器 `batch_check_path`；
-3. 服务器端运行 batch_check：`bjobs -l` 判定队列状态，解析 OUTCAR 能量 / 成功或错误标记 /
-   结构优化 TOTAL-FORCE 力收敛历史（阈值 0.02 / 0.01 eV/A）；
-4. 下载结果 → 按**状态机**回填数据库（非法流转保持原状态并记录警告）；
-5. `structure_opt` 到达终态时同步 POSCAR/CONTCAR 到本地 `files/` 并校验非空；
-6. 富化（prev_status / observed_changed / analysis_needed）归档到 `data/checks/check_results_*.json`，
-   轮次摘要记录到 `runs.json`。
-
-**结构分析范围（analysis_needed，v0.5.0 起）**：仅结构优化任务；按离子步每 25 步一桶
-（0-24→桶 0、25-49→桶 1…），同一输出目录需桶号比上次更大才触发，输出目录变化则重置计数。
-触发时下载 POSCAR/CONTCAR 并生成 CIF（`scripts/vasp2cif.py`）供前端 3Dmol 结构视图渲染，
-避免对未变化的任务重复下载。
-
-**结果保留策略**：同一子项只保留一条最新结果（按 task_id 合并，不删除历史行）；
-新一次巡检更新状态 / 能量 / 检查时间，但若本次未下载检查（无新标记 / 力历史），
-自动沿用上一次的检查标记、力历史与力统计，避免内容被覆盖丢失。
-
-### 接口
-
-- `POST /api/inspections/run`：立即巡检，请求体 `{"project_name": "Ag_20260830"}` 可限定范围
-- `GET /api/inspections`：巡检结果列表（按任务合并最近一次结果）
-- `GET /api/inspections/meta`：自动巡检间隔（默认 2 小时）、上次 / 下次执行时间
-
-### 总览接口（v0.6.0）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/dashboard/overview` | 整页聚合：统计 / 运行作业 / 核数 / 集群 / 风险 / 项目进度 / 趋势 / 最近任务 |
-| GET | `/api/dashboard/cores-usage` | 核数占用（blimits 配额 + 按项目分组） |
-| GET | `/api/dashboard/cluster-health` | 节点状态 / 队列拥堵 / 存储容量 |
-| GET | `/api/dashboard/risk-alerts` | 需干预任务（未收敛 / Zombie / 巡检异常）+ 上次巡检时间 |
-| GET | `/api/dashboard/trend` | 近 N 天核数占用 / 运行任务 / 提交作业数 |
-
-### 巡检与项目接口（v0.6.2）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| PUT | `/api/inspections/auto` | 开启/关闭自动巡检、调整间隔（写入 `settings.json`） |
-| GET | `/api/inspections/meta` | 调度状态：开关、间隔、上次/下次执行、是否正在跑、上次错误 |
-| POST | `/api/jobs/tasks/{id}/archive` | 关闭（归档）任务，只改状态 |
-| POST | `/api/jobs/tasks/{id}/unarchive` | 重新打开，恢复归档前状态 |
-| POST | `/api/projects/{id}/close` | 关闭项目（要求可见任务全部归档） |
-| POST | `/api/projects/{id}/reopen` | 重新打开项目 |
-
-以上接口都支持 `?refresh=1` 强制重新执行集群查询（默认命中服务端 5 分钟缓存）。
-`data/dashboard/core_history.json` 记录每次查询的核数/任务快照，趋势图的核数曲线自 v0.6.0 起累积。
-
-### 本地模拟模式（离线测试）
-
-```powershell
-$env:VASP_SSH_MOCK = '1'            # 启用模拟 SSH
-$env:VASP_MOCK_REMOTE_ROOT = 'D:\Skill\vasp-project-manager-web\data\mock_remote'
-$env:VASP_BATCH_NO_BJOBS = '1'      # 跳过 bjobs
-$env:VASP_BATCH_LOCAL_ROOT = $env:VASP_MOCK_REMOTE_ROOT
-python scripts/make_mock_fixtures.py   # 生成模拟远程目录夹具
-python backend/run.py
-```
-
-模拟模式下远程路径原样映射到 `VASP_MOCK_REMOTE_ROOT`，`python3 batch_check ...` 改为本地 Python 执行，
-可在不连接真实集群的情况下完整验证巡检流程。
-
-### 真实运行
-
-确认 SSH 密钥可用后（SSH 连接页已能连接），直接在前端巡检中心点「立即巡检」，
-或 `POST /api/inspections/run`。测试目录示例：`/data/gpfs03/mdye/projects/test/Ag_20260830`
-（对应数据库中 Ag_20260830 项目的 remote_dir）。
-
-## 后续迭代计划（本次未实现）
-
-- ~~后端骨架 + 新增项目~~（已完成）
-- ~~项目查询 / 状态更新 / 巡检集成~~（已完成：项目 CRUD、状态机、巡检编排）
-- 自动巡检调度（APScheduler 每 2 小时触发，前端展示调度状态）
-- 目录同步 / 文件操作 API（作业管理模块）
-- 大模型 API 集成与报告生成
-- SSH 配置页与后端 `data/config/servers.json` 打通（真实握手测试）
-- 用户认证与权限管理（如需要）
+文档以当前行为为中心，不维护多份阶段任务书或相互矛盾的待办。代码和数据变动不因文档描述自动生效。

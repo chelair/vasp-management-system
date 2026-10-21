@@ -1,28 +1,59 @@
-# 接口文档（API.md）
+# 接口文档
 
-2026-10-20：AI报告按用户要求改为“一句话、最小可用数据、直接查看结果”。吸附能有三个能量就给初步计算，质量问题仅警告；不确定时在原对话选择或自定义回答。默认不展示内部校验表。开发只做必要验证、不做无要求备份。见 [简明报告](agent-upgrade/simple-topic-report.md)；本条优先于下文历史严格草案流程。
+维护日期：2026-10-20；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
 
-PMS吸附能空草案排查与修复（2026-10-20）：候选检索支持明确吸附物的 `PMS@model1` 命名；名称仅产生候选。未完成报告明确显示准备/计划阶段，冻结需求报告列出候选和校验缺口；可重新检查已有数据、选择单候选任务及不同计算快照。模型正文中的伪工具指令不执行并标失败。见 [修复记录](agent-upgrade/PMS-topic-report-fix.md)。
+## 默认简明专题报告
 
-## 模型思考深度（本地完成，未部署）
+沿用 `/api/ai/chat` 私有连接、项目会话和SSE。默认工具 `search_report_data` → `create_topic_report`，必要时 `update_topic_report`；模型可以理解别名并自行绑定授权任务/角色，用户无须提供内部ID。create会直接构建并保存独立topic，不强制四轮分步编排。
 
-原私有连接POST/PUT增加 `reasoning_api=auto|openai|deepseek` 与 `reasoning_effort=default|none|minimal|low|medium|high|xhigh|max`。后端按型号/协议验证可选档位，未知接口自动模式只允许默认；明确兼容模式按服务商参数传递。旧thinking_mode/密钥/会话保留，旧客户端省略新字段不覆盖现有值。
+| 方法与路径 | 合同 |
+| --- | --- |
+| POST `/api/reports/topic/quick` | conversation_id、question、request，可选project_ids；创建独立简明报告 |
+| POST `/api/reports/topic/{id}/questions` | expected_revision、answers；选择或自定义回答补齐 |
+| PUT `/api/reports/topic/{id}/content` | expected_revision、title/notes/blocks/deleted_block_ids/show_warnings；不修改科学结果 |
+| POST `/api/reports/topic/{id}/rebuild` | 生成新独立报告，旧报告保留 |
 
-新增人工鉴权 `GET /api/ai/chat/reasoning-capabilities?base_url=...&model=...&reasoning_api=auto`，只读本地能力表，无模型请求。公开连接附 `reasoning_capabilities`/`effective_reasoning_effort`，聊天快照保存所选配置；`verified`仅表示内置型号文档匹配，不是账号实测。DeepSeek思考工具轮内容仅当前运行内存延续，不保存或回传。报告/OPT仍受原输出和时限上限；不兼容的Chat工具组合在请求前拒绝，不自动降低深度或重试。详见 [思考配置合同](agent-upgrade/model-reasoning.md)。
+create请求支持 property_id/model_queries、adsorbate_query、targets、title/notes/show_warnings 等。targets的角色可绑定 task_id/project_id/observation_id，也可用 energy_ev 或 energy_value+energy_unit，并附 label/source_quote/note。用户给定的参考能量不要求对应任务，服务端记录原话/归属，转换单位并由Python计算；AI解释或假设不能冒充验证记录。
 
-## v1.1.4已部署：R4与吸附能增强
+吸附能默认 `adsorption.estimate`（adsorption.minimum.1.1.0），三个有限能量即给初步值，质量问题为提醒。show_warnings只控制预览/HTML/PDF展示，冻结风险和来源保留。所有操作重新鉴权、no-store，修订冲突409；真正缺能量/角色时返回明确问题/操作建议。
 
-沿用下面R4接口。`prepare_topic_report`/`POST /api/reports/topic/prepare` 的request增加：`adsorbate_query`（明确吸附物名称/参考任务ID）、`adsorbate_reference_type`（periodic严格相同k网格，或明确isolated_molecule的Gamma分子参考）、`reference_conditions`（未验证的条件声明）。`model_queries`在此模式是1至4个表面体系；原complex/surface/adsorbate三查询兼容。`/api/properties/evaluate`与原evaluate_property工具支持`adsorbate_reference_type`。
+## 模型思考深度
 
-吸附配方版本adsorption.1.1.0：固定三能量公式、同晶胞表面输入映射、中性/收敛/理论设置验证、独立分子参考取样；共用同一参考观测时给B−A差值并记录消去项。多位点返回`choices[].adsorption_relations`（complex/surface/adsorbate/site、total/truncated），人工 `POST /{id}/resolve`可选targets和adsorbate_reference_type，保留历史。未指定参考/不满足关系不产生对应数值；不同参考不默认抵消。
+连接POST/PUT支持 reasoning_api=auto|openai|deepseek、reasoning_effort=default|none|minimal|low|medium|high|xhigh|max；可选组合由后端型号能力表验证，不是所有模型都支持全部值。未知自动模式不附加猜测参数，旧字段/密钥/连接ID保留。
 
-新增功能统一规范见 [ANALYSIS_FEATURES.md](ANALYSIS_FEATURES.md)，复制 [设计验收模板](docs/templates/analysis-feature.md) 后沿用原R3→R2→AI专题链路；科学范围与完整请求见 [吸附能接入](agent-upgrade/adsorption-analysis.md)。发布结果以PROGRESS §25为准。
+`GET /api/ai/chat/reasoning-capabilities?base_url=...&model=...&reasoning_api=auto` 只读本地定义，不请求模型。公开连接附能力和生效档位，verified仅指内置文档匹配，不是账号实测。DeepSeek工具轮思考只在运行内存延续，不进SSE/历史；不静默降深度或重试付费请求。设置和发送键旁快捷档位已接前端。
 
-## R4 专题报告（随v1.1.4已部署）
+## 项目托管 M0（计划与预览）
 
-复用原 `/api/ai/chat` 会话、连接凭据与SSE。项目会话启用原工作区后增加6个受限工具：`list_topic_projects`、`prepare_topic_report`、`plan_topic_report`、`write_topic_draft`、`save_topic_report`、`get_topic_report`；已有 `get_property_recipes` 提供配方定义。工具只保存专题文档，不新增计算/SSH/输入操作。
+| 方法与路径 | 用途 |
+| --- | --- |
+| GET `/api/managed` | 当前用户计划和execution_enabled摘要；不代表计划执行已接通 |
+| POST `/api/managed/plans` | 保存项目目标/阶段/task_overrides/resource_rules |
+| GET/PATCH `/api/managed/plans/{id}` | 查询/更新，PATCH须revision；冲突409 |
+| POST `/api/managed/plans/{id}/status` | status=active/paused/ended；结束计划仅人工 |
+| GET `/api/managed/plans/{id}/candidates` | 确定性任务排序 |
+| GET `/api/managed/plans/{id}/resource-plan` | 读取共享真实资源，过滤/评分，不提交 |
+| GET `/api/managed/plans/{id}/script-preview?index=0` | 只生成脚本预览，不写远端 |
 
-新增人工登录用户接口 `/api/reports/topic`；每次读/编辑/导出重新检查报告所有者及全部项目权限，Agent不能使用。完整协议与限制见 [R4](agent-upgrade/R4-topic-reports.md)。
+工具 get_managed_plans/create_managed_plan/update_managed_plan/set_task_priority 可在项目AI会话保存业务计划。人工锁定不能被AI覆盖；权限/字段范围以managed_plan/managed_tools为准。计划存data/managed_plan.json，任务/作业真相仍属原项目库和执行台账。**没有从M0计划到巡检后自动提交的执行接线**，详见 [托管说明](docs/managed-compute.md)。
+
+## 科学性质与正式验证
+
+`GET /api/properties/recipes`、`GET /api/properties/discover`、`POST /api/properties/evaluate`、`GET /api/properties/reports/{id}`。固定PropertyRecipe、七类输入状态、逐项目鉴权、精确观测与Python运算；未知性质UNSUPPORTED。严格接口不接受任意公式或替代任务能量；不要用这条限制拒绝简明报告中的用户给定输入。
+
+中性单O空位缺μ_O不能出绝对值；共同参考且其他前提成立时可以出B−A。人工μ_O按每O给数值/来源/条件，聊天严格工具不提供该设置字段。带电缺陷不套中性公式。吸附严格配方adsorption.simple与初步adsorption.estimate并存，参考类型periodic/isolated_molecule各有前提。[科学规范](ANALYSIS_FEATURES.md)
+
+原参数证据：`GET /api/jobs/tasks/{id}/input`附任务族最近5次applied_history，不含草稿。AI按需 get_task_parameter_history/get_remote_task_evidence，后者限定证据token、目录和stale_evidence/source_mismatch/missing_parameters原因，只读、不触发巡检/提交。[工作台证据](docs/ai-workspace.md)
+
+单OPT：`POST /api/agent-execution/opt-runs`创建；`GET /{id}`查询；`POST /{id}/step`推进；`POST /{id}/control`接收pause/resume/close，不停止远端作业。创建要求task_id/grant_id，可选max_steps（默认30）、max_repairs（默认1）、nsw_increment/nsw_max（默认0）、min_force_improvement（默认0.05）、connection_id。模型当前只审阅有限候选，不是完整项目规划执行。[执行边界](docs/execution.md)
+
+完整报告AI注解：项目ai_report_notes_enabled默认false，开关位于智能报告页。`GET /api/reports/project/{id}/notes/ai-status`，`POST .../notes/ai-preview`接收key/connection_id仅返回草稿；原PUT notes可带draft_token/expected_revision及restore_previous。普通generate不等待模型，不接HPC工具。
+
+## 高级分步专题接口（兼容）
+
+复用原 `/api/ai/chat` 会话、连接凭据与SSE。项目会话启用原工作区后保留6个分步工具：`list_topic_projects`、`prepare_topic_report`、`plan_topic_report`、`write_topic_draft`、`save_topic_report`、`get_topic_report`；已有 `get_property_recipes` 提供配方定义。工具只保存专题文档，不新增计算/SSH/输入操作。
+
+新增人工登录用户接口 `/api/reports/topic`；每次读/编辑/导出重新检查报告所有者及全部项目权限，Agent不能使用。完整协议与限制见 [R4](docs/reports.md)。
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
@@ -38,41 +69,10 @@ PMS吸附能空草案排查与修复（2026-10-20）：候选检索支持明确�
 | POST `/{id}/preview` | 空对象；预览已保存的冻结展示版本 |
 | GET `/{id}/export.html?print=false` | 自包含HTML；`print=true`为PDF打印入口 |
 
-`request` 支持R3的5种配方与`dos.comparison`（仅已有DOS/PDOS可视化，不新增派生公式）、1至4个`model_queries`、可选精确`targets`/已有人工氧参考报告ID。未知性质返回UNSUPPORTED缺口报告。模型不得提供mu_O数值、自定义公式、能量替代值或文件路径。多位点/多参考态保留候选；`common_oxygen_reference`在没有人工参考时仅形成待确认条件。
+`request` 支持R3的5种配方与`dos.comparison`（仅已有DOS/PDOS可视化，不新增派生公式）、1至4个`model_queries`、可选精确`targets`/已有人工氧参考报告ID。未知性质返回UNSUPPORTED缺口报告。严格prepare/evaluate接口不接受自定义公式、替代任务能量或任意文件路径；默认简明工具可以接收来源明确的用户给定能量，不适用这里的严格selector限制。多位点/多参考态保留候选；`common_oxygen_reference`在没有人工参考时仅形成待确认条件。
 
-文字中 `[[F01]]` 由Python展开为冻结事实的值/单位/状态；`[F01]` 为引用。拒绝自行填写数字、替代公式、无效事实引用和自定义HTML组件。AI原文与用户文字分离，PUT不能写`data`、Evidence、renderer或科学结果。冲突409附`current_revision`；无效400、不可访问/不存在403或404。所有报告响应禁止缓存。
+高级分步草稿文字中 `[[F01]]` 由Python展开为冻结事实的值/单位/状态；`[F01]` 为引用。拒绝自行填写数字、替代公式、无效事实引用和自定义HTML组件。AI原文与用户文字分离，PUT不能写`data`、Evidence、renderer或科学结果。冲突409附`current_revision`；无效400、不可访问/不存在403或404。所有报告响应禁止缓存。
 
-## R3 科学性质（v1.1.3已部署）
-
-新增 `/api/properties/recipes`、`GET /discover`、`POST /evaluate`、`GET /reports/{report_id}`。五类固定PropertyRecipe、七类输入状态、跨项目逐项权限、同次观测来源/时效检查与Python确定性计算。未知性质UNSUPPORTED；不接受自定义公式或替代能量。氧空位必须验证中性、单O差异/位点及理论设置；缺mu_O不出绝对值，明确共同参考时可计算B−A。人工mu_O必须给每O数值、来源和条件；聊天工具不能设置该数值。
-
-完整请求/状态/科学边界与实例见 [R3合同](agent-upgrade/R3-properties.md)。这些接口只读原始数据并保存独立派生报告，不创建/提交HPC，不自动生成结构。原报告schema和R2组合接口保持兼容；R3接口于v1.1.3部署，当前生产为v1.1.4。
-
-R1 报告 AI 注解（2026-10-19已部署）：原项目新增/更新支持 `ai_report_notes_enabled`（默认 false）；`GET /api/reports/project/{id}/notes/ai-status` 查询开关与目标，`POST .../notes/ai-preview` 接收 `{key, connection_id}`，仅返回草稿。复用发起用户私有工作台连接，不接收密钥、命令或前端自报科研结果。原 `PUT .../notes` 兼容人工编辑，可加 `draft_token` 保存经确认的草稿、`expected_revision` 防覆盖、`restore_previous=true` 恢复一次生成前保存文本。普通 `/generate` 不等待或调用模型。报告 schema 为1.2.0（兼容旧字段/布局），详细边界见 [R1 交接](./agent-upgrade/R1-report-notes.md)。
-
-v1.1.0参数证据补充（2026-10-19已部署）：已有`GET /api/jobs/tasks/{id}/input`增加`applied_history`，每个任务族最多5次实际上传/续算应用/成功提交的参数记录，草稿不计入；task context的input增加历史引用。
-
-AI工作区新增`get_task_parameter_history(task_id, record_id?, offset=0)`及`get_remote_task_evidence(task_id, evidence_token, reason, directories?)`。后者先用get_task_inspections取得token，由后端验证4小时时效、自动巡检参与范围、来源/参数缺口及任务目录边界；固定文件只读并合并LSF查询，不接收命令/任意路径、不触发巡检、不修改状态或文件。reason为stale_evidence/source_mismatch/missing_parameters；directories默认CURRENT，历史对比旧→新最多2个MAIN或已知conN。详情见`agent-upgrade/03-parameter-evidence.md`。
-
-阶段2单OPT闭环（2026-10-19已部署，Mock验收，自主执行关闭）：
-
-| 方法与路径 | 权限与用途 |
-| --- | --- |
-| POST `/api/agent-execution/opt-runs` | 人工owner/admin；创建单OPT有限循环，不立即提交 |
-| GET `/api/agent-execution/opt-runs/{id}` | 当前项目owner/admin及授权Agent只读；诊断/来源/决策/历史/总结 |
-| POST `/api/agent-execution/opt-runs/{id}/step` | 人工owner/admin；推进一次；也由已有巡检事件自动推进 |
-| POST `/api/agent-execution/opt-runs/{id}/control` | 人工owner/admin；`command: pause/resume/close`；不停止远端作业 |
-
-创建字段：task_id、grant_id，及可选max_steps（默认30，1–100）、max_repairs（默认1，0–10且不超授权重试预算）、nsw_increment/nsw_max（默认0/0，禁用自动增加；启用须同时显式配置）、min_force_improvement（默认0.05，0–1之间）、connection_id（启动账号自己的现有加密AI连接，可选）。运行摘要附于GET `/api/agent-execution`的opt_runs。Agent不能创建/控制/推进循环，聊天新增只读get_opt_runs工具。未结束的循环包括暂停状态，禁止通过通用动作接口绕过其科学策略；人工close后才解除循环托管。
-
-walltime及有限NSW策略通过原网关执行；模型只审阅结构化提案。未知状态、不完整数据、SCF失败及越界建议暂停。CONVERGED仅表示初期基础交叉验证通过，numerical_precision仍NOT_TESTED。详细约束、使用示例与147项离线验收见`agent-upgrade/02-opt-loop.md`。
-
-> 面向**自动化 / 智能体接入**的接口清单与调用约定。
-> 基准版本：**v1.1.0** · 维护：本文档由开发助手随版本更新；**与代码不一致时以代码 + 在线 Swagger（`/docs`）为准**。
-> 相关：`process.md`（交接文档）、`TODO.md` §13（智能体闭环）/ §14（账号与鉴权）。
-> 快速文档：`http://<host>:3001/docs`（Swagger UI）、`http://<host>:3001/openapi.json`。
-
----
 
 ## 1. 基础约定
 
@@ -87,9 +87,9 @@ walltime及有限NSW策略通过原网关执行；模型只审阅结构化提案
 | 巡检状态 | `normal / warning / error / low_precision / pending / archived` |
 | 授权 | **v0.9.2 起按项目归属过滤**：普通用户只能看到/操作 `owner` 是自己的项目，越权一律 `403`（不返回 404）；admin 全可见。详见 §2.3 |
 | 认证 | **v0.9.0 起强制登录**：除 `POST /api/auth/login`、`GET /api/health` 外，所有 `/api/**` 与 `/docs`、`/openapi.json` 都要 `Authorization: Bearer <token>`，未登录一律 `401`。详见 §2 |
-| 阻塞 | 全部为**同步** HTTP；长动作耗时见各行动作表（最重 `create-neb-files` ≈ 300s、`create-frac` ≈ 180s） |
-| 幂等 | 目前仅 `submit`（重复提交 409）与 `continuation`（重复 conN 409）自带保护；**其余动作重复调用可能重复建目录/重复提交** |
-| 审计 | `data/audit_submit.log` 文本行（`_audit_log`），**只覆盖部分动作**（submit / continuation / create-frac / create-neb / upload-* / archive 等） |
+| 执行方式 | 部分原业务HTTP同步；统一动作/AI有后台run与查询/SSE，不自动重发超时写操作 |
+| 幂等 | 受控网关与统一动作支持稳定意图键、任务族锁和未对账阻塞；不能假定任意写接口均可安全重试 |
+| 审计 | 原提交文本日志、automation审计及agent_execution持久动作台账；具体路径由对应模块维护 |
 
 ```bash
 # 先登录拿 token（脚本/智能体推荐用长期 token，见 §2）
@@ -108,7 +108,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 
 ## 2. 认证与授权
 
-> **认证已上线（v0.9.0）**；**授权（按项目归属隔离）尚未实现** —— 目前所有登录用户都能看到全部项目（见 TODO §14 第 3/4 步）。
+> 登录认证和按项目归属授权均已实现。普通用户只能访问当前归属项目，admin按原管理权限；私有AI会话/连接另按user_id隔离，管理员不能越过该私有边界。
 
 ### 2.1 认证接口
 
@@ -166,7 +166,7 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 ### 2.4 AI 专用认证（v0.9.42 已生效）
 
 给大模型 / 智能体用的**受限身份**：账号继承可见范围，token 限制能做什么。**人类账号与既有 token 完全不受影响**
-（没有 `scope` 的会话 = 不限；`scope` 只在 token 上生效）。
+（人类会话沿用原权限；Agent缺少scope不能视为无限写权限）。
 
 | 概念 | 位置 | 取值 | 说明 |
 | --- | --- | --- | --- |
@@ -177,9 +177,9 @@ python scripts/set_password.py <用户名> --disable  # 禁用（同时吊销其
 
 | 请求 | 需要 | 说明 |
 | --- | --- | --- |
-| 所有 `GET` / `HEAD` | `read` | 永远允许（能看见才谈得上读） |
+| 所有 `GET` / `HEAD` | `read` | 同时受项目/记录归属及接口权限约束 |
 | `POST /api/pending-actions` | `propose` | AI 只能"提案"，进待确认队列等人工批准（§4.5） |
-| 其它所有写操作 | `write` | 提交 / 续算 / 生成 frac / 归档 / 改草稿 … 直接执行 |
+| 写操作 | `write`及端点白名单 | 不是任意写接口通行证；HPC须走受控网关和授权预算，原人工写端点不能绕过 |
 
 组合规则：`write` 隐含 `propose`（能直接做就能提案）；`scope` 不足 → **403**，
 消息形如 `该 token 的能力范围不含 write（当前：['read']）`。
@@ -534,7 +534,7 @@ body: {
 
 | 分类 | 接口 | 备注 |
 | --- | --- | --- |
-| 作业 | `POST /jobs/tasks/{id}/stop` | 任务族锁内 `bkill`；核对LSF终态后同步提交台账、释放预留并清号；未确认返回 `stop_pending=true`，保留作业号/阻塞；**高风险** |
+| 作业 | `POST /jobs/tasks/{id}/stop` | 任务族锁内bkill，成功返回后同步本地与台账，不额外轮询；落库失败明确报未同步，再提交仍重查LSF活跃作业；**高风险** |
 | 作业 | `POST /jobs/tasks/{id}/archive` · `/unarchive` | 归档/重开（自由能主任务连带 frac） |
 | 作业 | `POST /jobs/tasks/{id}/build-ele-inputs` | ele 输入（`{source_type:"opt"/"external", source_task_id?, ...}`） |
 | 作业 | `POST /jobs/tasks/{id}/create-diff-charge` | **差分电荷分块计算**（ele 附属，v0.9.44）：`{blocks:[{label,atoms}], incar_params?}` → 见 §4.2 ④b |
@@ -562,10 +562,7 @@ body: {
 
 ## 4.4 统一动作与自动化（v0.9.6，仅 admin）
 
-> ⚠️ **已知边界（详见 TODO §15）**：规则目前是全局的、动作以系统身份执行（审计 `username=automation`），
-> 因此**规则命中后不做项目归属校验**，现在靠"只有 admin 能配置规则"兜底。后续开放给普通用户前，
-> 必须给规则加 `owner`，并在**创建期与执行期**都校验项目归属（执行期用规则 owner 复核任务归属，
-> 不通过记 `blocked` 且不执行、不消耗冷却与执行次数）。
+> 旧规则管理仍是admin全局能力，未改造成普通用户可编辑的私有规则系统。已托管任务不能经旧规则绕过授权/预算；不得直接开放此入口替代按项目鉴权的托管计划工具。当前前端统一位于`/automation`两个标签，均只对管理员开放。
 
 所有动作走同一入口（调度器不直接调业务接口），内部复用 `routers.jobs` 的四个核心实现。
 
@@ -839,9 +836,9 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 ---
 
-## 4.8 AI 工作台（本轮实现步骤 1 / 2 / 3）
+## 4.8 AI 工作台
 
-前端 `/ai`，接口统一前缀 `/api/ai/chat`。支持对话、本地上下文及按项目约束的文件工作区；不执行代码、SSH 或计算操作。需人类账号登录；每条连接、会话和运行按 `user_id` 隔离，即使管理员也不能通过这些接口读取其他人的私有记录。项目会话额外检查当前项目可见权限，失去权限后不再返回历史内容。
+前端 `/ai`，接口统一前缀 `/api/ai/chat`。支持对话、本地上下文及按项目约束的文件工作区；不开放任意代码/SSH或计算执行，报告和托管计划按专用工具写入。需人类账号登录；每条连接、会话和运行按 `user_id` 隔离，即使管理员也不能通过这些接口读取其他人的私有记录。项目会话额外检查当前项目可见权限，失去权限后不再返回历史内容。
 
 | 方法 | 路径（省略前缀） | 用途 |
 | --- | --- | --- |
@@ -862,75 +859,35 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 连接创建/编辑字段：`name`、`base_url`、`model`、`api_key`、`max_tokens`（128–32768，默认 2048）、`is_default`。基础地址通常形如 `https://provider.example/v1`，第一版支持 OpenAI 兼容 Chat Completions SSE。常规模型发送 `max_tokens`；gpt-5 / gpt-6 / o 系列发送 `max_completion_tokens`。不自动重试生成以避免重复计费。协议参考 [OpenAI 官方流式指南](https://developers.openai.com/api/docs/guides/streaming-responses) 与 [Chat Completions 参数说明](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。服务商未在流中返回 usage 时显示未返回，不伪造 token 用量。
 
-**保密**：API Key 只写不读，所有响应都不带原值或密文；后端 Fernet 加密密钥，数据库目录 0700、文件 0600。主密钥默认 `~/.config/vasp-manager/ai.key`，可用环境变量 `VASP_AI_KEY_FILE` 指定，独立于 `data/ai/chat.sqlite3`。备份时须安全、分开备份主密钥与数据库，丢失主密钥后需重新配置连接，禁止把主密钥加入 Git。模型接口不跟随 HTTP 跳转；更换基础地址须重新输入密钥。远端 API 要求 HTTPS，本机模型允许 HTTP；从浏览器配置密钥也要求 HTTPS 或本机端口转发。不要向聊天框粘贴凭据。
+**保密**：API Key 只写不读，所有响应都不带原值或密文；后端 Fernet 加密密钥，数据库目录 0700、文件 0600。主密钥默认 `~/.config/vasp-manager/ai.key`，可用环境变量 `VASP_AI_KEY_FILE` 指定，独立于 `data/ai/chat.sqlite3`。主密钥丢失后需重新配置连接；当前任务不要求新增备份，凭据不得加入Git。模型接口不跟随 HTTP 跳转；更换基础地址须重新输入密钥。远端 API 要求 HTTPS，本机模型允许 HTTP；从浏览器配置密钥也要求 HTTPS 或本机端口转发。不要向聊天框粘贴凭据。
 
 **项目级附加上下文（2026-10-18 调整）**：新建会话使用 `{title, project_id, connection_id}`；不传 project_id 则为通用会话。旧 task_id 创建参数仍兼容，但会解析为所属项目。会话绑定项目后不允许编辑为其他项目，避免混用聊天历史；同一项目可创建多个独立会话。旧任务会话启动时补齐 project_id，保留原 task_id、标题、消息、提示词和旧回答快照，不合并历史。权限按当前项目可见范围重新校验。
 
 上下文接口现在返回完整项目概览：项目说明/目标/预期、全部主任务的类型/状态/分组/作业/目录/能量/力/NEB结果摘要、最近巡检与操作记录。附属续算和分块不重复列为主任务，其操作仍可出现在项目日志。聚合只读本地、共用巡检缓存，不逐个任务读取大文件。发送模型时遵循字符预算，任务较多先转为 task_table（columns/rows），保留覆盖数量；确实超预算时由 summary.included_task_count / omitted_task_count 和 budget_note 明确说明。侧栏展示完整本地概览，“本轮依据”展示实际发给模型的版本。
 
-**DeepSeek 官方接口（v1.1.4历史行为，新深度配置见本文顶部）**：模型连接中点击“填入 DeepSeek 官方配置”，基础地址为 `https://api.deepseek.com`，默认 `deepseek-flash`、8192 tokens、直接回答；也可选择 `deepseek-v4-pro` 或手填服务商返回的模型名。连接新增 `thinking_mode=default|enabled|disabled`；仅对 DeepSeek 官方域名的当前型号发送 `thinking.type`，其他兼容接口不附加该参数。官方连接请求包含 `stream_options.include_usage=true`。思考片段不作为最终回答保存或回传；启用工作区时强制直接回答，避免工具多轮依赖未保留的思考链。关闭工作区仍使用原有模式配置。只有思考、没有最终答案时提示提高输出上限或改用直接回答。旧连接自动增加默认模式字段，密文及关联会话保留。参考 [DeepSeek 官方接入说明](https://api-docs.deepseek.com/)、[思考模式](https://api-docs.deepseek.com/guides/thinking_mode) 与 [Chat Completion 参数](https://api-docs.deepseek.com/api/create-chat-completion)。
+**DeepSeek 官方接口**：模型连接中点击“填入 DeepSeek 官方配置”，基础地址为 `https://api.deepseek.com`，默认 `deepseek-flash`、8192 tokens、直接回答；也可选择 `deepseek-v4-pro` 或手填服务商返回的模型名。连接新增 `thinking_mode=default|enabled|disabled`；仅对 DeepSeek 官方域名的当前型号发送 `thinking.type`，其他兼容接口不附加该参数。官方连接请求包含 `stream_options.include_usage=true`。思考片段不作为最终回答保存或回传；工作区沿用显式思考深度；必要思考链仅本轮内存延续，不写历史。只有思考、没有最终答案时提示提高输出上限或改用直接回答。旧连接自动增加默认模式字段，密文及关联会话保留。参考 [DeepSeek 官方接入说明](https://api-docs.deepseek.com/)、[思考模式](https://api-docs.deepseek.com/guides/thinking_mode) 与 [Chat Completion 参数](https://api-docs.deepseek.com/api/create-chat-completion)。
 
 **上下文**：工作台使用上文的项目级聚合，按需读取本地任务元数据、共用巡检缓存与项目操作日志；通用会话不附加任何项目数据。每次发问重建观测快照，任务结果与结构来源目录不一致时明确提示。原有 `/api/ai/tasks/{task_id}/context` 仍保留单任务接口契约，工作台不再以它作为唯一附加单位。
 
 **长度与恢复**：完整历史保留；每轮最多选取 40 条、24000 字符的近期历史，项目快照预算 28000 字符，截断/省略会标明，可在“本轮依据”查看。第一版没有自动语义摘要。单账号最多 3 个并发回答，同一会话只允许 1 个。断开页面不取消后台回答；重新打开可继续订阅。后端重启将未结束运行标为 interrupted，不自动重发付费请求。
 
-**项目文件工作区**：每轮项目上下文仅附 `workspace_rules` 简短规则（项目边界、只读/草稿权限、地图查询入口），不附完整 `directory_map` 或任务 `workspace_path`。模型需定位文件时调用 `read_workspace` 读取 `evidence/directory-map.json`；前端完整地图接口保持不变，地图仍沿用 `task_paths.py` 的布局约定。虚拟根为 `project/`、`reports/`、`evidence/`、`knowledge/`、`reference/`（只读）和 `work/`（会话私有草稿）。模型文件工具为 `list_workspace`、`read_workspace`、`write_workspace`，另有只读巡检工具 `find_project_tasks`、`get_task_inspections`、`get_inspection_evidence`；禁用路径越界、符号链接、敏感文件及覆盖。写入仅新建 work 文件，单文件120000字节、每会话4 MiB/100文件。每轮最多12次工具操作、6轮工具推理及一轮总结，工具结果预算90000字符；后续推理请求累计服务商实际 usage。`tool_events` 保留意图、参数、结果和状态，并随运行/SSE返回；服务重启的未结束工具标为 interrupted。PUT 会话可传 `workspace_enabled`；新建项目会话默认启用，已有会话原地升级默认关闭。通用会话不可启用。不兼容工具协议可关闭，无自动降级重试。凭据和全局状态继续由后端持有；不提供远端、代码执行或正式文件应用。详见 [MODEL_WORKSPACE.md](MODEL_WORKSPACE.md)。
+**项目文件工作区**：每轮项目上下文仅附 `workspace_rules` 简短规则（项目边界、只读/草稿权限、地图查询入口），不附完整 `directory_map` 或任务 `workspace_path`。模型需定位文件时调用 `read_workspace` 读取 `evidence/directory-map.json`；前端完整地图接口保持不变，地图仍沿用 `task_paths.py` 的布局约定。虚拟根为 `project/`、`reports/`、`evidence/`、`knowledge/`、`reference/`（只读）和 `work/`（会话私有草稿）。模型文件工具为 `list_workspace`、`read_workspace`、`write_workspace`，另有只读巡检工具 `find_project_tasks`、`get_task_inspections`、`get_inspection_evidence`；禁用路径越界、符号链接、敏感文件及覆盖。写入仅新建 work 文件，单文件120000字节、每会话4 MiB/100文件。每轮最多12次工具操作、6轮工具推理及一轮总结，工具结果预算90000字符；后续推理请求累计服务商实际 usage。`tool_events` 保留意图、参数、结果和状态，并随运行/SSE返回；服务重启的未结束工具标为 interrupted。PUT 会话可传 `workspace_enabled`；新建项目会话默认启用，已有会话原地升级默认关闭。通用会话不可启用。不兼容工具协议可关闭，无自动降级重试。凭据和全局状态继续由后端持有；不提供远端、代码执行或正式文件应用。详见 [docs/ai-workspace.md](docs/ai-workspace.md)。
 
 
-**模型按需巡检链路**：在启用工作区的项目会话中，由模型按问题定位任务并调用 `get_task_inspections(task_id, limit=3)`，默认最近3个计算目录、最多5个目录各自的最新观测；同目录后续巡检更新覆盖，不保留该目录多次巡检时间序列。需要具体曲线/参数/NEB数值时再调用 `get_inspection_evidence(task_id, observation_id, kind, offset=0)`。查询返回完整JSON，而非页面截图或任意字节截断；原始字段缺失不从最新汇总补填，跨目录/作业/参数阶段不直接计算差值。观测被同目录更新或超过5目录保留范围时明确报错、需重新查询。名称歧义可用 `find_project_tasks(query)`，返回本项目最多20个候选。活跃任务观测缺失、超两倍配置巡检间隔或未来时间异常时提示刷新，历史完成结果不机械按年龄失效；均不发SSH。工具定义属于模型请求协议，不是新增公开HTTP动作路由；工具参数、原始数值证据及状态持久化到运行 `tool_events`，可在本轮依据审阅。工具能力继续由工作区开关控制。
+**模型按需巡检链路**：在启用工作区的项目会话中，由模型按问题定位任务并调用 `get_task_inspections(task_id, limit=3)`，默认最近3个计算目录、最多5个目录各自的最新观测；同目录后续巡检更新覆盖，不保留该目录多次巡检时间序列。需要具体曲线/参数/NEB数值时再调用 `get_inspection_evidence(task_id, observation_id, kind, offset=0)`。查询返回完整JSON，而非页面截图或任意字节截断；原始字段缺失不从最新汇总补填，跨目录/作业/参数阶段不直接计算差值。观测被同目录更新或超过5目录保留范围时明确报错、需重新查询。名称歧义可用 `find_project_tasks(query)`，返回本项目最多20个候选。参与自动巡检的实时决策证据缺失、超过后端4小时阈值或未来时间异常时提示刷新，历史完成结果不机械按年龄失效；均不发SSH。工具定义属于模型请求协议，不是新增公开HTTP动作路由；工具参数、原始数值证据及状态持久化到运行 `tool_events`，可在本轮依据审阅。工具能力继续由工作区开关控制。
 
-## 5. 智能体闭环：巡检 → 判断 → 执行（建议用法）
+## 5. 现有自动化与托管执行边界
 
-目标：**只读为主、动作最少、影响最小**。三个阶段各自的推荐调用：
+固定规则、受控网关和单OPT有限循环已存在，不再把dry-run、幂等键、审计或触发调度列为“未实现”。外部Agent执行通过 `/api/agent-execution/actions`、有效授权/预算与稳定幂等键；不能绕到原人工submit/continuation端点。需审批的动作走pending-actions，已授权动作不逐次要求人工。
 
-> v0.9.42 起，智能体有**专用入口**（`GET /api/ai`，见 §4.6）与**受限身份**（agent 账号 + token scope，见 §2.4）；
-> 拿不准的动作走**待确认队列**（§4.5）而不是直接执行 —— AI 提案、人工批准。
+当前M0可保存计划和预览资源，尚未接通整轮候选仲裁、运行中异常分流和自动执行。单OPT也不是跨任务科研工作流，具体适用/停止条件见 [执行](docs/execution.md) 与 [托管](docs/managed-compute.md)。
 
-```text
-① 巡检（观测）
-   POST /inspections/run                     # 或等自动巡检（默认 2h）
-   GET  /inspections                         # 每个任务一行结论（status/message）
-   GET  /inspections/{task_id}               # 需要细节时：force_history / neb_barrier / precision
-
-② 判断（零副作用）
-   规则化：status 为 unconverged/low_precision/warning → 记录，不动作
-            输入文件齐全且 status=completed 且无活跃作业 → 候选"续算"
-            opt completed 且自由能组里 frac 未生成 → 候选"create-frac"
-            IS/FS 均 completed 且 NEB 无映像文件 → 候选"create-neb-files"
-            连续两轮无变化 → 停止跟进而非反复动作
-
-③ 执行（受控）
-   POST /jobs/tasks/{id}/continuation        # 看返回的 action 字段判断是否真的创建了 conN
-   POST /jobs/tasks/{id}/input/draft         # 改参数优先走草稿（下次续算生效、可撤销）
-   POST /jobs/tasks/{id}/submit              # 需要真正占算力时才提交（最需谨慎）
-```
-
-**低影响原则（建议写进策略）**
-
-1. 默认**只做只读判断**；动作必须来自白名单（建议：`continuation` / `input/draft` / `create-frac` / `inspection` / `report`），`submit` / `stop` / `delete` / `archive` 需人工确认。
-2. 每个任务每轮巡检**最多一个动作**；同一任务两次动作之间设**冷却时间**（建议 ≥ 巡检间隔）。
-3. 动作前先做**前置校验**（现有端点自带：文件齐全、初末态收敛、活跃作业拦截）；失败只记录不改状态。
-4. 所有动作写**动作台账**（建议 `data/agent/actions.jsonl`：时间 / 触发依据（巡检 run_id + 结论）/ 动作 / 参数 / 结果），便于回放与追责。
-5. 幂等：同一 `(task_id, action, 触发证据)` 只执行一次；HTTP 200 不代表成功，必须看业务字段（`action`、`applied`、`failed_batches`）。
-
-**现状缺口（接自动化前需要补）**
-
-| 缺口 | 影响 | 建议 |
-| --- | --- | --- |
-| ~~无鉴权~~ | v0.9.0 已解决 | 智能体用 `POST /api/auth/tokens` 签发的**长期 token**（可命名/设过期/随时吊销） |
-| ~~AI 权限过大~~ | v0.9.42 已解决 | agent 账号 `delegate_to` 收窄可见范围 + token `scope`（read/propose/write）限制动作 + 危险动作走待确认队列（§2.4 / §4.5） |
-| 无 dry-run | 动作直接落盘/占算力 | 增加 `?dry_run=1`（只跑 preflight 返回"将会发生什么"） |
-| 无幂等键 | 重试可能重复建目录/重复提交 | 加 `Idempotency-Key` 请求头 |
-| 长动作同步阻塞 | 300s 占住连接、超时易重试 | 加 `run_id` + 轮询（异步执行） |
-| 审计不全 | 追责/回放困难 | 统一动作台账 + 审计带用户名 |
-| 无调度触发 | 只能由 UI 触发 | 复用 `inspection_scheduler` 的后台线程模式，新增 `agent_scheduler`（默认关闭，显式开启） |
-
----
+动作成功不等于计算收敛；bsub结果未知先对账，人工停止依bkill返回更新本地但不代表科学收敛，再提交仍须通过实时活跃检查。调用方须同时看HTTP、业务状态和记录身份。
 
 ## 6. 维护约定
 
-- 每次版本提交（`process.md` §7 新增条目）时同步更新本文档：新增/变更接口、body 字段、前置条件、耗时与风险级别。
-- 本文档只描述**对外可见的 HTTP 面**；内部函数（`inspection_runner`、`continuation`、`input_state` 等）见 `process.md` §4。
+- 新增或变更接口时更新本文档：新增/变更接口、body 字段、前置条件、耗时与风险级别。
+- 本文档只描述**对外可见的 HTTP 面**；内部函数（`inspection_runner`、`continuation`、`input_state` 等）见相关源码和 `process.md`。
 - 变更接口时优先改代码 → 再更新本文档；发现不一致以代码 + `/docs` 为准并立即回来修正。
 
 
@@ -940,7 +897,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 ## 阶段1：受控自主执行（2026-10-19，已部署，默认关闭）
 
-独立于旧automation开关，新入口默认关闭；没有授权不能执行。完整边界、测试及回滚见 `agent-upgrade/01-gateway.md`。AI工作台尚未注册执行工具。
+独立于旧automation开关，新入口默认关闭；没有授权不能执行。完整边界和必要验证入口见 `docs/execution.md`。AI工作台尚未注册执行工具。
 
 | 方法与路径 | 权限与作用 |
 | --- | --- |
@@ -1047,8 +1004,4 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 - 新前端仅在提交报“原作业无法在LSF确认结束”时显示弹窗；LSF回执必须匹配旧job ID、工作目录和结束时间，才能提供“确认旧作业已结束并解除报错”按钮。用户不必另外输入依据/勾选；一次点击是明确人工确认，服务端保存展示过的依据并重新查LSF。回执不全时保持阻塞，不把查不到当作结束。
 - 确认按任务族+旧job ID+服务器目标+根目录+归属绑定；新job ID/换目标不复用旧确认，新提交仍重新检查LSF。已有actions/{id}/resolve-finished的人工确认也绑定此身份，可真正解除旧作业缺失检查。
 
-2026-10-20台账同步补充（已随v1.1.2部署）：普通人工提交前和巡检异步事件后复用只读LSF对账，不改变巡检回传/频率、不新增轮询。终态与科学收敛独立；旧记录不恢复已停止作业号、不覆盖更新提交；来源变化/目录不符/查询失败保留阻塞。详见agent-upgrade/PROGRESS.md §20。
-
-简明报告接口：原AI工具新增create_topic_report；POST /api/reports/topic/quick（conversation_id、question、request，可选project_ids）；POST /{topic_id}/questions（expected_revision、answers）；PUT /{topic_id}/content（expected_revision、title、notes、blocks、deleted_block_ids）；POST /{topic_id}/rebuild生成新的简明报告。均沿用登录、所有权、no-store和revision。
-
-语义报告输入：create_topic_report新增targets（角色可给task_id，或energy_ev，或energy_value+energy_unit，及label/source_quote）、title/notes/show_warnings；新增search_report_data与update_topic_report。原/content新增show_warnings，控制预览与导出，不改变冻结计算与风险记录。用户给定参考能量无需存在对应任务。
+2026-10-20台账同步补充（已随v1.1.2部署）：普通人工提交前和巡检异步事件后复用只读LSF对账，不改变巡检回传/频率、不新增轮询。终态与科学收敛独立；旧记录不恢复已停止作业号、不覆盖更新提交；来源变化/目录不符/查询失败保留阻塞。详见 [执行说明](docs/execution.md)。

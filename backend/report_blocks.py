@@ -1,6 +1,6 @@
 """R2-A：报告元素候选目录 + Evidence 稳定 ID / 来源与状态适配。
 
-设计合同见 `agent-upgrade/R2-report-blocks.md` §3。这里的四条硬边界：
+设计合同见 `docs/reports.md` 的 ReportBlock / Evidence 合同。这里的四条硬边界：
 
 1. **只读本地数据**：巡检归档（`checks_store.merged_results`）+ 本地镜像文件是否存在。
    不调用完整 `build_report()`（它会取集群快照/SSH）、不连远端、不改任务库与巡检数据。

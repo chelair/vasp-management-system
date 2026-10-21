@@ -1,6 +1,6 @@
 """认证中间件（账号体系第 2 步）：**全局拦截 /api 与文档路由，未登录一律 401**。
 
-规则（与 TODO.md §14 第 2 步一致）：
+规则（接口合同见 API.md 的认证与授权章节）：
 
 - 白名单只有 `POST /api/auth/login` 与 `GET /api/health`；
 - `/docs`、`/openapi.json`、`/redoc` 也要登录（`/docs` 是浏览器页面，取 token 的方式见下）；

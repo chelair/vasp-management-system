@@ -7,10 +7,10 @@
 
 | 层 | 环境 | 依赖 | 何时必需 |
 | --- | --- | --- | --- |
-| 前端 | Node.js ≥ 20.19（生产机 22.22.1 / npm 9.2.0） | React 18 / Vite 7 / AntD 5 / Framer Motion / React Router 7（package.json） | 构建前端 `npm ci && npm run build`（150 包，约 25 s） |
-| 后端核心 | Python ≥ 3.11（生产机 3.14.4，**已实测可用**） | fastapi / uvicorn / paramiko | 启动后端（生产机用仓库内 `.venv/bin/python backend/run.py`）必需 |
+| 前端 | Node.js ≥ 20.19（生产机 22.22.1 / npm 9.2.0） | React 18 / Vite 7 / AntD 5 / Framer Motion / React Router 7（package.json） | 构建前端 `npm ci && npm run build` |
+| 后端核心 | Python ≥ 3.11（生产机 3.14.4，**已实测可用**） | fastapi / uvicorn / paramiko / cryptography | 启动后端（生产机用仓库内 `.venv/bin/python backend/run.py`）必需 |
 | 后端可选 | 同上 | pymatgen / ase / apscheduler / openai | 仅对应功能用到时才装，见 §3 |
-| 系统工具（可选） | Linux 无头服务器 | **Xvfb** + Mesa 软件 GL（`libgl1-mesa-dri`） | **VESTA 结构渲染**（`backend/vesta_render.py`）需要图形环境；该渲染路径当前未被调用，接入后必需，见 §3b |
+| 系统工具（可选） | Linux 无头服务器 | **Xvfb** + Mesa 软件 GL（`libgl1-mesa-dri`） | **VESTA 结构渲染**（`backend/vesta_render.py`）需要图形环境；已用于后台结构图处理，相关功能需要，见 §3b |
 
 安装策略：**只装核心依赖即可运行**；可选依赖由 `backend/dependencies.py` 在启动时
 后台检查缺失并提示，不影响核心功能。国内网络建议加镜像：
@@ -23,14 +23,15 @@
 | fastapi | Web 框架（`/api/*`、Swagger `/docs`） |
 | uvicorn[standard] | ASGI 服务器（端口 3001） |
 | paramiko | SSH 连接池（远程执行 / 上传 / 下载） |
+| cryptography | AI私有连接Fernet加密；核心要求见requirements.txt |
 
-安装（几十 MB，快速；生产机 Linux）：
+安装（生产机 Linux；使用当前虚拟环境）：
 
 ```bash
 cd /home/zouyuxi/projects/vasp-manager
 python3 -m venv .venv
 .venv/bin/pip install -i https://mirrors.huaweicloud.com/repository/pypi/simple/ \
-  "fastapi>=0.115" "uvicorn[standard]>=0.32" "paramiko>=3.4"   # 核心三件套
+  "fastapi>=0.115" "uvicorn[standard]>=0.32" "paramiko>=3.4" "cryptography>=43"
 # 需要可选依赖时：# .venv/bin/pip install -r requirements.txt
 ```
 
@@ -43,8 +44,8 @@ python3 -m venv .venv
 | --- | --- | --- |
 | pymatgen | 未来 POTCAR 拼接等（`scripts/vasp2cif.py` 已改用自包含脚本，不再依赖它） | ⚠️ 最重，拉入完整科学计算栈，见 §4 |
 | ase | **报告结构图渲染（计划中，2026-09-13 决定）**：读 POSCAR/CONTCAR/CIF 搭场景交给 POV-Ray 渲染，替换现在效果差的纯 Python 正交投影三视图（当前尚未接入） | 中等 |
-| apscheduler | 自动巡检定时调度（当前未启用） | 小 |
-| openai | 智能报告大模型接入（当前未实现） | 小 |
+| apscheduler | 历史预留；当前巡检/自动化使用自建线程，无需为定时功能安装 | 小 |
+| openai | 历史预留；当前模型HTTP/SSE使用标准库，AI功能已实现但不依赖此SDK | 小 |
 
 ### 3a. POV-Ray（计划中的外部二进制，非 pip 包）
 
@@ -149,7 +150,7 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
 
 - **不是 Python 包**：VTST 是 VASP 的扩展脚本集，随 VASP 一起编译/放置，无需 pip 安装。
 - **默认路径**：`/data/gpfs03/mdye/VTST/vtstscripts`（`backend/ele_diff.py::VTST_DEFAULT_DIR`）。
-  换机器 / 换路径时在 `data/servers.json` 对应服务器下加 `"vtst_dir": "/path/to/vtstscripts"`
+  换机器 / 换路径时在 `data/config/servers.json` 对应服务器下加 `"vtst_dir": "/path/to/vtstscripts"`
   覆盖（缺省回退到上面的默认路径；`chgsum.pl` / `chgdiff.pl` 需具可执行权限）。
 - **差分电荷口径（2026-10-14 变更）**：不再把各分块和完整结构的 `CHGCAR`（各 200MB+）都拉回本地，
   改为在远端主目录一条命令算完（`chgsum.pl 1/CHGCAR 2/CHGCAR …` → `chgdiff.pl CHGCAR CHGCAR_sum`），
@@ -168,7 +169,7 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
 
 - **不是 Python 包、也不在 PATH 里**：集群上在 `/data/gpfs03/mdye/projects/potcar/bader`
   （`bader -h` 报 1.05 08/19/23；实测是 Fortran 版，默认**不写体积文件**，`AVF.dat` 要显式 `-p` 才写，
-  所以默认只落 `ACF.dat` + `BCF.dat`）。换机器 / 换路径时在 `data/servers.json` 对应服务器下加
+  所以默认只落 `ACF.dat` + `BCF.dat`）。换机器 / 换路径时在 `data/config/servers.json` 对应服务器下加
   `"bader_exe": "/path/to/bader"` 覆盖（缺省回退上面的默认路径）。
 - **`ACF.dat` 格式**：header `# X Y Z CHARGE MIN DIST ATOMIC VOL` + 每原子一行
   （序号 / x / y / z / Bader 电荷 / 最近表面距离 / 原子体积），页脚三行
@@ -203,7 +204,7 @@ LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
   stdout 汇总 `Vacuum-Level (eV)` / `Work Function (eV)`；**没有 DOSCAR 时**它会在写完 `.dat`
   之后报 `The DOSCAR File NOT Exist` 并**跳过汇总**（退出码仍为 0）→ 功函数链路因此**不依赖它的汇总**：
   本地自己从电位平台估真空能级（没有汇总时的兜底），有汇总时以 VASPKIT 值为准并交叉校验。
-- 路径可用 `data/servers.json: vaspkit_exe` 覆盖（默认直接叫 `vaspkit`，依赖远端 PATH）。
+- 路径可用 `data/config/servers.json: vaspkit_exe` 覆盖（默认直接叫 `vaspkit`，依赖远端 PATH）。
 - 功函数链路在**临时目录**里跑（软链 LOCPOT/OUTCAR/DOSCAR/POSCAR/INCAR），**不往任务目录写文件**，
   跑完即删；200MB 级 LOCPOT 的解析在登录节点约 3 s。
 
@@ -250,9 +251,8 @@ ruamel.yaml`（以及 matplotlib/pandas/requests 各自的子依赖）。
 ## 5. 前端依赖
 
 - Node.js ≥ 20.19；`npm install` 安装 package.json 依赖。
-- `npm audit` 保持 0 漏洞（历史记录）。
-- 3Dmol 测试页（`vasp-3dmol-test/`）：纯静态页面，`3Dmol-min.js` 已本地化
-  （512 KB），双击 `index.html` 即可，无需安装任何包；仅要求浏览器支持 WebGL。
+- 安全检查结果仅代表实际运行的时点，不保留“始终零漏洞”的承诺。
+- 3Dmol已本地化，站内和离线报告使用本地资源，浏览器需要WebGL。
 - **ECharts 按需注册组件**（2026-10-13，PDOS 折线用到十字准线）：`src/components/dashboard/useEcharts.ts`
   里 `echarts.use([...])` 新增 `AxisPointerComponent`（`tooltip.axisPointer.type='cross'` 需要它）。
   **没有新增第三方依赖**，只是同一个 `echarts` 包内多注册一个组件；能量范围改用两个
@@ -260,26 +260,22 @@ ruamel.yaml`（以及 matplotlib/pandas/requests 各自的子依赖）。
 
 ## 6. 安装命令汇总
 
-```powershell
-# 前端
-npm install
-
-# 后端核心（运行系统够用）
-python -m pip install -r requirements.txt
-
-# 仅当需要 vasp2cif / 结构转换时再装 pymatgen
-python -m pip install -U pip
-python -m pip install pymatgen
+```bash
+npm ci
+python3 -m venv .venv
+.venv/bin/pip install 'fastapi>=0.115' 'uvicorn[standard]>=0.32' 'paramiko>=3.4' 'cryptography>=43'
 ```
+
+requirements.txt还列有历史/实验性可选包，全部安装不是启动系统的前提。vasp2cif自包含转换无需pymatgen；有确切依赖该包的新功能时再安装。浏览器测试按相关脚本实际需要使用Playwright/浏览器，不作为日常服务依赖。
 
 ## 7. 变更记录
 
 - 2026-10-14：登记 **VTST scripts**（§3c）——差分电荷改为**远端**用 `chgsum.pl` + `chgdiff.pl` 算好只回传
   `CHGCAR_diff`，不再把各分块/完整 CHGCAR 都拉回本地；本机无需安装 VTST，脚本路径可经
-  `data/servers.json: vtst_dir` 覆盖。
+  `data/config/servers.json: vtst_dir` 覆盖。
 - 2026-10-06：登记 **VESTA 结构渲染**的外部依赖（§3b）——Linux 无头服务器需要 **Xvfb + Mesa 软件 GL**
   （生产机已装 xvfb；VESTA 二进制已存在），并记录调用方式、实测耗时与代码侧修的三点（LORIENT 视图中心、
-  进程组收尾、b 视图视线方向）。该渲染路径当前未被调用，属"以后接入时按此方案准备"。
+  进程组收尾、b 视图视线方向）。当前调用见backend/structure_images.py；运行情况以源码和配置为准。
 - 2026-08-31：新增本文件；登记 `scripts/vasp2cif.py` 对 pymatgen 的依赖，
   记录 Windows 旧 pip 安装失败与升级方案、拖带依赖树与体积提示。
   同日改用自包含 vasp2cif 脚本（经典实现 Python 3 移植，零第三方依赖），

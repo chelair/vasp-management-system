@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { App, Button, Card, Descriptions, Empty, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import {
   CheckCircleFilled,
@@ -16,8 +17,9 @@ import {
 } from '@ant-design/icons';
 import type { JobWorkspace, Task, TaskStatus, TaskType } from '../../types';
 import { GROUP_ROLE_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS } from '../../types';
-import { openTaskFolder } from '../../api/jobs';
-import type { TaskInputState } from '../../api/jobs';
+import { fetchTaskFiles, openTaskFolder } from '../../api/jobs';
+import type { TaskFileEntry, TaskInputState } from '../../api/jobs';
+import { INSPECTION_COMPLETED } from '../../api/inspections';
 import StatusTag from '../common/StatusTag';
 import { checkNeedsAttention } from '../../utils/project';
 
@@ -37,11 +39,11 @@ interface Props {
   /** 关闭（归档）任务 / 重新打开已归档任务 */
   onArchive?: (task: Task) => void;
   onUnarchive?: (task: Task) => void;
-  /** 输入文件状态（远端快照 + 待生效草稿），用于「文件结构」的同步状态 */
+  /** 输入文件记录与待生效草稿；不作为远端实时文件清单。 */
   input?: TaskInputState | null;
 }
 
-/** 参与参数同步的文件（POTCAR / submit.sh 不在同步范围，只显示本地就绪状态） */
+/** 「同步最新参数」涉及的文件。文件存在性统一读取本地目录。 */
 const SYNCED_FILES = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR'];
 const FILE_ORDER = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR', 'POTCAR', 'vasp.lsf'];
 /** 状态配色（一处定义，图标/文字/边框都跟它走） */
@@ -70,65 +72,76 @@ export default function TaskOverview({
   input,
 }: Props) {
   const { message } = App.useApp();
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [localFiles, setLocalFiles] = useState<{
+    taskId: string;
+    status: 'loading' | 'ready' | 'error';
+    files: TaskFileEntry[];
+  } | null>(null);
+
+  // 只读本地目录，避免工作区旧标志（尤其 vasp.lsf）和同步缓存造成误判。
+  useEffect(() => {
+    let disposed = false;
+    let generation = 0;
+    const refresh = async () => {
+      const version = ++generation;
+      setLocalFiles({ taskId: task.task_id, status: 'loading', files: [] });
+      try {
+        const files = await fetchTaskFiles(task.task_id);
+        if (!disposed && version === generation) {
+          setLocalFiles({ taskId: task.task_id, status: 'ready', files });
+        }
+      } catch {
+        if (!disposed && version === generation) {
+          setLocalFiles({ taskId: task.task_id, status: 'error', files: [] });
+        }
+      }
+    };
+    void refresh();
+    window.addEventListener(INSPECTION_COMPLETED, refresh);
+    return () => {
+      disposed = true;
+      window.removeEventListener(INSPECTION_COMPLETED, refresh);
+    };
+  }, [task.task_id, workspace.files, input, refreshVersion]);
+
+  const filesStatus = localFiles?.taskId === task.task_id ? localFiles.status : 'loading';
+  const filesByName = new Map(
+    (filesStatus === 'ready' ? localFiles?.files ?? [] : []).map((file) => [file.name, file]),
+  );
 
   /** 待生效（有修改待提交）的文件集合 */
-  const pendingFiles = new Set(
+  const pendingFiles = new Set<string>(
     (input?.changes ?? []).filter((c) => !c.applied_at).map((c) => c.file),
   );
 
-  /**
-   * 单个文件的展示状态（**2026-10-14 统一口径**，用户："这几个的显示逻辑改一下"）。
-   *
-   * 改之前有两种毛病：① 「本地没有」这一种情况在同步文件上叫「未同步」、在 POTCAR/vasp.lsf 上叫
-   * 「未生成」，文案不统一；② 图标颜色只有不同步文件那条分支显式给了灰，同步文件那条继承成深色
-   * ——同样是"没有这份文件"，CONTCAR 是黑 ⊖、POTCAR 是灰 ⊖。
-   *
-   * 现在按 **远端最新目录有没有 × 本地有没有** 判：
-   *   远端有 + 本地有 → 最新（绿）        ｜ 草案未生效 → 有修改待提交（橙）
-   *   远端有 + 本地无 → 待同步（灰）      ｜ 远端无 + 本地有 → 过时（黄）
-   *   远端无 + 本地无 → 未生成（灰）      ｜ 不同步文件：本地有 → 已生成（绿）/ 无 → 未生成（灰）
-   * 每个状态都带 tooltip 说明"下一步该做什么"。
-   */
-  const syncStateOf = (name: string) => {
-    if (pendingFiles.has(name as 'INCAR' | 'KPOINTS')) {
+  if (Object.keys(input?.draft?.INCAR ?? {}).length) pendingFiles.add('INCAR');
+  if (input?.draft?.KPOINTS) pendingFiles.add('KPOINTS');
+
+  const fileStateOf = (name: string) => {
+    if (pendingFiles.has(name)) {
       return {
-        key: 'pending',
-        label: '有修改待提交',
-        icon: <EditOutlined style={{ color: STATE_COLOR.pending }} />,
-        tip: '参数已改、还没生效：下次提交/续算时写入远端（不想改可撤销）',
+        key: 'pending', label: '有修改待提交',
+        tip: '已保存待生效参数；写入远端后，运行中的 VASP 也不会自动重读。',
       };
     }
-    const remoteHas = Boolean(input?.files?.[name]);
-    const localHas = Boolean(workspace.files[name]);
-    if (remoteHas && localHas) {
+    if (filesStatus !== 'ready') {
       return {
-        key: 'fresh',
-        label: '最新',
-        icon: <CheckCircleFilled style={{ color: STATE_COLOR.fresh }} />,
-        tip: '本地与远端最新计算目录一致',
+        key: 'none', label: filesStatus === 'error' ? '状态未知' : '读取中',
+        tip: filesStatus === 'error'
+          ? '本地文件清单读取失败，点击「刷新状态」重试。'
+          : '正在读取本地任务目录。',
       };
     }
-    if (remoteHas) {
-      return {
-        key: 'none',
-        label: '待同步',
-        icon: <MinusCircleFilled style={{ color: STATE_COLOR.muted }} />,
-        tip: '远端最新目录里有这份文件、本地还没有：点「同步最新参数」拉回本地',
-      };
-    }
-    if (localHas) {
-      return {
-        key: 'stale',
-        label: '过时',
-        icon: <MinusCircleFilled style={{ color: STATE_COLOR.stale }} />,
-        tip: '本地有、远端最新计算目录里没有（远端换过计算目录或这份文件已被替换）',
-      };
+    const file = filesByName.get(name);
+    if (file) {
+      return file.size > 0
+        ? { key: 'fresh', label: '本地已有', tip: `本地文件大小：${file.size} 字节。仅确认文件存在，未校验内容或远端是否更新。` }
+        : { key: 'stale', label: '空文件', tip: '本地文件存在，但大小为 0，尚不能作为有效输入或结果。' };
     }
     return {
-      key: 'none',
-      label: '未生成',
-      icon: <MinusCircleFilled style={{ color: STATE_COLOR.muted }} />,
-      tip: '远端和本地都还没有这份文件（还没生成输入文件 / 还没算出来）',
+      key: 'none', label: '本地缺失',
+      tip: '本地目录中没有这份文件；远端是否存在尚未核对。CONTCAR 需计算产生，输入文件可生成或同步。',
     };
   };
 
@@ -334,38 +347,33 @@ export default function TaskOverview({
         title="文件结构"
         className="job-card mt-16"
         extra={
-          <Button type="primary" icon={<FileTextOutlined />} size="small" onClick={onGenerateInputs}>
-            生成输入文件
-          </Button>
+          <Space>
+            <Button size="small" loading={filesStatus === 'loading'} onClick={() => setRefreshVersion((v) => v + 1)}>
+              刷新状态
+            </Button>
+            <Button type="primary" icon={<FileTextOutlined />} size="small" onClick={onGenerateInputs}>
+              生成输入文件
+            </Button>
+          </Space>
         }
       >
         <div className="job-files">
           {FILE_ORDER.map((name) => {
             const synced = SYNCED_FILES.includes(name);
-            const localReady = !!workspace.files[name];
-            // 同步文件：远端×本地判状态；不同步文件（POTCAR / vasp.lsf）：只看本地有没有生成
-            const state = synced
-              ? syncStateOf(name)
-              : {
-                  key: localReady ? 'fresh' : 'none',
-                  label: localReady ? '已生成' : '未生成',
-                  icon: localReady ? (
-                    <CheckCircleFilled style={{ color: STATE_COLOR.fresh }} />
-                  ) : (
-                    <MinusCircleFilled style={{ color: STATE_COLOR.muted }} />
-                  ),
-                  tip: localReady
-                    ? '已生成（这份文件不走「同步最新参数」覆盖逻辑）'
-                    : '还没生成：POTCAR 在 POSCAR 页生成、vasp.lsf 在提交脚本页生成',
-                };
+            const state = fileStateOf(name);
+            const color = state.key === 'fresh' ? STATE_COLOR.fresh
+              : state.key === 'pending' ? STATE_COLOR.pending
+              : state.key === 'stale' ? STATE_COLOR.stale : STATE_COLOR.muted;
             return (
               <Tooltip key={name} title={state.tip}>
                 <div className={`job-file job-file--${state.key}`}>
-                  {state.icon}
+                  {state.key === 'pending' ? <EditOutlined style={{ color }} />
+                    : state.key === 'fresh' ? <CheckCircleFilled style={{ color }} />
+                    : <MinusCircleFilled style={{ color }} />}
                   <span className="job-file__name">{name}</span>
                   <span className="job-file__state">
                     {state.label}
-                    {!synced && <span className="job-file__hint"> · 不参与同步</span>}
+                    {!synced && <span className="job-file__hint"> · 不参与参数同步</span>}
                   </span>
                 </div>
               </Tooltip>
@@ -373,21 +381,25 @@ export default function TaskOverview({
           })}
         </div>
         <div className="preview-note" style={{ marginTop: 10 }}>
-          <b style={{ color: STATE_COLOR.fresh }}>最新</b> = 本地与远端最新计算目录一致；
-          <b style={{ color: STATE_COLOR.pending }}>有修改待提交</b> = 参数已改，等下次续算写入；
-          <b style={{ color: STATE_COLOR.stale }}>过时</b> = 本地有、远端最新目录里没有；
-          <b style={{ color: STATE_COLOR.muted }}>待同步</b> = 远端有、本地还没有（点下面按钮拉回）；
-          <b style={{ color: STATE_COLOR.muted }}>未生成</b> = 远端和本地都还没有。
-          POTCAR / vasp.lsf 只显示「已生成 / 未生成」，不参与同步覆盖。
-          点「同步最新参数」会用远端最新目录覆盖本地文件（有未生效改动的文件跳过）。
-          归档时后台会静默拉取该次计算的 OUTCAR / OSZICAR。
+          以上状态来自本地任务目录；「本地已有」只表示文件存在，不代表与远端一致或计算已收敛。
+          「有修改待提交」表示已保存待生效参数；「本地缺失」不代表远端没有。
+          「刷新状态」只重读本地清单；拉取远端文件请使用「同步最新参数」（跳过有待生效修改的文件）。
+          {input?.source && (
+            <span>
+              {' '}上次输入同步记录：
+              <Tooltip title={input.source.remote_dir}>
+                <span>{input.source.con || '主目录'}</span>
+              </Tooltip>
+              {input.source.synced_at ? ` · ${input.source.synced_at}` : ''}（非远端实时状态）。
+            </span>
+          )}
         </div>
       </Card>
 
-      {Object.values(workspace.files).every((v) => !v) && (
+      {filesStatus === 'ready' && FILE_ORDER.every((name) => !filesByName.has(name)) && pendingFiles.size === 0 && !input?.pending && (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="尚未生成任何输入文件，点击「生成输入文件」开始"
+          description="本地尚无这些文件，可生成输入文件或同步远端文件"
           style={{ marginTop: 28 }}
         />
       )}

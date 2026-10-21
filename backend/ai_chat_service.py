@@ -589,6 +589,47 @@ def _pseudo_args_ok(call: dict) -> bool:
     return isinstance(arguments, dict) and set(spec.get("required") or []) <= set(arguments)
 
 
+def _stream_final_text(connection: dict, key: str, payload: dict, run_id: str, authorize, usage: dict) -> str:
+    """兜底"直接回答"请求：只收 content，不接收思考/工具；用于思考耗尽额度时补一次回答。"""
+    parts: list = []
+    checks = 0
+    with _open(connection, key, "/chat/completions", payload) as response:
+        with _UPSTREAM_LOCK:
+            _UPSTREAMS[run_id] = response
+        try:
+            while True:
+                checks += 1
+                if checks % 200 == 0:
+                    authorize()
+                line = response.readline(1024 * 1024)
+                if not line:
+                    break
+                if len(line) >= 1024 * 1024:
+                    raise ValueError("模型流式响应过大，已停止接收")
+                if not line.startswith(b"data:"):
+                    continue
+                data = line[5:].strip()
+                if data == b"[DONE]":
+                    break
+                if not data:
+                    continue
+                part = json.loads(data)
+                if part.get("error"):
+                    raise ValueError("模型在生成过程中返回错误，请检查模型服务后重试")
+                if isinstance(part.get("usage"), dict):
+                    usage.update({k: v for k, v in part["usage"].items()
+                                  if k in ("prompt_tokens", "completion_tokens", "total_tokens") and type(v) is int})
+                for choice in part.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    chunk = delta.get("content")
+                    if isinstance(chunk, str):
+                        parts.append(chunk)
+        finally:
+            with _UPSTREAM_LOCK:
+                _UPSTREAMS.pop(run_id, None)
+    return "".join(parts)
+
+
 def _generate(run_id: str, connection: dict, key: str, messages: list, user: dict, workspace_enabled: bool = False):
     text, usage = "", {}
     hold = max(96, len(key))
@@ -615,7 +656,11 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             # 工具后续轮是新的推理请求，不是失败重试；每轮实际 usage 累计。
             payload = completion_payload(connection, messages)
             if workspace_enabled:
-                payload.update(tools=workspace.TOOLS, tool_choice="none" if round_index == 8 or tool_count >= 14 else "auto")
+                force_none = round_index == 8 or tool_count >= 14
+                payload.update(tools=workspace.TOOLS, tool_choice="none" if force_none else "auto")
+                if force_none and ai_reasoning.capabilities(connection)["provider"] == "deepseek":
+                    # 思考与回答共用 max_tokens：最后一轮不再展开思考，保证能产出最终回答。
+                    payload["thinking"] = {"type": "disabled"}
             calls, round_text, finished, saw_reasoning = {}, "", False, False
             reasoning_text, pseudo = "", False
             keep_reasoning=workspace_enabled and ai_reasoning.capabilities(connection)["provider"]=="deepseek"
@@ -707,7 +752,29 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             if not calls:
                 if not round_text.strip():
                     if saw_reasoning:
-                        raise ValueError("模型只返回了思考阶段的数据，未生成最终回答；请提高输出上限或改用直接回答")
+                        # 思考把 max_tokens 用完了（deepseek-flash 常见）：补一次不带思考的直接回答。
+                        final_payload = completion_payload(connection, messages + [{
+                            "role": "system",
+                            "content": "请直接给出最终回答：基于以上证据用简洁中文总结结论与建议，不要再展开新的思考，也不要调用工具。",
+                        }])
+                        final_payload.pop("tools", None)
+                        if ai_reasoning.capabilities(connection)["provider"] == "deepseek":
+                            final_payload["thinking"] = {"type": "disabled"}
+                        final_usage: dict = {}
+                        try:
+                            final_text = _stream_final_text(connection, key, final_payload, run_id, authorize, final_usage)
+                        except ValueError:
+                            final_text = ""
+                        for k, v in final_usage.items():
+                            usage[k] = usage.get(k, 0) + v
+                        if final_text.strip():
+                            store.update_answer(run_id, clean(text + final_text, (key,)), status="completed",
+                                                usage=usage, reasoning=reasoning_total)
+                            return
+                        raise ValueError(
+                            f"思考用完了输出额度（max_tokens={connection['max_tokens']}），未生成最终回答；"
+                            "请提高连接的最大输出或降低思考深度后重试"
+                        )
                     raise ValueError("模型未返回可显示的文字，请检查模型及接口协议")
                 store.update_answer(run_id, clean(text, (key,)), status="completed", usage=usage, reasoning=reasoning_total)
                 return

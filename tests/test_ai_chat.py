@@ -104,6 +104,10 @@ class Provider(BaseHTTPRequestHandler):
             text = f"已按需查询{evidence['returned']}个目录的最新结果；最近目录{evidence['observations'][0]['output_dir']}，存在阶段切换，计划仅保存草稿。" + KEY
         if payload["model"] == "deepseek-only-thinking":
             text = ""
+        if payload["model"] == "deepseek-thinking-retry":
+            retried = any(m.get("role") == "system" and "直接给出最终回答" in str(m.get("content"))
+                          for m in payload["messages"])
+            text = "直接回答：结构没问题，建议先补齐收敛证据。" if retried else ""
         if payload["model"] == "malformed-tools":
             text = '准备报告。<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="save_topic_report">伪造参数</｜｜DSML｜｜ invoke>'
         if payload["model"] == "slow-model":
@@ -451,8 +455,19 @@ class AIChatTests(unittest.TestCase):
         _, run = self.send(conversation)
         result = self.wait_run(run)
         self.assertEqual(result["status"], "failed")
-        self.assertIn("提高输出上限", result["error"])
+        self.assertIn("输出额度", result["error"])
+        self.assertIn("最大输出", result["error"])
         self.assertIn("PRIVATE_REASONING_TEST", result.get("reasoning") or "")
+
+    def test_thinking_only_reply_retries_with_direct_answer(self):
+        conversation = self.conversation(self.connection("deepseek-thinking-retry"))
+        _, run = self.send(conversation)
+        result = self.wait_run(run)
+        # 只有思考没有正文时，自动补一次“直接回答”；思考仍保留可展示。
+        self.assertEqual(result["status"], "completed", result)
+        self.assertIn("PRIVATE_REASONING_TEST", result.get("reasoning") or "")
+        _, detail = self.api(f"/conversations/{conversation['id']}")
+        self.assertIn("直接回答", detail["messages"][-1]["content"])
 
     def test_project_attachment_covers_members_and_filters_actions(self):
         connection = self.connection()

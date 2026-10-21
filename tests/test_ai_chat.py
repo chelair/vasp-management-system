@@ -62,7 +62,7 @@ class Provider(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         if payload['model']=='deepseek-workspace':
             self.wfile.write(b'data: {"choices":[{"delta":{"reasoning_content":"PRIVATE_TOOL_REASONING"}}]}\n\n')
-        if payload["model"] in ("deepseek-workspace","workspace-model", "workspace-loop", "workspace-blocked", "inspection-model", "parameter-model"):
+        if payload["model"] in ("deepseek-workspace","workspace-model", "workspace-loop", "workspace-blocked", "inspection-model", "parameter-model", "structure-model"):
             count = sum(m.get("role") == "tool" for m in payload["messages"])
             if count < (4 if payload["model"] == "inspection-model" else 3) or payload["model"] == "workspace-loop":
                 choices = [
@@ -86,6 +86,14 @@ class Provider(BaseHTTPRequestHandler):
                         ('get_task_inspections',{'task_id':'task-alice'}),
                         ('get_task_parameter_history',{'task_id':'task-alice'}),
                         ('get_remote_task_evidence',{'task_id':'task-alice','evidence_token':previous[0]['evidence_token'] if previous else '', 'reason':'stale_evidence'}),
+                    ][count]
+                if payload['model'] == 'structure-model':
+                    previous = [json.loads(m['content']) for m in payload['messages'] if m.get('role') == 'tool']
+                    selected = previous[0]['source']['selector'] if previous else {'task_id':'task-alice-extra'}
+                    name,args = [
+                        ('get_structure_summary',{'structure':{'task_id':'task-alice-extra'}}),
+                        ('get_structure_environment',{'structure':selected,'atom_indices':[1],'cutoff_angstrom':3}),
+                        ('compare_structures',{'reference':{'task_id':'task-alice-extra','file':'POSCAR'},'target':selected,'pairs':[[1,2]]}),
                     ][count]
                 if payload["model"] == "workspace-blocked":
                     name, args = "read_workspace", {"path": "project/../bob/private.txt"}
@@ -562,6 +570,33 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(self.api(f"/conversations/{conversation['id']}", "DELETE")[0], 200)
         self.assertFalse(work.exists())
         self.assertTrue((files/"CONTCAR").is_file())
+
+    def test_structure_tools_in_existing_chat_stream_and_audit(self):
+        files = Path(self.temp.name)/'projects/alice/opt/Model-alice-extra/files'
+        files.mkdir(parents=True,exist_ok=True)
+        cell = 'fixture\n1\n10 0 0\n0 10 0\n0 0 10\nH\n2\nDirect\n'
+        (files/'POSCAR').write_text(cell+'.99 0 0\n.2 0 0\n')
+        (files/'CONTCAR').write_text(cell+'.01 0 0\n.21 0 0\n')
+        raw = (files/'CONTCAR').read_bytes()
+        connection = self.connection('structure-model')
+        conversation = self.conversation(connection,'task-alice-extra')
+        with patch('structure_tools.load_db',return_value=PROJECTS), \
+             patch('ssh.run_remote',side_effect=AssertionError('local structure chat must not use SSH')):
+            status,run = self.send(conversation)
+            self.assertEqual(status,200,run)
+            result = self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        events = result['tool_events']
+        self.assertEqual([e['name'] for e in events],['get_structure_summary','get_structure_environment','compare_structures'])
+        self.assertTrue(all(e['status']=='completed' for e in events),events)
+        self.assertEqual(events[0]['result']['atom_count'],2)
+        self.assertEqual(events[1]['result']['environments'][0]['neighbors'][0]['distance_angstrom'],2)
+        self.assertEqual(events[2]['result']['displacements']['max_angstrom'],.2)
+        self.assertEqual(events[0]['result']['source']['sha256'],events[1]['result']['source']['sha256'])
+        self.assertEqual((files/'CONTCAR').read_bytes(),raw)
+        _,detail = self.api(f"/conversations/{conversation['id']}")
+        self.assertEqual(len(detail['runs'][0]['tool_events']),3)
+        self.assertEqual(self.api(f"/conversations/{conversation['id']}",user='bob')[0],403)
 
     def test_workspace_model_tools_stream_audit_and_draft(self):
         connection = self.connection("workspace-model")

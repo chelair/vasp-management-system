@@ -5,7 +5,7 @@ import { getAIWorkspace, listAIWorkspace, readAIWorkspace } from '../../api/aiCh
 import type { AIRun, AIWorkspaceFile, AIWorkspaceListing, AIWorkspaceMap } from '../../api/aiChat';
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '读取失败';
-const TOOL_NAMES: Record<string, string> = { list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿', find_project_tasks: '定位任务', get_task_inspections: '查询最近巡检', get_inspection_evidence: '读取巡检数值证据', get_opt_runs: '查询OPT自主处置', get_task_parameter_history: '查询实际参数记录', get_remote_task_evidence: '远端只读补证' };
+const TOOL_NAMES: Record<string, string> = { list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿', find_project_tasks: '定位任务', get_task_inspections: '查询最近巡检', get_inspection_evidence: '读取巡检数值证据', get_opt_runs: '查询OPT自主处置', get_task_parameter_history: '查询实际参数记录', get_remote_task_evidence: '远端只读补证', get_structure_summary: '读取结构概览', get_structure_environment: '分析原子环境', compare_structures: '对比模型结构' };
 
 export default function WorkspacePanel({ conversationId, runs, enabled }: { conversationId: string; runs: AIRun[]; enabled: boolean }) {
   const [map, setMap] = useState<AIWorkspaceMap | null>(null);
@@ -41,7 +41,7 @@ export default function WorkspacePanel({ conversationId, runs, enabled }: { conv
   return <div className="ai-file-panel">
     {error && <Alert type="warning" showIcon message={error} />}
     {map ? <>
-      <p className="ai-muted">{enabled ? '模型可查询巡检和实际参数记录，必要时远端只读补证，读取文件、创建草稿。' : '模型工具未启用，可在会话设置中开启工作区。'}正式数据只读，草稿不会自动应用。</p>
+      <p className="ai-muted">{enabled ? '模型可读取结构、分析原子环境与结构变化，查询巡检和实际参数记录，必要时远端只读补证，读取文件、创建草稿。' : '模型工具未启用，可在会话设置中开启工作区。'}正式数据只读，草稿不会自动应用。</p>
       <h4>目录地图</h4>
       {map.roots.map((root) => <button className="ai-run-row" key={root.path} onClick={() => { void browse(root.path.replace(/\/$/, '')); }}>
         <strong><FolderOpenOutlined /> {root.path}<Tag style={{ marginLeft: 8 }}>{root.access === 'read_write' ? '可写草稿' : '只读'}</Tag></strong><span>{root.purpose}</span>

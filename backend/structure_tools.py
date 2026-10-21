@@ -1,0 +1,117 @@
+"""AI structure tools: project-authorized, bounded read-only geometry evidence."""
+import math
+
+import permissions
+from storage import load_db
+import structure_geometry as geometry
+from structure_sources import load_many
+
+SELECTOR = {'type':'object','properties':{
+    'task_id':{'type':'string','maxLength':200}, 'file':{'type':'string','enum':['POSCAR','CONTCAR'],'default':'CONTCAR'},
+    'source':{'type':'string','enum':['local','remote'],'default':'local'},
+    'directory':{'type':'string','description':'仅remote支持：CURRENT、MAIN或conN；本地仅有镜像'},
+    'image':{'type':'string','description':'NEB必填00/01等映像号'},
+    'expected_sha256':{'type':'string','description':'沿用概览返回的selector指纹；结构变化则拒绝混用'}},
+    'required':['task_id'],'additionalProperties':False}
+PBC = {'type':'array','items':{'type':'boolean'},'minItems':3,'maxItems':3,
+       'description':'晶格a/b/c方向的周期边界，默认全true；孤立分子可显式设false'}
+INDEX = {'type':'integer','minimum':1,'maximum':geometry.MAX_ATOMS}
+ELEMENTS = {'type':'array','items':{'type':'string','maxLength':3},'minItems':1,'maxItems':12}
+
+
+def tool(name,description,properties,required):
+    return {'type':'function','function':{'name':name,'description':description,
+        'parameters':{'type':'object','properties':properties,'required':required,'additionalProperties':False}}}
+
+
+TOOLS = [
+    tool('get_structure_summary',
+        '读取当前项目POSCAR/CONTCAR结构概览：组成、晶格、逐方向固定约束、几何分层/平面间隙和原子坐标分页（每页24）。先find_project_tasks定位。默认本地镜像，不保证最新；用户问最新/指定con时可按需source=remote只读固定文件。远端缺文件不跨目录回退，NEB指定image。后续查询沿用返回的source.selector锁定文件指纹。几何层/间隙不是材料相或真空的验证结论。',
+        {'structure':SELECTOR,'pbc':PBC,'axis':{'type':'string','enum':['a','b','c'],'default':'c'},
+         'atom_offset':{'type':'integer','minimum':0,'maximum':geometry.MAX_ATOMS},
+         'layer_gap_angstrom':{'type':'number','minimum':.1,'maximum':3,'default':.75}},['structure']),
+    tool('get_structure_environment',
+        '按真实坐标和斜晶胞周期映像查询局部原子环境、距离/几何邻居数和最近6邻居的夹角。沿用概览的结构selector；原子编号从1开始。atom_indices最多6个，或用elements选择元素的前6个原子（截断会明确返回，后续按编号分批）。cutoff默认3Å，返回判据；邻居不等于化学键/价态。neighbor_elements可筛邻居元素。',
+        {'structure':SELECTOR,'pbc':PBC,'atom_indices':{'type':'array','items':INDEX,'minItems':1,'maxItems':6},
+         'elements':ELEMENTS,'neighbor_elements':ELEMENTS,'cutoff_angstrom':{'type':'number','minimum':.1,'maximum':6,'default':3}},['structure']),
+    tool('compare_structures',
+        '由Python比较两份结构的组成/晶格、原子位移与指定原子对距离变化。优化前后通常选同任务POSCAR与CONTCAR，逐一使用已读取的selector指纹。同任务同映像同元素顺序仅按原编号对应，须说明未验证同元素重排。跨任务不猜原子映射，只返回组成/晶胞；变胞不输出含混逐原子位移。pairs可指定最多8对1起原子编号。',
+        {'reference':SELECTOR,'target':SELECTOR,'pbc':PBC,
+         'pairs':{'type':'array','items':{'type':'array','items':INDEX,'minItems':2,'maxItems':2},'maxItems':8}},['reference','target']),
+]
+
+
+def real(value,low,high,label):
+    if type(value) not in (int,float) or not math.isfinite(value) or not low <= value <= high:
+        raise ValueError(f'{label}须为{low}至{high}之间的有限数')
+    return value
+
+
+def indices(value,maximum):
+    if not isinstance(value,list) or not 1 <= len(value) <= maximum or any(type(x) is not int or not 1 <= x <= geometry.MAX_ATOMS for x in value) or len(set(value)) != len(value):
+        raise ValueError(f'请提供1至{maximum}个不重复的原子编号（从1开始）')
+    return value
+
+
+def elements(value):
+    if not isinstance(value,list) or not 1 <= len(value) <= 12 or any(not isinstance(x,str) or not 1 <= len(x) <= 3 or not x.isalpha() for x in value):
+        raise ValueError('元素筛选须为1至12个元素符号')
+    return value
+
+
+def dispatch(project,user,name,arguments):
+    allowed = {
+        'get_structure_summary':{'structure','pbc','axis','atom_offset','layer_gap_angstrom'},
+        'get_structure_environment':{'structure','pbc','atom_indices','elements','neighbor_elements','cutoff_angstrom'},
+        'compare_structures':{'reference','target','pbc','pairs'},
+    }
+    if name not in allowed or not isinstance(arguments,dict) or set(arguments)-allowed[name]:
+        raise ValueError('结构工具不接受任意路径、命令、公式或未知参数')
+    # Recheck the trusted conversation project and task membership on every call.
+    current = next((p for p in load_db().get('projects',[]) if p.get('project_id') == project.get('project_id')),None)
+    permissions.ensure_project_owner(current,user)
+    if current is None:
+        raise ValueError('当前项目不存在')
+    pbc = arguments.get('pbc',[True,True,True])
+    if not isinstance(pbc,list) or len(pbc)!=3 or any(type(x) is not bool for x in pbc):
+        raise ValueError('周期边界须是a/b/c方向的三个布尔值')
+    if name == 'compare_structures':
+        pairs = arguments.get('pairs',[])
+        if not isinstance(pairs,list) or len(pairs)>8:
+            raise ValueError('最多比较8个原子对')
+        for pair in pairs:
+            indices(pair,2)
+            if len(pair)!=2:
+                raise ValueError('每个原子对必须有两个不同编号')
+        sources = load_many(current,[arguments.get('reference'),arguments.get('target')])
+        (before,source_a),(after,source_b) = sources
+        result = geometry.compare(geometry.parse(before),geometry.parse(after),
+            same_task=source_a['task_id']==source_b['task_id'] and source_a['image']==source_b['image'], pbc=pbc,pairs=pairs)
+        return {**result,'reference_source':source_a,'target_source':source_b}
+    if name == 'get_structure_summary':
+        axis = arguments.get('axis','c')
+        offset = arguments.get('atom_offset',0)
+        gap = real(arguments.get('layer_gap_angstrom',.75),.1,3,'分层间隙阈值')
+        if axis not in ('a','b','c') or type(offset) is not int or not 0 <= offset <= geometry.MAX_ATOMS:
+            raise ValueError('分层方向或原子分页无效')
+    else:
+        cutoff = real(arguments.get('cutoff_angstrom',3),.1,6,'邻居截断半径')
+        if 'atom_indices' in arguments:
+            indices(arguments['atom_indices'],6)
+        if 'elements' in arguments:
+            elements(arguments['elements'])
+        if 'neighbor_elements' in arguments:
+            elements(arguments['neighbor_elements'])
+        if 'elements' in arguments and 'atom_indices' in arguments:
+            raise ValueError('中心原子请选择编号或元素之一')
+    text,source = load_many(current,[arguments.get('structure')])[0]
+    parsed = geometry.parse(text)
+    if name == 'get_structure_summary':
+        return {**geometry.summary(parsed,atom_offset=offset,axis=axis,layer_gap_angstrom=gap,pbc=pbc),'source':source}
+    for field in ('elements','neighbor_elements'):
+        if field in arguments and set(arguments[field])-set(parsed['atoms']):
+            raise ValueError('元素筛选包含当前结构不存在的元素')
+    candidates = arguments.get('atom_indices') or [i+1 for i,el in enumerate(parsed['atoms']) if 'elements' not in arguments or el in arguments['elements']]
+    result = geometry.environment(parsed,candidates[:6],cutoff,pbc,arguments.get('neighbor_elements'))
+    return {**result,'source':source,'selection':{'atom_indices':candidates[:6], 'matching_atom_count':len(candidates),
+        'truncated':len(candidates)>6,'note':'中心原子按原文件顺序选取；超出6个时请按编号分批，不代表其余原子没有邻居。'}}

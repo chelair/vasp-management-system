@@ -880,6 +880,8 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 新巡检总能统一使用已输出的离子步 `TOTEN`（含色散修正），不使用未完成电子迭代的能量。历史巡检摘要及详情按归档原值返回，不在读取时重解析或自动更正，也不返回 `energy_correction`；原始归档、`observation_id` 和已冻结报告/聊天保持原样。后续实际巡检产生的新观测按新取数规则更新。
 
+**模型按需结构工具**：原项目工作台增加 `get_structure_summary(structure, pbc?, axis?, atom_offset?, layer_gap_angstrom?)`、`get_structure_environment(structure, pbc?, atom_indices?|elements?, neighbor_elements?, cutoff_angstrom?)`、`compare_structures(reference, target, pbc?, pairs?)`。结构selector为 `{task_id, file?:POSCAR|CONTCAR, source?:local|remote, directory?:CURRENT|MAIN|conN, image?, expected_sha256?}`；默认CONTCAR/local，directory仅远端支持，NEB必须指定映像。每次重查当前项目/任务归属，远端只读固定结构文件，不触发巡检/同步/HPC动作。返回Å/°几何值、完整sha256、采集/文件时间及来源selector；后续携带指纹防混用。概览坐标每页24原子；环境最多6中心/16邻居及最近6邻居夹角；文件1 MiB/2000原子，有搜索预算和截断标记。跨任务不自动映射原子，变胞不报告逐原子位移，几何邻居/分层不等于成键/物相判定。仅工具协议增量，无新增HTTP动作路由或结构预加载；见 [结构工具](docs/structure-tools.md)。
+
 ## 5. 现有自动化与托管执行边界
 
 固定规则、受控网关和单OPT有限循环已存在，不再把dry-run、幂等键、审计或触发调度列为“未实现”。外部Agent执行通过 `/api/agent-execution/actions`、有效授权/预算与稳定幂等键；不能绕到原人工submit/continuation端点。需审批的动作走pending-actions，已授权动作不逐次要求人工。

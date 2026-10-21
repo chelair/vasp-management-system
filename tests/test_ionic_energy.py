@@ -1,5 +1,4 @@
 """Ionic total energy versus unfinished SCF TOTEN; isolated data, no SSH/job actions."""
-import copy
 import hashlib
 import json
 import os
@@ -75,7 +74,7 @@ class IonicEnergyTests(unittest.TestCase):
                 'property_evidence':{'schema_version':'r3.evidence.1', 'directory':'/project/FS/con8',
                     'files':{'OUTCAR':{'stable':True, 'text':OUT}, 'OSZICAR':{'stable':True, 'text':OSZ}}}}
 
-    def test_legacy_views_correct_same_observation_without_rewriting_archive_or_id(self):
+    def test_legacy_views_preserve_recorded_energy_even_with_corroborating_evidence(self):
         from ai_inspections import _summary
         with tempfile.TemporaryDirectory() as root, patch.object(store, 'CHECKS_DIR', Path(root)):
             row = self.record()
@@ -86,26 +85,14 @@ class IonicEnergyTests(unittest.TestCase):
             expected_id = hashlib.sha256((archive.name + '\n' + canonical).encode()).hexdigest()[:24]
             observation = store.collect_task_observations('fixture')[0]
             self.assertEqual(observation['observation_id'], expected_id)
-            self.assertEqual(observation['data']['last_energy'], IONIC)
-            self.assertEqual(store.collect_results()['fixture']['last_energy'], IONIC)
+            self.assertEqual(observation['data']['last_energy'], ELECTRONIC)
+            self.assertEqual(store.collect_results()['fixture']['last_energy'], ELECTRONIC)
             summary = _summary(observation)
-            self.assertEqual(summary['energy_ev'], IONIC)
-            self.assertEqual(summary['energy_correction']['recorded_energy_ev'], ELECTRONIC)
+            self.assertEqual(summary['energy_ev'], ELECTRONIC)
+            self.assertNotIn('energy_correction', summary)
+            self.assertEqual(observation['data'], row)
             self.assertEqual(archive.read_bytes(), raw)
             self.assertEqual(row['last_energy'], ELECTRONIC)
-
-    def test_legacy_correction_requires_same_directory_stable_corroborated_evidence(self):
-        row = self.record()
-        cases = [copy.deepcopy(row) for _ in range(5)]
-        cases[0]['property_evidence']['directory'] = '/project/FS/con7'
-        cases[1]['property_evidence']['files']['OUTCAR']['stable'] = False
-        cases[2]['property_evidence']['files']['OSZICAR']['stable'] = False
-        cases[3]['property_evidence']['files']['OSZICAR']['text'] = ' 54 F= -900 E0= -900\n'
-        del cases[4]['property_evidence']
-        for candidate in cases:
-            with self.subTest(candidate=candidate):
-                self.assertEqual(store._energy_view(candidate)['last_energy'], ELECTRONIC)
-                self.assertNotIn('energy_correction', candidate)
 
     def test_scientific_validation_and_capture_use_completed_ionic_summary(self):
         import r3_fixtures

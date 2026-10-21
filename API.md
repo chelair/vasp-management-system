@@ -878,7 +878,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 **模型按需巡检链路**：在启用工作区的项目会话中，由模型按问题定位任务并调用 `get_task_inspections(task_id, limit=3)`，默认最近3个计算目录、最多5个目录各自的最新观测；同目录后续巡检更新覆盖，不保留该目录多次巡检时间序列。需要具体曲线/参数/NEB数值时再调用 `get_inspection_evidence(task_id, observation_id, kind, offset=0)`。查询返回完整JSON，而非页面截图或任意字节截断；原始字段缺失不从最新汇总补填，跨目录/作业/参数阶段不直接计算差值。观测被同目录更新或超过5目录保留范围时明确报错、需重新查询。名称歧义可用 `find_project_tasks(query)`，返回本项目最多20个候选。参与自动巡检的实时决策证据缺失、超过后端4小时阈值或未来时间异常时提示刷新，历史完成结果不机械按年龄失效；均不发SSH。工具定义属于模型请求协议，不是新增公开HTTP动作路由；工具参数、原始数值证据及状态持久化到运行 `tool_events`，可在本轮依据审阅。工具能力继续由工作区开关控制。
 
-巡检总能统一使用已输出的离子步 `TOTEN`（含色散修正），不使用未完成电子迭代的能量。历史读取可用同次、同目录稳定保存的 OUTCAR 离子步段与 OSZICAR 最后 `F=` 互证后重解析；不借用其他目录/当前文件，不改原始归档和 `observation_id`。发生更正时，`get_task_inspections` 的观测摘要增加 `energy_correction{recorded_energy_ev,corrected_energy_ev,source,directory,note}`，`energy_ev` 返回更正总能。已冻结的报告和聊天内容不会因此自动改写。
+新巡检总能统一使用已输出的离子步 `TOTEN`（含色散修正），不使用未完成电子迭代的能量。历史巡检摘要及详情按归档原值返回，不在读取时重解析或自动更正，也不返回 `energy_correction`；原始归档、`observation_id` 和已冻结报告/聊天保持原样。后续实际巡检产生的新观测按新取数规则更新。
 
 ## 5. 现有自动化与托管执行边界
 

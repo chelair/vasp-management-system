@@ -1,8 +1,6 @@
 """巡检结果存取：归档 check_results_*.json、按 task_id 合并、映射为前端展示行。"""
 
 import json
-import math
-import re
 import hashlib
 from contextlib import contextmanager
 from datetime import datetime
@@ -121,41 +119,6 @@ def observation_directory(entry: dict) -> dict:
         path = posixpath.join(root, output)
     path = posixpath.normpath(path)
     return {"key": "directory:" + path, "path": path, "known": True}
-
-
-def _energy_view(entry: dict) -> dict:
-    """Reparse a proven legacy energy error without changing raw archives or IDs.
-
-    Only same-directory, stable OUTCAR ionic summaries corroborated by the last
-    completed OSZICAR F qualify; never borrow inherited curves or current files.
-    """
-    from batch_check import extract_toten
-    recorded = entry.get("last_energy")
-    if type(recorded) not in (int, float) or not math.isfinite(recorded):
-        return entry
-    evidence = entry.get("property_evidence") or {}
-    directory = observation_directory(entry)
-    if (not directory["known"] or not evidence.get("directory") or
-            posixpath.normpath(str(evidence["directory"])) != directory["path"]):
-        return entry
-    files = evidence.get("files") or {}
-    out, osz = files.get("OUTCAR") or {}, files.get("OSZICAR") or {}
-    if out.get("stable") is not True or osz.get("stable") is not True:
-        return entry
-    corrected = extract_toten(str(out.get("text") or ""))
-    tail = str(osz.get("text") or "").split("@@R3_TAIL@@")[-1]
-    values = re.findall(r"^\s*\d+\s+F=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?)", tail, re.M)
-    if corrected is None or not values or abs(corrected - recorded) < 1e-8:
-        return entry
-    ionic_f = float(values[-1].replace("D", "E").replace("d", "e"))
-    if not math.isfinite(ionic_f) or abs(ionic_f - corrected) > 1e-5:
-        return entry
-    return {**entry, "last_energy": corrected, "energy_correction": {
-        "recorded_energy_ev": recorded, "corrected_energy_ev": corrected,
-        "source": "same_observation_OUTCAR_ionic_summary_and_OSZICAR_F",
-        "directory": directory["path"],
-        "note": "按同次巡检保存的离子步总能重解析；原归档和观测标识保持不变，排除电子迭代能。",
-    }}
 
 
 def _latest_from(archives):
@@ -282,12 +245,12 @@ def collect_results() -> Dict[str, Dict[str, Any]]:
     未提供/本次未检查的字段（markers / notes / force_history / 力统计）
     沿用上一次结果，避免覆盖丢失（例如本次未下载检查时保留上次的检查标记）。
     """
-    return {tid: _energy_view(entry) for tid, entry in _latest_from(_archives()).items()}
+    return _latest_from(_archives())
 
 
 @_synchronized
 def collect_task_observations(task_id: str, limit: int = 5) -> List[Dict[str, Any]]:
-    """最近最多5个目录的最新观测及原始标识；能量可按同次证据重解析，不补填历史字段。"""
+    """最近最多5个目录的最新原始观测及标识；不补填历史字段。"""
     result = []
     seen = set()
     if not task_id or limit <= 0:
@@ -301,7 +264,7 @@ def collect_task_observations(task_id: str, limit: int = 5) -> List[Dict[str, An
         seen.add(directory["key"])
         canonical = json.dumps(entry, ensure_ascii=False, sort_keys=True)
         result.append({"observation_id": hashlib.sha256((path.name + "\n" + canonical).encode()).hexdigest()[:24],
-                       "archive": path.name, "directory": directory, "data": _energy_view(entry)})
+                       "archive": path.name, "directory": directory, "data": entry})
         if len(result) >= min(limit, MAX_TASK_HISTORY):
             break
     return result

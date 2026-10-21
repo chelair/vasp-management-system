@@ -205,6 +205,8 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 
 ## 3. 只读接口（观测面）
 
+NEB巡检结果补充：`force_thresholds`来自实际输出目录INCAR负EDIFFG，max=|EDIFFG|、RMS=|EDIFFG|/2；`force_max/force_rms`为中间映像末步最大值，`neb_force_checks`列各映像值、来源和收敛状态。仅全部中间映像正常结束且力收敛才`completed`，正常结束但超限/无法确认则`unconverged`，缺阈值/受力时`force_converged=null`并说明原因。端点不参与；排队/运行状态不被静态力检查覆盖。
+
 ### 3.1 项目 / 任务
 
 | 接口 | 参数 | 关键返回 | 用途 |

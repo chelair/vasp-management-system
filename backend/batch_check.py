@@ -1198,7 +1198,8 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
 
     规则（与结构优化一致的前提：bjobs 已无活跃作业）：
     - 中间映像（非端点）没有任何 OUTCAR -> pending（待提交，任务还没开始运行）；
-    - 所有中间映像 OUTCAR 均正常结束（含成功标志）-> completed；
+    - 所有中间映像正常结束且末步力满足计算目录 INCAR 的阈值 -> completed；
+    - 正常结束但力超限或无法确认力收敛 -> unconverged；
     - 有结果但存在缺失/无结束标志的映像 -> zombied，并列出具体映像。
     端点（00/NN）的 OUTCAR 是创建 NEB 文件时从 IS/FS 复制的伪结果，不参与判定。
     """
@@ -1207,6 +1208,18 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
         result["status"] = "pending"
         return
     base = Path(neb_dir)
+    # NEB 的公共输入在带目录中；不得借用主目录或端点的旧 INCAR。
+    incar = parse_incar(base / "INCAR")
+    ediffg = _to_float(incar.get("EDIFFG"))
+    thresholds = None
+    if ediffg is not None and math.isfinite(ediffg) and ediffg < 0:
+        thresholds, source = force_thresholds_from_incar(incar, {})
+        result["force_thresholds"] = {**thresholds, "source": source}
+    else:
+        result["force_thresholds"] = None
+    result["force_converged"] = None
+    result["incar"] = incar or None
+    result.setdefault("parameter_sources", {})["INCAR"] = str(base)
     names = sorted(
         (p.name for p in base.iterdir() if p.is_dir() and p.name.isdigit()),
         key=int,
@@ -1216,10 +1229,16 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
         result["error_messages"].append("NEB 映像目录不足（少于 3 个），无法判定完成状态")
         return
     lo, hi = names[0], names[-1]
-    middle = [n for n in names if lo < n < hi]
+    try:
+        image_count = int(incar.get("IMAGES", ""))
+    except ValueError:
+        image_count = 0
+    middle = ([f"{i:02d}" for i in range(1, image_count + 1)] if image_count > 0
+              else names[1:-1])
     missing: List[str] = []
     unfinished: List[str] = []
     neb_errors: List[Dict[str, Any]] = []
+    force_checks: List[Dict[str, Any]] = []
     # 中间映像的离子步：取各映像 OUTCAR 的 TOTAL-FORCE 块数最大值，
     # 作为「NEB 带推进了多少步」的度量（端点 OUTCAR 是 IS/FS 的伪结果，不计入）
     band_steps = 0
@@ -1260,6 +1279,40 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
                         "image": img,
                     }
                 )
+        if finished:
+            # 优先采用 NEB 输出的优化力摘要（含路径投影/弹簧处理），避免把
+            # 沿反应路径的真实原子力误判为未收敛；旧输出无摘要时复用 OPT 统计。
+            image_result = {"error_messages": []}
+            force_source = "OUTCAR:TOTAL-FORCE"
+            tail = _read_tail(outcar, 1048576) or ""
+            _parse_forces(image_result, str(base / img), tail, thresholds or DEFAULT_THRESHOLDS)
+            # 末步截断/缺原子时不能用部分原子的力冒充整个映像已收敛。
+            force_blocks = parse_total_force_blocks(tail)
+            flags = parse_poscar_fixed(base / img / "POSCAR")
+            if (not force_blocks or flags is None or len(force_blocks[-1]["forces"]) != len(flags)
+                    or any(not math.isfinite(v) for force in force_blocks[-1]["forces"] for v in force)):
+                image_result = {"error_messages": []}
+            step_tail = tail[tail.rfind(FORCE_HEADER):] if FORCE_HEADER in tail else ""
+            summaries = re.findall(
+                r"FORCES:\s*max atom,\s*RMS\s*=?\s*([-+\d.EeDd]+)\s+([-+\d.EeDd]+)", step_tail)
+            if summaries:
+                try:
+                    fmax, frms = (float(v.replace("D", "E").replace("d", "e")) for v in summaries[-1])
+                    if all(math.isfinite(v) and v >= 0 for v in (fmax, frms)):
+                        force_source = "OUTCAR:FORCES max atom,RMS"
+                        image_result.update(force_max=fmax, force_rms=frms,
+                            force_converged=bool(thresholds and fmax < thresholds["max_force_threshold"]
+                                                 and frms < thresholds["rms_force_threshold"]))
+                except ValueError:
+                    pass
+            force_checks.append({
+                "image": img,
+                "force_max": image_result.get("force_max"),
+                "force_rms": image_result.get("force_rms"),
+                "source": force_source,
+                "force_converged": image_result.get("force_converged") if thresholds else None,
+            })
+    result["neb_force_checks"] = force_checks
     result["neb_band_steps"] = band_steps
     if neb_errors:
         result["errors"] = neb_errors
@@ -1268,7 +1321,20 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
                 f"映像 {item.get('image')} OUTCAR 报错：{item['name']}"
             )
     if not missing and not unfinished:
-        result["status"] = "completed"
+        known = [c for c in force_checks if c["force_max"] is not None and c["force_rms"] is not None]
+        result["force_max"] = max((c["force_max"] for c in known), default=None)
+        result["force_rms"] = max((c["force_rms"] for c in known), default=None)
+        if thresholds and len(known) == len(middle) and middle:
+            result["force_converged"] = all(c["force_converged"] for c in force_checks)
+        result["status"] = "completed" if result["force_converged"] is True else "unconverged"
+        if thresholds is None:
+            result["error_messages"].append("NEB 已结束，但计算目录 INCAR 缺少有效的负值 EDIFFG，无法确认力收敛")
+        elif len(known) != len(middle):
+            unknown = [c["image"] for c in force_checks if c["force_max"] is None or c["force_rms"] is None]
+            result["error_messages"].append("NEB 已结束，但映像末步受力或 POSCAR 不完整，无法确认力收敛：" + ", ".join(unknown))
+        elif result["force_converged"] is False:
+            failed = [c["image"] for c in force_checks if c["force_converged"] is False]
+            result["error_messages"].append("NEB 已结束但力未收敛，超限映像：" + ", ".join(failed))
         try:
             text = (base / lo / "OUTCAR").read_text(
                 encoding="utf-8", errors="replace"
@@ -1387,6 +1453,7 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         if task_type == "neb":
             neb_out_dir = _neb_latest_output_dir(remote_dir)
             if neb_out_dir:
+                work_dir = neb_out_dir
                 neb_rel = (
                     Path(neb_out_dir).name
                     if Path(neb_out_dir) != Path(remote_dir)
@@ -1407,7 +1474,7 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
         # 全部复用同一次 exec，不新增任何 SSH 往返。
         incar = parse_incar(Path(work_dir) / "INCAR")
         incar_source = work_dir
-        if not incar:
+        if not incar and task_type != "neb":
             incar = parse_incar(Path(remote_dir) / 'INCAR')
             incar_source = remote_dir
         result["incar"] = incar or None
@@ -1433,6 +1500,11 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
             result["precision"] = precision_check(
                 incar, mesh, lattice_abc, mesh_note, _precision_requirements()
             )
+        elif task_type == "neb":
+            ediffg = _to_float(incar.get("EDIFFG"))
+            if ediffg is not None and math.isfinite(ediffg) and ediffg < 0:
+                used_thresholds, threshold_source = force_thresholds_from_incar(incar, thresholds)
+                result["force_thresholds"] = {**used_thresholds, "source": threshold_source}
         else:
             # 其他任务类型只留 INCAR/KPOINTS 快照，不改判定逻辑
             result["force_thresholds"] = {**thresholds, "source": "registry"}

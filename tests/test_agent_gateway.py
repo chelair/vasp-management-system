@@ -688,6 +688,35 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], record['job_id'])
         self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
 
+    def test_stop_missing_job_finishes_local_state_without_polling_or_science_claim(self):
+        record = self.execute()
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                'exit_code': 255, 'stderr': f'Job <{record["job_id"]}>: No matching job found'}), \
+             patch.object(self.unknown, 'jobs', side_effect=AssertionError('不额外轮询LSF')):
+            response = self.jobs.stop_task('t1')
+        self.assertTrue(response['data']['job_not_found'])
+        self.assertFalse(response['data']['stop_pending'])
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        self.assertEqual(task['status'], 'pending')
+        self.assertIsNone(task['job_id'])
+        action = self.ledger.get(record['id'])
+        self.assertTrue(action['job_finished'])
+        self.assertEqual(action['reservation'], 0)
+        self.assertEqual(action['scheduler_state'], 'NOT_FOUND')
+        self.assertEqual(action['stop_confirmed_by'], 'bkill_not_found')
+
+    def test_stop_only_accepts_explicit_missing_job_receipt(self):
+        record = self.execute()
+        for error in ('bkill: command not found', 'Permission denied', 'Connection timed out',
+                      'Job <999999999>: No matching job found',
+                      'No matching job found\nUnable to contact mbatchd'):
+            with self.subTest(error=error), patch.object(self.jobs.ssh, 'run_remote',
+                    return_value={'exit_code': 1, 'stderr': error}):
+                response = self.jobs.stop_task('t1')
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], record['job_id'])
+                self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+
     def test_unresolved_actions_only_block_their_own_directory(self):
         doc = {'actions': {'a1': {
             'id': 'a1', 'family_id': 't1', 'status': 'running',

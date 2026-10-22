@@ -1005,6 +1005,8 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 ## 旧作业历史缺失的人工处理（2026-10-20）
 
+2026-10-22人工停止补充：指定job的bkill明确返回`No matching job found`/`No job found`也按幂等停止收尾，返回`job_not_found=true`、`confirmed_by=bkill_not_found`。清理本地运行状态和对应预留，台账记`NOT_FOUND`，不记科学完成。带job前缀的回执须匹配请求ID；SSH、权限、命令失败仍报错且保留状态。停止不额外轮询，后续提交仍实时检查活跃作业。
+
 - `GET /api/agent-execution/tasks/{task_id}/prior-job`：项目owner/admin/已有归属Agent只读，返回当前LSF状态、task族阻塞、可确认标志、身份review_fingerprint、固定旧job_id.out回执摘要和建议核实依据。只在报错弹窗打开时查询，无定时轮询。读取任务根目录/最多100个conN目录的最多3份定名回执，每份只取头尾有界文本；回执不直接提供执行授权。
 - `POST /api/agent-execution/tasks/{task_id}/prior-job/confirm-finished`：仅人工owner/admin，必须四字段 `{confirmed_finished:true, expected_job_id, review_fingerprint, evidence}`。核实依据20–4000字，确认时重查LSF并检查任务族锁、旧job ID/服务器签名/目录/归属未变化、无未完成或UNKNOWN动作；活跃或未知目录/LSF失败一律拒绝。写原agent_execution台账和严格审计，不改job_id、科学状态、预算开关，不提交/续算远端。
 - 新前端仅在提交报“原作业无法在LSF确认结束”时显示弹窗；LSF回执必须匹配旧job ID、工作目录和结束时间，才能提供“确认旧作业已结束并解除报错”按钮。用户不必另外输入依据/勾选；一次点击是明确人工确认，服务端保存展示过的依据并重新查LSF。回执不全时保持阻塞，不把查不到当作结束。

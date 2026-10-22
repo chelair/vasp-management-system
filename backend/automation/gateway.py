@@ -706,11 +706,12 @@ def _sync_stop_metadata(project, task, rows):
     return terminal
 
 
-def confirm_killed(project, task, job_id, raw=''):
-    """bkill 已明确返回终止/已结束：以它作为停止证据，立即回退本地状态。
+def confirm_killed(project, task, job_id, raw='', *, not_found=False):
+    """bkill 明确返回终止/已结束/无匹配作业后收尾本地状态。
 
     用户口径（2026-10-21）：拿到 bkill 的 killed 结果就刷新，不再一直停在"等待确认"。
     LSF 终态通常几秒后才反映到 bjobs；同目录并发仍由 assert_remote_idle 用实时 bjobs 兜底。
+    无匹配仅记录 NOT_FOUND，原结束原因未知，不表示 VASP 正常完成或收敛。
     """
     requested = now_iso()
     family = family_id(task['task_id'])
@@ -718,12 +719,13 @@ def confirm_killed(project, task, job_id, raw=''):
         if (record['family_id'] == family and str(record.get('job_id') or '') == str(job_id)
                 and not record.get('job_finished')):
             # 与 LSF 终态路径同一记账口径：释放预留，核时按最坏情况计入。
-            ledger.update(record['id'], job_finished=True, scheduler_state='EXIT',
-                          stop_confirmed_by='bkill', stop_requested_at=requested,
+            ledger.update(record['id'], job_finished=True, scheduler_state='NOT_FOUND' if not_found else 'EXIT',
+                          stop_confirmed_by='bkill_not_found' if not_found else 'bkill', stop_requested_at=requested,
                           reservation=0,
                           consumed_core_hours=record.get('reservation', 0) + record.get('consumed_core_hours', 0),
                           consumption_basis='reserved_upper_bound',
-                          reason='bkill 已确认终止' + (f'：{raw[:200]}' if raw else ''))
+                          reason=('bkill 明确无匹配作业，原结束原因未知' if not_found else 'bkill 已确认终止')
+                                 + (f'：{raw[:200]}' if raw else ''))
     with db_transaction() as db:
         current = next(t for p in db['projects'] if p['name'] == project['name']
                        for t in p['tasks'] if t['task_id'] == task['task_id'])

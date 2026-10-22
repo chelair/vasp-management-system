@@ -1566,7 +1566,7 @@ def stop_task(task_id: str):
 
 
 def _stop_task_locked(task_id: str):
-    """bkill仅表示请求已接受；经LSF确认终态后才能回退待提交。"""
+    """按 bkill 明确的终止/已结束/不存在回执收尾，不额外轮询。"""
     try:
         project, task = _resolve_task(task_id)
     except LookupError as e:
@@ -1603,8 +1603,13 @@ def _stop_task_locked(task_id: str):
     # LSF：对已结束/不存在的作业执行 bkill 会输出 "Job <id>: Job has already
     # finished" 且退出码非 0 —— 作业实际上已停止，按停止成功处理（归档为待提交）
     already_finished = bool(re.search(r"already finished", raw, re.IGNORECASE))
+    # 指定 job 的不存在回执属于幂等停止成功，不能与 SSH/权限/命令失败混淆。
+    # 若带 job 前缀，必须与本次请求相符；只接受完整回执，不泛匹配 "not found"。
+    job_not_found = bool(re.fullmatch(
+        r"(?:Job\s*<" + re.escape(str(job_id)) + r">\s*:\s*)?"
+        r"(?:No matching job found|No job found)\.?", raw, re.IGNORECASE))
     # bkill 的返回值就是用户要的 "killed 结果"：rc=0 或明确终止/已结束的文案。
-    killed = result.get("exit_code") == 0 or already_finished or bool(re.search(
+    killed = result.get("exit_code") == 0 or already_finished or job_not_found or bool(re.search(
         r"being\s+(?:terminated|killed|dequeued)|has\s+been\s+killed|Job\s*<\d+>.*?(?:terminated|killed|dequeued)",
         raw, re.IGNORECASE))
     if not killed:
@@ -1618,18 +1623,21 @@ def _stop_task_locked(task_id: str):
     sync_error = ''
     from automation.gateway import confirm_killed
     try:
-        confirmed_by = 'bkill'
-        confirmed = confirm_killed(project, task, str(job_id), raw)
+        confirmed_by = 'bkill_not_found' if job_not_found else 'bkill'
+        confirmed = confirm_killed(project, task, str(job_id), raw, not_found=job_not_found)
     except Exception as exc:  # 落库失败不能伪装已停止
         sync_error = str(exc)
     _audit_log(project['name'], task_id, str(job_id), 'bkill',
-               ('OK; bkill 确认停止' if confirmed else 'ACCEPTED; 本地状态更新失败') +
+               ('OK; bkill 明确无匹配作业' if confirmed and job_not_found else
+                'OK; bkill 确认停止' if confirmed else 'ACCEPTED; 本地状态更新失败') +
                (('; SYNC_WARN: ' + sync_error) if sync_error else ''))
     _, current_task = _resolve_task(task_id)
-    return ok('作业已停止' if confirmed else '停止请求已发出，等待LSF结束确认；暂不可重新提交', {
+    message = ('作业已不在调度器中，本地状态已更新' if job_not_found else '作业已停止') if confirmed else '停止结果未同步到本地，请重试或对账'
+    return ok(message, {
         'job_id': job_id, 'new_status': current_task['status'], 'already_finished': already_finished,
         'stop_pending': not confirmed, 'sync_warning': sync_error,
         'confirmed_by': confirmed_by, 'bkill_output': raw[:2000],
+        'job_not_found': job_not_found,
     })
 
 

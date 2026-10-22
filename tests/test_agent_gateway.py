@@ -109,13 +109,17 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(recovered['scheduler_state'], 'RUN')
         self.assertEqual(self.hpc.submit_count(), 1)
 
-    def test_unknown_cannot_use_new_key(self):
+    def test_lost_submission_is_released_when_lsf_has_no_job(self):
         self.hpc.install_bsub('lost')
         with self.assertRaises(self.jobs.ActionError): self.execute()
         self.hpc.set_jobs([])
-        self.gateway.reconcile()
-        with self.assertRaises(ValueError): self.execute(idempotency_key='another')
-        self.assertEqual(self.hpc.submit_count(), 1)
+        released = self.gateway.reconcile()[0]
+        self.assertTrue(released.get('released'))
+        self.assertEqual(released['reservation'], 0)
+        # 目录里没有活跃作业：允许重新提交（同目录并发仍由实时 bjobs 拦）。
+        self.hpc.install_bsub()
+        self.execute(idempotency_key='another')
+        self.assertEqual(self.hpc.submit_count(), 2)
 
     def test_budget_limits_missing_and_invalid_resources(self):
         for field, value in [('max_core_hours', 23), ('max_cores', 23), ('max_walltime_hours', .5)]:
@@ -486,22 +490,17 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         second = events._event_id({'schedule_id': 'daily', 'fired_at': 'day2'})
         self.assertNotEqual(first, second)
 
-    def test_purged_lsf_history_needs_human_confirmation_of_finished_job(self):
+    def test_purged_lsf_history_releases_the_directory(self):
         record = self.execute()
         self.hpc.set_jobs([])
-        uncertain = self.gateway.reconcile(record['id'])[0]
-        self.assertEqual(uncertain['status'], 'unknown')
-        self.assertEqual(uncertain['reservation'], 24)
-        evidence = '人工核实：已核对LSF归档日志和远端输出时间，原作业确实已结束。'
-        with self.assertRaises(self.permissions.PermissionDenied):
-            self.gateway.resolve_finished(self.agent, record['id'], evidence)
-        resolved = self.gateway.resolve_finished(self.owner, record['id'], evidence)
-        self.assertTrue(resolved['job_finished'])
-        self.assertEqual(resolved['consumed_core_hours'], 24)
-        self.assertEqual(resolved['reservation'], 0)
+        released = self.gateway.reconcile(record['id'])[0]
+        # LSF 查询成功但完全没有这个作业：视为未提交/已清理，释放目录占用，不再永久 unknown。
+        self.assertTrue(released.get('released'))
+        self.assertEqual(released['status'], 'failed')
+        self.assertEqual(released['reservation'], 0)
+        self.assertIsNone(self.gateway._unresolved(self.ledger.read(), 't1',
+                                                   directory=record['plan']['work_dir']))
         self.assertEqual(self.hpc.submit_count(), 1)
-        project, task = self.gateway.actions.load_task('t1')
-        self.gateway.assert_remote_idle(project, task, self.paths.resolve_remote_path('server1', task['remote_dir']), [])
 
     def _old_job(self):
         self.db['projects'][0]['tasks'][0]['job_id'] = '751321'

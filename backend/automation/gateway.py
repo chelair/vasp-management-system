@@ -174,6 +174,8 @@ def _unresolved(doc, family, exclude=None, directory=None):
             work_dir = str((action.get('plan') or {}).get('work_dir') or '').rstrip('/')
             if work_dir and work_dir != target:
                 continue
+        if action.get('released'):
+            continue
         if (action['status'] in ledger.UNRESOLVED or action.get('reservation', 0) > 0
                 or (action.get('job_id') and not action.get('job_finished'))):
             return action
@@ -592,9 +594,24 @@ def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
             else:
                 if record['server'] not in rows_by_server:
                     rows_by_server[record['server']] = unknown.jobs(record['server'])
-                match = unknown.find(record, rows_by_server[record['server']])
+                rows = rows_by_server[record['server']]
+                if record.get('job_id'):
+                    same_job = [row for row in rows if row['job_id'] == str(record['job_id'])]
+                    matches = [row for row in same_job if row['name'] == record.get('execution_name')]
+                else:
+                    matches = [row for row in rows if row['name'] == record.get('execution_name')]
+                    same_job = matches
+                match = matches[0] if len(matches) == 1 else None
             if not match:
-                results.append(ledger.update(record['id'], status='unknown', reason='LSF未能唯一识别作业，暂停并要求人工核实'))
+                if not same_job:
+                    # bjobs 查询成功却完全没有这个作业：说明未提交成功或早已结束/清理。
+                    # 只按目录互斥的规则，它不再占用该目录，直接释放，避免永久卡住提交。
+                    results.append(ledger.update(
+                        record['id'], status='failed', reservation=0, released=True,
+                        reason='LSF 已无该作业（未提交或已清理），释放目录占用'))
+                else:
+                    results.append(ledger.update(record['id'], status='unknown',
+                                                 reason='LSF 作业身份不唯一或与提交记录不符，暂停并要求人工核实'))
                 continue
             directory = (record.get('plan') or {}).get('work_dir')
             if directory and match['directory'].rstrip('/') != directory.rstrip('/'):

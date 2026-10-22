@@ -160,11 +160,12 @@ def _record(project, task, action, actor, **fields):
             'submission_attempted': False, 'source_binding': _completion_binding(project, task, job_id=''), **fields}
 
 
-def _unresolved(doc, family, exclude=None, directory=None):
+def _unresolved(doc, family, exclude=None, directory=None, in_flight_only=False):
     """同族里尚未收尾的动作；给了 directory 时只拦同一作业目录。
 
     2026-10-21 用户口径：并发冲突只认“同一目录”，root 运行中不应阻止 conN 续算。
-    没有 plan.work_dir 的早期动作无法判断目录，仍按族保守拦截。
+    `in_flight_only=True` 时只看“提交正在进行中”（prepared/running），
+    不再把历史 UNKNOWN / 旧作业号当作人工复核门槛（用户无法人工复核）。
     """
     target = str(directory or '').rstrip('/')
     for action in doc['actions'].values():
@@ -175,6 +176,10 @@ def _unresolved(doc, family, exclude=None, directory=None):
             if work_dir and work_dir != target:
                 continue
         if action.get('released'):
+            continue
+        if in_flight_only:
+            if action['status'] in {'prepared', 'running'}:
+                return action
             continue
         if (action['status'] in ledger.UNRESOLVED or action.get('reservation', 0) > 0
                 or (action.get('job_id') and not action.get('job_finished'))):
@@ -512,8 +517,10 @@ def safe_submit(project, task, *, dry_run=False):
         project, task = actions.load_task(task['task_id'])
         target_dir = resolve_remote_path(project['server'], task.get('remote_dir') or '').rstrip('/')
         with ledger.transaction() as doc:
-            if _unresolved(doc, family, directory=target_dir):
-                raise ValueError('该作业目录存在活跃/UNKNOWN提交记录，请先对账')
+            # 只拦“另一个提交正在进行中”，历史 UNKNOWN/旧作业号不再要求人工复核；
+            # 同目录的真实并发由提交前的实时 bjobs 检查负责。
+            if _unresolved(doc, family, directory=target_dir, in_flight_only=True):
+                raise ValueError('该作业目录有一个正在进行的提交，请稍候再试')
             record = _record(project, task, 'task.submit', permissions.context_username() or 'automation')
             doc['actions'][record['id']] = record
         try:

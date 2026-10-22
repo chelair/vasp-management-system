@@ -776,6 +776,21 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertIn('POSCAR', neb)
         self.assertIn('IMAGES', neb)
 
+    def test_manual_submit_ignores_history_but_blocks_in_flight(self):
+        doc = {'actions': {
+            'old': {'id': 'old', 'family_id': 't1', 'status': 'unknown',
+                    'plan': {'work_dir': '/remote/T1'}, 'job_id': '1', 'job_finished': None, 'reservation': 0},
+            'old2': {'id': 'old2', 'family_id': 't1', 'status': 'succeeded',
+                     'plan': {'work_dir': '/remote/T1'}, 'job_id': '2', 'job_finished': None, 'reservation': 24},
+        }}
+        # 历史 UNKNOWN / 旧作业号不再要求人工复核
+        self.assertIsNone(self.gateway._unresolved(doc, 't1', directory='/remote/T1', in_flight_only=True))
+        # 但“提交正在进行中”仍然串行
+        doc['actions']['live'] = {'id': 'live', 'family_id': 't1', 'status': 'prepared',
+                                  'plan': {'work_dir': '/remote/T1'}}
+        blocked = self.gateway._unresolved(doc, 't1', directory='/remote/T1', in_flight_only=True)
+        self.assertEqual(blocked['id'], 'live')
+
     def test_submit_check_syncs_task_back_to_running(self):
         record = self.execute()
         db = self.storage.load_db()

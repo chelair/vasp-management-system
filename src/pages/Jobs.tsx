@@ -839,6 +839,9 @@ export default function Jobs() {
         // 后端已把任务同步回运行中；刷新后提交置灰、停止可点。
         await refreshProjects();
         message.warning(reason);
+      } else if (reason.includes('正在进行的提交')) {
+        await refreshProjects();
+        message.warning(reason);
       } else if (reason.includes('原作业无法在LSF确认结束')) setPriorJobTask(task);
       else if (reason.includes('请先对账') || reason.includes('未对账动作')) {
         modal.confirm({

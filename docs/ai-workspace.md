@@ -42,7 +42,7 @@ work/          当前用户当前会话的私有草稿
 
 ## 按需结构工具
 
-模型可调用 `get_structure_summary`（结构概览）、`get_structure_environment`（局部原子环境）、`compare_structures`（结构对比），默认读取本地POSCAR/CONTCAR，也可按需固定范围远端只读。坐标与几何数据只在工具调用时返回，不预载整个项目到每轮对话。距离/角度/位移由Python处理周期边界；完整文件指纹和目录来源随结果返回，指纹变化即拒绝混用。细节与限制见 [结构工具](structure-tools.md)。
+评价结构合理性/优化问题优先调用 `check_structure`：先整体结构及重构迹象、再局部配位/界面、最后参数；元素/赝势仅基础核对，磁性等影响物理态时提升处理。模型也可调用 `get_structure_summary`（结构概览）、`get_structure_environment`（局部原子环境）、`compare_structures`（结构对比），默认读取本地POSCAR/CONTCAR，也可按需固定范围远端只读。坐标与几何数据只在工具调用时返回，不预载整个项目到每轮对话。距离/角度/位移由Python处理周期边界；完整文件指纹和目录来源随结果返回，指纹变化即拒绝混用。细节与限制见 [结构工具](structure-tools.md)。
 
 ## 思考深度
 

@@ -4,7 +4,8 @@ import math
 import permissions
 from storage import load_db
 import structure_geometry as geometry
-from structure_sources import load_many
+from structure_sources import load_many, load_check_evidence, selector
+import structure_check
 
 SELECTOR = {'type':'object','properties':{
     'task_id':{'type':'string','maxLength':200}, 'file':{'type':'string','enum':['POSCAR','CONTCAR'],'default':'CONTCAR'},
@@ -25,6 +26,9 @@ def tool(name,description,properties,required):
 
 
 TOOLS = [
+    tool('check_structure',
+        '检查模型合理性或结构优化问题时优先调用。按影响从整体结构合理性/优化重构迹象、局部配位与界面、最后计算参数输出Python筛查证据；不自动判定物相/变性。元素赝势对应仅基础核对，不作为默认最高优先级。自动只读目标目录INCAR/POTCAR摘要及OUTCAR头部，缺失标未知。reference可显式选真正初始结构；省略时CONTCAR尝试同任务POSCAR（remote尝试MAIN，local仅镜像），不是完整续算历史。当前/指定con用remote。返回来源指纹，沿用selector细查。',
+        {'structure':SELECTOR,'reference':SELECTOR,'pbc':PBC},['structure']),
     tool('get_structure_summary',
         '读取当前项目POSCAR/CONTCAR结构概览：组成、晶格、逐方向固定约束、几何分层/平面间隙和原子坐标分页（每页24）。先find_project_tasks定位。默认本地镜像，不保证最新；用户问最新/指定con时可按需source=remote只读固定文件。远端缺文件不跨目录回退，NEB指定image。后续查询沿用返回的source.selector锁定文件指纹。几何层/间隙不是材料相或真空的验证结论。',
         {'structure':SELECTOR,'pbc':PBC,'axis':{'type':'string','enum':['a','b','c'],'default':'c'},
@@ -61,6 +65,7 @@ def elements(value):
 
 def dispatch(project,user,name,arguments):
     allowed = {
+        'check_structure':{'structure','reference','pbc'},
         'get_structure_summary':{'structure','pbc','axis','atom_offset','layer_gap_angstrom'},
         'get_structure_environment':{'structure','pbc','atom_indices','elements','neighbor_elements','cutoff_angstrom'},
         'compare_structures':{'reference','target','pbc','pairs'},
@@ -75,6 +80,31 @@ def dispatch(project,user,name,arguments):
     pbc = arguments.get('pbc',[True,True,True])
     if not isinstance(pbc,list) or len(pbc)!=3 or any(type(x) is not bool for x in pbc):
         raise ValueError('周期边界须是a/b/c方向的三个布尔值')
+    if name == 'check_structure':
+        text, source = load_many(current,[arguments.get('structure')])[0]
+        target = geometry.parse(text)
+        reference_selection = selector(arguments['reference']) if 'reference' in arguments else None
+        reference_source, reference, reference_error = None, None, None
+        if reference_selection is None and source['file'] == 'CONTCAR':
+            reference_selection = {k:v for k,v in source['selector'].items() if k != 'expected_sha256'}
+            reference_selection['file'] = 'POSCAR'
+            if source['kind'] == 'remote':
+                reference_selection['directory'] = 'MAIN'
+        if reference_selection is not None:
+            # Validate before optional missing-file handling; never swallow explicit selectors.
+            selector(reference_selection)
+            try:
+                before, reference_source = load_many(current,[reference_selection])[0]
+                reference = geometry.parse(before)
+            except ValueError as exc:
+                if 'reference' in arguments:
+                    raise
+                reference_error = str(exc)
+        evidence = load_check_evidence(current,source)
+        same_task = bool(reference_source and reference_source['task_id']==source['task_id'] and reference_source['image']==source['image'])
+        result = structure_check.check(target,reference,evidence,pbc,same_task)
+        return {**result,'source':source,'reference_source':reference_source,'reference_unavailable':reference_error,
+                'reference_scope':'显式reference' if 'reference' in arguments else '默认MAIN/POSCAR候选起点（本地仅镜像），需核对是否真正初始构型'}
     if name == 'compare_structures':
         pairs = arguments.get('pairs',[])
         if not isinstance(pairs,list) or len(pairs)>8:

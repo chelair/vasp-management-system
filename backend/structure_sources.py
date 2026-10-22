@@ -186,3 +186,26 @@ def load_many(project, selections):
             source['snapshot_hash_matches'] = meta.get('hash') == 'sha1:'+hashlib.sha1(text.encode()).hexdigest()[:16] if meta.get('hash') else None
         result.append((text,source))
     return result
+
+
+def load_check_evidence(project, source):
+    """Only called with a trusted source returned by load_many, never model paths."""
+    import structure_check_evidence as probe
+    task_for(project, source['task_id'])
+    if source['kind'] == 'local':
+        evidence = probe.probe(str(Path(source['local_path']).parent), source['file'], source['sha256'])
+    else:
+        import ssh
+        script = Path(probe.__file__).read_text()
+        args = [str(Path(source['remote_path']).parent), source['file'], source['sha256']]
+        command = 'python3 -c ' + shlex.quote(script) + ' ' + ' '.join(shlex.quote(x) for x in args)
+        response = ssh.run_remote(project['server'], command, timeout=30)
+        if response.get('exit_code') != 0:
+            raise ValueError('结构检查补证失败或结构正在变化，请重新读取；不跨目录补证')
+        try:
+            evidence = json.loads(response.get('stdout') or '')
+        except (ValueError, TypeError):
+            raise ValueError('结构检查补证格式无效') from None
+    return {'files':evidence, 'directory':str(Path(source.get('remote_path') or source['local_path']).parent),
+            'kind':source['kind'], 'read_at':now_iso(), 'co_run_verified':False,
+            'note':'固定读取结构所在目录；同目录不证明这些输入曾用于该次输出。本地为镜像，OUTCAR仅采样；缺失/不稳定为未知。'}

@@ -91,7 +91,7 @@ class Provider(BaseHTTPRequestHandler):
                     previous = [json.loads(m['content']) for m in payload['messages'] if m.get('role') == 'tool']
                     selected = previous[0]['source']['selector'] if previous else {'task_id':'task-alice-extra'}
                     name,args = [
-                        ('get_structure_summary',{'structure':{'task_id':'task-alice-extra'}}),
+                        ('check_structure',{'structure':{'task_id':'task-alice-extra'}}),
                         ('get_structure_environment',{'structure':selected,'atom_indices':[1],'cutoff_angstrom':3}),
                         ('compare_structures',{'reference':{'task_id':'task-alice-extra','file':'POSCAR'},'target':selected,'pairs':[[1,2]]}),
                     ][count]
@@ -587,9 +587,9 @@ class AIChatTests(unittest.TestCase):
             result = self.wait_run(run)
         self.assertEqual(result['status'],'completed',result)
         events = result['tool_events']
-        self.assertEqual([e['name'] for e in events],['get_structure_summary','get_structure_environment','compare_structures'])
+        self.assertEqual([e['name'] for e in events],['check_structure','get_structure_environment','compare_structures'])
         self.assertTrue(all(e['status']=='completed' for e in events),events)
-        self.assertEqual(events[0]['result']['atom_count'],2)
+        self.assertEqual(events[0]['result']['overall_structure']['target']['atom_count_scanned'],2)
         self.assertEqual(events[1]['result']['environments'][0]['neighbors'][0]['distance_angstrom'],2)
         self.assertEqual(events[2]['result']['displacements']['max_angstrom'],.2)
         self.assertEqual(events[0]['result']['source']['sha256'],events[1]['result']['source']['sha256'])

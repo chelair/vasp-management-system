@@ -528,8 +528,8 @@ def task_atomic_forces(
 ):
     """逐原子受力（巡检详情页 3D 视图「查看原子受力」）。
 
-    数据来自远端**最新工作目录** OUTCAR 的最后一个 `TOTAL-FORCE` 块，元素/固定原子标志取同一目录
-    的 POSCAR；结果落到**该任务自己的本地镜像** `<任务目录>/reports/atomic_forces[_<映像>].json`，
+    数据来自远端**结构来源目录** OUTCAR 的最后一个 `TOTAL-FORCE` 块，元素/固定原子标志取同一目录
+    的 CONTCAR；结果落到**该任务自己的本地镜像** `<任务目录>/reports/atomic_forces[_<映像>].json`，
     任务已结束时直接复用本地缓存、不再连远端（任务在跑则每次重新取并覆盖）。
     """
     try:

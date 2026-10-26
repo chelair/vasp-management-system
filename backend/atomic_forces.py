@@ -1,7 +1,7 @@
 """逐原子受力读取（巡检详情页 3D 视图「查看原子受力」，v0.9.41）。
 
 数据来源：远端**结构来源目录**里 OUTCAR 的最后一个 `TOTAL-FORCE` 块，元素与固定原子标志取
-同一目录的 POSCAR。解析**直接复用 `batch_check`**（不复制一套）。
+同一目录的 CONTCAR。解析**直接复用 `batch_check`**（不复制一套）。
 
 **目录口径（关键）**：受力必须与界面显示的 CONTCAR 来自**同一个目录**——所以按巡检同步结构时
 记录的 `task.last_structure_dirs.CONTCAR`（如 `con5`；`""` = 任务主目录）取力，而不是"当前最新 conN"。
@@ -11,7 +11,7 @@
 - NEB：一次把**所有映像目录**（`00..NN`）的受力全取回来（仍然只发**一次**远端调用），
   每个映像各自落盘，前端切换映像即时可见、不再重复连远端。
 
-远端读取一次 exec（遵守项目"合并远端调用"约定）：进入结构来源目录 → stat 指纹 + base64 POSCAR
+远端读取一次 exec（遵守项目"合并远端调用"约定）：进入结构来源目录 → stat 指纹 + base64 CONTCAR
   + base64 OUTCAR 尾部 128KB。OUTCAR 实测 30–57MB，只读尾部（**不做全文件扫描**，否则每张要读几十 MB）。
 尾部窗口里没有完整的 `TOTAL-FORCE` 块时（有的映像在最后一个离子步之后又写了大块内容，把力块挤出窗口），
 再发一次**定点**调用：远端 grep 出最后一个 `TOTAL-FORCE` 行号、算出字节偏移，只把那一段取回来
@@ -53,7 +53,7 @@ DEFAULT_THRESHOLDS = {"max_force_threshold": 0.02, "rms_force_threshold": 0.01}
 #: NEB 一次最多取多少个映像（防目录里混入奇怪编号）
 MAX_IMAGES = 200
 #: 缓存载荷版本：字段口径变化时递增，旧缓存自动作废（不必手动清 data/）
-CACHE_SCHEMA = 5  # v5：fmax / force_max 从最大单轴分量改为合力模长 |F|
+CACHE_SCHEMA = 6  # v6：固定标记/元素取同目录 CONTCAR，旧 POSCAR 缓存作废
 #: 远端单次调用超时（秒）：只读尾部 + 两个 grep，正常 2–5s 内
 REMOTE_TIMEOUT = 120
 
@@ -162,7 +162,7 @@ def _work_dir_lines(remote_dir: str, analysis_dirs: List[str]) -> List[str]:
 
 
 def _image_probe_lines(prefix: str) -> List[str]:
-    """按目录前缀 `prefix`（`"$WORK/"` 或 `"$d/"`）回传指纹 / POSCAR / 尾部 OUTCAR。
+    """按目录前缀 `prefix`（`"$WORK/"` 或 `"$d/"`）回传指纹 / CONTCAR / 尾部 OUTCAR。
 
     不在这里做 `grep -c TOTAL-FORCE`（要整读 30–57MB 的 OUTCAR，NEB 一张一张读会明显变慢）；
     只 `grep -m1` 取尾部…也不需要——尾部里就有完整块，交给本地解析。
@@ -170,8 +170,8 @@ def _image_probe_lines(prefix: str) -> List[str]:
     return [
         "echo \"@@@META\"",
         f"stat -c '%s %Y' \"{prefix}OUTCAR\"",
-        'echo "@@@POSCAR"',
-        f"base64 \"{prefix}POSCAR\" | tr -d '\\n'",
+        'echo "@@@CONTCAR"',
+        f"base64 \"{prefix}CONTCAR\" | tr -d '\\n'",
         "echo",
         'echo "@@@TAIL"',
         f"tail -c {TAIL_BYTES} \"{prefix}OUTCAR\" | base64 | tr -d '\\n'",
@@ -220,7 +220,7 @@ def _single_script(remote_dir: str, analysis_dirs: List[str]) -> str:
     lines += [
         'cd "$WORK" 2>/dev/null || { echo "@@@NODIR"; exit 3; }',
         '[ -s OUTCAR ] || { echo "@@@NOOUTCAR"; exit 4; }',
-        '[ -s POSCAR ] || { echo "@@@NOPOSCAR"; exit 5; }',
+        '[ -s CONTCAR ] || { echo "@@@NOCONTCAR"; exit 5; }',
     ]
     lines += _image_probe_lines("")
     lines.append('echo "@@@END"')
@@ -237,7 +237,7 @@ def _all_images_script(remote_dir: str, analysis_dirs: List[str]) -> str:
         "  img=$(basename \"$d\")",
         "  COUNT=$((COUNT + 1))",
         f"  [ $COUNT -le {MAX_IMAGES} ] || break",
-        '  if [ ! -s "$d/OUTCAR" ] || [ ! -s "$d/POSCAR" ]; then',
+        '  if [ ! -s "$d/OUTCAR" ] || [ ! -s "$d/CONTCAR" ]; then',
         '    echo "@@@SKIP $img"',
         "    continue",
         "  fi",
@@ -275,13 +275,13 @@ def _decode(text: str) -> str:
 
 
 def _probe_of(chunk: str) -> Dict[str, Any]:
-    """把一段探测输出解析成 `{poscar, tail, size, mtime}`。"""
-    meta = _slice(chunk, "@@@META\n", "@@@POSCAR").split()
-    poscar_b64 = _slice(chunk, "@@@POSCAR\n", "@@@TAIL").strip()
+    """把一段探测输出解析成 `{contcar, tail, size, mtime}`。"""
+    meta = _slice(chunk, "@@@META\n", "@@@CONTCAR").split()
+    contcar_b64 = _slice(chunk, "@@@CONTCAR\n", "@@@TAIL").strip()
     # 用 _slice 而不是 _after：最后一段后面跟着 "@@@END" 标记，不能混进 base64
     tail_b64 = _slice(chunk, "@@@TAIL\n", "@@@IMGDONE").strip()
     return {
-        "poscar": _decode(poscar_b64),
+        "contcar": _decode(contcar_b64),
         "tail": _decode(tail_b64),
         "size": int(meta[0]) if len(meta) > 0 and meta[0].isdigit() else None,
         "mtime": int(meta[1]) if len(meta) > 1 and meta[1].isdigit() else None,
@@ -292,7 +292,7 @@ def _probe_of(chunk: str) -> Dict[str, Any]:
 
 
 def _elements_of(layout: Optional[Dict[str, Any]]) -> Optional[List[str]]:
-    """把 POSCAR 的「元素名 + 计数」摊平成逐原子元素表；VASP4（无元素名）返回 None。"""
+    """把 CONTCAR 布局的「元素名 + 计数」摊平成逐原子元素表；VASP4 无名称时返回 None。"""
     if not layout:
         return None
     species = layout.get("species")
@@ -381,15 +381,15 @@ def _build_payload(
     if not forces:
         raise AtomicForceError(409, "最后一个 TOTAL-FORCE 块没有原子行")
 
-    layout = parse_poscar_layout(probe["poscar"])
+    layout = parse_poscar_layout(probe["contcar"])
     fixed: List[bool] = list((layout or {}).get("fixed") or [])
     elements = _elements_of(layout)
     warnings: List[str] = []
     if layout is None:
-        warnings.append("POSCAR 解析失败，无法确定固定原子与元素名")
+        warnings.append("CONTCAR 解析失败，无法确定固定原子与元素名")
     elif layout.get("n_atoms") != len(forces):
         warnings.append(
-            f"POSCAR 原子数（{layout.get('n_atoms')}）与 OUTCAR 受力行数（{len(forces)}）不一致"
+            f"CONTCAR 原子数（{layout.get('n_atoms')}）与 OUTCAR 受力行数（{len(forces)}）不一致"
         )
 
     atoms: List[Dict[str, Any]] = []
@@ -419,6 +419,7 @@ def _build_payload(
             "image": image,
             "work_dir": work_dir,
             "structure": "CONTCAR",
+            "fixed_source": "CONTCAR",
             "energy": last.get("energy"),
             "force_max": stats[0] if stats else None,
             "force_rms": stats[1] if stats else None,
@@ -563,7 +564,7 @@ def _run(server: str, script_b64: str) -> str:
     # （@@@NODATA 是 2026-10-15 新增：目录在、但没有可用的 OUTCAR —— 漏了它就会掉进 502 兜底，
     #   把"试过哪些候选目录"的诊断全丢掉）
     flagged = any(
-        flag in out for flag in ("@@@NODIR", "@@@NODATA", "@@@NOOUTCAR", "@@@NOPOSCAR")
+        flag in out for flag in ("@@@NODIR", "@@@NODATA", "@@@NOOUTCAR", "@@@NOCONTCAR")
     )
     if result.get("exit_code") != 0 and "@@@END" not in out and not flagged:
         raise AtomicForceError(
@@ -585,8 +586,8 @@ def _raise_for_flags(out: str, remote_dir: str) -> None:
         )
     if "@@@NOOUTCAR" in out:
         raise AtomicForceError(404, "该目录还没有 OUTCAR（作业可能尚未开始或尚未产生输出）")
-    if "@@@NOPOSCAR" in out:
-        raise AtomicForceError(404, "该目录缺少 POSCAR，无法对应原子序号")
+    if "@@@NOCONTCAR" in out:
+        raise AtomicForceError(404, "该目录缺少 CONTCAR，无法确定固定原子与原子序号")
 
 
 def _candidate_note(out: str) -> str:

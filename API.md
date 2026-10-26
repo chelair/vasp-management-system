@@ -205,6 +205,8 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 
 ## 3. 只读接口（观测面）
 
+`GET /api/inspections/{task_id}/atomic-forces?image=&refresh=`：逐原子受力取结构来源目录OUTCAR，固定标记和元素从同目录CONTCAR读取（包括NEB各映像）。响应`fixed_source=CONTCAR`、`schema=6`；固定原子灰色显示，排除最大力/RMS统计。缺CONTCAR明确报错，不借用POSCAR标记；旧schema缓存自动失效。部分方向含F仍按现有整原子固定口径处理。
+
 NEB巡检结果补充：`force_thresholds`来自实际输出目录INCAR负EDIFFG，max=|EDIFFG|、RMS=|EDIFFG|/2；`force_max/force_rms`为中间映像末步最大值，`neb_force_checks`列各映像值、来源和收敛状态。仅全部中间映像正常结束且力收敛才`completed`，正常结束但超限/无法确认则`unconverged`，缺阈值/受力时`force_converged=null`并说明原因。端点不参与；排队/运行状态不被静态力检查覆盖。
 
 ### 3.1 项目 / 任务

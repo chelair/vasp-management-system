@@ -340,7 +340,7 @@ export default function JobsTree({
         className={`job-tree__project-row${p.closed ? ' job-tree__project-row--closed' : ''}`}
       >
         <span className="job-tree__project">
-          <span>{p.name}</span>
+          <span title={p.name}>{p.name}</span>
           {p.owner && (
             <Tooltip title={`项目归属：${p.owner}`}>
               <span className="job-tree__owner">{p.owner}</span>

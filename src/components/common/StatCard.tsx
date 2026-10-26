@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion';
 import type { ReactNode } from 'react';
 
 const ACCENTS = {
@@ -34,12 +33,9 @@ export default function StatCard({
 }: Props) {
   const a = ACCENTS[accent];
   return (
-    <motion.div
+    <div
       className={`stat-card${onClick ? ' stat-card--clickable' : ''}${active ? ' stat-card--active' : ''}`}
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, delay, ease: 'easeOut' }}
-      whileHover={{ y: -4, boxShadow: '0 12px 30px rgba(35, 48, 67, 0.12)' }}
+      style={{ animationDelay: `${delay}s` }}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
@@ -62,6 +58,6 @@ export default function StatCard({
         <div className="stat-card__value">{value}</div>
         {trend && <div className="stat-card__trend">{trend}</div>}
       </div>
-    </motion.div>
+    </div>
   );
 }

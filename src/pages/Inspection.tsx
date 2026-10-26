@@ -736,7 +736,10 @@ export default function Inspection() {
       dataIndex: 'check_time',
       key: 'check_time',
       width: 150,
-      render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span>,
+      render: (value: string) => {
+        const [date, ...time] = (value || '—').replace('T', ' ').split(' ');
+        return <span className="inspection-check-time" title={value}><span>{date}</span><small>{time.join(' ')}</small></span>;
+      },
     },
     {
       title: '项目',

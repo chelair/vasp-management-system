@@ -90,6 +90,21 @@ export interface TaskFileEntry {
   modified: string;
 }
 
+export interface TaskFileStatus {
+  task_id: string;
+  files: { name: string; status: string; local_size: number; local_count: number;
+    remote_size: number | null; remote_count: number | null }[];
+  remote_checked: boolean;
+  remote_dir: string | null;
+  checked_at: number;
+  error: string | null;
+}
+
+/** 默认只读本地；用户明确刷新时一次核对远端，不传输文件。 */
+export function fetchTaskFileStatus(taskId: string, remote = false): Promise<TaskFileStatus> {
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/file-status${remote ? '?remote=1' : ''}`);
+}
+
 /** 读取任务本地目录文件清单（第一次打开/刷新时扫描） */
 export async function fetchTaskFiles(taskId: string): Promise<TaskFileEntry[]> {
   const data = await request<{ task_id: string; dir: string; files: TaskFileEntry[] }>(

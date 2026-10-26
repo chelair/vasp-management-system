@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { App, Button, Card, Descriptions, Empty, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import {
   CheckCircleFilled,
@@ -17,8 +17,8 @@ import {
 } from '@ant-design/icons';
 import type { JobWorkspace, Task, TaskStatus, TaskType } from '../../types';
 import { GROUP_ROLE_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS } from '../../types';
-import { fetchTaskFiles, openTaskFolder } from '../../api/jobs';
-import type { TaskFileEntry, TaskInputState } from '../../api/jobs';
+import { fetchTaskFileStatus, openTaskFolder } from '../../api/jobs';
+import type { TaskFileStatus, TaskInputState } from '../../api/jobs';
 import { INSPECTION_COMPLETED } from '../../api/inspections';
 import StatusTag from '../common/StatusTag';
 import { checkNeedsAttention } from '../../utils/project';
@@ -43,9 +43,7 @@ interface Props {
   input?: TaskInputState | null;
 }
 
-/** 「同步最新参数」涉及的文件。文件存在性统一读取本地目录。 */
-const SYNCED_FILES = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR'];
-const FILE_ORDER = ['INCAR', 'KPOINTS', 'POSCAR', 'CONTCAR', 'POTCAR', 'vasp.lsf'];
+const FILE_ORDER = ['INCAR', 'KPOINTS', 'POSCAR', 'POTCAR', 'CONTCAR', 'OUTCAR', 'OSZICAR'];
 /** 状态配色（一处定义，图标/文字/边框都跟它走） */
 const STATE_COLOR = {
   fresh: 'var(--color-success)',
@@ -73,23 +71,30 @@ export default function TaskOverview({
 }: Props) {
   const { message } = App.useApp();
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const verifyNext = useRef(false);
   const [localFiles, setLocalFiles] = useState<{
     taskId: string;
     status: 'loading' | 'ready' | 'error';
-    files: TaskFileEntry[];
+    files: TaskFileStatus['files'];
+    remoteChecked?: boolean;
+    remoteDir?: string | null;
+    checkedAt?: number;
+    error?: string | null;
   } | null>(null);
 
   // 只读本地目录，避免工作区旧标志（尤其 vasp.lsf）和同步缓存造成误判。
   useEffect(() => {
     let disposed = false;
     let generation = 0;
-    const refresh = async () => {
+    const refresh = async (remote = false) => {
       const version = ++generation;
       setLocalFiles({ taskId: task.task_id, status: 'loading', files: [] });
       try {
-        const files = await fetchTaskFiles(task.task_id);
+        const data = await fetchTaskFileStatus(task.task_id, remote);
         if (!disposed && version === generation) {
-          setLocalFiles({ taskId: task.task_id, status: 'ready', files });
+          setLocalFiles({ taskId: task.task_id, status: 'ready', files: data.files,
+            remoteChecked: data.remote_checked, remoteDir: data.remote_dir,
+            checkedAt: data.checked_at, error: data.error });
         }
       } catch {
         if (!disposed && version === generation) {
@@ -97,11 +102,13 @@ export default function TaskOverview({
         }
       }
     };
-    void refresh();
-    window.addEventListener(INSPECTION_COMPLETED, refresh);
+    void refresh(verifyNext.current);
+    verifyNext.current = false;
+    const onInspection = () => void refresh();
+    window.addEventListener(INSPECTION_COMPLETED, onInspection);
     return () => {
       disposed = true;
-      window.removeEventListener(INSPECTION_COMPLETED, refresh);
+      window.removeEventListener(INSPECTION_COMPLETED, onInspection);
     };
   }, [task.task_id, workspace.files, input, refreshVersion]);
 
@@ -121,7 +128,7 @@ export default function TaskOverview({
   const fileStateOf = (name: string) => {
     if (pendingFiles.has(name)) {
       return {
-        key: 'pending', label: '有修改待提交',
+        key: 'pending', label: '有修改待同步',
         tip: '已保存待生效参数；写入远端后，运行中的 VASP 也不会自动重读。',
       };
     }
@@ -129,16 +136,27 @@ export default function TaskOverview({
       return {
         key: 'none', label: filesStatus === 'error' ? '状态未知' : '读取中',
         tip: filesStatus === 'error'
-          ? '本地文件清单读取失败，点击「刷新状态」重试。'
-          : '正在读取本地任务目录。',
+          ? '文件状态读取失败，点击「刷新状态」重试。'
+          : '正在读取文件状态。',
       };
     }
     const file = filesByName.get(name);
-    if (file) {
-      return file.size > 0
-        ? { key: 'fresh', label: '本地已有', tip: `本地文件大小：${file.size} 字节。仅确认文件存在，未校验内容或远端是否更新。` }
-        : { key: 'stale', label: '空文件', tip: '本地文件存在，但大小为 0，尚不能作为有效输入或结果。' };
-    }
+    const states: Record<string, { key: string; label: string; tip: string }> = {
+      synced: { key: 'fresh', label: '已核对一致', tip: '本地与远端同名文件内容一致，仅代表本次核对结果。' },
+      sampled: { key: 'stale', label: '抽样一致', tip: '大文件大小和头尾抽样一致，未逐字节核对整个文件。' },
+      different: { key: 'pending', label: '内容不同', tip: '文件内容或映像文件集合不同；请按需要上传输入或下载结果。' },
+      upload: { key: 'pending', label: '待上传', tip: '本地已有，远端缺失；可通过对应输入页同步。' },
+      download: { key: 'pending', label: '待下载', tip: '远端已有，本地缺失；可同步输入或回传结果文件。' },
+      local_only: { key: 'none', label: '仅本地有', tip: '本地结果文件存在，当前远端目录中缺失；不会自动上传结果。' },
+      missing: { key: 'none', label: '尚未生成', tip: '本次核对的本地和远端均没有该文件。' },
+      empty: { key: 'stale', label: '空文件', tip: '存在大小为0的文件，尚不能作为有效输入或结果。' },
+      changing: { key: 'stale', label: '文件更新中', tip: '核对期间文件仍在变化，请稍后刷新。' },
+      unknown: { key: 'none', label: '未能核对', tip: '远端连接、文件读取或映像数量超限；不能视为一致。' },
+      local: { key: 'none', label: '本地已有 · 未核对', tip: '只确认本地文件存在；点刷新状态核对远端。' },
+      local_missing: { key: 'none', label: '本地缺失', tip: '本地没有此文件，远端情况尚未核对。' },
+    };
+    if (file) return { ...(states[file.status] ?? states.unknown),
+      tip: `${(states[file.status] ?? states.unknown).tip} 本地${file.local_count}份，共${file.local_size}字节${file.remote_count !== null ? `；远端${file.remote_count}份，共${file.remote_size}字节` : ''}。` };
     return {
       key: 'none', label: '本地缺失',
       tip: '本地目录中没有这份文件；远端是否存在尚未核对。CONTCAR 需计算产生，输入文件可生成或同步。',
@@ -348,7 +366,7 @@ export default function TaskOverview({
         className="job-card mt-16"
         extra={
           <Space>
-            <Button size="small" loading={filesStatus === 'loading'} onClick={() => setRefreshVersion((v) => v + 1)}>
+            <Button size="small" loading={filesStatus === 'loading'} onClick={() => { verifyNext.current = true; setRefreshVersion((v) => v + 1); }}>
               刷新状态
             </Button>
             <Button type="primary" icon={<FileTextOutlined />} size="small" onClick={onGenerateInputs}>
@@ -359,7 +377,6 @@ export default function TaskOverview({
       >
         <div className="job-files">
           {FILE_ORDER.map((name) => {
-            const synced = SYNCED_FILES.includes(name);
             const state = fileStateOf(name);
             const color = state.key === 'fresh' ? STATE_COLOR.fresh
               : state.key === 'pending' ? STATE_COLOR.pending
@@ -373,7 +390,6 @@ export default function TaskOverview({
                   <span className="job-file__name">{name}</span>
                   <span className="job-file__state">
                     {state.label}
-                    {!synced && <span className="job-file__hint"> · 不参与参数同步</span>}
                   </span>
                 </div>
               </Tooltip>
@@ -381,9 +397,12 @@ export default function TaskOverview({
           })}
         </div>
         <div className="preview-note" style={{ marginTop: 10 }}>
-          以上状态来自本地任务目录；「本地已有」只表示文件存在，不代表与远端一致或计算已收敛。
-          「有修改待提交」表示已保存待生效参数；「本地缺失」不代表远端没有。
-          「刷新状态」只重读本地清单；拉取远端文件请使用「同步最新参数」（跳过有待生效修改的文件）。
+          「刷新状态」只读核对远端，不自动上传或下载。大文件标记抽样结果；有待生效参数时优先提示待同步。
+          核对一致不代表计算已收敛；运行中输出后续仍会变化。
+          {localFiles?.taskId === task.task_id && localFiles.remoteChecked && localFiles.checkedAt && (
+            <span> 核对时间：{new Date(localFiles.checkedAt * 1000).toLocaleString()}；目录：{localFiles.remoteDir}。</span>
+          )}
+          {localFiles?.taskId === task.task_id && localFiles.error && <span> {localFiles.error}。</span>}
           {input?.source && (
             <span>
               {' '}上次输入同步记录：
@@ -396,7 +415,7 @@ export default function TaskOverview({
         </div>
       </Card>
 
-      {filesStatus === 'ready' && FILE_ORDER.every((name) => !filesByName.has(name)) && pendingFiles.size === 0 && !input?.pending && (
+      {filesStatus === 'ready' && FILE_ORDER.every((name) => !filesByName.get(name)?.local_count) && pendingFiles.size === 0 && !input?.pending && (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description="本地尚无这些文件，可生成输入文件或同步远端文件"

@@ -856,6 +856,18 @@ def core_create_neb(
     return dict(result)
 
 
+@router.get("/tasks/{task_id}/file-status")
+def task_file_status(task_id: str, remote: bool = False):
+    try:
+        from file_sync_status import file_status
+        project, task = _resolve_task(task_id)
+        return ok("文件状态已读取", file_status(project, task, remote))
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content=fail(str(exc)))
+    except permissions.PermissionDenied:
+        raise
+
+
 @router.get("/tasks/{task_id}/files")
 def list_task_files(task_id: str):
     try:

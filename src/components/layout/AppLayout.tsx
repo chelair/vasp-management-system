@@ -7,11 +7,15 @@ import { request, setForbiddenHandler } from '../../api/client';
 
 /** 依赖提示条"已关闭"记录键：值为缺失依赖集合签名，集合不变则不再次弹出 */
 const DEPS_DISMISS_KEY = 'vasp.deps.banner.dismissed';
+const NAV_COLLAPSED_KEY = 'vasp.nav.collapsed';
 
 export default function AppLayout() {
   const location = useLocation();
   const { message } = App.useApp();
   const [navOpen, setNavOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    try { return localStorage.getItem(NAV_COLLAPSED_KEY) === 'true'; } catch { return false; }
+  });
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
   const [depsSignature, setDepsSignature] = useState('');
   const contentRef = useRef<HTMLElement>(null);
@@ -60,7 +64,11 @@ export default function AppLayout() {
 
   return (
     <div className={`app-shell${/^\/ai\/?$/.test(location.pathname) ? ' app-shell--ai' : ''}`}>
-      <Sidebar open={navOpen} onNavigate={() => setNavOpen(false)} />
+      <Sidebar open={navOpen} collapsed={navCollapsed} onToggleCollapse={() => {
+        const next = !navCollapsed;
+        setNavCollapsed(next);
+        try { localStorage.setItem(NAV_COLLAPSED_KEY, String(next)); } catch { /* 本次切换仍生效。 */ }
+      }} onNavigate={() => setNavOpen(false)} />
       {navOpen && (
         <div className="sidebar-overlay" onClick={() => setNavOpen(false)} />
       )}

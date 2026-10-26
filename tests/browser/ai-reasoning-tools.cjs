@@ -68,8 +68,22 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
   try {
     await page.goto('http://127.0.0.1:' + server.address().port);
     await page.getByText('目前读取到 188 个原子', { exact: false }).waitFor();
-    assert.equal(await page.locator('.sidebar').isVisible(), false, 'workbench has one sidebar');
-    assert.equal(await page.locator('.topbar').isVisible(), false);
+    assert.equal(await page.locator('.sidebar').isVisible(), true, 'system navigation remains beside the workbench');
+    assert.equal(await page.locator('.topbar').isVisible(), true);
+    await page.getByRole('button', { name: '收起总导航', exact: true }).click();
+    await page.locator('.sidebar--collapsed').waitFor();
+    assert.equal(Math.round((await page.locator('.sidebar').boundingBox()).width), 64);
+    assert.equal(await page.locator('.sidebar .nav-item__label').first().isVisible(), false, 'collapsed navigation only shows icons');
+    await page.locator('.sidebar').getByRole('link', { name: '作业管理', exact: true }).hover();
+    await page.getByRole('tooltip').getByText('作业管理', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '展开总导航', exact: true }).click();
+    await page.locator('.sidebar:not(.sidebar--collapsed)').waitFor();
+    assert.equal(Math.round((await page.locator('.sidebar').boundingBox()).width), 236);
+    assert.equal(await page.locator('.sidebar .nav-item__label').first().isVisible(), true);
+    await page.getByRole('button', { name: '收起总导航', exact: true }).click();
+    await page.reload();
+    await page.locator('.sidebar--collapsed').waitFor();
+    await page.getByText('目前读取到 188 个原子', { exact: false }).waitFor();
     const activity = page.locator('.ai-activity-summary').first(); assert.equal(await activity.getAttribute('aria-expanded'), 'false');
     await activity.click(); await page.locator('.ai-thought summary').click(); await page.getByText(REASONING, { exact: true }).waitFor();
     const tools = page.locator('.ai-tool-call'); await tools.first().locator('summary').click(); await tools.first().getByText('check_structure', { exact: true }).waitFor();
@@ -104,17 +118,26 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
     await page.waitForFunction(() => document.querySelector('.ai-composer textarea')?.value === '保留下一条草稿');
     await page.getByRole('button', { name: '收起会话栏', exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => document.querySelector('.sidebar').getBoundingClientRect().right <= 1);
     await page.screenshot({ path: '/tmp/vasp-ai-codex-mobile.png' });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile has no horizontal overflow');
     const mobileComposer = await composer.boundingBox(); assert(mobileComposer.y + mobileComposer.height <= 844, 'mobile composer stays visible');
     await page.getByRole('button', { name: '展开会话栏', exact: true }).click();
     await page.getByRole('button', { name: '关闭会话栏', exact: true }).waitFor();
-    await page.getByRole('link', { name: '返回项目管理' }).click(); await page.getByText('作业管理入口', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '关闭会话栏', exact: true }).click({ position: { x: 350, y: 50 } });
+    await page.getByRole('button', { name: '打开导航', exact: true }).click();
+    await page.locator('.sidebar.open').waitFor();
+    assert.equal(await page.locator('.sidebar .nav-item__label').first().isVisible(), true, 'mobile drawer retains full labels');
+    await page.locator('.sidebar').getByRole('link', { name: '作业管理', exact: true }).click(); await page.getByText('作业管理入口', { exact: true }).waitFor();
     assert.equal(await page.locator('.app-shell--ai').count(), 0, 'workbench layout only affects the AI route');
-    assert.equal(await page.locator('.topbar').isVisible(), true, 'system header returns outside workbench');
+    assert.equal(await page.locator('.topbar').isVisible(), true, 'system header remains available');
+    await page.setViewportSize({ width: 1440, height: 960 });
+    assert.equal(Math.round((await page.locator('.sidebar').boundingBox()).width), 64, 'collapse preference persists across modules');
+    await page.getByRole('button', { name: '展开总导航', exact: true }).click();
+    await page.locator('.sidebar:not(.sidebar--collapsed)').waitFor();
     assert.deepEqual(requests.filter(r => r.method !== 'GET').map(r => r.url), ['/api/ai/chat/conversations/c1/messages', '/api/ai/chat/runs/live/cancel']);
     assert.deepEqual(errors, []);
-    console.log('PASS Codex layout, activity details, live SSE, stop, drafts, file drawer, session search, mobile and return navigation; only explicit send/cancel writes');
+    console.log('PASS embedded workbench, global navigation collapse/expand/hover/persistence, activity, live SSE, stop, drafts, file drawer, session search and mobile navigation; only explicit send/cancel writes');
   } catch (error) { console.error((await page.locator('body').innerText()).slice(0, 8000)); throw error; }
   finally { for (const stream of streams) stream.end(); await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

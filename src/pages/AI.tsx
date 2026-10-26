@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Collapse, Descriptions, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Tabs, Tag, Tooltip } from 'antd';
-import { ApiOutlined, ArrowDownOutlined, ArrowLeftOutlined, ArrowUpOutlined, BookOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
+import { ApiOutlined, ArrowDownOutlined, ArrowUpOutlined, BookOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
 import ConnectionSettings from '../components/ai/ConnectionSettings';
 import WorkExperience from '../components/ai/WorkExperience';
 import StreamingAnswer from '../components/ai/StreamingAnswer';
@@ -223,7 +223,6 @@ export default function AI() {
         {sessionSearch && !conversationGroups.length && <p className="ai-muted ai-empty-hint">没有匹配的对话</p>}
         <div className="ai-sidebar-footer">
           <Button type="text" icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button>
-          <Link to="/jobs"><ArrowLeftOutlined /> 返回项目管理</Link>
         </div>
       </aside>
 

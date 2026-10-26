@@ -393,8 +393,8 @@ def audit(
         }
         if detail:
             record["detail"] = detail
-        with open(AUDIT_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        from operation_audit import append
+        append(record, path=AUDIT_FILE)
     except Exception as e:  # noqa: BLE001 - 审计失败不影响登录
         logger.warning("写账号审计失败：%s", e)
 

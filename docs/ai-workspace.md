@@ -65,3 +65,7 @@ work/          当前用户当前会话的私有草稿
 ## 维护位置
 
 `backend/ai_chat_service.py`、`ai_chat_store.py`、`ai_workspace.py`、`ai_inspections.py`、`ai_remote_evidence.py`、`ai_reasoning.py`；前端 `src/pages/AI.tsx` 与 `src/components/ai/`。验证只选涉及的聊天、证据、模型配置或浏览器用例，使用临时数据/密钥和 Mock 服务。
+
+## 个人操作经验
+
+工作台“操作经验”可查看本人近期关键操作、选择已有模型连接并启停每周整理、修改/确认/停用经验及下载知识文档。模型通过`search_work_experience`按问题检索，采用关键词与中文双字匹配，当前项目优先；跨项目先核对适用条件。每条保留冻结操作摘要及来源，AI候选不是科学规律或执行授权。数据与检索按本人/项目权限隔离，经验不写入共享knowledge。实际口径与上限见[操作经验](operation-learning.md)。

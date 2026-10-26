@@ -170,6 +170,8 @@ def _run_auto_reports() -> None:
 def _loop() -> None:
     while True:
         try:
+            from work_experience import tick
+            tick()
             if not _state["running"] and _due():
                 _state["running"] = True
                 _state["last_triggered_at"] = datetime.now().isoformat(timespec="seconds")

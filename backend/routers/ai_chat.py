@@ -89,6 +89,55 @@ class MessageBody(BaseModel):
     request_id: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
+class LearningBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    enabled: bool
+    connection_id: str | None = Field(default=None,max_length=64)
+
+
+class MemoryBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    title: str | None = Field(default=None,min_length=1,max_length=120)
+    body: str | None = Field(default=None,min_length=1,max_length=3000)
+    confirmed: bool | None = None
+    disabled: bool | None = None
+
+
+@router.get('/work-experience')
+@guard
+def work_experience(request:Request):
+    import work_experience as memory
+    user,owner=actor(request)
+    return ok('查询成功',{'settings':memory.settings(owner),'items':memory.entries(user)[:50],
+        'operations':memory.recent_operations(user)[:100], 'document':memory.document(user),
+        'note':'显示最近50条经验/100条本人操作；每周整理一次，最多40条事件、16000字符输入、2048输出token。'})
+
+
+@router.put('/work-experience/settings')
+@guard
+def configure_learning(request:Request,body:LearningBody):
+    import work_experience as memory
+    _,owner=actor(request)
+    return ok('已保存',memory.settings(owner,body.model_dump()))
+
+
+@router.post('/work-experience/learn')
+@guard
+def learn_experience(request:Request):
+    import work_experience as memory
+    user,_=actor(request)
+    return ok('整理完成',memory.learn(user,manual=True))
+
+
+@router.put('/work-experience/{item_id}')
+@guard
+def edit_experience(item_id:str,request:Request,body:MemoryBody):
+    import work_experience as memory
+    user,_=actor(request)
+    memory.update(user,item_id,body.model_dump(exclude_none=True))
+    return ok('经验已更新',{})
+
+
 @router.get("/connections")
 @guard
 def list_connections(request: Request):

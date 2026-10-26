@@ -74,6 +74,11 @@ def record_in_db(db, task_id, **values):
         if task is not None:
             parent = root_task(project,task)
             parent['input_state'] = append(parent.get('input_state') or {}, **values)
+            from operation_audit import record
+            record(project,parent,'parameters.'+values['event'],{
+                'directory':values.get('directory'),'job_id':values.get('job_id'),
+                'changes':diff(values.get('before',{}),values.get('after',{})),
+                'semantics':'输入已写入/提交快照；不代表运行中的VASP已重读或已收敛'})
             return
     raise ValueError('参数历史对应任务不存在')
 

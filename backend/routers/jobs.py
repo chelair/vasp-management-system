@@ -286,41 +286,17 @@ def _audit_log(project: str, task_id: str, remote_dir: str, command: str, result
     from automation.gateway import execution_context
     controlled_action = execution_context()
     timestamp = datetime.now().isoformat(timespec="seconds")
+    import operation_audit
     try:
-        AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
-            f.write(
-                f"[{timestamp}] project={project} "
-                f"task={task_id} dir={remote_dir} cmd={command} result={result} user={username}\n"
-            )
-    except permissions.PermissionDenied:
-        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
-    except Exception:  # noqa: BLE001 - 审计日志失败不影响提交
-        pass
-    try:
-        jsonl = DATA_DIR / "audit" / "actions.jsonl"
-        jsonl.parent.mkdir(parents=True, exist_ok=True)
-        with open(jsonl, "a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "at": timestamp,
-                        "username": username,
-                        "automation": bool(controlled_action),
-                        "action_id": controlled_action,
-                        "project": project,
-                        "task_id": task_id,
-                        "remote_dir": remote_dir,
-                        "command": command,
-                        "result": result,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except permissions.PermissionDenied:
-        raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
-    except Exception:  # noqa: BLE001
+        with operation_audit.LOCK:
+            AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with open(AUDIT_LOG, "a", encoding="utf-8") as stream:
+                stream.write(f"[{timestamp}] project={project} task={task_id} dir={remote_dir} cmd={command} result={result} user={username}\n")
+            user = permissions.current_user_from_context() or {}
+            operation_audit.append({"at":timestamp,"username":username,"actor_id":user.get('user_id'),
+                "automation":bool(controlled_action) or user.get('role')=='agent',"action_id":controlled_action,
+                "project":project,"task_id":task_id,"remote_dir":remote_dir,"command":command,"result":result})
+    except Exception:
         pass
 
 
@@ -1411,6 +1387,8 @@ def archive_task(task_id: str):
         return JSONResponse(status_code=500, content=fail(f"关闭任务失败：{e}"))
     # 归档后静默拉回最新计算目录的 OUTCAR / OSZICAR 到本地镜像（失败不影响归档）
     _schedule_archive_outputs(str(project.get("name") or ""), task_id)
+    from operation_audit import record
+    record(project,task,'task.archive',{'before':previous,'after':'archived','siblings':siblings})
     return ok(
         "任务已关闭（归档）",
         {
@@ -1545,6 +1523,8 @@ def unarchive_task(task_id: str):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"重新打开任务失败：{e}"))
+    from operation_audit import record
+    record(project,task,'task.unarchive',{'before':'archived','after':restore,'siblings':siblings})
     return ok(
         "任务已重新打开",
         {
@@ -2099,6 +2079,9 @@ def update_task_input_draft(task_id: str, payload: dict = Body(default={})):
             current["input_state"] = state
             updated = dict(current)
         data = _input_payload(project, updated)
+        from operation_audit import record
+        record(project,updated,'input.draft',{'file':file_name,'changes':[c for c in data['changes'] if not c.get('applied_at')],
+            'semantics':'待生效草稿，未写远端'})
         count = len([c for c in data["changes"] if not c.get("applied_at")])
         return ok(
             f"已记录参数修改（共 {count} 项待生效，将在下次续算时应用）", data

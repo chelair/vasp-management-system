@@ -326,19 +326,11 @@ def _append_history(snapshot: Dict[str, Any]) -> None:
 
 def _audit_submissions() -> Dict[str, int]:
     """从 data/audit_submit.log 统计每日提交成功作业数（result=OK）。"""
-    counts: Dict[str, int] = {}
-    if not AUDIT_FILE.is_file():
-        return counts
+    from operation_audit import submission_counts
     try:
-        lines = AUDIT_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()[-2000:]
-    except Exception:  # noqa: BLE001
-        return counts
-    for line in lines:
-        m = re.match(r"^\[(\d{4}-\d{2}-\d{2})T[^\]]*\]", line)
-        if not m or "result=OK" not in line or "job=" not in line:
-            continue
-        counts[m.group(1)] = counts.get(m.group(1), 0) + 1
-    return counts
+        return submission_counts(AUDIT_FILE)
+    except (OSError, ValueError):
+        return {}
 
 
 def build_trend(days: int = TREND_DAYS) -> Dict[str, Any]:

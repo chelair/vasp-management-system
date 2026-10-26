@@ -53,6 +53,8 @@ async def lifespan(_: FastAPI):
         recover_runs()
         from ai_chat_service import migrate_project_conversations
         migrate_project_conversations()
+        from work_experience import recover
+        recover()
     except Exception:
         print("[ai-chat] AI 私有存储暂不可用，请检查磁盘权限；其他模块继续运行", flush=True)
 

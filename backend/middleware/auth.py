@@ -148,8 +148,21 @@ async def auth_middleware(request: Request, call_next):
     request.state.username = user.get("username")
     # 供深层调用（jobs._resolve_task 等"唯一入口"）做归属校验用
     permissions.set_current_user(user)
+    audit_target = None
+    if method not in SAFE_METHODS:
+        try:
+            from operation_audit import request_target
+            audit_target = request_target(path,user)
+        except Exception:
+            pass
     try:
         response = await call_next(request)
+        if audit_target:
+            try:
+                from operation_audit import request_result
+                request_result(audit_target,path,method,response.status_code)
+            except Exception:
+                pass
     finally:
         # 防御性清理：避免极少数情况下 contextvar 残留到后续处理
         permissions.clear_current_user()

@@ -5,7 +5,7 @@ import { getAIWorkspace, listAIWorkspace, readAIWorkspace } from '../../api/aiCh
 import type { AIRun, AIWorkspaceFile, AIWorkspaceListing, AIWorkspaceMap } from '../../api/aiChat';
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '读取失败';
-const TOOL_NAMES: Record<string, string> = { list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿', find_project_tasks: '定位任务', get_task_inspections: '查询最近巡检', get_inspection_evidence: '读取巡检数值证据', get_opt_runs: '查询OPT自主处置', get_task_parameter_history: '查询实际参数记录', get_remote_task_evidence: '远端只读补证', check_structure: '检查结构合理性与变化', get_structure_summary: '读取结构概览', get_structure_environment: '分析原子环境', compare_structures: '对比模型结构' };
+const TOOL_NAMES: Record<string, string> = { search_work_experience: '检索个人操作经验', list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿', find_project_tasks: '定位任务', get_task_inspections: '查询最近巡检', get_inspection_evidence: '读取巡检数值证据', get_opt_runs: '查询OPT自主处置', get_task_parameter_history: '查询实际参数记录', get_remote_task_evidence: '远端只读补证', check_structure: '检查结构合理性与变化', get_structure_summary: '读取结构概览', get_structure_environment: '分析原子环境', compare_structures: '对比模型结构' };
 
 export default function WorkspacePanel({ conversationId, runs, enabled }: { conversationId: string; runs: AIRun[]; enabled: boolean }) {
   const [map, setMap] = useState<AIWorkspaceMap | null>(null);

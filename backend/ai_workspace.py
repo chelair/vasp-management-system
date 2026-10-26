@@ -273,6 +273,9 @@ from managed_tools import TOOLS as MANAGED_TOOLS
 from structure_tools import TOOLS as STRUCTURE_TOOLS
 
 TOOLS = TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE_TOOLS + [
+    {'type':'function','function':{'name':'search_work_experience',
+        'description':'按当前问题检索本人历史操作经验，最多5条，优先当前项目；仅包含本人目前可访问项目的经验。类似故障/参数处理或用户习惯时按需调用，中文关键词即可。跨项目先核对适用条件，候选不代表规律或计算已收敛，最新用户指令优先；不提供执行授权。',
+        'parameters':{'type':'object','properties':{'query':{'type':'string','minLength':1,'maxLength':200}},'required':['query'],'additionalProperties':False}}},
     {'type':'function','function':{'name':'get_task_parameter_history','description':'查询当前任务最近5次实际上传/续算应用/成功提交的参数记录（不含草稿），可见具体旧值/新值、con目录和作业号；record_id分页读取实际参数快照。',
         'parameters':{'type':'object','properties':{'task_id':{'type':'string'},'record_id':{'type':'string'},'offset':{'type':'integer','minimum':0}},'required':['task_id'],'additionalProperties':False}}},
     {'type':'function','function':{'name':'get_remote_task_evidence','description':'独立按需远端只读补证。先get_task_inspections取得evidence_token并检查来源/时效；参与自动巡检且超过4小时、来源不符，或参数证据缺失时使用。只读固定输入和日志并核对LSF，不执行命令、不修改文件/状态、不触发巡检。历史对比directories按旧→新给定已知conN，最多2个；默认CURRENT。',
@@ -298,6 +301,16 @@ TOOLS = TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE_TOOLS + [
 def dispatch(project: dict, conversation: dict, context: dict, name: str, arguments: dict, *, user=None, run_id='') -> dict:
     if name not in {tool["function"]["name"] for tool in TOOLS} or not isinstance(arguments, dict):
         raise ValueError("不支持的工作区工具")
+    if name == 'search_work_experience':
+        query=arguments.get('query')
+        if set(arguments)!={'query'} or not isinstance(query,str) or not 1<=len(query.strip())<=200:
+            raise ValueError('请给出简短的经验检索关键词')
+        import work_experience as memory
+        if project['project_id'] not in {p['project_id'] for p in memory.scope(user)}:
+            raise ValueError('当前项目不存在或无权访问')
+        rows=memory.entries(user,query,preferred_project_id=project['project_id'])
+        return {'items':rows,'current_project_id':project['project_id'],
+                'note':'本人历史参考，已停用经验已排除；候选不等于已验证规律，实际操作前仍核对当前证据。'}
     if name in {tool['function']['name'] for tool in TOPIC_TOOLS}:
         from topic_tools import dispatch as topic_dispatch
         return topic_dispatch(user,conversation,run_id,name,arguments)

@@ -66,11 +66,8 @@ def write(
     try:
         LOCKS_DIR.mkdir(parents=True, exist_ok=True)
         AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUDIT_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            if strict:
-                f.flush()
-                os.fsync(f.fileno())
+        from operation_audit import append
+        record = append(record, path=AUDIT_FILE, strict=strict)
     except OSError:
         if strict:
             raise
@@ -79,26 +76,5 @@ def write(
 
 def read_recent(limit: int = 200, *, only_automation: bool = True) -> list:
     """读取最近若干条审计（默认只看自动化记录），用于决策日志页。"""
-    if not AUDIT_FILE.is_file():
-        return []
-    try:
-        # 审计文件是追加写的 JSONL，体积不大，直接从尾部读
-        with open(AUDIT_FILE, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()[-max(limit * 3, 200):]
-    except OSError:
-        return []
-    out = []
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if only_automation and not record.get("automation"):
-            continue
-        out.append(record)
-        if len(out) >= limit:
-            break
-    return out
+    from operation_audit import recent
+    return recent(limit, path=AUDIT_FILE, predicate=(lambda row:bool(row.get('automation'))) if only_automation else None)

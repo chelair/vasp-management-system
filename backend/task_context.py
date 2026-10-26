@@ -42,13 +42,12 @@ def _actor_kind(username: Any) -> str:
 
 def _actions_for(task_id: str, limit: int) -> List[Dict[str, Any]]:
     """最近 N 条动作（新 → 旧）。审计是 JSONL，按行倒着找。"""
-    if not AUDIT_FILE.is_file() or limit <= 0:
+    if limit <= 0:
         return []
+    from operation_audit import recent
     found: List[Dict[str, Any]] = []
-    try:
-        lines = AUDIT_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
+    lines = [json.dumps(row) for row in reversed(recent(limit, path=AUDIT_FILE, predicate=lambda row:row.get('task_id')==task_id))]
+
     for line in reversed(lines):
         if f'"{task_id}"' not in line:
             continue

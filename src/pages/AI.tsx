@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, App, Button, Collapse, Descriptions, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Tabs, Tag, Tooltip } from 'antd';
+import { Alert, App, Button, Collapse, Descriptions, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tabs, Tag, Tooltip } from 'antd';
 import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
 import PageHeader from '../components/common/PageHeader';
 import ConnectionSettings from '../components/ai/ConnectionSettings';
+import WorkExperience from '../components/ai/WorkExperience';
 import StreamingAnswer from '../components/ai/StreamingAnswer';
 import ThinkingText from '../components/ai/ThinkingText';
 import WorkspacePanel from '../components/ai/WorkspacePanel';
@@ -47,6 +48,7 @@ export default function AI() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [experienceOpen,setExperienceOpen]=useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [inspecting, setInspecting] = useState<AIRun | null>(null);
   const [streamRevision, setStreamRevision] = useState(0);
@@ -192,7 +194,7 @@ export default function AI() {
 
   return <div className="ai-page">
     {topicId&&<TopicReportEditor key={topicId} topicId={topicId} connectionId={detail?.connection_id} onClose={()=>setTopicId(undefined)} onSaved={()=>setTopicRevision(r=>r+1)}/>}
-      <PageHeader title="AI 工作台" subtitle="按项目附加上下文 · 基于本地计算记录分析" extra={<Button icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button>} />
+      <PageHeader title="AI 工作台" subtitle="按项目附加上下文 · 基于本地计算记录分析" extra={<Space><Button onClick={()=>setExperienceOpen(true)}>操作经验</Button><Button icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button></Space>} />
     {!connections.length && !loading && <Alert type="info" showIcon message="先配置模型接口，再开始对话" action={<Button size="small" onClick={() => setSettingsOpen(true)}>配置连接</Button>} />}
     {error && <Alert type="warning" closable onClose={() => setError('')} message={error} action={active ? <Button size="small" onClick={() => setStreamRevision((n) => n + 1)}>重新连接</Button> : undefined} />}
     <div className="ai-workspace">
@@ -340,6 +342,7 @@ export default function AI() {
         </> : <div className="ai-empty-hint ai-muted">选择会话后展示对应数据。每次发问会重新读取本地快照；右侧刷新不会发起远端同步。</div>}
       </aside>
     </div>
+    <WorkExperience open={experienceOpen} close={()=>setExperienceOpen(false)} connections={connections}/>
     <ConnectionSettings open={settingsOpen} close={() => setSettingsOpen(false)} connections={connections} reload={reloadConnections} />
     <Modal title="会话设置" forceRender open={editOpen} onCancel={() => setEditOpen(false)} onOk={async () => {
       if (!detail) return;

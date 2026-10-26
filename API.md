@@ -881,6 +881,8 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 新巡检总能统一使用已输出的离子步 `TOTEN`（含色散修正），不使用未完成电子迭代的能量。历史巡检摘要及详情按归档原值返回，不在读取时重解析或自动更正，也不返回 `energy_correction`；原始归档、`observation_id` 和已冻结报告/聊天保持原样。后续实际巡检产生的新观测按新取数规则更新。
 
+**个人操作经验**：原私有工作台新增 GET `/api/ai/chat/work-experience`（本人设置/最近50经验与100操作/Markdown），PUT `/work-experience/settings`（enabled、本人connection_id），POST `/work-experience/learn`（手动整理，每自然周最多两次尝试，自动最多一次），PUT `/work-experience/{id}`（title/body/confirmed/disabled，禁止改owner/项目/来源）。模型只读工具 `search_work_experience(query)` 使用中文关键词检索，最多5条，当前项目优先，仅本人及当前可访问项目；停用立即排除。周整理输入最多40事件/16000字符、输出2048token，候选不证明通用规律或计算收敛。日志每周压缩保留28天/64MiB，提交统计独立累计；经验存私有SQLite与Markdown，不进共享knowledge目录。见[操作经验](docs/operation-learning.md)。
+
 **模型按需结构工具**：`check_structure(structure, reference?, pbc?)`按整体结构/优化重构迹象→局部配位/界面→计算设置返回全原子筛查；元素/赝势为基础核对项，不默认最高优先级。参考省略时CONTCAR尝试同任务POSCAR（远端MAIN，本地镜像）；缺默认参考标未知，显式参考缺失报错。固定只读同目录INCAR/POTCAR摘要/OUTCAR头，未证明同次计算、不自动判相/变性或收敛。原项目工作台还提供 `get_structure_summary(structure, pbc?, axis?, atom_offset?, layer_gap_angstrom?)`、`get_structure_environment(structure, pbc?, atom_indices?|elements?, neighbor_elements?, cutoff_angstrom?)`、`compare_structures(reference, target, pbc?, pairs?)`。结构selector为 `{task_id, file?:POSCAR|CONTCAR, source?:local|remote, directory?:CURRENT|MAIN|conN, image?, expected_sha256?}`；默认CONTCAR/local，directory仅远端支持，NEB必须指定映像。每次重查当前项目/任务归属，远端只读固定结构文件，不触发巡检/同步/HPC动作。返回Å/°几何值、完整sha256、采集/文件时间及来源selector；后续携带指纹防混用。概览坐标每页24原子；环境最多6中心/16邻居及最近6邻居夹角；文件1 MiB/2000原子，有搜索预算和截断标记。跨任务不自动映射原子，变胞不报告逐原子位移，几何邻居/分层不等于成键/物相判定。仅工具协议增量，无新增HTTP动作路由或结构预加载；见 [结构工具](docs/structure-tools.md)。
 
 ## 5. 现有自动化与托管执行边界

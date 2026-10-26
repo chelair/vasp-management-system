@@ -513,6 +513,16 @@ export default function Jobs() {
     [applyInputState, inputStates],
   );
 
+  /** Creation changes remote inputs and the local snapshot; bypass the editor cache. */
+  const handleInputsCreated = async (taskId?: string) => {
+    const ps = await refreshProjects();
+    const task = ps.flatMap((p) => p.tasks).find((t) => t.task_id === taskId);
+    if (task) {
+      const state = await loadInputState(task, true);
+      if (!state) message.warning('计算文件已生成，但参数页读取失败，请重新打开任务');
+    }
+  };
+
   /** 同步远端最新计算目录的参数（1 次 exec + 4 次小文件下载） */
   const handleSyncInput = async (task: Task) => {
     setInputSyncing(task.task_id);
@@ -919,7 +929,10 @@ export default function Jobs() {
     try {
       const r = await createFracFiles(optTask.task_id);
       message.success(`频率矫正输入已生成：${r.frac_dir}`);
-      await refreshProjects();
+      if (r.warnings?.length) message.warning(r.warnings.join('；'));
+      const frac = projects.flatMap((p) => p.tasks).find((t) =>
+        t.task_type === 'frac' && (t.parent_task_id === optTask.task_id || t.dir_path === `${optTask.dir_path}/frac`));
+      await handleInputsCreated(frac?.task_id);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '创建频率矫正失败');
     } finally {
@@ -1606,7 +1619,7 @@ export default function Jobs() {
         project={selectedProject}
         task={eleBuildTask}
         onCancel={() => setEleBuildTask(null)}
-        onCreated={() => void refreshProjects()}
+        onCreated={() => void handleInputsCreated(eleBuildTask?.task_id)}
       />
 
       <DiffChargeModal
@@ -1636,7 +1649,7 @@ export default function Jobs() {
         project={selectedProject}
         nebTask={nebBuildTask}
         onCancel={() => setNebBuildTask(null)}
-        onCreated={() => void refreshProjects()}
+        onCreated={() => void handleInputsCreated(nebBuildTask?.task_id)}
       />
 
       <TaskPickerModal

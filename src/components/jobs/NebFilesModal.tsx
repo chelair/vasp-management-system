@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, App, Form, InputNumber, Modal, Select, Switch } from 'antd';
 import { createNebFiles } from '../../api/jobs';
 import type { Project, Task } from '../../types';
+import { isCompletedOptimization } from '../../utils/taskStatus';
 
 interface Props {
   open: boolean;
@@ -53,6 +54,10 @@ export default function NebFilesModal({
       message.warning('请选择初态和末态优化任务');
       return;
     }
+    if (![initialId, finalId].every((id) => optCandidates.some((t) => t.task_id === id && isCompletedOptimization(t)))) {
+      message.warning('初末态须为已完成或归档前已完成的优化任务');
+      return;
+    }
     setBuilding(true);
     try {
       const r = await createNebFiles(nebTask.task_id, {
@@ -69,6 +74,7 @@ export default function NebFilesModal({
         },
       });
       message.success(`NEB 计算文件已生成：${r.neb_dir}（${r.images.length} 个映像）`);
+      if (r.warnings?.length) message.warning(r.warnings.join('；'));
       onCancel();
       onCreated();
     } catch (err) {
@@ -98,7 +104,8 @@ export default function NebFilesModal({
             onChange={setInitialId}
             options={optCandidates.map((t) => ({
               value: t.task_id,
-              label: `${t.model_name}（${t.status}）`,
+              label: `${t.model_name}（${t.status === 'archived' && isCompletedOptimization(t) ? '已归档，优化已完成' : t.status}）`,
+              disabled: !isCompletedOptimization(t),
             }))}
           />
         </Form.Item>
@@ -110,7 +117,8 @@ export default function NebFilesModal({
             onChange={setFinalId}
             options={optCandidates.map((t) => ({
               value: t.task_id,
-              label: `${t.model_name}（${t.status}）`,
+              label: `${t.model_name}（${t.status === 'archived' && isCompletedOptimization(t) ? '已归档，优化已完成' : t.status}）`,
+              disabled: !isCompletedOptimization(t),
             }))}
           />
         </Form.Item>

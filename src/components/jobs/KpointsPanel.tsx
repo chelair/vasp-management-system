@@ -66,6 +66,12 @@ export default function KpointsPanel({
   const [meshDraft, setMeshDraft] = useState<number[]>(
     pendingMesh ?? snapshotMesh ?? [1, 1, 1],
   );
+  const inputMeshKey = JSON.stringify(pendingMesh ?? snapshotMesh ?? [1, 1, 1]);
+  useEffect(() => {
+    // Tabs retain mounted panels: a new snapshot must update the readonly fields
+    // as well as their caption. Leave an in-progress edit under user control.
+    if (!editing) setMeshDraft(JSON.parse(inputMeshKey));
+  }, [inputMeshKey, editing]);
 
   const structureText = poscarContent ?? localPoscar;
   const info = useMemo(() => (structureText ? parsePoscar(structureText) : null), [structureText]);

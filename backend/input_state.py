@@ -312,7 +312,7 @@ def _download_text(server: str, remote_path: str) -> Optional[str]:
 
 
 def build_snapshot(
-    server: str, task: Dict[str, Any], *, kind: str = "manual"
+    server: str, task: Dict[str, Any], *, kind: str = "manual", source_dir: Optional[str] = None
 ) -> Dict[str, Any]:
     """从远端最新目录取回输入文件，**覆盖**本地镜像并返回 input_state（不落库）。
 
@@ -325,7 +325,9 @@ def build_snapshot(
     ).rstrip("/")
     if not remote_dir:
         raise ValueError("任务缺少远程目录")
-    source_dir = _newest_dir_with_file(server, remote_dir, "INCAR") or remote_dir
+    # Creation callers pin the directory they just wrote; an old conN must not
+    # silently replace those inputs. The ordinary manual/submit path is unchanged.
+    source_dir = source_dir or _newest_dir_with_file(server, remote_dir, "INCAR") or remote_dir
 
     texts: Dict[str, str] = {}
     for name in SNAPSHOT_FILES:

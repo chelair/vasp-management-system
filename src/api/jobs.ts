@@ -573,6 +573,7 @@ export async function createFracFiles(
   latest_dir: string | null;
   incar_changes: Record<string, string>;
   copied_files: string[];
+  warnings: string[];
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/create-frac`, {
     method: 'POST',
@@ -810,6 +811,7 @@ export async function createNebFiles(
   images: string[];
   incar_changes: Record<string, string | number>;
   copied_files: string[];
+  warnings: string[];
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/create-neb-files`, {
     method: 'POST',

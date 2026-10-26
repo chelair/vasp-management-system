@@ -64,6 +64,7 @@ from paths import resolve_local_path, resolve_remote_path, to_local_rel, to_remo
 import ssh
 from storage import STATUS_ENUM, db_transaction, load_db, save_db, update_task_status
 from task_paths import (
+    completed_optimization,
     ELE_DIFF_TYPE,
     free_energy_frac_task,
     is_continuation_task,
@@ -693,12 +694,12 @@ def core_create_frac(
     frac_task["notes"] = (
         f"频率矫正输入由 {task.get('model_name')} 生成（{result['latest_dir'] or '主目录'}）"
     )
-    db = load_db()
-    proj = next(p for p in db["projects"] if p["name"] == project["name"])
-    for t in proj["tasks"]:
-        if t.get("task_id") == frac_task["task_id"]:
-            t.update(frac_task)
-    save_db(db)
+    with db_transaction() as db:
+        current = _find_task_in_db(db, frac_task['task_id'])
+        if current is None:
+            raise LookupError('频率矫正任务已不存在')
+        current.update(input_source=frac_task['input_source'], notes=frac_task['notes'])
+    _sync_created_inputs(project, frac_task, result, 'frac_dir')
     _audit_log(
         project["name"], task_id, result["frac_dir"],
         "create-frac", f"OK src={result['source_dir']}",
@@ -833,12 +834,12 @@ def core_create_neb(
         raise ActionError(404, "初态/末态优化任务不存在")
     if initial_task.get("task_type") != "opt" or final_task.get("task_type") != "opt":
         raise ActionError(400, "初态/末态必须是结构优化任务")
-    if initial_task.get("status") != "completed":
+    if not completed_optimization(initial_task):
         raise ActionError(
             400,
             f"初态优化未收敛（当前状态：{initial_task.get('status')}），请先完成结构优化",
         )
-    if final_task.get("status") != "completed":
+    if not completed_optimization(final_task):
         raise ActionError(
             400,
             f"末态优化未收敛（当前状态：{final_task.get('status')}），请先完成结构优化",
@@ -866,12 +867,12 @@ def core_create_neb(
         "potcar_from": f"{result['source_is']}/POTCAR",
         "kpoints_from": f"{result['source_is']}/KPOINTS",
     }
-    db = load_db()
-    proj = next(p for p in db["projects"] if p["name"] == project["name"])
-    for t in proj["tasks"]:
-        if t.get("task_id") == task_id:
-            t.update(task)
-    save_db(db)
+    with db_transaction() as db:
+        current = _find_task_in_db(db, task_id)
+        if current is None:
+            raise LookupError('NEB任务已不存在')
+        current['input_source'] = task['input_source']
+    _sync_created_inputs(project, task, result, 'neb_dir')
     _audit_log(
         project["name"], task_id, result["neb_dir"],
         f"create-neb images={num_images}", "OK",
@@ -1102,15 +1103,15 @@ def build_ele(task_id: str, payload: dict = Body(default={})):
             ),
         }
         task["subtype"] = ",".join(ele_types) if ele_types else None
-        db = load_db()
-        proj = next(p for p in db["projects"] if p["name"] == project["name"])
-        for t in proj["tasks"]:
-            if t.get("task_id") == task_id:
-                t.update(task)
-        save_db(db)
+        with db_transaction() as db:
+            current = _find_task_in_db(db, task_id)
+            if current is None:
+                raise LookupError('电子结构任务已不存在')
+            current.update(input_source=task['input_source'], subtype=task['subtype'])
+        _sync_created_inputs(project, task, result, 'ele_dir')
         _audit_log(
             project["name"], task_id, result["ele_dir"],
-            f"build-ele-inputs type={ele_type}", "OK",
+            f"build-ele-inputs type={','.join(ele_types)}", "OK",
         )
         return ok("电子结构输入文件已生成", result)
     except LookupError as e:
@@ -1764,12 +1765,15 @@ def _input_payload(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, A
     }
 
 
-def _sync_input_now(project: Dict[str, Any], task: Dict[str, Any], kind: str) -> Dict[str, Any]:
+def _sync_input_now(project: Dict[str, Any], task: Dict[str, Any], kind: str, *, source_dir: str | None = None) -> Dict[str, Any]:
     """同步一次远端输入并落库，返回更新后的 payload。"""
+    options = {'kind':kind}
+    if source_dir:
+        options['source_dir'] = source_dir
     snapshot = build_snapshot(
         str(project.get("server") or ""),
         {**task, "project_name": project.get("name")},
-        kind=kind,
+        **options,
     )
     updated: Dict[str, Any] = {}
     with db_transaction() as db:
@@ -1779,6 +1783,22 @@ def _sync_input_now(project: Dict[str, Any], task: Dict[str, Any], kind: str) ->
         current["input_state"] = merge_snapshot(current, snapshot)
         updated = dict(current)
     return _input_payload(project, updated)
+
+
+def _sync_created_inputs(project: Dict[str, Any], task: Dict[str, Any], result: Dict[str, Any], directory_key: str) -> None:
+    """Mirror the exact inputs just created. A failed read must not claim creation failed."""
+    try:
+        current = _find_task_in_db(load_db(), str(task['task_id']))
+        if current is None:
+            raise LookupError('任务已不存在')
+        _sync_input_now(project, current, 'create', source_dir=result[directory_key])
+        result['input_synced'] = True
+    except permissions.PermissionDenied:
+        raise
+    except Exception as exc:
+        result['input_synced'] = False
+        result.setdefault('warnings', []).append('计算文件已生成，但参数镜像同步失败；请点“同步最新参数”重试。')
+        _audit_log(project['name'], str(task['task_id']), result.get(directory_key, ''), 'input-sync', f'FAILED kind=create: {exc}')
 
 
 def _schedule_input_sync(project_name: str, task_id: str, delay: float = 2.0) -> None:

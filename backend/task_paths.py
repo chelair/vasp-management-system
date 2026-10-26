@@ -31,6 +31,14 @@ CATEGORY_DIRS = {
 _CONTINUATION_RE = re.compile(r"/con\d+$")
 
 
+def completed_optimization(task: Dict[str, Any]) -> bool:
+    """Archiving hides a task, it does not invalidate an already converged OPT."""
+    return task.get('task_type') == 'opt' and (
+        task.get('status') == 'completed' or
+        (task.get('status') == 'archived' and task.get('archived_from') == 'completed')
+    )
+
+
 def strip_continuation_suffix(dir_path: str) -> str:
     """去掉续算子任务的 `/conN` 尾巴，得到任务族的本地根目录。
 

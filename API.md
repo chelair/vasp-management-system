@@ -313,9 +313,9 @@ POST /api/jobs/tasks/{task_id}/continuation   # 无 body
 POST /api/jobs/tasks/{task_id}/create-frac    # body: {"ibration": 5}（可省，默认 5）
 ```
 
-- **行为**：从 opt 任务最新输出生成频率矫正（frac）输入：`CONTCAR→POSCAR`、复制 `POTCAR/KPOINTS`，默认 `ISYM=0/SIGMA=0.05/NSW=1/IBRION=5/NFREE=2/POTIM=0.015`；回填 frac 子任务的 `input_source/notes`。
+- **行为**：从 opt 任务最新输出生成频率矫正（frac）输入：`CONTCAR→POSCAR`、复制 `POTCAR/KPOINTS`，默认 `ISYM=0/SIGMA=0.05/NSW=1/IBRION=5/NFREE=2/POTIM=0.015`；回填 frac 子任务的 `input_source/notes`；同步刚生成目录的输入快照到本地，保留待生效草稿，页面立即回填参数。
 - **前置**：任务必须是 `opt`（否则 `400`）；必须已存在 `<结构目录>/frac` 子任务（自由能组创建时自动登记，否则 `404`）。
-- **返回**：`{frac_dir, source_dir, latest_dir, incar_changes, copied_files}`
+- **返回**：`{frac_dir, source_dir, latest_dir, incar_changes, copied_files, input_synced, warnings}`
 - **耗时**：远端 bash **timeout 180s**。**审计**：`create-frac`。
 
 #### ④b 差分电荷分块计算生成（ele 附属，v0.9.44）
@@ -520,8 +520,9 @@ body: {
 
 - **行为**：以 IS INCAR 为基底只改 NEB 参数 → 远端 `nebmake.pl` 线性插值生成 `00..NN` 映像目录与文件。
 - **前置**：任务必须是 `neb`（否则 `400`）；初/末态任务必须存在、类型为 `opt`（否则 `404`/`400`）；
-  **初/末态必须 `status=completed`**，否则 `400`（"优化未收敛，请先完成结构优化"）。
-- **返回**：`{neb_dir, source_is, source_fs, num_images, images[], incar_changes, copied_files}`
+  **初/末态必须 `status=completed` 或 `status=archived && archived_from=completed`**；归档前未收敛/原状态未知仍拒绝，否则 `400`（"优化未收敛，请先完成结构优化"）。
+- **返回**：`{neb_dir, source_is, source_fs, num_images, images[], incar_changes, copied_files, input_synced, warnings}`
+- **创建后同步**：NEB/frac/电子结构均同步刚生成的确切目录，不让旧conN替换本次创建参数。同步失败仍保留创建成功事实，`input_synced=false`并返回warnings；前端强制重读本地参数页缓存，不新增提交或后台轮询。
 - **耗时**：远端 `nebmake.pl` **timeout 300s（最重）**。**审计**：`create-neb images=N`。
 
 ### 4.2 巡检动作

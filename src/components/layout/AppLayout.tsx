@@ -59,7 +59,7 @@ export default function AppLayout() {
   }, []);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${/^\/ai\/?$/.test(location.pathname) ? ' app-shell--ai' : ''}`}>
       <Sidebar open={navOpen} onNavigate={() => setNavOpen(false)} />
       {navOpen && (
         <div className="sidebar-overlay" onClick={() => setNavOpen(false)} />

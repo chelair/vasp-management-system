@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Alert, App, Button, Collapse, Descriptions, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin, Tabs, Tag, Tooltip } from 'antd';
-import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
-import PageHeader from '../components/common/PageHeader';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Alert, App, Button, Collapse, Descriptions, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Tabs, Tag, Tooltip } from 'antd';
+import { ApiOutlined, ArrowDownOutlined, ArrowLeftOutlined, ArrowUpOutlined, BookOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
 import ConnectionSettings from '../components/ai/ConnectionSettings';
 import WorkExperience from '../components/ai/WorkExperience';
 import StreamingAnswer from '../components/ai/StreamingAnswer';
-import ThinkingText from '../components/ai/ThinkingText';
+import RunActivity, { runProgress } from '../components/ai/RunActivity';
 import WorkspacePanel from '../components/ai/WorkspacePanel';
 import TopicReportLinks from '../components/ai/TopicReportLinks';
 import TopicReportEditor from '../components/reports/TopicReportEditor';
@@ -24,7 +23,6 @@ const TASK_STATUS: Record<string, string> = { completed: '已完成', running: '
 const asObject = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const show = (value: unknown) => value == null || value === '' ? '—' : String(value);
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请重试';
-const toolBrief = (value: unknown) => { const text = JSON.stringify(value ?? {}); return text.length > 140 ? `${text.slice(0, 140)}…` : text; };
 function JsonView({ value }: { value: unknown }) { return <pre className="ai-json">{JSON.stringify(value ?? {}, null, 2)}</pre>; }
 
 export default function AI() {
@@ -49,6 +47,10 @@ export default function AI() {
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [experienceOpen,setExperienceOpen]=useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia('(max-width: 900px)').matches);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [sessionSearch, setSessionSearch] = useState('');
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [inspecting, setInspecting] = useState<AIRun | null>(null);
   const [streamRevision, setStreamRevision] = useState(0);
@@ -83,7 +85,7 @@ export default function AI() {
     freshRuns.current.clear();
     setDetail(null); setContext(null); setError(''); setDraft(selected ? drafts.current[selected] ?? '' : '');
     setEditOpen(false); setInspecting(null); setTopicId(undefined);
-    autoScroll.current = true;
+    autoScroll.current = true; setAwayFromBottom(false);
     if (!selected) { setLoading(false); return; }
     setLoading(true);
     void getAIConversation(selected).then((data) => {
@@ -143,16 +145,22 @@ export default function AI() {
   }, [conversations, targets]);
   const conversationGroups = useMemo(() => {
     const groups = new Map<string, { id: string; name: string; conversations: AIConversation[] }>();
+    const query = sessionSearch.trim().toLocaleLowerCase();
     for (const conversation of visibleConversations) {
+      const projectName = targets.find((project) => project.id === conversation.project_id)?.name ?? '';
+      if (query && !`${conversation.title} ${projectName}`.toLocaleLowerCase().includes(query)) continue;
       const id = conversation.project_id ?? 'general';
       if (!groups.has(id)) groups.set(id, { id, name: targets.find((project) => project.id === id)?.name ?? '通用对话', conversations: [] });
       groups.get(id)!.conversations.push(conversation);
     }
     // 已按时间排序的会话依次入组：组内倒序，分组也按最近一次对话排序。
     return [...groups.values()];
-  }, [visibleConversations, targets]);
+  }, [visibleConversations, targets, sessionSearch]);
   const model = connections.find((c) => c.id === detail?.connection_id);
-  const choose = (id: string | null) => setParams(id ? { conversation: id } : {});
+  const choose = (id: string | null) => {
+    setParams(id ? { conversation: id } : {});
+    if (window.matchMedia('(max-width: 900px)').matches) setSidebarOpen(false);
+  };
 
   const newConversation = async () => {
     const requestedScope = scope;
@@ -194,47 +202,56 @@ export default function AI() {
 
   return <div className="ai-page">
     {topicId&&<TopicReportEditor key={topicId} topicId={topicId} connectionId={detail?.connection_id} onClose={()=>setTopicId(undefined)} onSaved={()=>setTopicRevision(r=>r+1)}/>}
-      <PageHeader title="AI 工作台" subtitle="按项目附加上下文 · 基于本地计算记录分析" extra={<Space><Button onClick={()=>setExperienceOpen(true)}>操作经验</Button><Button icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button></Space>} />
-    {!connections.length && !loading && <Alert type="info" showIcon message="先配置模型接口，再开始对话" action={<Button size="small" onClick={() => setSettingsOpen(true)}>配置连接</Button>} />}
-    {error && <Alert type="warning" closable onClose={() => setError('')} message={error} action={active ? <Button size="small" onClick={() => setStreamRevision((n) => n + 1)}>重新连接</Button> : undefined} />}
-    <div className="ai-workspace">
-      <aside className="ai-sessions">
-        <label className="ai-label">新对话所属项目</label>
+    <div className={`ai-workspace${sidebarOpen ? ' ai-workspace--sidebar' : ''}`}>
+      {sidebarOpen && <button className="ai-session-overlay" aria-label="关闭会话栏" onClick={() => setSidebarOpen(false)} />}
+      <aside className="ai-sessions" aria-label="会话列表">
+        <div className="ai-sidebar-brand"><span className="ai-brand-mark" aria-hidden="true">⌘</span><strong>AI 工作台</strong>
+          <Button type="text" icon={<MenuFoldOutlined />} aria-label="收起会话栏" onClick={() => setSidebarOpen(false)} /></div>
+        <Button className="ai-new-session" type="text" icon={<EditOutlined />} loading={busy} onClick={() => { void newConversation(); }}>新建对话</Button>
+        <Input className="ai-session-search" aria-label="搜索对话" prefix={<SearchOutlined />} placeholder="搜索对话" allowClear value={sessionSearch} onChange={(e) => setSessionSearch(e.target.value)} />
+        <Button className="ai-sidebar-action" type="text" icon={<BookOutlined />} onClick={() => setExperienceOpen(true)}>操作经验</Button>
+        <label className="ai-label">新对话项目</label>
         <Select aria-label="选择新对话所属项目" showSearch optionFilterProp="label" value={scope} options={projectOptions} style={{ width: '100%' }} onChange={setScope} />
-        <Button block icon={<PlusOutlined />} loading={busy} onClick={() => { void newConversation(); }} style={{ margin: '12px 0' }}>新建会话</Button>
-        <div className="ai-muted ai-scope-title">最近对话</div>
-        <div className="ai-session-list">{conversationGroups.map((group) => <section className="ai-session-group" key={group.id} aria-label={`${group.name}的对话`}>
-          <div className="ai-session-group-title"><strong>{group.name}</strong><span>{group.conversations.length}</span></div>
+        <div className="ai-muted ai-scope-title">对话</div>
+        <div className="ai-session-list">{conversationGroups.map((group) => <details className="ai-session-group" open key={group.id} aria-label={`${group.name}的对话`}>
+          <summary className="ai-session-group-title"><FolderOpenOutlined /><strong>{group.name}</strong><span>{group.conversations.length}</span></summary>
           {group.conversations.map((conversation) => <button key={conversation.id}
-          className={`ai-session${selected === conversation.id ? ' selected' : ''}`} onClick={() => choose(conversation.id)}>
+          aria-current={selected === conversation.id ? 'page' : undefined} className={`ai-session${selected === conversation.id ? ' selected' : ''}`} onClick={() => choose(conversation.id)}>
           <strong>{conversation.title}</strong><span>{conversation.updated_at.replace('T', ' ').slice(0, 16)}</span>
-        </button>)}</section>)}</div>
+        </button>)}</details>)}</div>
         {!visibleConversations.length && <div className="ai-muted ai-empty-hint">暂无对话。这里汇总通用对话和所有未关闭项目的对话，已关闭项目的对话自动归档隐藏。</div>}
+        {sessionSearch && !conversationGroups.length && <p className="ai-muted ai-empty-hint">没有匹配的对话</p>}
+        <div className="ai-sidebar-footer">
+          <Button type="text" icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button>
+          <Link to="/jobs"><ArrowLeftOutlined /> 返回项目管理</Link>
+        </div>
       </aside>
 
       <section className="ai-chat" aria-label="AI 对话窗口">
-        {detail ? <>
-          <header className="ai-chat-header"><div><strong>{detail.title}</strong><div className="ai-muted">{detail.project_id ? '项目会话' : '通用会话'} · 提示词版本 {detail.prompt_version}</div></div>
-            <div className="ai-actions">
+        <header className="ai-chat-header">
+          <div className="ai-chat-heading">
+            {!sidebarOpen && <Button type="text" icon={<MenuUnfoldOutlined />} aria-label="展开会话栏" onClick={() => setSidebarOpen(true)} />}
+            <div><strong>{detail?.title ?? '新对话'}</strong><span className="ai-chat-project">{detail?.project_id ? targets.find((p) => p.id === detail.project_id)?.name ?? '项目会话' : '通用对话'}</span></div>
+          </div>
+          <div className="ai-actions">
+            <Button type="text" aria-label="项目资料" icon={<FolderOpenOutlined />} disabled={!detail} onClick={() => setContextOpen(true)}>项目资料</Button>
+            {detail && <>
               <Tooltip title="会话名称与提示词"><Button size="small" icon={<EditOutlined />} disabled={!!active} onClick={() => { form.setFieldsValue({ title: detail.title, prompt: detail.prompt }); setEditOpen(true); }} aria-label="编辑会话提示词" /></Tooltip>
               <Popconfirm title="删除此会话及其全部聊天记录？" onConfirm={async () => {
                 try { await deleteAIConversation(detail.id); delete drafts.current[detail.id]; choose(null); await reloadList(); }
                 catch (e) { void message.error(errorText(e)); }
               }}><Button size="small" icon={<DeleteOutlined />} disabled={!!active} aria-label="删除会话" /></Popconfirm>
-            </div>
-          </header>
-          <div className="ai-model-select"><Select aria-label="当前会话模型" placeholder="选择模型连接" value={model?.id} disabled={!!active || busy}
-            options={connections.map((c) => ({ value: c.id, label: `${c.name} · ${c.model}` }))} style={{ width: '100%' }} onChange={async (value) => {
-              const id = detail.id; setBusy(true);
-              try { const result = await updateAIConversation(id, { title: detail.title, prompt: detail.prompt, connection_id: value }); if (selectedRef.current === id) setDetail(result); await reloadList(); }
-              catch (e) { void message.error(errorText(e)); }
-              finally { setBusy(false); }
-            }} />
-
+            </>}
           </div>
+        </header>
+        {!connections.length && !loading && <Alert className="ai-chat-notice" type="info" showIcon message="先配置模型接口，再开始对话" action={<Button size="small" onClick={() => setSettingsOpen(true)}>配置连接</Button>} />}
+        {error && <Alert className="ai-chat-notice" type="warning" closable onClose={() => setError('')} message={error} action={active ? <Button size="small" onClick={() => setStreamRevision((n) => n + 1)}>重新连接</Button> : undefined} />}
+        {detail ? <>
           <div className="ai-messages" ref={messagesRef} onScroll={() => {
-            const box = messagesRef.current; if (box) autoScroll.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100;
+            const box = messagesRef.current;
+            if (box) { autoScroll.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; setAwayFromBottom(!autoScroll.current); }
           }}>
+            <div className="ai-message-column">
             {detail.has_more && <Button type="link" onClick={async () => {
               const id = detail.id;
               try { const older = await getAIConversation(id, detail.messages[0]?.seq); setDetail((old) => old?.id === id ? { ...old,
@@ -242,66 +259,61 @@ export default function AI() {
                 runs: [...old.runs, ...older.runs.filter((r) => !old.runs.some((existing) => existing.id === r.id))], has_more: older.has_more } : old); }
               catch (e) { void message.error(errorText(e)); }
             }}>加载更早的消息</Button>}
-            {!detail.messages.length && <div className="ai-welcome"><h2>从一个具体问题开始</h2><p>{detail.project_id ? '每次发问会附加整个项目的目标、预期、任务状态与结果摘要。' : '这里可以讨论研究思路和计算计划。选择项目后可创建带项目上下文的会话。'}</p>
+            {!detail.messages.length && <div className="ai-welcome"><span className="ai-welcome-mark" aria-hidden="true">✳</span><h2>今天想研究什么？</h2><p>{detail.project_id ? '每次发问会附加整个项目的目标、预期、任务状态与结果摘要。' : '这里可以讨论研究思路和计算计划。选择项目后可创建带项目上下文的会话。'}</p>
               {['帮我梳理整个项目的结果与缺失信息', '对比已有结果与预期，提出下一步验证计划', '比较两个模型的科学性质，生成专题科研报告'].map((text) => <Button key={text} onClick={() => { setDraft(text); drafts.current[detail.id] = text; }}>{text}</Button>)}</div>}
             {detail.messages.map((item) => {
               const run = detail.runs.find((r) => r.message_id === item.id);
               return <article key={item.id} className={`ai-message ai-message--${item.role}`}>
-                <div className="ai-message-meta"><strong>{item.role === 'user' ? '你' : 'AI'}</strong><span>{item.created_at.replace('T', ' ').slice(5, 16)}</span>
-                  {item.role === 'assistant' && <Tag color={item.status === 'failed' ? 'error' : isActiveRun({ status: item.status } as AIRun) ? 'processing' : 'default'}>{STATUS[item.status] ?? item.status}</Tag>}
-                </div>
-                {item.role === 'assistant' && run && (run.reasoning || run.tool_events?.length) ? (
-                  <details className="ai-reasoning" open={isActiveRun(run)}>
-                    <summary>
-                      思考与工具调用
-                      {run.tool_events?.length ? ` · ${run.tool_events.length} 次` : ''}
-                      {isActiveRun(run) ? '（生成中）' : ''}
-                    </summary>
-                    {run.reasoning ? <ThinkingText text={run.reasoning} active={isActiveRun(run)} /> : null}
-                    {run.tool_events?.length ? (
-                      <div className="ai-tool-events">
-                        {run.tool_events.map((event) => (
-                          <div className="ai-tool-event" key={event.id}>
-                            <Tag color={event.status === 'failed' ? 'error' : event.status === 'running' ? 'processing' : 'default'}>{event.status}</Tag>
-                            <strong>{event.name}</strong>
-                            <span className="ai-muted">{toolBrief(event.arguments)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </details>
-                ) : null}
-                {item.role === 'user' ? <div className="ai-user-text">{item.content}</div> : <StreamingAnswer text={item.content} status={item.status} fresh={!!run && freshRuns.current.has(run.id)} onProgress={scrollAnswer} />}
+                {item.role === 'user' ? <div className="ai-message-meta"><span>{item.created_at.replace('T', ' ').slice(5, 16)}</span></div> : null}
+                {item.role === 'assistant' && run && (run.reasoning || run.tool_events?.length || isActiveRun(run)) ? <RunActivity key={run.id} run={run} hasAnswer={!!item.content} /> : null}
+                {item.role === 'user' ? <div className="ai-user-text">{item.content}</div> : item.content || !run || !isActiveRun(run) ? <StreamingAnswer text={item.content} status={item.status} fresh={!!run && freshRuns.current.has(run.id)} onProgress={scrollAnswer} /> : null}
                 {run?.error && <div className="ai-run-error">{run.error}</div>}
-                {item.role === 'assistant' && <div className="ai-answer-tools"><Button size="small" type="text" onClick={() => { void navigator.clipboard?.writeText(item.content); }}>复制回答</Button>
+                {item.role === 'assistant' && (!!item.content || !run || !isActiveRun(run)) && <div className="ai-answer-tools">{run && !isActiveRun(run) && <span className={`ai-answer-state${run.status === 'failed' ? ' ai-run-error' : ''}`}>{STATUS[run.status]}{run.usage.total_tokens != null ? ` · ${run.usage.total_tokens.toLocaleString()} tokens` : ''}</span>}<Button size="small" type="text" onClick={() => { void navigator.clipboard?.writeText(item.content); }}>复制回答</Button>
                   {run && <Button size="small" type="text" onClick={() => { void getAIRun(run.id).then(setInspecting).catch((e) => message.error(errorText(e))); }}>本轮依据</Button>}
                 </div>}
               </article>;
             })}
             {detail.project_id&&<TopicReportLinks inline conversationId={detail.id} runs={detail.runs} onOpen={setTopicId} revision={topicRevision}/>}
+            </div>
           </div>
 
           {model&&detail.project_id&&(model.reasoning_capabilities.tool_policy==='unsupported'||model.reasoning_capabilities.tool_policy==='none_only'&&model.effective_reasoning_effort!=='none')&&<Alert type="warning" message={model.reasoning_capabilities.note}/>}
-          <div className="ai-composer"><Input.TextArea aria-label="输入 AI 对话消息" value={draft} maxLength={16000} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="输入问题，Enter 发送，Shift + Enter 换行" disabled={busy}
+          <div className="ai-composer-dock">
+          {awayFromBottom && <Button className="ai-jump-latest" shape="round" icon={<ArrowDownOutlined />} onClick={() => { autoScroll.current = true; scrollAnswer(); setAwayFromBottom(false); }}>回到最新</Button>}
+          {active && <div className="ai-live-status" role="status"><span className="ai-live-dot" />{runProgress(active, !!detail.messages.find((m) => m.id === active.message_id)?.content)}<span>可随时停止</span></div>}
+          <div className="ai-composer"><Input.TextArea aria-label="输入 AI 对话消息" value={draft} maxLength={16000} autoSize={{ minRows: 2, maxRows: 8 }} placeholder={active ? "可以先写下一条问题，当前回答结束后发送" : "询问任何问题，或描述你想完成的任务…"} disabled={busy}
             onChange={(e) => { setDraft(e.target.value); drafts.current[detail.id] = e.target.value; }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }} />
-            <div className="ai-composer-footer"><span className="ai-muted">{detail.project_id ? '模型可读取项目文件并调用工具 · 不执行计算操作' : '基于摘要对话分析'}</span><div className="ai-actions">
-              {!active && <Button icon={<ReloadOutlined />} disabled={busy || !model || !detail.messages.some((m) => m.role === 'user')} onClick={() => { void send(true); }}>重新生成</Button>}
+            <div className="ai-composer-footer"><div className="ai-composer-options"><div className="ai-model-select"><Select aria-label="当前会话模型" placeholder="选择模型连接" value={model?.id} disabled={!!active || busy}
+            options={connections.map((c) => ({ value: c.id, label: `${c.name} · ${c.model}` }))} style={{ width: '100%' }} onChange={async (value) => {
+              const id = detail.id; setBusy(true);
+              try { const result = await updateAIConversation(id, { title: detail.title, prompt: detail.prompt, connection_id: value }); if (selectedRef.current === id) setDetail(result); await reloadList(); }
+              catch (e) { void message.error(errorText(e)); }
+              finally { setBusy(false); }
+            }} />
+
+          </div><div className="ai-effort-control">
               {model&&<Select className="ai-reasoning-select" variant="borderless" aria-label="当前模型思考深度" value={model.effective_reasoning_effort} options={model.reasoning_capabilities.options.map(option=>({...option,label:`思考 · ${option.label}`}))} disabled={!!active||busy||model.reasoning_capabilities.options.length<2} onChange={async effort=>{
               setBusy(true);try{await saveAIConnection({name:model.name,base_url:model.base_url,model:model.model,max_tokens:model.max_tokens,is_default:model.is_default,reasoning_api:model.reasoning_api,reasoning_effort:effort,thinking_mode:effort==='default'?'default':effort==='none'?'disabled':'enabled'},model.id);await reloadConnections();void message.success('已更新此连接的默认思考深度，后续请求生效');}catch(e){void message.error(errorText(e));}finally{setBusy(false);}
             }}/>}
-              {active ? <Button icon={<StopOutlined />} onClick={async () => {
+              </div></div><div className="ai-actions">
+              {!active && <Tooltip title="重新生成上一条回答"><Button type="text" aria-label="重新生成" icon={<ReloadOutlined />} disabled={busy || !model || !detail.messages.some((m) => m.role === 'user')} onClick={() => { void send(true); }} /></Tooltip>}
+              {active ? <Button className="ai-stop-button" shape="circle" aria-label="停止生成" icon={<StopOutlined />} onClick={async () => {
                 const id = detail.id;
                 try { await stopAIRun(active.id); const result = await getAIConversation(id); if (selectedRef.current === id) setDetail(result); }
                 catch (e) { void message.error(errorText(e)); }
-              }}>停止生成</Button> : <>
-                <Button type="primary" icon={<SendOutlined />} loading={busy} disabled={!draft.trim() || !model} onClick={() => { void send(); }}>发送</Button>
+              }} /> : <>
+                <Button className="ai-send-button" type="primary" shape="circle" aria-label="发送" icon={<ArrowUpOutlined />} loading={busy} disabled={!draft.trim() || !model} onClick={() => { void send(); }} />
               </>}
             </div></div>
           </div>
-        </> : <div className="ai-no-conversation">{loading ? <Spin /> : <Empty description="选择项目并新建会话，或打开已有会话" />}</div>}
+          <div className="ai-composer-hint">{detail.project_id ? '已连接项目上下文 · 模型按需调用工具' : '通用对话'}<span>Enter 发送 · Shift + Enter 换行</span></div>
+          </div>
+        </> : <div className="ai-no-conversation">{loading ? <Spin /> : <div className="ai-welcome"><span className="ai-welcome-mark" aria-hidden="true">✳</span><h2>今天想研究什么？</h2><p>从一个问题开始，分析结构、理解结果或整理研究思路。</p><Select aria-label="新对话的项目" value={scope} options={projectOptions} onChange={setScope} /><Button icon={<PlusOutlined />} loading={busy} onClick={() => { void newConversation(); }}>新建对话</Button></div>}</div>}
       </section>
 
+    </div>
+    <Drawer title="项目资料" open={contextOpen} onClose={() => setContextOpen(false)} width={560} rootClassName="ai-context-drawer">
       <aside className="ai-context"><div className="ai-context-header"><strong>项目上下文</strong><Button size="small" icon={<ReloadOutlined />} disabled={!selected} onClick={() => { void refreshContext(); }}>刷新</Button></div>
         {context ? <><p className="ai-muted">本地快照 · {show(context.generated_at).replace('T', ' ').slice(0, 19)}</p>
           <Tabs size="small" items={[
@@ -339,9 +351,9 @@ export default function AI() {
               <strong>{show(action.task_name)} · {show(action.command)}</strong><span>{show(action.at).replace('T', ' ')} · {show(action.actor)}</span><p>{show(action.result)}</p>
             </div>; }) : <p className="ai-muted">暂无操作记录</p>}<Collapse ghost size="small" items={[{ key: 'manual', label: '查看人工修改痕迹', children: <JsonView value={context.manual} /> }]} /></> },
           ]} />
-        </> : <div className="ai-empty-hint ai-muted">选择会话后展示对应数据。每次发问会重新读取本地快照；右侧刷新不会发起远端同步。</div>}
+        </> : <div className="ai-empty-hint ai-muted">选择会话后展示对应数据。每次发问会重新读取本地快照；刷新不会发起远端同步。</div>}
       </aside>
-    </div>
+    </Drawer>
     <WorkExperience open={experienceOpen} close={()=>setExperienceOpen(false)} connections={connections}/>
     <ConnectionSettings open={settingsOpen} close={() => setSettingsOpen(false)} connections={connections} reload={reloadConnections} />
     <Modal title="会话设置" forceRender open={editOpen} onCancel={() => setEditOpen(false)} onOk={async () => {

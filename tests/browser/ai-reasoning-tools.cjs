@@ -65,6 +65,7 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
   const browser = await chromium.launch({ executablePath: process.env.BROWSER_PATH || '/opt/microsoft/msedge/msedge', headless: true, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } }); page.setDefaultTimeout(10000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const waitNavWidth = width => page.waitForFunction(expected => Math.abs(document.querySelector('.sidebar').getBoundingClientRect().width - expected) < 0.1, width);
   try {
     await page.goto('http://127.0.0.1:' + server.address().port);
     await page.getByText('目前读取到 188 个原子', { exact: false }).waitFor();
@@ -72,12 +73,15 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
     assert.equal(await page.locator('.topbar').isVisible(), true);
     await page.getByRole('button', { name: '收起总导航', exact: true }).click();
     await page.locator('.sidebar--collapsed').waitFor();
+    await page.waitForFunction(() => { const width = document.querySelector('.sidebar').getBoundingClientRect().width; return width > 65 && width < 235; });
+    await waitNavWidth(64);
     assert.equal(Math.round((await page.locator('.sidebar').boundingBox()).width), 64);
     assert.equal(await page.locator('.sidebar .nav-item__label').first().isVisible(), false, 'collapsed navigation only shows icons');
     await page.locator('.sidebar').getByRole('link', { name: '作业管理', exact: true }).hover();
     await page.getByRole('tooltip').getByText('作业管理', { exact: true }).waitFor();
     await page.getByRole('button', { name: '展开总导航', exact: true }).click();
     await page.locator('.sidebar:not(.sidebar--collapsed)').waitFor();
+    await waitNavWidth(236);
     assert.equal(Math.round((await page.locator('.sidebar').boundingBox()).width), 236);
     assert.equal(await page.locator('.sidebar .nav-item__label').first().isVisible(), true);
     await page.getByRole('button', { name: '收起总导航', exact: true }).click();
@@ -132,12 +136,18 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
     assert.equal(await page.locator('.app-shell--ai').count(), 0, 'workbench layout only affects the AI route');
     assert.equal(await page.locator('.topbar').isVisible(), true, 'system header remains available');
     await page.setViewportSize({ width: 1440, height: 960 });
+    await waitNavWidth(64);
     assert.equal(Math.round((await page.locator('.sidebar').boundingBox()).width), 64, 'collapse preference persists across modules');
     await page.getByRole('button', { name: '展开总导航', exact: true }).click();
     await page.locator('.sidebar:not(.sidebar--collapsed)').waitFor();
+    await waitNavWidth(236);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.getByRole('button', { name: '收起总导航', exact: true }).click();
+    await waitNavWidth(64);
+    assert.equal(await page.locator('.sidebar').evaluate(element => getComputedStyle(element).transitionDuration), '0s', 'respects reduced motion');
     assert.deepEqual(requests.filter(r => r.method !== 'GET').map(r => r.url), ['/api/ai/chat/conversations/c1/messages', '/api/ai/chat/runs/live/cancel']);
     assert.deepEqual(errors, []);
-    console.log('PASS embedded workbench, global navigation collapse/expand/hover/persistence, activity, live SSE, stop, drafts, file drawer, session search and mobile navigation; only explicit send/cancel writes');
+    console.log('PASS embedded workbench, global navigation animated collapse/expand/hover/persistence/reduced-motion, activity, live SSE, stop, drafts, file drawer, session search and mobile navigation; only explicit send/cancel writes');
   } catch (error) { console.error((await page.locator('body').innerText()).slice(0, 8000)); throw error; }
   finally { for (const stream of streams) stream.end(); await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

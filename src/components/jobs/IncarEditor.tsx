@@ -111,6 +111,8 @@ export default function IncarEditor({
   const [loadValue, setLoadValue] = useState<string | undefined>(undefined);
   /** 参数编辑闸门：默认只读（灰色不可点），点「修改参数」后才可编辑 */
   const [editing, setEditing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const uploadInFlight = useRef(false);
 
   const params = workspace.incarParams;
   const precision = workspace.precision;
@@ -165,6 +167,9 @@ export default function IncarEditor({
   };
 
   const handleUploadRemote = async () => {
+    if (uploadInFlight.current) return;
+    uploadInFlight.current = true;
+    setUploading(true);
     try {
       // 只提交相对"本次计算实际使用的值"真的变了的参数（含主开关关掉的整组）；
       // **留空 = 从 INCAR 里删掉这一项**，所以空值也在提交范围内（见 incarUploadParams）。
@@ -186,6 +191,9 @@ export default function IncarEditor({
       }
     } catch (err) {
       message.error(err instanceof Error ? err.message : '同步 INCAR 到远端失败');
+    } finally {
+      uploadInFlight.current = false;
+      setUploading(false);
     }
   };
 
@@ -738,7 +746,7 @@ export default function IncarEditor({
           <Button icon={<DownloadOutlined />} onClick={() => void handleSaveLocal()}>
             生成到本地
           </Button>
-          <Button icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
+          <Button loading={uploading} icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
             <Tooltip title="把当前参数（含未生效修改）写入远端最新目录，这些修改随即标记为已生效；不改动续算逻辑">
               <span>同步到远端</span>
             </Tooltip>

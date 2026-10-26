@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Card, InputNumber, Radio, Tag, Tooltip } from 'antd';
 import {
   CheckOutlined,
@@ -60,6 +60,8 @@ export default function KpointsPanel({
   const [meshType, setMeshType] = useState<'Gamma' | 'Monkhorst-Pack'>('Gamma');
   /** 参数编辑闸门（与 INCAR 页一致：默认只读） */
   const [editing, setEditing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const uploadInFlight = useRef(false);
 
   const snapshotMesh = input?.files?.KPOINTS?.mesh ?? null;
   const pendingMesh = input?.draft?.KPOINTS?.mesh ?? null;
@@ -115,7 +117,9 @@ export default function KpointsPanel({
   };
 
   const handleUploadRemote = async () => {
-    if (!kpointsContent) return;
+    if (!kpointsContent || uploadInFlight.current) return;
+    uploadInFlight.current = true;
+    setUploading(true);
     // text 是本地镜像，生成文件也会更新它，不能据此断言远端一致。
     // 后端核对真实远端：相同只刷新网格元数据，不重复写文件。
     try {
@@ -129,6 +133,9 @@ export default function KpointsPanel({
       );
     } catch (err) {
       message.error(err instanceof Error ? err.message : '同步 KPOINTS 到远端失败');
+    } finally {
+      uploadInFlight.current = false;
+      setUploading(false);
     }
   };
 
@@ -340,7 +347,7 @@ export default function KpointsPanel({
           kpointsContent && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span className="preview-note">已生成 · 保存至 {taskName}/KPOINTS</span>
-              <Button size="small" icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
+              <Button size="small" loading={uploading} icon={<UploadOutlined />} onClick={() => void handleUploadRemote()}>
                 <Tooltip title="把当前 KPOINTS（含未生效修改）写入远端最新目录，这些修改随即标记为已生效">
                   <span>同步到远端</span>
                 </Tooltip>

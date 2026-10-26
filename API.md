@@ -544,7 +544,7 @@ body: {
 | 作业 | `POST /jobs/tasks/{id}/build-ele-inputs` | ele 输入（`{source_type:"opt"/"external", source_task_id?, ...}`） |
 | 作业 | `POST /jobs/tasks/{id}/create-diff-charge` | **差分电荷分块计算**（ele 附属，v0.9.44）：`{blocks:[{label,atoms}], incar_params?}` → 见 §4.2 ④b |
 | 作业 | `POST /jobs/tasks/{id}/selective-dynamics` | 固定原子生成新 POSCAR（`{manual/indices/elements/z_range/..., sync_remote?}`） |
-| 作业 | `POST /jobs/tasks/{id}/upload-poscar` · `/upload-kpoints` · `/upload-submit-script` · `/generate-potcar` | 写远端最新目录，同名先备份 `old_*` |
+| 作业 | `POST /jobs/tasks/{id}/upload-poscar` · `/upload-kpoints` · `/upload-submit-script` · `/generate-potcar` | 写远端最新目录；KPOINTS先比对真实远端，相同不重写但刷新网格记录，返回unchanged/state；变更时沿用old_* |
 | 作业 | `POST /jobs/tasks/{id}/input/sync` | 从远端重新取回四件套（1 exec + 4 SFTP；会覆盖本地镜像，有草稿的文件跳过） |
 | 作业 | `PATCH /jobs/tasks/{id}` · `DELETE /jobs/tasks/{id}` | 重命名 / 删除（本地进回收站，**远端不删**） |
 | 项目 | `POST /projects` · `GET /projects/{id}` · `POST /projects/{id}/close` · `/reopen` · `DELETE /projects/{id}` | 关闭要求可见任务全部归档；新建项目自动写 `owner`=当前登录用户（v0.9.1） |

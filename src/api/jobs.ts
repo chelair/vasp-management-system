@@ -245,6 +245,7 @@ export async function uploadKpoints(
 ): Promise<{
   dir: string;
   backup_file: string | null;
+  unchanged?: boolean;
   applied: string[];
   state: TaskInputState;
 }> {

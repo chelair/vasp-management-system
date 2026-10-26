@@ -45,6 +45,38 @@ class ParameterEvidenceTests(unittest.TestCase):
     def project(self):
         return self.storage.load_db()['projects'][0]
 
+    def test_upload_identical_kpoints_repairs_missing_mesh_without_remote_write(self):
+        text = 'Generated\n0\nGamma\n3 4 1\n0 0 0\n'
+        project = self.project()
+        task = project['tasks'][0]
+        with patch.object(self.jobs, '_resolve_task', return_value=(project, task)), \
+             patch.object(self.jobs, '_remote_latest_con', return_value=''), \
+             patch.object(self.jobs, '_download_remote_text', return_value=text), \
+             patch.object(self.jobs.ssh, 'run_remote') as remote, \
+             patch.object(self.jobs, '_write_remote_file') as write:
+            response = self.jobs.upload_kpoints('t1', {'content': text})
+        self.assertTrue(response['success'])
+        self.assertTrue(response['data']['unchanged'])
+        self.assertIsNone(response['data']['backup_file'])
+        self.assertEqual(response['data']['state']['files']['KPOINTS']['mesh'], [3, 4, 1])
+        self.assertEqual(self.project()['tasks'][0]['input_state']['files']['KPOINTS']['mesh'], [3, 4, 1])
+        remote.assert_not_called()
+        write.assert_not_called()
+
+    def test_upload_new_kpoints_writes_remote_then_returns_mesh(self):
+        text = 'Generated\n0\nGamma\n3 4 1\n0 0 0\n'
+        project = self.project()
+        with patch.object(self.jobs, '_resolve_task', return_value=(project, project['tasks'][0])), \
+             patch.object(self.jobs, '_remote_latest_con', return_value=''), \
+             patch.object(self.jobs, '_download_remote_text', return_value=''), \
+             patch.object(self.jobs.ssh, 'run_remote'), \
+             patch.object(self.jobs, '_write_remote_file') as write:
+            response = self.jobs.upload_kpoints('t1', {'content': text})
+        self.assertTrue(response['success'])
+        self.assertFalse(response['data']['unchanged'])
+        self.assertEqual(response['data']['state']['files']['KPOINTS']['mesh'], [3, 4, 1])
+        self.assertEqual(write.call_args.args[-1], text)
+
     def local(self):
         return self.inspections.query_inspections(self.project(),'t1')
 

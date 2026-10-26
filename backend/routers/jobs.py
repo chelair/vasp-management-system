@@ -2621,27 +2621,30 @@ def upload_kpoints(task_id: str, payload: dict = Body(default={})):
         if not content:
             return JSONResponse(status_code=400, content=fail("请提供 KPOINTS 内容（content）"))
         old = _download_remote_text(server, f"{work_dir}/KPOINTS") or ""
-        ssh.run_remote(
-            server,
-            f'bash -c \'[ -f "{work_dir}/KPOINTS" ] && mv -f "{work_dir}/KPOINTS" "{work_dir}/old_KPOINTS" || true\'',
-            timeout=30,
-        )
-        _write_remote_file(server, f"{work_dir}/KPOINTS", str(content))
+        unchanged = old.strip() == str(content).strip()
+        if not unchanged:
+            ssh.run_remote(
+                server,
+                f'bash -c \'[ -f "{work_dir}/KPOINTS" ] && mv -f "{work_dir}/KPOINTS" "{work_dir}/old_KPOINTS" || true\'',
+                timeout=30,
+            )
+            _write_remote_file(server, f"{work_dir}/KPOINTS", str(content))
         payload_state, applied = _push_input_file(
-            project, task_id, "KPOINTS", str(content), work_dir, old_text=old
+            project, task_id, "KPOINTS", old if unchanged else str(content), work_dir, old_text=old
         )
         _audit_log(
             project["name"],
             task_id,
             work_dir,
             "upload-kpoints",
-            f"OK backup={'old_KPOINTS' if old else 'none'} applied={','.join(applied) or '-'}",
+            f"OK unchanged={unchanged} backup={'old_KPOINTS' if old and not unchanged else 'none'} applied={','.join(applied) or '-'}",
         )
         return ok(
-            "KPOINTS 已同步到远端",
+            "KPOINTS 与远端一致，已刷新网格记录" if unchanged else "KPOINTS 已同步到远端",
             {
                 "dir": work_dir,
-                "backup_file": "old_KPOINTS" if old else None,
+                "backup_file": "old_KPOINTS" if old and not unchanged else None,
+                "unchanged": unchanged,
                 "applied": applied,
                 "state": payload_state,
             },

@@ -116,16 +116,13 @@ export default function KpointsPanel({
 
   const handleUploadRemote = async () => {
     if (!kpointsContent) return;
-    // 只有 k 网格（或内容）真的变了才提交修改
-    const current = input?.files?.KPOINTS?.text ?? null;
-    if (current && current.trim() === kpointsContent.trim()) {
-      message.info('KPOINTS 与本次计算一致，无需同步');
-      return;
-    }
+    // text 是本地镜像，生成文件也会更新它，不能据此断言远端一致。
+    // 后端核对真实远端：相同只刷新网格元数据，不重复写文件。
     try {
       const r = await uploadKpoints(taskId, { content: kpointsContent });
       onStatePushed?.(r.state);
       message.success(
+        r.unchanged ? 'KPOINTS 与远端一致，已刷新本次计算网格' :
         `KPOINTS 已同步到远端${r.backup_file ? `（旧文件备份为 ${r.backup_file}）` : ''}${
           r.applied.length > 0 ? `，${r.applied.length} 项修改已生效` : ''
         }`,

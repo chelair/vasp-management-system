@@ -6653,12 +6653,38 @@ h6:hover > .report-hide-btn,
   }
 }
 
-/* 共用界面细节：静态层级为主，只在进入或交互时做短暂过渡。 */
+/* 只在切换/内容到达时播放，不逐行错峰或持续占用动画层。 */
+:root {
+  --motion-enter: 320ms;
+  --motion-content: 240ms;
+  --motion-collapse: 260ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
 @keyframes surface-enter {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes content-enter {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.page-transition { animation: surface-enter 0.2s ease-out; }
+@keyframes pane-enter { from { opacity: 0; } to { opacity: 1; } }
+.page-transition, .ai-page { animation: surface-enter var(--motion-enter) var(--motion-ease); }
+:is(.content-enter, .report-list, .report-detail, .ai-welcome, .ai-message:nth-last-child(-n + 2)) {
+  animation: content-enter var(--motion-content) var(--motion-ease);
+}
+/* 不变更页签挂载规则；图表和编辑器保留自身状态。 */
+.app-content .ant-tabs-tabpane-active { animation: pane-enter var(--motion-content) ease-out; }
+.animated-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--motion-collapse) var(--motion-ease), opacity var(--motion-collapse) ease;
+}
+.animated-collapse--open { grid-template-rows: 1fr; opacity: 1; }
+.animated-collapse__inner { min-height: 0; overflow: hidden; }
+.collapse-chevron { transition: transform var(--motion-collapse) var(--motion-ease); }
+.collapse-chevron--open { transform: rotate(90deg); }
 .page-header > div:first-child { min-width: 0; }
 .page-header__extra { row-gap: 8px; }
 .stat-card__label { margin-bottom: 4px; }
@@ -6761,8 +6787,17 @@ html[data-density="compact"] .stat-card { padding: 16px; }
   html[data-density="compact"] :is(.jobs-grid, .report-grid, .dashboard-grid, .stats-grid) { gap: 8px; }
 }
 html[data-motion="reduced"] .app-shell, html[data-motion="reduced"] .app-shell *, html[data-motion="reduced"] .app-shell *::before { transition: none !important; }
-html[data-motion="reduced"] :is(.page-transition, .stat-card, .ai-live-dot, .ai-typing-cursor) { animation: none; }
+html[data-motion="reduced"] {
+  --motion-enter: 0ms;
+  --motion-content: 0ms;
+  --motion-collapse: 0ms;
+}
+html[data-motion="reduced"] :is(.page-transition, .ai-page, .content-enter, .inspection-projects, .report-list, .report-detail, .ai-welcome, .ai-message, .ant-tabs-tabpane-active, .stat-card, .cluster-panel-enter, .cores-legend__row--enter, .ai-live-dot, .ai-typing-cursor) { animation: none; }
 html[data-motion="reduced"] .stat-card--clickable:hover { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-enter: 0ms; --motion-content: 0ms; --motion-collapse: 0ms; }
+  :is(.page-transition, .ai-page, .content-enter, .inspection-projects, .report-list, .report-detail, .ai-welcome, .ai-message, .ant-tabs-tabpane-active) { animation: none; }
+}
 @media (max-width: 600px) {
   .settings-color { padding: 9px 12px; }
   .settings-row { gap: 16px; align-items: flex-start; }

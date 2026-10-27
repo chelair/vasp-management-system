@@ -1386,7 +1386,7 @@ export default function Jobs() {
             </Button>
           }
         >
-          <div ref={treeWrapRef}>
+          <div ref={treeWrapRef} className="content-enter">
             {projects.length === 0 && !loading ? (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}

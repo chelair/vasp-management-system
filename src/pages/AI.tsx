@@ -204,7 +204,8 @@ export default function AI() {
     {topicId&&<TopicReportEditor key={topicId} topicId={topicId} connectionId={detail?.connection_id} onClose={()=>setTopicId(undefined)} onSaved={()=>setTopicRevision(r=>r+1)}/>}
     <div className={`ai-workspace${sidebarOpen ? ' ai-workspace--sidebar' : ''}`}>
       {sidebarOpen && <button className="ai-session-overlay" aria-label="关闭会话栏" onClick={() => setSidebarOpen(false)} />}
-      <aside className="ai-sessions" aria-label="会话列表">
+      <aside className="ai-sessions" aria-label="会话列表" aria-hidden={!sidebarOpen} {...(!sidebarOpen ? { inert: '' } : {})}>
+        <div className="ai-sessions-inner">
         <div className="ai-sidebar-brand"><span className="ai-brand-mark" aria-hidden="true">⌘</span><strong>AI 工作台</strong>
           <Button type="text" icon={<MenuFoldOutlined />} aria-label="收起会话栏" onClick={() => setSidebarOpen(false)} /></div>
         <Button className="ai-new-session" type="text" icon={<EditOutlined />} loading={busy} onClick={() => { void newConversation(); }}>新建对话</Button>
@@ -223,6 +224,7 @@ export default function AI() {
         {sessionSearch && !conversationGroups.length && <p className="ai-muted ai-empty-hint">没有匹配的对话</p>}
         <div className="ai-sidebar-footer">
           <Button type="text" icon={<ApiOutlined />} onClick={() => setSettingsOpen(true)}>模型连接</Button>
+        </div>
         </div>
       </aside>
 

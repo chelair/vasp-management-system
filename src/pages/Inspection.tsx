@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import AnimatedCollapse from '../components/common/AnimatedCollapse';
 import { useAuth } from '../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -24,7 +25,6 @@ import type { Key } from 'react';
 import {
   InboxOutlined,
   ClearOutlined,
-  DownOutlined,
   FileSearchOutlined,
   InfoCircleOutlined,
   ReloadOutlined,
@@ -985,7 +985,7 @@ export default function Inspection() {
           />
         </div>
 
-        <div className="inspection-projects">
+        <div className={`inspection-projects${loading ? '' : ' content-enter'}`}>
           {projectBlocks.map((block) => {
             const expanded = projectExpansion.get(block.projectName) ?? !block.closed;
             return (
@@ -1006,7 +1006,7 @@ export default function Inspection() {
                     })
                   }
                 >
-                  {expanded ? <DownOutlined /> : <RightOutlined />}
+                  <RightOutlined className={`collapse-chevron${expanded ? ' collapse-chevron--open' : ''}`} />
                   <span className="inspection-project__name">{block.projectName}</span>
                   {block.closed && (
                     <span className="inspection-project__closed">已关闭</span>
@@ -1036,7 +1036,7 @@ export default function Inspection() {
                     )}
                   </span>
                 </button>
-                {expanded && (
+                <AnimatedCollapse open={expanded}>
                   <Table
                     rowKey="id"
                     dataSource={block.rows}
@@ -1048,7 +1048,7 @@ export default function Inspection() {
                       block.closed ? 'inspection-row--closed' : ''
                     }
                   />
-                )}
+                </AnimatedCollapse>
               </div>
             );
           })}

@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { CheckOutlined, CloseCircleOutlined, CodeOutlined, DownOutlined, LoadingOutlined, PauseOutlined, RightOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseCircleOutlined, CodeOutlined, LoadingOutlined, PauseOutlined, RightOutlined } from '@ant-design/icons';
 import { isActiveRun } from '../../api/aiChat';
 import type { AIRun } from '../../api/aiChat';
 import ThinkingText from './ThinkingText';
+import AnimatedCollapse from '../common/AnimatedCollapse';
 
 export const TOOL_NAMES: Record<string, string> = {
   search_work_experience: '检索个人操作经验', list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿',
@@ -53,9 +54,9 @@ export default function RunActivity({ run, hasAnswer }: { run: AIRun; hasAnswer:
       {events.length > 0 && <span className="ai-activity-count">{events.length} 次工具调用</span>}
       {failed > 0 && <span className="ai-activity-issues">{failed} 次调用失败</span>}
       {elapsed && <span className="ai-activity-duration">{elapsed}</span>}
-      {open ? <DownOutlined className="ai-activity-chevron" /> : <RightOutlined className="ai-activity-chevron" />}
+      <RightOutlined className={`ai-activity-chevron collapse-chevron${open ? ' collapse-chevron--open' : ''}`} />
     </button>
-    {open && <div className="ai-activity-body">
+    <AnimatedCollapse open={open}><div className="ai-activity-body">
       {run.reasoning && <details className="ai-thought">
         <summary>模型思考 <span>{active ? run.reasoning.trim().split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 90) : '查看过程'}</span></summary>
         <ThinkingText text={run.reasoning} active={active} />
@@ -81,6 +82,6 @@ export default function RunActivity({ run, hasAnswer }: { run: AIRun; hasAnswer:
         </details>;
       })}
       {!run.reasoning && !events.length && <p className="ai-muted">等待模型返回思考、工具调用或回答。</p>}
-    </div>}
+    </div></AnimatedCollapse>
   </div>;
 }

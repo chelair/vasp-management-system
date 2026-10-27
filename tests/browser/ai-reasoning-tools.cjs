@@ -69,6 +69,11 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
   try {
     await page.goto('http://127.0.0.1:' + server.address().port);
     await page.getByText('目前读取到 188 个原子', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '收起会话栏', exact: true }).click();
+    await page.waitForFunction(() => {const width=document.querySelector('.ai-sessions').getBoundingClientRect().width;return width>0&&width<251;});
+    assert.equal(await page.locator('.ai-sessions').getAttribute('inert'),'');
+    await page.getByRole('button', { name: '展开会话栏', exact: true }).click();
+    await page.waitForFunction(() => Math.abs(document.querySelector('.ai-sessions').getBoundingClientRect().width-252)<0.1);
     assert.equal(await page.locator('.sidebar').isVisible(), true, 'system navigation remains beside the workbench');
     assert.equal(await page.locator('.topbar').isVisible(), true);
     await page.getByRole('button', { name: '收起总导航', exact: true }).click();

@@ -5,8 +5,8 @@ const http=require('node:http'),path=require('node:path'),assert=require('node:a
 (async()=>{
   const bundle=await build({stdin:{contents:`
     import {createRoot} from 'react-dom/client';import {MemoryRouter} from 'react-router-dom';import {App} from 'antd';
-    import {AuthProvider} from './src/context/AuthContext';import Inspection from './src/pages/Inspection';import './src/styles/global.css';
-    createRoot(document.getElementById('root')).render(<App><AuthProvider><MemoryRouter><Inspection/></MemoryRouter></AuthProvider></App>);
+    import {AuthProvider} from './src/context/AuthContext';import {AppearanceProvider} from './src/context/AppearanceContext';import Inspection from './src/pages/Inspection';import './src/styles/global.css';
+    createRoot(document.getElementById('root')).render(<AppearanceProvider><App><AuthProvider><MemoryRouter><Inspection/></MemoryRouter></AuthProvider></App></AppearanceProvider>);
   `,resolveDir:path.resolve('.'),loader:'tsx'},bundle:true,write:false,outfile:'app.js',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'}});
   const files=Object.fromEntries(bundle.outputFiles.map(f=>[f.path.endsWith('.css')?'/app.css':'/app.js',f.text]));
   const results=['Alpha','Beta','Closed'].map((name,i)=>({id:name,task_id:name,task_name:name+' task',project_name:name,
@@ -31,6 +31,15 @@ const http=require('node:http'),path=require('node:path'),assert=require('node:a
     await header('Alpha').waitFor();
     assert.equal(await header('Alpha').getAttribute('aria-expanded'),'true');
     assert.equal(await header('Closed').getAttribute('aria-expanded'),'false');
+    await block('Alpha').locator('.ant-table').waitFor();
+    await page.waitForFunction(()=>!document.querySelector('.inspection-projects').getAnimations().length);
+    const fullHeight=await block('Alpha').locator('.animated-collapse').evaluate(e=>e.getBoundingClientRect().height);
+    await header('Alpha').evaluate(e=>e.click());
+    await page.waitForFunction(full=>{const el=document.querySelector('.inspection-project .animated-collapse');const h=el.getBoundingClientRect().height;return h>0&&h<full-1},fullHeight);
+    assert.equal(await block('Alpha').locator('.animated-collapse').getAttribute('inert'),'','closing content immediately leaves keyboard navigation');
+    await header('Alpha').evaluate(e=>e.click());
+    await page.waitForFunction(full=>Math.abs(document.querySelector('.inspection-project .animated-collapse').getBoundingClientRect().height-full)<0.1,fullHeight);
+    assert.equal(await block('Alpha').locator('.ant-table').isVisible(),true,'rapid reversal keeps content mounted');
     await header('Alpha').click();await block('Alpha').locator('.ant-table').waitFor({state:'detached'});
     assert.equal(await header('Alpha').getAttribute('aria-expanded'),'false');
     assert.equal(await block('Beta').locator('.ant-table').isVisible(),true,'other active projects stay expanded');
@@ -43,8 +52,14 @@ const http=require('node:http'),path=require('node:path'),assert=require('node:a
     await header('Alpha').press('Space');await block('Alpha').locator('.ant-table').waitFor();
     assert.equal(await header('Alpha').getAttribute('aria-expanded'),'true');
     assert.equal(await header('Closed').getAttribute('aria-expanded'),'false');
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await page.waitForFunction(()=>document.documentElement.dataset.motion==='reduced');
+    await header('Alpha').click();
+    assert.equal(await block('Alpha').locator('.ant-table').count(),0,'reduced motion collapses immediately');
+    assert.equal(await page.locator('.page-transition').evaluate(e=>getComputedStyle(e).animationName),'none');
+    await header('Alpha').click();assert.equal(await block('Alpha').locator('.ant-table').isVisible(),true);
     assert.deepEqual(requests.map(r=>r.method+' '+r.url).sort(),['GET /api/inspections','GET /api/inspections/meta']);
     assert.deepEqual(errors,[]);
-    console.log('PASS active/closed defaults, independent folding, re-expansion, keyboard, unchanged filter reset; no inspection or extra requests');
+    console.log('PASS active/closed defaults, animated middle frame, rapid reversal, keyboard, filter reset and instant reduced motion; no inspection or extra requests');
   }finally{await browser.close();await new Promise(r=>server.close(r));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

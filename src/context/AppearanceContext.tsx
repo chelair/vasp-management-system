@@ -37,6 +37,7 @@ function accentPalette(hex: string) {
 }
 const AppearanceContext = createContext<{
   appearance: Appearance;
+  reducedMotion: boolean;
   updateAppearance: (patch: Partial<Appearance>) => void;
   resetAppearance: () => void;
 } | null>(null);
@@ -45,6 +46,11 @@ export function useAppearance() {
   const value = useContext(AppearanceContext);
   if (!value) throw new Error('useAppearance 必须在 AppearanceProvider 内使用');
   return value;
+}
+
+export function useReducedMotion() {
+  const value = useContext(AppearanceContext);
+  return value?.reducedMotion ?? window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 /** 只保存浏览器展示偏好，不访问模型、SSH 或业务配置。 */
@@ -83,7 +89,9 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const theme = useMemo(() => ({
     ...themeConfig,
     token: { ...themeConfig.token, colorPrimary: appearance.accent,
-      colorTextLightSolid: palette.on, controlHeight: appearance.density === 'compact' ? 32 : 36, motion: !reduced },
+      colorTextLightSolid: palette.on, controlHeight: appearance.density === 'compact' ? 32 : 36,
+      // 动态切换 motion 布尔值会让 Ant Design 插入 Provider 并重挂业务页面；只切换动画时长。
+      motionUnit: reduced ? 0 : 0.1 },
     components: {
       ...themeConfig.components,
       Card: { ...themeConfig.components?.Card, paddingLG: appearance.density === 'compact' ? 16 : 20 },
@@ -91,6 +99,6 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       Tabs: { ...themeConfig.components?.Tabs, inkBarColor: appearance.accent, itemSelectedColor: palette.strong },
     },
   }), [appearance.accent, appearance.density, palette, reduced]);
-  const value = useMemo(() => ({ appearance, updateAppearance, resetAppearance }), [appearance, updateAppearance, resetAppearance]);
+  const value = useMemo(() => ({ appearance, reducedMotion: reduced, updateAppearance, resetAppearance }), [appearance, reduced, updateAppearance, resetAppearance]);
   return <AppearanceContext.Provider value={value}><ConfigProvider locale={zhCN} theme={theme}>{children}</ConfigProvider></AppearanceContext.Provider>;
 }

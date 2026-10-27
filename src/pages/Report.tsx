@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AnimatedCollapse from '../components/common/AnimatedCollapse';
 import {
   App,
   Button,
@@ -1052,16 +1053,17 @@ export default function Report() {
                   <button
                     type="button"
                     className="project-closed-toggle"
+                    aria-expanded={showClosedReports}
                     onClick={() => setShowClosedReports((v) => !v)}
                   >
-                    {showClosedReports ? <DownOutlined /> : <RightOutlined />}
+                    <RightOutlined className={`collapse-chevron${showClosedReports ? ' collapse-chevron--open' : ''}`} />
                     已关闭项目（{closedGroups.length}）
                   </button>
-                  {showClosedReports && (
+                  <AnimatedCollapse open={showClosedReports}>
                     <div className="project-closed-list">
                       {closedGroups.map((group) => renderReportGroup(group, true))}
                     </div>
-                  )}
+                  </AnimatedCollapse>
                 </div>
               )}
             </div>

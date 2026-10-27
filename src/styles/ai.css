@@ -5,8 +5,9 @@
 .ai-workspace { position: relative; display: flex; height: 100%; min-height: 0; }
 .ai-page .ant-btn-primary { background: var(--color-primary); color: var(--color-primary-on); box-shadow: none; }
 .ai-page .ant-btn-primary:not(:disabled):hover { background: var(--color-primary-strong); }
-.ai-sessions { width: 252px; flex: 0 0 252px; display: none; flex-direction: column; min-height: 0; padding: 12px; background: #f5f5f5; border-right: 1px solid #ebebeb; }
-.ai-workspace--sidebar .ai-sessions { display: flex; }
+.ai-sessions { width: 0; flex: 0 0 auto; min-height: 0; overflow: hidden; visibility: hidden; opacity: 0; background: #f5f5f5; box-shadow: inset -1px 0 #ebebeb; transition: width var(--motion-collapse) var(--motion-ease), opacity var(--motion-collapse) ease, visibility 0s var(--motion-collapse); }
+.ai-workspace--sidebar .ai-sessions { width: 252px; visibility: visible; opacity: 1; transition-delay: 0s; }
+.ai-sessions-inner { display: flex; flex-direction: column; width: 252px; height: 100%; min-height: 0; padding: 12px; }
 .ai-sidebar-brand { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 4px; margin-bottom: 15px; font-size: 14px; }
 .ai-sidebar-brand > .ant-btn { margin-left: auto; color: #737373; }
 .ai-brand-mark { font-size: 25px; color: #333; line-height: 1; }
@@ -16,8 +17,8 @@
 .ai-session-search .ant-input { background: transparent; }
 .ai-session-search .ant-input-prefix { color: #737373; margin-right: 9px; }
 .ai-label { font-size: 11px; color: #858585; margin: 22px 8px 8px; }
-.ai-sessions > .ant-select { font-size: 12px; }
-.ai-sessions > .ant-select .ant-select-selector { background: transparent; border-color: #e2e2e2; }
+.ai-sessions-inner > .ant-select { font-size: 12px; }
+.ai-sessions-inner > .ant-select .ant-select-selector { background: transparent; border-color: #e2e2e2; }
 .ai-scope-title { margin: 24px 8px 6px; }
 .ai-session-list { min-height: 0; flex: 1; overflow-y: auto; }
 .ai-session-group + .ai-session-group { margin-top: 15px; }
@@ -90,7 +91,7 @@
 .ai-tool-call-title { flex-shrink: 0; color: #666; }
 .ai-tool-target { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #999; font-family: var(--font-mono); font-size: 11px; }
 .ai-tool-status { margin-left: auto; white-space: nowrap; font-size: 10px; color: #999; }
-.ai-tool-chevron { font-size: 9px; color: #aaa; margin-right: 4px; }
+.ai-tool-chevron { font-size: 9px; color: #aaa; margin-right: 4px; transition: transform var(--motion-collapse) var(--motion-ease); }
 .ai-tool-call[open] > summary .ai-tool-chevron { transform: rotate(90deg); }
 .ai-tool-detail { border: 1px solid #e8e8e8; border-radius: 8px; overflow: hidden; background: #fafafa; margin: 2px 0 10px; }
 .ai-tool-signature { display: flex; align-items: center; gap: 8px; padding: 10px 12px; color: #666; border-bottom: 1px solid #e8e8e8; overflow-wrap: anywhere; }
@@ -144,8 +145,21 @@
 .ai-file-panel .ant-btn-link { white-space: normal; height: auto; text-align: left; padding-left: 0; overflow-wrap: anywhere; }
 .ai-page button:focus-visible, .ai-page summary:focus-visible, .ai-page a:focus-visible { outline: 2px solid #888; outline-offset: 3px; }
 @media (max-width: 900px) {
-  .ai-workspace--sidebar .ai-sessions { display: flex; position: absolute; inset: 0 auto 0 0; z-index: 11; box-shadow: 10px 0 35px #00000012; }
+  .ai-sessions { width: 252px; position: absolute; inset: 0 auto 0 0; z-index: 11; transform: translateX(-100%); transition: transform var(--motion-collapse) var(--motion-ease), opacity var(--motion-collapse) ease, visibility 0s var(--motion-collapse); }
+  .ai-workspace--sidebar .ai-sessions { transform: translateX(0); box-shadow: 10px 0 35px #00000012; }
   .ai-session-overlay { display: block; position: absolute; inset: 0; border: 0; background: #0003; z-index: 10; cursor: pointer; }
+}
+
+/* 原生 details 渐进增强；不支持的浏览器保留原生开合。 */
+@supports (interpolate-size: allow-keywords) and (transition-behavior: allow-discrete) {
+  :is(.ai-session-group, .ai-thought, .ai-tool-call)::details-content {
+    interpolate-size: allow-keywords;
+    block-size: 0;
+    opacity: 0;
+    overflow: clip;
+    transition: block-size var(--motion-collapse) var(--motion-ease), opacity var(--motion-collapse) ease, content-visibility var(--motion-collapse) allow-discrete;
+  }
+  :is(.ai-session-group, .ai-thought, .ai-tool-call)[open]::details-content { block-size: auto; opacity: 1; }
 }
 @media (max-width: 600px) {
   .app-shell--ai .topbar__right { gap: 8px; }

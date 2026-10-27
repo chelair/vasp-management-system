@@ -45,6 +45,8 @@ const http=require('node:http'),path=require('node:path'),assert=require('node:a
     await page.reload();await page.locator('.settings-page').waitFor();
     assert.equal(await accent(),'#7953B5');
     assert.deepEqual(await page.evaluate(()=>({density:document.documentElement.dataset.density,motion:document.documentElement.dataset.motion})),{density:'compact',motion:'reduced'});
+    assert.equal(await page.locator('.page-transition').evaluate(e=>getComputedStyle(e).animationName),'none','saved motion setting disables page entrance');
+    assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--motion-collapse').trim()),'0ms','saved setting disables custom folds and native details');
     assert.equal(await page.locator('.clock-chip').count(),0);
     await page.screenshot({path:'/tmp/vasp-settings-desktop.png'});
     await page.locator('.sidebar').getByRole('link',{name:'巡检中心',exact:true}).click();await page.locator('.page-header__title').getByText('巡检中心',{exact:true}).waitFor();

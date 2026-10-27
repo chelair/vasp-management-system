@@ -23,11 +23,13 @@ from task_context import AUDIT_FILE
 from task_paths import is_auxiliary_task
 
 SYSTEM_PROMPT = """你是 VASP 科研计算助手，用中文与用户协作。
+研究分析先明确用户目标：读取project.calc_description/expected_results，不因预期字段为空忽略计算内容；不清楚可调用get_project_research_context。预期是评价路径是否适合的问题，不是预设结论。用户问NEB/断键能垒是否继续时，必须先analyze_reaction_path核对两端候选反应键、片段内部形变与额外界面接触，再讨论收敛/资源，不能只看组成晶胞相同就建议续算。两端有差异时围绕目标解释是否混入脱配位/重排/形变；几何近邻不是成键证明，不能从位移或端点总能拆出形变能。目标键和研究范围不明确时用报告选择卡确认，不能断言初态错误或能垒为零。应自动读取已有INCAR/KPOINTS和来源，读不到才简明说明，不能把自己未查询说成数据不存在。
+客户报告只需关键结论、现在遇到的问题、影响与解决办法，配上必要结构对照和标注。必要数据/研究意图缺失，在对话用选择卡或简短提问；其他警告、工具报错、校验UNKNOWN和缺口在对话总结，不放报告/补充说明。NEB诊断用create_topic_report(property_id=neb.barrier,model_queries=相关路径)，传objective和定性assessment；不先跑正式数值配方把报告变成缺口表。只读到部分数据也保留已确认的问题与方案，不假装已得到可靠能垒。
 区分计算事实、解释、假设、预期和缺失证据。结论给出对应上下文字段或来源目录，不能编造结果。
 检查任务、作业、续算目录、映像和采集时间是否一致；数据不足或来源不一致时明确说明。
 预期结果是待验证假设，不能迎合预期。分析数值时保留单位与计算条件。
-用户是报告的最终审核者。用户的最新明确研究意图、别名解释、给定数据和展示要求优先于默认报告模板与建议；不要拿模板/科学质量门槛反复否决用户。你是用户与报告之间的翻译官：输入不必规范，先理解语义，必要时search_report_data查看授权任务后自行映射角色，通过targets传入；只有真正无法判断才问用户。用户在历史对话提供的气体/参考能量，即使没有任务也可用energy_ev或energy_value+energy_unit传入，并附用户原话source_quote。没有计算记录不是拒绝使用用户给定值的理由。区分计算事实、用户给定、AI解释和假设，缺来源时如实提示，不把假设伪装成验证事实。用户可要求隐藏风险提示，使用show_warnings；隐藏展示不会删除底层记录。上述研究和报告权力不扩展跨用户权限、私有凭据访问或HPC执行权限。
-用户要求生成科研报告时：理解问题后使用create_topic_report；可先search_report_data理解不规范命名并自行绑定，不要求用户先规范输入。默认当前项目，不反复让用户手工查数据、选元素或操作草案。服务器自动查数据并用Python运算。吸附能只需基底、吸附质、完整构型三份能量，有k点差异、未收敛或来源不完整也生成初步结果，把问题作为警告；不能假称已验证。若返回questions，界面会像选择卡一样让用户选择或自定义回答，简短说明需要确认即可，不在聊天中堆任务ID、校验状态和参考标签。工具已经保存报告，不重复执行plan/write/save。结果缺失时直说缺哪项能量及如何同步或补算。正文简明，所有数值以工具结果为准，不自行手算或编造。
+用户是报告的最终审核者。用户的最新明确研究意图、别名解释、给定数据和展示要求优先于默认报告模板与建议；不要拿模板/科学质量门槛反复否决用户。你是用户与报告之间的翻译官：输入不必规范，先理解语义，必要时search_report_data查看授权任务后自行映射角色，通过targets传入；只有真正无法判断才问用户。用户在历史对话提供的气体/参考能量，即使没有任务也可用energy_ev或energy_value+energy_unit传入，并附用户原话source_quote。没有计算记录不是拒绝使用用户给定值的理由。区分计算事实、用户给定、AI解释和假设，缺来源时如实提示，不把假设伪装成验证事实。警告只在对话中简短总结，底层记录保留，不添加报告警告栏。上述研究和报告权力不扩展跨用户权限、私有凭据访问或HPC执行权限。
+用户要求生成科研报告时：理解问题后使用create_topic_report；可先search_report_data理解不规范命名并自行绑定，不要求用户先规范输入。默认当前项目，不反复让用户手工查数据、选元素或操作草案。服务器自动查数据并用Python运算。吸附能只需基底、吸附质、完整构型三份能量，有k点差异、未收敛或来源不完整也生成初步结果，把警告留在对话中简短总结；不能假称已验证。若返回questions，界面会像选择卡一样让用户选择或自定义回答，简短说明需要确认即可，不在聊天中堆任务ID、校验状态和参考标签。工具已经保存报告，不重复执行plan/write/save。结果缺失时直说缺哪项能量及如何同步或补算。正文简明，所有数值以工具结果为准，不自行手算或编造。
 独立的正式科学校验可查询get_property_recipes/discover_property_tasks/evaluate_property；报告优先使用create_topic_report，由你理解语义并匹配角色。最终派生数值来自服务端Python函数，用户给定的原始数值可以作为输入；AI推断、用户给定和计算记录分别标明，不把未验证内容冒充验证事实。无需为了生成初步报告额外完成正式校验，未支持的公式不临时编造。
 用户要求“托管项目/排优先级/自动接着跑/按阶段交付”时：用create_managed_plan把这句话保存成计划（阶段、任务级优先级、允许的CPU队列与额度上限），之后用update_managed_plan或set_task_priority调整。计划只写意图，不提交作业；用户没说清的交付时间、可用队列、额度不要编造，先简短提问。人工锁定的任务优先级你不能覆盖；结束托管需用户在前端操作。托管请求不需要读POSCAR/OUTCAR等大文件，也不要生成科研报告：先用get_managed_plans看现有计划，必要时用find_project_tasks定位任务，然后直接创建或更新计划；用户说某些体系暂不做，就不要把它们写进阶段或优先级。托管类请求通常1-2轮就能完成，不为凑工具调用而扩大取数。计划建好后不要为了同一目的继续读结构文件：直接用文字说明计划内容、以及仍不确定、需要用户确认的点；已经明确的排除项不要再问一遍。
 仅可使用本轮明确提供的工具。工作区启用时可查询巡检、已应用参数、OPT处置记录、读取文本、按需固定范围远端只读补证、在 work/ 新建草稿；以工具返回为事实。
@@ -199,6 +201,7 @@ def context_for(user: dict, task_id: str | None = None, *, project_id: str | Non
     checks.sort(key=lambda r: str(r["checked_at"] or ""), reverse=True)
     return clean({"scope": "project", "generated_at": now_iso(),
                   "project": {k: project.get(k) for k in ("project_id", "name", "description", "calc_description", "expected_results", "deadline", "closed")},
+                  "research_goal": {"calculation_goal": project.get("calc_description") or "", "expected_results": project.get("expected_results") or "", "rule": "先目标，再结构合理性/反应路径，再参数；用事实检验目标，不迎合预期。"},
                   "summary": {"task_count": len(tasks), "status_counts": counts}, "tasks": tasks,
                   "workspace_rules": {
                       "scope": "仅当前项目；正式文件只读，只能在当前会话 work/ 新建草稿；无任意代码/SSH命令或作业操作权限。",
@@ -644,6 +647,10 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
     started = time.monotonic()
     tool_bytes = 0
     final_deadline = None
+    question = str(messages[-1].get('content','')) if messages else ''
+    review_required = workspace_enabled and bool(re.search(r'能垒|断键|\bNEB\b', question, re.I)) and bool(re.search(r'继续|当前|目前|现在|这条|这组|看法|怎么看|帮.*看|评估|合理|问题|报告', question))
+    review_obtained = False
+    review_reminded = False
 
     def authorize(*, check_time=True):
         if _cancelled(run_id):
@@ -825,6 +832,16 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             text += round_text
             round_recorded = True
             if not calls:
+                if review_required and not review_obtained:
+                    # Do not turn an unsupported first answer into a recommendation to run.
+                    text = text[:-len(round_text)] if round_text else text
+                    if not review_reminded:
+                        review_reminded = True
+                        messages.append({'role':'system','content':'在判断能垒能否继续前，必须先调用analyze_reaction_path检查相关路径端点与研究目标。不要仅凭收敛、组成和晶胞建议续算；如工具无法读取，直接在对话询问必要资料。'})
+                        store.update_answer(run_id, clean(text, (key,)), usage=usage, reasoning=reasoning_total)
+                        continue
+                    store.update_answer(run_id, clean(text+'尚未完成相关路径的端点结构核对，暂不能判断是否适合继续NEB。请先确认目标路径和研究的反应过程。',(key,)),status='completed',usage=usage,reasoning=reasoning_total)
+                    return
                 if not round_text.strip():
                     if saw_reasoning:
                         finalize(f"思考用完了输出额度（max_tokens={connection['max_tokens']}），需要直接总结；后续可提高最大输出或降低思考深度")
@@ -857,6 +874,8 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                     result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"]), name, arguments, user=user, run_id=run_id)
                     result = clean(result, (key,))
                     status = "completed"
+                    if name == 'analyze_reaction_path' or (name == 'create_topic_report' and arguments.get('property_id') == 'neb.barrier') or (name == 'get_topic_report' and result.get('path_evidence')):
+                        review_obtained = True
                 except Exception as exc:
                     error = str(exc) if isinstance(exc, (ValueError, permissions.PermissionDenied)) and not isinstance(exc, json.JSONDecodeError) else "证据或文件不可访问，请重新查询；草稿使用新文件名"
                     result, status = {"error": clean(error, (key,))}, "failed"
@@ -866,10 +885,11 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                 if not denied and tool_bytes + len(encoded) > TOOL_RESULT_CHARS:
                     limit_reason = "本轮工具结果总量达到预算，拒绝继续读取或调用工具"
                     # 操作可能已成功（如保存报告），不能把省略返回值伪装成执行失败或重做。
-                    summary = {k: result[k] for k in ("path", "report_id", "topic_id", "id", "applied")
+                    summary = {k: result[k] for k in ("path", "report_id", "topic_id", "id", "applied", "revision", "stage", "report_ready")
                                if isinstance(result, dict) and k in result and isinstance(result[k], (str, bool, int)) and len(str(result[k])) <= 256}
-                    result = {**summary, "error": limit_reason, "result_omitted": True, "operation_status": status,
-                              "note": "原操作状态见operation_status，不要重复执行；未展示的数据不能当作已审阅"}
+                    result = {**summary, "notice" if status == "completed" else "error": limit_reason,
+                              "result_omitted": True, "operation_status": status,
+                              "note": "操作已成功完成，仅返回数据被省略；不能说未保存或重复执行。" if status == "completed" else "原操作失败；未展示的数据不能当作已审阅"}
                     encoded = json.dumps(result, ensure_ascii=False)
                 elif not denied:
                     tool_bytes += len(encoded)

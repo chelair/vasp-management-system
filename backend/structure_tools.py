@@ -26,6 +26,14 @@ def tool(name,description,properties,required):
 
 
 TOOLS = [
+    tool('get_project_research_context',
+        '读取当前项目的计算目标、预期、说明与NEB端点关联。分析先以目标为判断标准，不能根据任务名猜反应；预期为空不代表计算内容没有目标。', {}, []),
+    tool('analyze_reaction_path',
+        '评估NEB/断键能垒能否继续、路径是否只包含目标反应时优先调用，而不是只看收敛。一次核对IS/FS的目标候选键、研究片段内部形变（排除刚体平移/转动）、O与片段外Li等接触变化、约束和同目录INCAR/KPOINTS，再看已有路径能量。默认B/F和BCOF片段仅适合相应体系，其余按目标显式指定；片段若与基底共用元素需fragment_indices。返回Python距离与固定来源selector，不把近邻当成键、不把位移当形变能、不猜目标键。需要确认目标键时在报告选择卡提问。当前结构选remote；生成报告沿用initial/final指纹，不混合重读后的结构。',
+        {'path_task_id':{'type':'string'},'initial':SELECTOR,'final':SELECTOR,
+         'source':{'type':'string','enum':['local','remote'],'default':'local'},'bond_elements':{'type':'array','items':{'type':'string'},'minItems':2,'maxItems':2},
+         'fragment_elements':ELEMENTS,'fragment_indices':{'type':'array','items':INDEX,'minItems':2,'maxItems':96},'contact_elements':ELEMENTS,
+         'contact_cutoff':{'type':'number','minimum':.5,'maximum':4},'pbc':PBC}, ['path_task_id']),
     tool('check_structure',
         '检查模型合理性或结构优化问题时优先调用。按影响从整体结构合理性/优化重构迹象、局部配位与界面、最后计算参数输出Python筛查证据；不自动判定物相/变性。元素赝势对应仅基础核对，不作为默认最高优先级。自动只读目标目录INCAR/POTCAR摘要及OUTCAR头部，缺失标未知。reference可显式选真正初始结构；省略时CONTCAR尝试同任务POSCAR（remote尝试MAIN，local仅镜像），不是完整续算历史。当前/指定con用remote。返回来源指纹，沿用selector细查。',
         {'structure':SELECTOR,'reference':SELECTOR,'pbc':PBC},['structure']),
@@ -65,6 +73,8 @@ def elements(value):
 
 def dispatch(project,user,name,arguments):
     allowed = {
+        'get_project_research_context':set(),
+        'analyze_reaction_path':{'path_task_id','initial','final','source','bond_elements','fragment_indices','fragment_elements','contact_elements','contact_cutoff','pbc'},
         'check_structure':{'structure','reference','pbc'},
         'get_structure_summary':{'structure','pbc','axis','atom_offset','layer_gap_angstrom'},
         'get_structure_environment':{'structure','pbc','atom_indices','elements','neighbor_elements','cutoff_angstrom'},
@@ -77,6 +87,12 @@ def dispatch(project,user,name,arguments):
     permissions.ensure_project_owner(current,user)
     if current is None:
         raise ValueError('当前项目不存在')
+    if name == 'get_project_research_context':
+        from reaction_review import research_context, paths
+        return {**research_context(current), 'paths':[{'task_id':t['task_id'],'name':t.get('model_name'),'group':t.get('group')} for t in paths(current)]}
+    if name == 'analyze_reaction_path':
+        from reaction_review import analyze
+        return analyze(current,user,arguments)
     pbc = arguments.get('pbc',[True,True,True])
     if not isinstance(pbc,list) or len(pbc)!=3 or any(type(x) is not bool for x in pbc):
         raise ValueError('周期边界须是a/b/c方向的三个布尔值')

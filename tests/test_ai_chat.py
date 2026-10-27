@@ -721,6 +721,26 @@ class AIChatTests(unittest.TestCase):
                 _, detail = self.api(f"/conversations/{conversation['id']}")
                 self.assertIn("依据已有证据", detail["messages"][-1]["content"])
 
+    def test_neb_question_requires_path_review_before_a_final_recommendation(self):
+        conversation=self.conversation(self.connection(),"task-alice")
+        payloads=[]
+        def model(_connection,_key,_path,payload):
+            payloads.append(copy.deepcopy(payload))
+            if len(payloads)==1:return model_stream({'content':'直接继续算就可以。'})
+            if len(payloads)==2:
+                self.assertIn('analyze_reaction_path',payload['messages'][-1]['content'])
+                return model_stream({'tool_calls':[{'index':0,'id':'review_once','function':{'name':'analyze_reaction_path','arguments':'{"path_task_id":"task-alice"}'}}]})
+            return model_stream({'content':'已核对端点：先处理额外结构变化，再决定如何续算。'})
+        with patch.object(service,'_open',side_effect=model),patch.object(workspace,'dispatch',return_value={'sources':{},'framework_shape':{}}) as dispatched:
+            _,run=self.api(f"/conversations/{conversation['id']}/messages",'POST',{'content':'现在B-F断键能垒能继续吗','request_id':store.uid()})
+            result=self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        self.assertEqual(dispatched.call_count,1)
+        self.assertEqual(len(payloads),3)
+        _,detail=self.api(f"/conversations/{conversation['id']}")
+        self.assertNotIn('直接继续算',detail['messages'][-1]['content'])
+        self.assertIn('已核对端点',detail['messages'][-1]['content'])
+
     def test_tool_result_budget_preserves_success_and_rejects_rest_of_batch(self):
         conversation = self.conversation(self.connection(), "task-alice")
         payloads = []

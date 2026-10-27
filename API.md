@@ -1,6 +1,6 @@
 # 接口文档
 
-维护日期：2026-10-20；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
+维护日期：2026-10-27；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
 
 ## 默认简明专题报告
 
@@ -9,13 +9,17 @@
 | 方法与路径 | 合同 |
 | --- | --- |
 | POST `/api/reports/topic/quick` | conversation_id、question、request，可选project_ids；创建独立简明报告 |
-| POST `/api/reports/topic/{id}/questions` | expected_revision、answers；选择或自定义回答补齐 |
-| PUT `/api/reports/topic/{id}/content` | expected_revision、title/notes/blocks/deleted_block_ids/show_warnings；不修改科学结果 |
+| POST `/api/reports/topic/{id}/questions` | expected_revision、answers，可选布尔 continue_analysis（默认 false）；选择/自定义回答保存后，可继续原 AI 对话 |
+| PUT `/api/reports/topic/{id}/content` | expected_revision、title/notes/blocks/deleted_block_ids/show_warnings；路径诊断可传 assessment={conclusion,recommendation}，仅定性文字；不修改科学结果 |
 | POST `/api/reports/topic/{id}/rebuild` | 生成新独立报告，旧报告保留 |
 
 create请求支持 property_id/model_queries、adsorbate_query、targets、title/notes/show_warnings 等。targets的角色可绑定 task_id/project_id/observation_id，也可用 energy_ev 或 energy_value+energy_unit，并附 label/source_quote/note。用户给定的参考能量不要求对应任务，服务端记录原话/归属，转换单位并由Python计算；AI解释或假设不能冒充验证记录。
 
-吸附能默认 `adsorption.estimate`（adsorption.minimum.1.1.0），三个有限能量即给初步值，质量问题为提醒。show_warnings只控制预览/HTML/PDF展示，冻结风险和来源保留。所有操作重新鉴权、no-store，修订冲突409；真正缺能量/角色时返回明确问题/操作建议。
+吸附能默认 `adsorption.estimate`（adsorption.minimum.1.1.0），三个有限能量即给初步值，质量问题为提醒。简明报告不展示报错、缺项或警告，冻结风险和来源保留；show_warnings保留兼容。所有操作重新鉴权、no-store，修订冲突409；真正缺能量/角色时返回明确问题/操作建议。
+
+`neb.barrier` 默认简明入口生成端点结构诊断（`reaction.topic.1`），不冒充已取得可靠能垒。create 支持 objective、定性 assessment、bond_elements/fragment_elements/contact_elements，以及 targets[].path。get_project_research_context 返回项目目标与端点关联；analyze_reaction_path 按需读取固定结构和同目录参数，返回反应键候选、片段内部距离变化、O–Li 接触变化、约束及来源。默认本地保存结构，远端须明确选择；不提交计算。
+
+工具摘要 `questions` 用于对话确认，`conversation_notes` 仅供 AI 在对话简短总结。路径报告摘要包含冻结 path_evidence，后续回答不必重新读取。问题回答携带 continue_analysis=true 时，沿用原 start_run 与幂等 request_id；回答已保存但继续失败时返回 continuation_error，错误不写报告。详见 [路径诊断合同](docs/reaction-diagnosis.md)。
 
 ## 模型思考深度
 

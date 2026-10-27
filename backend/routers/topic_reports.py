@@ -61,7 +61,27 @@ def quick(request:Request,payload:dict=Body()):
 @guard
 def questions(topic_id:str,request:Request,payload:dict=Body()):
     from topic_simple import answer
-    return ok('已按回答更新报告',answer(actor(request),topic_id,payload))
+    user=actor(request)
+    old=topics.load(user,topic_id)
+    continuation=payload.get('continue_analysis',False)
+    if type(continuation) is not bool:raise ValueError('继续分析开关无效')
+    doc=answer(user,topic_id,{k:v for k,v in payload.items() if k!='continue_analysis'})
+    if continuation:
+        from ai_chat_service import start_run
+        supplied=payload.get('answers') or {}
+        lines=[]
+        for q in old.get('simple',{}).get('questions',[]):
+            if q['id'] in supplied:
+                option=next((o['label'] for o in q['options'] if o['value']==supplied[q['id']]), supplied[q['id']])
+                lines.append(q['title']+'：'+option)
+        try:
+            run,_=start_run(user,str(user['user_id']),doc['conversation_id'],
+                '我对报告“'+doc['title']+'”的确认：\n'+'\n'.join(lines)+'\n请继续同一报告的分析。必要缺项在对话中问我，其他警告在对话总结，不要放进报告。',
+                False,'topic-answer-'+topic_id+'-'+str(old['revision']))
+            doc={**doc,'continuation':run}
+        except ValueError as exc:
+            doc={**doc,'continuation_error':'回答已保存，但AI暂未继续：'+str(exc)}
+    return ok('已按回答更新报告',doc)
 
 
 @router.put('/{topic_id}/content')

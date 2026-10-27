@@ -23,15 +23,15 @@ INTERPRETED_TARGET={'type':'object','properties':{'label':{'type':'string'},'rea
 REPORT_TARGET={**TARGET,'properties':{**TARGET['properties'],**{role:INPUT for role in ('surface','adsorbate','complex')}}}
 
 TOOLS=[
-    tool('create_topic_report','用户用一句话要求科研报告时优先且直接调用本工具，无需先查询和逐个计划元素。服务端自己查授权项目数据、使用注册配方与Python计算、选择现有报告元素并保存可读报告。吸附能有三个角色的能量就给初步结果；k点/未收敛等仅警告。仅多候选或无法确定角色时返回简短问题，界面自动给用户选择/自定义回答。你是用户与报告间的翻译官：可以理解口语/别名，先search_report_data查实际任务，再自行传targets绑定角色；不需要用户给task_id。用户在本轮或历史对话给过的能量可直接作为对应角色的energy_ev，或energy_value+energy_unit，并用source_quote引用用户原话；不需要存在分子任务。推断/假设须在note说明，不能伪装为计算事实。用户的标题、文字、风险提示显示偏好可直接传入。不先写文章再找数字。',
-         {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'adsorbate_query':{'type':'string','maxLength':100},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4},'targets':{'type':'array','items':INTERPRETED_TARGET,'maxItems':4},'title':{'type':'string','maxLength':200},'notes':{'type':'string','maxLength':8000},'show_warnings':{'type':'boolean'}},('property_id','model_queries')),
+    tool('create_topic_report','用户要求科研报告时直接用本工具。NEB/断键诊断先analyze_reaction_path核对目标与端点，再以neb.barrier及路径名生成问题—影响—解决办法和带标注结构对照；定性assessment写重点结论，不把报错/缺口/警告写成notes。必要选择返回对话卡，非必要警告在对话总结。无需逐个计划元素。服务端自己查授权项目数据、使用注册配方与Python计算、选择现有报告元素并保存可读报告。吸附能有三个角色的能量就给初步结果；k点/未收敛等仅警告。仅多候选或无法确定角色时返回简短问题，界面自动给用户选择/自定义回答。你是用户与报告间的翻译官：可以理解口语/别名，先search_report_data查实际任务，再自行传targets绑定角色；不需要用户给task_id。用户在本轮或历史对话给过的能量可直接作为对应角色的energy_ev，或energy_value+energy_unit，并用source_quote引用用户原话；不需要存在分子任务。推断/假设须在note说明，不能伪装为计算事实。用户的标题和分析重点可直接传入，警告只在对话总结。不先写文章再找数字。',
+         {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'adsorbate_query':{'type':'string','maxLength':100},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4},'targets':{'type':'array','items':REPORT_TARGET,'maxItems':4},'title':{'type':'string','maxLength':200},'notes':{'type':'string','maxLength':8000},'show_warnings':{'type':'boolean'},'objective':{'type':'string','maxLength':1000},'assessment':{'type':'object','properties':{'conclusion':{'type':'string','maxLength':1800},'recommendation':{'type':'string','maxLength':1800}},'additionalProperties':False},'bond_elements':{'type':'array','items':{'type':'string'},'minItems':2,'maxItems':2},'fragment_elements':{'type':'array','items':{'type':'string'},'maxItems':12},'contact_elements':{'type':'array','items':{'type':'string'},'maxItems':12}},('property_id','model_queries')),
     tool('search_report_data','按用户的别名/口语寻找可用任务和当前对话中的用户给定数据。可留空query先看任务目录，再由你理解并用task_id绑定报告角色；名称不必与用户输入完全相同。返回用户原话供取数，最新要求优先。只读授权项目，不执行计算作业。',
          {'query':{'type':'string','maxLength':200},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4},'offset':{'type':'integer','minimum':0}}),
-    tool('update_topic_report','按用户要求修改报告标题、补充文字、内容顺序和风险提示是否展示；风险仍保存在底层记录。不会改底层能量和计算结果。',
-         {'topic_id':{'type':'string'},'expected_revision':{'type':'integer'},'title':{'type':'string'},'notes':{'type':'string'},'show_warnings':{'type':'boolean'},'blocks':{'type':'array','items':{'type':'string'}},'deleted_block_ids':{'type':'array','items':{'type':'string'}}},('topic_id','expected_revision')),
+    tool('update_topic_report','按用户要求修改报告标题、关键结论、建议和内容顺序；警告在对话总结，底层记录保留。不会改底层能量和计算结果。',
+         {'topic_id':{'type':'string'},'expected_revision':{'type':'integer'},'title':{'type':'string'},'notes':{'type':'string'},'show_warnings':{'type':'boolean'},'assessment':{'type':'object','properties':{'conclusion':{'type':'string','maxLength':1800},'recommendation':{'type':'string','maxLength':1800}},'additionalProperties':False},'blocks':{'type':'array','items':{'type':'string'}},'deleted_block_ids':{'type':'array','items':{'type':'string'}}},('topic_id','expected_revision')),
     tool('list_topic_projects','查找当前用户可访问项目，只读名称/ID/任务数。专题跨项目查询须逐项目鉴权，最多4项目。默认直接使用会话项目，不要求用户手工查已有数据。',
          {'query':{'type':'string','maxLength':100},'offset':{'type':'integer','minimum':0}}),
-    tool('prepare_topic_report','专题流程第一步：解析问题后给property_id和model_queries，服务端自动找任务、验证唯一结构关系/当前快照，复用R3计算，再冻结相关R2候选。DOS比较用dos.comparison（仅已有图及能量参考，不新增派生公式）。吸附能用adsorption.simple，model_queries为各表面体系如[LMR,LIC@LMR]，adsorbate_query为明确吸附物如H2；采用最小数据模式：可由AI匹配角色，也可直接使用用户给定参考能量；质量问题仅提示。不要把电子吸附能当自由能。多位点不能随机选，缺数值也继续生成缺口报告。氧参考仅可复用已有人工参考报告；common_oxygen_reference仅表示待确认的共同参考条件。原始问题由运行记录提供，不能伪造。',
+    tool('prepare_topic_report','专题流程第一步：解析问题后给property_id和model_queries，服务端自动找任务、验证唯一结构关系/当前快照，复用R3计算，再冻结相关R2候选。DOS比较用dos.comparison（仅已有图及能量参考，不新增派生公式）。吸附能用adsorption.simple，model_queries为各表面体系如[LMR,LIC@LMR]，adsorbate_query为明确吸附物如H2；采用最小数据模式：可由AI匹配角色，也可直接使用用户给定参考能量；质量问题仅提示。不要把电子吸附能当自由能。多位点不能随机选，必要数值缺失应在对话中直接询问，不生成缺口报告。氧参考仅可复用已有人工参考报告；common_oxygen_reference仅表示待确认的共同参考条件。原始问题由运行记录提供，不能伪造。',
          {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},
           'project_ids':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'targets':{'type':'array','items':REPORT_TARGET,'maxItems':4},
           'common_oxygen_reference':{'type':'boolean'},'reference_report_id':{'type':'string'},'surface_side':{'type':'string','enum':['start','end']},'reaction_correspondence':{'type':'string'},
@@ -42,7 +42,7 @@ TOOLS=[
           'selections':{'type':'array','items':SELECTION,'maxItems':24},
           'sections':{'type':'array','items':{'type':'object','properties':{'section_id':{'type':'string'},'title':{'type':'string'}},'required':['section_id','title'],'additionalProperties':False},'maxItems':12}},
          ('topic_id','expected_revision','selections')),
-    tool('write_topic_draft','仅在数据检查和元素计划完成后组织科研文字。每段区分解释/假设/局限；数字必须写[[Fxx]]让Python按可信事实展开，或[Fxx]引用，不自行写数值/公式/HTML组件。无数据就写精确缺口。草案和计算数据分开存储，保留用户编辑。',
+    tool('write_topic_draft','仅在数据检查和元素计划完成后组织科研文字。每段区分解释/假设/局限；数字必须写[[Fxx]]让Python按可信事实展开，或[Fxx]引用，不自行写数值/公式/HTML组件。必要数据缺失在对话提问，报错和警告不要写入报告。草案和计算数据分开存储，保留用户编辑。',
          {'topic_id':{'type':'string'},'expected_revision':{'type':'integer'},'paragraphs':{'type':'array','items':PARAGRAPH,'minItems':1,'maxItems':10}},
          ('topic_id','expected_revision','paragraphs')),
     tool('save_topic_report','保存已生成的独立topic报告。不会覆盖project_full或其他专题，返回可从对话打开的报告ID。用户已要求生成报告时，完成草案后直接保存，不重复要求确认。',
@@ -88,7 +88,7 @@ def dispatch(user,conversation,run_id,name,arguments):
         question=messages[-1]['content']
         if name=='create_topic_report' or arguments.get('property_id') in ('adsorption.simple','adsorption.estimate'):
             from topic_simple import create
-            request={k:v for k,v in arguments.items() if k in ('property_id','model_queries','adsorbate_query','targets','title','notes','show_warnings')}
+            request={k:v for k,v in arguments.items() if k in ('property_id','model_queries','adsorbate_query','targets','title','notes','show_warnings','assessment','objective','bond_elements','fragment_elements','contact_elements')}
             with ai_chat_store.database() as db:
                 seq=db.execute('SELECT seq FROM messages WHERE id=?',(run['message_id'],)).fetchone()['seq']
                 rows=db.execute("SELECT content FROM messages WHERE conversation_id=? AND role='user' AND seq<=? ORDER BY seq DESC LIMIT 60",(conversation['id'],seq)).fetchall()

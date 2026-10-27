@@ -39,6 +39,10 @@
 
 发布：类型检查、临时目录前端/报告运行时构建、12项相关用例通过；已切换前端并重启原后端，health和首页hash资源核对通过。本地3Dmol/报告运行时保留。未触发HPC操作、付费模型请求或改写计算文件。
 
+## 目标反应路径检查（已发布，2026-10-27）
+
+新增 get_project_research_context 与 analyze_reaction_path；共用原项目鉴权、结构读取、固定同目录参数探针及 R2 报告。后者围绕具体反应核对端点，不替代一般 check_structure。参数探针补充 KPOINTS 自动网格和必要 INCAR 项，未知不猜默认值。几何近邻不是成键证明；完整合同与验证见 [路径诊断](reaction-diagnosis.md)。
+
 ## 结构检查顺序（2026-10-22）
 
 `check_structure(structure, reference?, pbc?)` 是评价结构合理性/优化问题时的入口，保留三个原几何工具用于细查。固定输出 `structure.check.1`，不只修改提示词：

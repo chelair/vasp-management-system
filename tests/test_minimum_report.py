@@ -25,7 +25,7 @@ class MinimumReportTests(unittest.TestCase):
         d=self.create();self.assertEqual(d['stage'],'saved');self.assertEqual(d['data']['science']['results'][0]['value'],-2)
         self.assertFalse(d['data']['science']['results'][0]['formal_conclusion_allowed'])
         self.assertEqual(d['simple']['questions'],[]);h=self.simple.render_html(d)
-        for text in ('-2.000000','吸附能 = 完整构型能量','未收敛','基底','吸附质','完整构型'):self.assertIn(text,h)
+        for text in ('-2.000000','吸附能 = 完整构型能量','基底','吸附质','完整构型'):self.assertIn(text,h)
         for text in ('NOT_TESTED','AVAILABLE','evidence_id'):self.assertNotIn(text,h)
         frozen=json.dumps(d['data'],sort_keys=True)
         d=self.simple.update_content(self.user,d['topic_id'],{'expected_revision':1,'title':'我的报告1','notes':'<script>alert(1)</script>','blocks':list(reversed([b['block_id'] for b in d['blocks']]))})
@@ -34,7 +34,7 @@ class MinimumReportTests(unittest.TestCase):
     def test_missing_energy_reports_exact_action(self):
         self.project['tasks'][1].pop('last_energy');self.storage.save_db({'projects':[self.project]});d=self.create()
         self.assertEqual(d['data']['science']['results'],[]);h=self.simple.render_html(d)
-        self.assertIn('没有找到吸附质',h);self.assertIn('OUTCAR或OSZICAR',h);self.assertNotIn('NaN',h)
+        self.assertEqual(d['stage'],'waiting');self.assertTrue(d['simple']['questions']);self.assertIn('没有找到吸附质',d['simple']['questions'][0]['title']);self.assertNotIn('没有找到吸附质',h);self.assertNotIn('OUTCAR或OSZICAR',h);self.assertNotIn('NaN',h)
 
     def test_ambiguity_and_free_answer_keep_old_revision(self):
         task=copy.deepcopy(self.project['tasks'][2]);task.update(task_id='complex2',model_name='PMS@model1_site2',last_energy=-106);self.project['tasks'].append(task);self.storage.save_db({'projects':[self.project]})
@@ -62,7 +62,7 @@ class MinimumReportTests(unittest.TestCase):
         h=self.simple.render_html(d);self.assertNotIn('使用这个结果前，请留意',h);self.assertIn('用户提供',h);self.assertEqual(d['title'],'按我的口径')
         science=json.dumps(d['data'],sort_keys=True)
         d=self.simple.update_content(self.user,d['topic_id'],{'expected_revision':d['revision'],'show_warnings':True})
-        self.assertIn('使用这个结果前，请留意',self.simple.render_html(d));self.assertEqual(json.dumps(d['data'],sort_keys=True),science)
+        self.assertNotIn('使用这个结果前，请留意',self.simple.render_html(d));self.assertTrue(d['simple']['warnings']);self.assertEqual(json.dumps(d['data'],sort_keys=True),science)
 
     def test_free_energy_answer_and_units_do_not_require_molecule_task(self):
         self.project['tasks']=[t for t in self.project['tasks'] if t['task_id']!='ads'];self.storage.save_db({'projects':[self.project]})

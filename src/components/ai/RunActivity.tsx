@@ -6,6 +6,7 @@ import ThinkingText from './ThinkingText';
 import AnimatedCollapse from '../common/AnimatedCollapse';
 
 export const TOOL_NAMES: Record<string, string> = {
+  get_project_research_context: '读取研究目标与路径', analyze_reaction_path: '检查反应路径与端点结构',
   search_work_experience: '检索个人操作经验', list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿',
   find_project_tasks: '查找项目任务', get_task_inspections: '查看巡检结果', get_inspection_evidence: '读取巡检证据',
   get_opt_runs: '查看结构优化记录', get_task_parameter_history: '查看实际参数记录', get_remote_task_evidence: '远端只读补证',

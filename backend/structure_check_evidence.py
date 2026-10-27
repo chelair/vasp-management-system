@@ -26,7 +26,7 @@ def open_directory(path):
 
 
 def read_file(directory_fd, name):
-    limits = {'POSCAR':1048576, 'CONTCAR':1048576, 'INCAR':65536, 'POTCAR':33554432, 'OUTCAR':None}
+    limits = {'POSCAR':1048576, 'CONTCAR':1048576, 'INCAR':65536, 'KPOINTS':65536, 'POTCAR':33554432, 'OUTCAR':None}
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(stream.fileno())
@@ -64,14 +64,15 @@ def probe(folder, filename, expected_sha256):
         if original['sha256'] != expected_sha256:
             raise ValueError('structure changed before companion read')
         result = {}
-        for name in ('INCAR', 'POTCAR', 'OUTCAR'):
+        for name in ('INCAR', 'KPOINTS', 'POTCAR', 'OUTCAR'):
             try:
                 text, meta = read_file(fd, name)
                 row = {'status':'AVAILABLE', 'source':meta}
                 if name == 'INCAR':
                     # Return only numeric/control settings, never arbitrary input text.
                     keys = {'ENCUT','EDIFF','EDIFFG','IBRION','ISIF','NSW','POTIM','NELM','ISPIN',
-                            'MAGMOM','LDAU','LDAUL','LDAUU','LDAUJ','LSORBIT','PREC','ALGO','LREAL'}
+                            'MAGMOM','LDAU','LDAUL','LDAUU','LDAUJ','LSORBIT','PREC','ALGO','LREAL',
+                            'GGA','IVDW','LDIPOL','IDIPOL','DIPOL','ISMEAR','SIGMA','NELECT','NUPDOWN'}
                     values = {}
                     for line in text.splitlines():
                         for item in re.split(';', re.split('[!#]', line)[0]):
@@ -79,6 +80,15 @@ def probe(folder, filename, expected_sha256):
                             if len(pair) == 2 and pair[0].strip().upper() in keys:
                                 values[pair[0].strip().upper()] = pair[1].strip()[:512]
                     row['settings'] = values
+                elif name == 'KPOINTS':
+                    lines = text.splitlines()
+                    if len(lines) >= 4 and lines[1].strip() == '0' and lines[2].strip().lower().startswith(('g','m')):
+                        grid = [int(x) for x in lines[3].split()]
+                        shift = [float(x) for x in lines[4].split()] if len(lines) > 4 else [0.,0.,0.]
+                        if len(grid) == len(shift) == 3 and all(0 < x <= 10000 for x in grid) and all(abs(x) <= 1 for x in shift):
+                            row['grid'] = {'mesh':grid,'scheme':'Gamma' if lines[2].strip().lower().startswith('g') else 'Monkhorst-Pack','shift':shift}
+                    if 'grid' not in row:
+                        row.update(status='UNKNOWN', reason='不是可直接比较的自动规则网格，不猜测k点一致')
                 elif name == 'POTCAR':
                     row['titles'] = titles(text, r'^\s*TITEL\s*=\s*([^\r\n]+)')
                     row['zval'] = titles(text, r'ZVAL\s*=\s*([0-9.]+)')

@@ -73,6 +73,19 @@ export default function AI() {
   }, []);
   const reloadList = useCallback(async () => { setConversations((await listAIConversations()).items); }, []);
   useEffect(() => {
+    const update = (event: Event) => {
+      const info = (event as CustomEvent<{conversationId?:string;error?:string}>).detail;
+      if (!info?.conversationId || selectedRef.current !== info.conversationId) return;
+      if (info.error) setError(info.error);
+      void getAIConversation(info.conversationId).then(value => {
+        if (selectedRef.current === value.id) setDetail(value);
+      }).catch(e => setError(errorText(e)));
+      void reloadList().catch(() => undefined);
+    };
+    window.addEventListener('vasp:topic-updated', update);
+    return () => window.removeEventListener('vasp:topic-updated', update);
+  }, [reloadList]);
+  useEffect(() => {
     let cancelled = false;
     void Promise.all([listAIConnections(), listAITargets(), listAIConversations()]).then(([a, b, c]) => {
       if (!cancelled) { setConnections(a.items); setTargets(b.items); setConversations(c.items); }

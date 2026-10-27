@@ -7,7 +7,7 @@ import type {AIRun} from '../../api/aiChat';
 export function ReportQuestions({item,onDone,disabled=false}:{item:{topic_id:string;revision:number;questions:TopicQuestion[]};onDone:()=>void;disabled?:boolean}) {
   const [answers,setAnswers]=useState<Record<string,string>>({});const [custom,setCustom]=useState<Record<string,string>>({});const [busy,setBusy]=useState(false);const [error,setError]=useState('');
   const questions=item.questions.slice(0,3);
-  const submit=async()=>{setBusy(true);setError('');try{const values=Object.fromEntries(questions.map(q=>[q.id,answers[q.id]==='__custom'?custom[q.id]:answers[q.id]]).filter(([,v])=>v?.trim()));if(!Object.keys(values).length){setError('请选择一项，或填写你的回答。');return;}await answerTopic(item.topic_id,item.revision,values);window.dispatchEvent(new Event('vasp:topic-updated'));setAnswers({});setCustom({});onDone();}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
+  const submit=async()=>{setBusy(true);setError('');try{const values=Object.fromEntries(questions.map(q=>[q.id,answers[q.id]==='__custom'?custom[q.id]:answers[q.id]]).filter(([,v])=>v?.trim()));if(!Object.keys(values).length){setError('请选择一项，或填写你的回答。');return;}const updated=await answerTopic(item.topic_id,item.revision,values);window.dispatchEvent(new CustomEvent('vasp:topic-updated',{detail:{conversationId:updated.conversation_id,error:updated.continuation_error}}));setAnswers({});setCustom({});onDone();}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
   return <Card size="small" style={{margin:'12px 0',maxWidth:680}} title="确认一下，就可以继续">
     {error&&<Alert type="error" message={error}/>}
     {questions.map(q=><div key={q.id} style={{marginBottom:18}}><Typography.Paragraph strong>{q.title}</Typography.Paragraph>
@@ -16,7 +16,7 @@ export function ReportQuestions({item,onDone,disabled=false}:{item:{topic_id:str
         {q.options.map(option=><Radio key={option.value} value={option.value}>{option.label}{option.description&&<span style={{color:'#8a94a3',marginLeft:8}}>{option.description}</span>}</Radio>)}
         <Radio value="__custom">自己填写</Radio>
       </Space></Radio.Group>
-      {(answers[q.id]==='__custom'||!q.options.length)&&<Input.TextArea aria-label={`${q.title}-自定义回答`} value={custom[q.id]||''} onFocus={()=>setAnswers(old=>({...old,[q.id]:'__custom'}))} onChange={e=>{setAnswers(old=>({...old,[q.id]:'__custom'}));setCustom(old=>({...old,[q.id]:e.target.value}));}} placeholder={'可直接描述你的选择，也可提供已知能量，例如气体能量 -37 eV'} autoSize={{minRows:1,maxRows:3}} maxLength={300} style={{marginTop:10}}/>}
+      {(answers[q.id]==='__custom'||!q.options.length)&&<Input.TextArea aria-label={`${q.title}-自定义回答`} value={custom[q.id]||''} onFocus={()=>setAnswers(old=>({...old,[q.id]:'__custom'}))} onChange={e=>{setAnswers(old=>({...old,[q.id]:'__custom'}));setCustom(old=>({...old,[q.id]:e.target.value}));}} placeholder={'可直接描述你的研究意图、反应位置或选择'} autoSize={{minRows:1,maxRows:3}} maxLength={300} style={{marginTop:10}}/>}
       {q.options.length>0&&<div style={{color:'#8a94a3',fontSize:12,marginTop:8}}>{q.hint}</div>}
     </div>)}
     <Button type="primary" loading={busy} disabled={disabled} onClick={()=>void submit()}>按我的回答继续</Button>

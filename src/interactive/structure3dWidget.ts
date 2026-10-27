@@ -29,6 +29,8 @@ export interface Structure3DPayload {
   /** Bader：单个结构 + 逐原子读数 */
   cif?: string | null;
   atoms?: MolAtom[];
+  annotations?: { atoms: number[]; points: number[][]; label: string; distance_angstrom: number; kind: 'reaction' | 'contact' }[];
+  focus_atom_indices?: number[];
 }
 
 export interface Structure3DHandle {
@@ -48,6 +50,9 @@ interface MolViewer {
   removeAllModels?: () => void;
   setStyle: (sel: Record<string, unknown>, style: unknown) => void;
   addLine?: (spec: Record<string, unknown>) => void;
+  addLabel?: (text: string, spec: Record<string, unknown>) => void;
+  removeAllShapes?: () => void;
+  removeAllLabels?: () => void;
   zoomTo: (a?: unknown, b?: number) => void;
   zoom: (f: number, t?: number) => void;
   spin: (axis: string | false, speed?: number) => void;
@@ -172,6 +177,26 @@ export function mountStructure3D(
   let scale = 0.35;
   let spinning = false;
   let savedView: unknown = null;
+  let showAnnotations = true;
+  const focusSelection = data.focus_atom_indices?.length ? {index: data.focus_atom_indices.map(i => i-1)} : {};
+
+  function drawAnnotations(): void {
+    if (!viewer || !structure) return;
+    viewer.removeAllShapes?.();
+    viewer.removeAllLabels?.();
+    drawCellBox(viewer as never, structure);
+    if (!showAnnotations) return;
+    (data.annotations || []).slice(0, 12).forEach(row => {
+      if (row.points.length !== 2 || row.points.some(p => p.length !== 3 || p.some(v => !Number.isFinite(v))) || !Number.isFinite(row.distance_angstrom)) return;
+      const [a, b] = row.points;
+      const color = row.kind === 'contact' ? '#bd5036' : '#2467a5';
+      viewer!.addLine?.({ start: {x:a[0], y:a[1], z:a[2]}, end: {x:b[0], y:b[1], z:b[2]}, color, dashed: true, linewidth: 3 });
+      viewer!.addLabel?.(`${row.label.slice(0, 60)} · ${row.distance_angstrom.toFixed(2)} Å`, {
+        position: {x:(a[0]+b[0])/2, y:(a[1]+b[1])/2, z:(a[2]+b[2])/2},
+        fontSize: 11, fontColor: color, backgroundColor: '#ffffff', backgroundOpacity: .85, inFront: true,
+      });
+    });
+  }
 
   const charges = options.bader
     ? buildChargeColors(
@@ -225,16 +250,16 @@ export function mountStructure3D(
         if (!atoms[j].bonds!.includes(i)) atoms[j].bonds!.push(i);
       });
       paint();
-      drawCellBox(viewer as never, structure);
+      drawAnnotations();
       if (savedView) {
         try {
           (viewer as unknown as { setView: (v: unknown) => void }).setView(savedView);
         } catch {
-          viewer.zoomTo({}, 0);
+          viewer.zoomTo(focusSelection, 0);
           viewer.zoom(1.25, 0);
         }
       } else {
-        viewer.zoomTo({}, 0);
+        viewer.zoomTo(focusSelection, 0);
         viewer.zoom(1.25, 0);
       }
       if (spinning) viewer.spin('y', 1.2);
@@ -261,6 +286,18 @@ export function mountStructure3D(
   }
 
   let modelSwitch: HTMLButtonElement | null = null;
+  if (data.annotations?.length) {
+    const annotationsButton = addButton('距离标注', () => {
+      showAnnotations = !showAnnotations;
+      annotationsButton.classList.toggle('is-on', showAnnotations);
+      drawAnnotations();
+      viewer?.render();
+    }, true);
+  }
+  if (data.focus_atom_indices?.length) {
+    addButton('完整结构', () => { viewer?.zoomTo({}, 0); viewer?.render(); });
+    addButton('反应区域', () => { viewer?.zoomTo(focusSelection, 0); viewer?.zoom(1.25, 0); viewer?.render(); });
+  }
   if (poscar && contcar) {
     const showingContcar = () => current === contcar;
     modelSwitch = addButton('优化后（CONTCAR）', () => {

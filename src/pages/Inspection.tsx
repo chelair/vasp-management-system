@@ -277,8 +277,8 @@ export default function Inspection() {
   const [statusFilter, setStatusFilter] = useState<string[] | null>(() =>
     parseFilter(searchParams, 'statuses') ?? savedFilters.statuses,
   );
-  // 关闭项目默认折叠：这里记录"被用户手动展开"的项目名
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  // 只记录手动选择；未操作时，进行中项目展开、已关闭项目收起。
+  const [projectExpansion, setProjectExpansion] = useState<Map<string, boolean>>(() => new Map());
   const [autoSaving, setAutoSaving] = useState(false);
   const [outcarTail, setOutcarTail] = useState<{ taskId: string; title: string } | null>(null);
   const [detail, setDetail] = useState<InspectionResult | null>(null);
@@ -388,7 +388,7 @@ export default function Inspection() {
 
   // 筛选变化时重置折叠状态（关闭项目仍保持默认折叠）
   useEffect(() => {
-    setExpandedProjects(new Set());
+    setProjectExpansion(new Map());
   }, [keyword, projectFilter, taskCategoryFilter, statusFilter]);
 
   // 筛选同步到 URL：切换页面 / 刷新后自动恢复
@@ -987,8 +987,7 @@ export default function Inspection() {
 
         <div className="inspection-projects">
           {projectBlocks.map((block) => {
-            const expanded =
-              !block.closed || expandedProjects.has(block.projectName);
+            const expanded = projectExpansion.get(block.projectName) ?? !block.closed;
             return (
               <div
                 key={block.projectName}
@@ -997,11 +996,12 @@ export default function Inspection() {
                 <button
                   type="button"
                   className="inspection-project__head"
+                  aria-expanded={expanded}
+                  aria-label={`${expanded ? '收起' : '展开'}项目 ${block.projectName}`}
                   onClick={() =>
-                    setExpandedProjects((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(block.projectName)) next.delete(block.projectName);
-                      else next.add(block.projectName);
+                    setProjectExpansion((prev) => {
+                      const next = new Map(prev);
+                      next.set(block.projectName, !(prev.get(block.projectName) ?? !block.closed));
                       return next;
                     })
                   }

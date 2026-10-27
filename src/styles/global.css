@@ -6675,8 +6675,7 @@ h6:hover > .report-hide-btn,
 .app-content .ant-table-thead > tr > th { font-size: 12px; font-weight: 600; }
 .app-content .ant-table-tbody > tr > td { line-height: 1.65; }
 .app-content .ant-table-pagination { font-size: 12px; }
-.app-content .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab { border-radius: 6px 6px 0 0; }
-.app-content .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active { background: var(--color-primary-soft); }
+/* 普通页签沿用文字与下划线指示，不给文字宽度的标签额外铺底色。 */
 .app-content .ant-tabs-tab-btn { font-size: 13px; }
 .app-content .ant-empty-description { color: var(--color-text-secondary); font-size: 13px; line-height: 1.7; }
 .app-content .ant-empty { padding: 12px 0; }

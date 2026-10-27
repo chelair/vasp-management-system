@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { App, Button, Dropdown, Tooltip } from 'antd';
-import { ClockCircleOutlined, LogoutOutlined, MenuOutlined, UserOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, LogoutOutlined, MenuOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
 import { useClock } from '../../hooks/useClock';
 import { useSSH } from '../../context/SSHContext';
 import { useAuth } from '../../context/AuthContext';
 import { fetchSshStatus } from '../../api/ssh';
 import type { SshStatus } from '../../api/ssh';
+import { useAppearance } from '../../context/AppearanceContext';
 
 /** 角色展示名（第 5 步：顶栏显示用户名 + 角色） */
 const ROLE_LABELS: Record<string, string> = {
@@ -23,10 +24,12 @@ const TITLES: Record<string, string> = {
   '/ai': 'AI 工作台',
   '/ssh': 'SSH 连接',
   '/automation': '自动化',
+  '/settings': '设置',
 };
 
 export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const location = useLocation();
+  const { appearance } = useAppearance();
   const clock = useClock();
   const navigate = useNavigate();
   const { activeServer } = useSSH();
@@ -111,12 +114,12 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
             {hostLabel && <span className="ssh-chip__host">{hostLabel}</span>}
           </div>
         </Tooltip>
-        <div className="topbar__divider" />
+        {appearance.showClock && <><div className="topbar__divider" />
         <div className="clock-chip">
           <ClockCircleOutlined />
           <span>{clock.date}</span>
           <strong>{clock.time}</strong>
-        </div>
+        </div></>}
         <div className="topbar__divider" />
         <Dropdown
           trigger={['click']}
@@ -128,9 +131,11 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
                 disabled: true,
               },
               { type: 'divider' },
+              { key: 'settings', icon: <SettingOutlined />, label: '设置' },
               { key: 'logout', icon: <LogoutOutlined />, label: '退出登录' },
             ],
             onClick: ({ key }) => {
+              if (key === 'settings') { navigate('/settings'); return; }
               if (key !== 'logout') return;
               modal.confirm({
                 title: '退出登录',
@@ -145,11 +150,11 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
             },
           }}
         >
-          <div className="topbar__user" role="button" tabIndex={0}>
+          <button type="button" className="topbar__user" aria-label="用户菜单" aria-haspopup="menu">
             <UserOutlined />
             <span>{user?.username ?? '未登录'}</span>
             {roleLabel && <span className="topbar__user-role">{roleLabel}</span>}
-          </div>
+          </button>
         </Dropdown>
       </div>
     </header>

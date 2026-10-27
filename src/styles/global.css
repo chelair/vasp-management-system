@@ -6,6 +6,10 @@
 :root {
   --color-primary: #527bc5;
   --color-primary-strong: #4266ad;
+  --color-primary-rgb: 82, 123, 197;
+  --color-primary-soft: rgba(82, 123, 197, 0.08);
+  --color-primary-border: rgba(82, 123, 197, 0.32);
+  --color-primary-on: #ffffff;
   --color-secondary: #67c6b0;
   --color-bg: #f5f7fa;
   --color-card: #ffffff;
@@ -167,7 +171,7 @@ p {
 }
 
 .nav-item.active {
-  background: #edf3fc;
+  background: var(--color-primary-soft);
   color: var(--color-primary-strong);
   font-weight: 600;
 }
@@ -380,16 +384,16 @@ p {
 }
 
 .topbar__user:hover {
-  background: #eef3fa;
-  border-color: rgba(91, 141, 239, 0.35);
-  color: #4a7bdd;
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary-border);
+  color: var(--color-primary-strong);
 }
 
 .topbar__user-role {
   padding: 0 6px;
   border-radius: 999px;
-  background: #e8effb;
-  color: #4a7bdd;
+  background: var(--color-primary-soft);
+  color: var(--color-primary-strong);
   font-size: 11px;
   line-height: 16px;
 }
@@ -773,7 +777,7 @@ p {
 }
 
 .chip--active {
-  background: #eaf1ff;
+  background: var(--color-primary-soft);
   border-color: transparent;
   color: var(--color-primary-strong);
   font-weight: 600;
@@ -860,7 +864,7 @@ p {
 
 .project-item.active {
   border-color: var(--color-primary);
-  background: #f5f9ff;
+  background: var(--color-primary-soft);
   box-shadow: inset 3px 0 0 var(--color-primary);
 }
 
@@ -1096,7 +1100,7 @@ p {
   justify-content: center;
   border-radius: 6px;
   color: var(--color-primary);
-  background: #eaf1ff;
+  background: var(--color-primary-soft);
   cursor: pointer;
   font-size: 12px;
   transition: background 0.15s ease;
@@ -1107,7 +1111,7 @@ p {
 }
 
 .job-tree__add:hover {
-  background: #d8e6ff;
+  background: var(--color-primary-border);
 }
 
 .job-tree__task {
@@ -2628,7 +2632,7 @@ body.is-atom-selecting * {
 }
 
 .task-picker__item:hover {
-  background: #f5f9ff;
+  background: var(--color-primary-soft);
 }
 
 .task-picker__name {
@@ -3575,7 +3579,7 @@ body.is-atom-selecting * {
 
 .ssh-server-item.selected {
   border-color: var(--color-primary);
-  background: #f5f9ff;
+  background: var(--color-primary-soft);
   box-shadow: inset 3px 0 0 var(--color-primary);
 }
 
@@ -3904,7 +3908,7 @@ body.is-atom-selecting * {
 
 .project-closed-toggle:hover {
   background: #eef3fa;
-  border-color: rgba(91, 141, 239, 0.35);
+  border-color: var(--color-primary-border);
   color: #4a7bdd;
 }
 
@@ -4955,7 +4959,7 @@ body.is-atom-selecting * {
 
 .report-item.is-active {
   border-color: var(--color-primary);
-  background: #f3f7fd;
+  background: var(--color-primary-soft);
   box-shadow: inset 3px 0 0 var(--color-primary);
 }
 
@@ -5124,8 +5128,8 @@ body.is-atom-selecting * {
 }
 
 .report-toc a:hover {
-  background: #eaf1ff;
-  border-color: rgba(91, 141, 239, 0.45);
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary-border);
   color: var(--color-primary);
 }
 
@@ -6110,7 +6114,7 @@ h6:hover > .report-hide-btn,
 
 .inspection-lazy-btn:hover {
   background: #eef3fa;
-  border-color: rgba(91, 141, 239, 0.35);
+  border-color: var(--color-primary-border);
   color: #4a7bdd;
 }
 
@@ -6672,14 +6676,14 @@ h6:hover > .report-hide-btn,
 .app-content .ant-table-tbody > tr > td { line-height: 1.65; }
 .app-content .ant-table-pagination { font-size: 12px; }
 .app-content .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab { border-radius: 6px 6px 0 0; }
-.app-content .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active { background: #f5f8fd; }
+.app-content .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab-active { background: var(--color-primary-soft); }
 .app-content .ant-tabs-tab-btn { font-size: 13px; }
 .app-content .ant-empty-description { color: var(--color-text-secondary); font-size: 13px; line-height: 1.7; }
 .app-content .ant-empty { padding: 12px 0; }
 .app-content .ant-input::placeholder, .app-content .ant-input-affix-wrapper input::placeholder { color: #929eae; }
 .app-content .ant-tree { font-size: 13px; }
 .app-content .ant-tree .ant-tree-node-content-wrapper { border-radius: 7px; transition: background-color 0.14s ease; }
-.app-content .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected { background: #eaf1fc; }
+.app-content .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected { background: var(--color-primary-soft); }
 .inspection-project { border-color: var(--color-border); border-radius: 11px; }
 .inspection-project__head { background: #f8fafc; padding: 12px 14px; color: var(--color-text); }
 .inspection-project__meta { font-variant-numeric: tabular-nums; }
@@ -6693,7 +6697,7 @@ h6:hover > .report-hide-btn,
 .inspection-check-time { display: grid; gap: 2px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .inspection-check-time small { color: var(--color-text-muted); font-size: 11px; }
 .report-detail__title { letter-spacing: -0.3px; }
-.history-item.active, .project-item.active { background: #f3f7fd; }
+.history-item.active, .project-item.active { background: var(--color-primary-soft); }
 .filter-bar { row-gap: 10px; }
 .chip { border-radius: 8px; }
 .login-card { border-color: var(--color-border); box-shadow: 0 8px 28px rgba(28, 44, 65, 0.08); padding: 32px 28px 26px; }
@@ -6724,4 +6728,45 @@ h6:hover > .report-hide-btn,
   .page-transition, .stat-card { animation: none; }
   .stat-card { transition: none; }
   .stat-card--clickable:hover, .stat-card--clickable:active { transform: none; }
+}
+
+/* 浏览器本地显示偏好，不涉及业务状态与科研图表配色。 */
+.settings-page { max-width: 900px; margin: 0 auto; }
+.settings-page > .ant-card { margin-bottom: 18px; }
+.settings-description, .settings-footnote { color: var(--color-text-secondary); font-size: 12px; line-height: 1.8; }
+.settings-description { margin-bottom: 20px; }
+.settings-colors { display: flex; flex-wrap: wrap; gap: 10px; }
+.settings-color { display: flex; align-items: center; gap: 9px; border: 1px solid var(--color-border); border-radius: 9px; padding: 10px 14px; background: #fff; color: var(--color-text-secondary); cursor: pointer; font: inherit; font-size: 13px; transition: border-color 0.14s ease, background-color 0.14s ease; }
+.settings-color:hover, .settings-color[aria-pressed="true"] { border-color: var(--color-primary-border); color: var(--color-primary-strong); background: var(--color-primary-soft); }
+.settings-color-swatch { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: #fff; }
+.settings-custom-color { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--color-text-secondary); margin-top: 20px; }
+.settings-custom-swatch { width: 15px; height: 15px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.08); }
+.settings-preview { margin-top: 22px; padding: 18px; background: #f8fafc; border: 1px solid var(--color-border-soft); border-radius: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 12px; }
+.settings-preview-primary { background: var(--color-primary); color: var(--color-primary-on); border-radius: 7px; padding: 8px 16px; }
+.settings-preview-selected { background: var(--color-primary-soft); color: var(--color-primary-strong); border: 1px solid var(--color-primary-border); border-radius: 7px; padding: 7px 15px; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px 0; border-bottom: 1px solid var(--color-border-soft); }
+.settings-row:first-child { padding-top: 0; }
+.settings-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.settings-row h3 { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+.settings-row p { color: var(--color-text-secondary); font-size: 12px; line-height: 1.7; }
+.settings-row .ant-select { width: 160px; flex-shrink: 0; }
+.settings-footnote { padding: 0 3px; }
+.report-markdown a { color: var(--color-primary-strong); }
+html[data-density="compact"] .app-shell:not(.app-shell--ai) .app-content { padding: 18px; }
+html[data-density="compact"] .page-header { margin-bottom: 16px; }
+html[data-density="compact"] :is(.jobs-grid, .report-grid, .dashboard-grid, .stats-grid) { gap: 12px; }
+html[data-density="compact"] .stat-card { padding: 16px; }
+@media (max-width: 640px) {
+  html[data-density="compact"] .app-shell:not(.app-shell--ai) .app-content { padding: 12px; }
+  html[data-density="compact"] .stat-card { padding: 12px; }
+  html[data-density="compact"] :is(.jobs-grid, .report-grid, .dashboard-grid, .stats-grid) { gap: 8px; }
+}
+html[data-motion="reduced"] .app-shell, html[data-motion="reduced"] .app-shell *, html[data-motion="reduced"] .app-shell *::before { transition: none !important; }
+html[data-motion="reduced"] :is(.page-transition, .stat-card, .ai-live-dot, .ai-typing-cursor) { animation: none; }
+html[data-motion="reduced"] .stat-card--clickable:hover { transform: none; }
+@media (max-width: 600px) {
+  .settings-color { padding: 9px 12px; }
+  .settings-row { gap: 16px; align-items: flex-start; }
+  .settings-row .ant-select { width: 130px; }
+  .settings-row p { max-width: 200px; }
 }

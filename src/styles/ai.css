@@ -3,8 +3,8 @@
 .app-shell--ai .ai-page { height: auto; flex: 1; min-height: 0; }
 .ai-page { height: 100dvh; min-height: 0; color: #242424; background: #fff; }
 .ai-workspace { position: relative; display: flex; height: 100%; min-height: 0; }
-.ai-page .ant-btn-primary { background: #252525; box-shadow: none; }
-.ai-page .ant-btn-primary:not(:disabled):hover { background: #444; }
+.ai-page .ant-btn-primary { background: var(--color-primary); color: var(--color-primary-on); box-shadow: none; }
+.ai-page .ant-btn-primary:not(:disabled):hover { background: var(--color-primary-strong); }
 .ai-sessions { width: 252px; flex: 0 0 252px; display: none; flex-direction: column; min-height: 0; padding: 12px; background: #f5f5f5; border-right: 1px solid #ebebeb; }
 .ai-workspace--sidebar .ai-sessions { display: flex; }
 .ai-sidebar-brand { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 4px; margin-bottom: 15px; font-size: 14px; }
@@ -112,6 +112,7 @@
 .ai-reasoning-select { min-width: 108px; font-size: 11px; }
 .ai-composer-footer > .ai-actions { flex-shrink: 0; flex-wrap: nowrap; }
 .ai-send-button.ant-btn, .ai-stop-button.ant-btn { background: #292929; color: #fff; border-color: #292929; box-shadow: none; }
+.ai-send-button.ant-btn { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-primary-on); }
 .ai-send-button.ant-btn:disabled { background: #e5e5e5; color: #aaa; border-color: #e5e5e5; }
 .ai-composer-hint { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; padding: 9px 6px 0; color: #aaa; font-size: 10px; }
 .ai-live-status { display: flex; align-items: center; gap: 8px; padding: 9px 4px 12px; color: #777; font-size: 11px; }

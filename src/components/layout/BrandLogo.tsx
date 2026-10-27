@@ -7,8 +7,8 @@ export default function BrandLogo({ size = 36 }: Props) {
     <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden="true">
       <defs>
         <linearGradient id="brandGradient" x1="0" y1="0" x2="48" y2="48">
-          <stop stopColor="#5B8DEF" />
-          <stop offset="1" stopColor="#67C6B0" />
+          <stop stopColor="var(--color-primary, #527bc5)" />
+          <stop offset="1" stopColor="var(--color-secondary, #67c6b0)" />
         </linearGradient>
       </defs>
       <rect x="2" y="2" width="44" height="44" rx="12" fill="url(#brandGradient)" />

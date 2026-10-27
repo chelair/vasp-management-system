@@ -15,9 +15,9 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
     import React from 'react'; import {createRoot} from 'react-dom/client';
     import {App} from 'antd'; import {MemoryRouter,Routes,Route} from 'react-router-dom';
     import {AuthProvider} from './src/context/AuthContext'; import {SSHProvider} from './src/context/SSHContext';
-    import AppLayout from './src/components/layout/AppLayout'; import AI from './src/pages/AI';
+    import {AppearanceProvider} from './src/context/AppearanceContext'; import AppLayout from './src/components/layout/AppLayout'; import AI from './src/pages/AI';
     import './src/styles/global.css';
-    createRoot(document.getElementById('root')).render(<App><MemoryRouter initialEntries={['/ai?conversation=c1']}><AuthProvider><SSHProvider><Routes><Route element={<AppLayout/>}><Route path='/ai' element={<AI/>}/><Route path='/jobs' element={<div>作业管理入口</div>}/></Route></Routes></SSHProvider></AuthProvider></MemoryRouter></App>);
+    createRoot(document.getElementById('root')).render(<AppearanceProvider><App><MemoryRouter initialEntries={['/ai?conversation=c1']}><AuthProvider><SSHProvider><Routes><Route element={<AppLayout/>}><Route path='/ai' element={<AI/>}/><Route path='/jobs' element={<div>作业管理入口</div>}/></Route></Routes></SSHProvider></AuthProvider></MemoryRouter></App></AppearanceProvider>);
   `, loader: 'tsx', resolveDir: path.resolve('.') }, bundle: true, write: false, outfile: 'app.js', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"development"' } });
   const js = bundle.outputFiles.find(f => f.path.endsWith('.js')).text;
   const css = bundle.outputFiles.find(f => f.path.endsWith('.css')).text;

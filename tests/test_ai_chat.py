@@ -4,6 +4,7 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import io
 import os
 from pathlib import Path
 import socket
@@ -42,6 +43,11 @@ PROJECTS["projects"][0]["tasks"].extend([
     {"task_id": "task-alice-aux", "model_name": "hidden", "task_type": "opt", "dir_path": "alice/opt/model/con1", "status": "completed"},
 ])
 REQUESTS = []
+
+
+def model_stream(delta, *, usage=7, finish="stop"):
+    frame = {"choices": [{"delta": delta, "finish_reason": finish}], "usage": {"total_tokens": usage}}
+    return io.BytesIO(("data: " + json.dumps(frame) + "\n\ndata: [DONE]\n\n").encode())
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -462,9 +468,10 @@ class AIChatTests(unittest.TestCase):
         conversation = self.conversation(self.connection("deepseek-only-thinking"))
         _, run = self.send(conversation)
         result = self.wait_run(run)
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("输出额度", result["error"])
-        self.assertIn("最大输出", result["error"])
+        self.assertEqual(result["status"], "completed")
+        _, detail = self.api(f"/conversations/{conversation['id']}")
+        self.assertIn("输出额度", detail["messages"][-1]["content"])
+        self.assertIn("最大输出", detail["messages"][-1]["content"])
         self.assertIn("PRIVATE_REASONING_TEST", result.get("reasoning") or "")
 
     def test_thinking_only_reply_retries_with_direct_answer(self):
@@ -655,11 +662,147 @@ class AIChatTests(unittest.TestCase):
         self.assertTrue(all(e["status"] == "failed" for e in result["tool_events"]))
         self.assertNotIn("must never leave host", json.dumps(result))
         looping = self.conversation(self.connection("workspace-loop"), "task-alice")
-        _, run = self.send(looping)
-        result = self.wait_run(run)
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(len(result["tool_events"]), 8)
-        self.assertIn("上限", result["error"])
+        with patch.object(service, "TOOL_RESULT_CHARS", 500):
+            _, run = self.send(looping)
+            result = self.wait_run(run)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertTrue(all(e["status"] != "running" for e in result["tool_events"]))
+        _, detail = self.api(f"/conversations/{looping['id']}")
+        self.assertIn("预算", detail["messages"][-1]["content"])
+
+    def test_more_than_fourteen_sequential_calls_in_standard_and_pseudo_protocols(self):
+        for pseudo in (False, True):
+            with self.subTest(pseudo=pseudo):
+                conversation = self.conversation(self.connection(), "task-alice")
+                payloads = []
+                def model(_connection, _key, _path, payload):
+                    payloads.append(copy.deepcopy(payload))
+                    count = sum(m.get("role") == "tool" for m in payload["messages"])
+                    if count == 16:
+                        return model_stream({"content": "已完成16次只读查询，下面是最终结论。"}, usage=42)
+                    if pseudo:
+                        return model_stream({"content": '<||DSML||tool_calls><||DSML||invoke name="read_workspace"><||DSML||parameter name="path">project/test.txt</||DSML||parameter></||DSML||invoke></||DSML||tool_calls>'})
+                    return model_stream({"tool_calls": [{"index": 0, "id": f"call_{count}", "type": "function",
+                        "function": {"name": "read_workspace", "arguments": '{"path":"project/test.txt"}'}}]}, finish="tool_calls")
+                with patch.object(service, "_open", side_effect=model), patch.object(workspace, "dispatch", return_value={"content": "local evidence"}) as dispatch:
+                    _, run = self.send(conversation)
+                    result = self.wait_run(run)
+                self.assertEqual(result["status"], "completed", result)
+                self.assertEqual(dispatch.call_count, 16)
+                self.assertEqual(len(result["tool_events"]), 16)
+                self.assertEqual(len({e["id"] for e in result["tool_events"]}), 16)
+                self.assertEqual(len(payloads), 17)
+                self.assertTrue(all(p["tool_choice"] == "auto" for p in payloads))
+                self.assertEqual(result["usage"]["total_tokens"], 16 * 7 + 42)
+
+    def test_stream_resource_limits_reject_without_executing_then_summarize(self):
+        cases = {
+            "arguments": {"tool_calls": [{"index": 0, "id": "call_large", "function": {"name": "write_workspace", "arguments": "x" * 150001}}]},
+            "parallel": {"tool_calls": [{"index": 12, "id": "call_excess", "function": {"name": "read_workspace", "arguments": "{}"}}]},
+            "pseudo_parallel": {"content": '<||DSML||tool_calls>' + '<||DSML||invoke name="read_workspace"><||DSML||parameter name="path">project/test.txt</||DSML||parameter></||DSML||invoke>' * 13 + '</||DSML||tool_calls>'},
+            "reasoning": {"reasoning_content": "x" * 200001},
+        }
+        for name, delta in cases.items():
+            with self.subTest(limit=name):
+                conversation = self.conversation(self.connection(), "task-alice")
+                payloads = []
+                def model(_connection, _key, _path, payload):
+                    payloads.append(copy.deepcopy(payload))
+                    return model_stream(delta if len(payloads) == 1 else {"content": "请求已被拒绝，依据已有证据给出结论。"})
+                with patch.object(service, "_open", side_effect=model), patch.object(workspace, "dispatch") as dispatch:
+                    _, run = self.send(conversation)
+                    result = self.wait_run(run)
+                self.assertEqual(result["status"], "completed", result)
+                dispatch.assert_not_called()
+                self.assertEqual(len(payloads), 2)
+                self.assertNotIn("tools", payloads[-1])
+                self.assertIn("拒绝", payloads[-1]["messages"][-1]["content"])
+                self.assertEqual(result["usage"]["total_tokens"], 14, "include usage already received before the rejected stream")
+                _, detail = self.api(f"/conversations/{conversation['id']}")
+                self.assertIn("依据已有证据", detail["messages"][-1]["content"])
+
+    def test_tool_result_budget_preserves_success_and_rejects_rest_of_batch(self):
+        conversation = self.conversation(self.connection(), "task-alice")
+        payloads = []
+        calls = [{"index": i, "id": f"batch_{i}", "function": {"name": "write_workspace", "arguments": json.dumps({"path": f"work/{i}.txt", "content": "draft"})}} for i in range(3)]
+        def model(_connection, _key, _path, payload):
+            payloads.append(copy.deepcopy(payload))
+            return model_stream({"tool_calls": calls} if len(payloads) == 1 else {"content": "首个草稿已保存，其他两项已拒绝，未执行。"})
+        with patch.object(service, "_open", side_effect=model), patch.object(service, "TOOL_RESULT_CHARS", 100), \
+             patch.object(workspace, "dispatch", return_value={"path": "work/0.txt", "applied": False, "extra": "x" * 200}) as dispatch:
+            _, run = self.send(conversation)
+            result = self.wait_run(run)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(dispatch.call_count, 1, "never execute the remaining writes or repeat the successful one")
+        self.assertEqual([e["status"] for e in result["tool_events"]], ["completed", "failed", "failed"])
+        self.assertTrue(result["tool_events"][0]["result"]["result_omitted"])
+        self.assertEqual(result["tool_events"][0]["result"]["path"], "work/0.txt")
+        self.assertTrue(all(e["result"]["denied"] and not e["result"]["executed"] for e in result["tool_events"][1:]))
+        self.assertEqual(len([m for m in payloads[-1]["messages"] if m.get("role") == "tool"]), 3)
+        self.assertNotIn("tools", payloads[-1])
+
+    def test_deadline_in_batch_closes_pending_calls_before_final_answer(self):
+        conversation = self.conversation(self.connection(), "task-alice")
+        payloads = []
+        calls = [{"index": i, "id": f"timeout_{i}", "function": {"name": "read_workspace", "arguments": '{"path":"project/test.txt"}'}} for i in range(3)]
+        def model(_connection, _key, _path, payload):
+            payloads.append(copy.deepcopy(payload))
+            return model_stream({"tool_calls": calls} if len(payloads) == 1 else {"content": "时限已到，基于已取得的一项结果作总结。"})
+        def dispatch(*args, **kwargs):
+            service.GENERATION_SECONDS = -1
+            return {"content": "first completed"}
+        with patch.object(service, "_open", side_effect=model), patch.object(service, "GENERATION_SECONDS", 600), \
+             patch.object(workspace, "dispatch", side_effect=dispatch) as dispatched:
+            _, run = self.send(conversation)
+            result = self.wait_run(run)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(dispatched.call_count, 1)
+        self.assertEqual([e["status"] for e in result["tool_events"]], ["completed", "failed", "failed"])
+        self.assertEqual([m["tool_call_id"] for m in payloads[-1]["messages"] if m.get("role") == "tool"], ["timeout_0", "timeout_1", "timeout_2"])
+
+    def test_summary_failure_or_repeated_tool_request_still_has_final_text(self):
+        for failure in ("network", "tools", "empty"):
+            with self.subTest(failure=failure):
+                conversation = self.conversation(self.connection(), "task-alice")
+                attempts = []
+                def model(_connection, _key, _path, payload):
+                    attempts.append(copy.deepcopy(payload))
+                    if failure == "network":
+                        raise ValueError("模拟总结连接失败")
+                    return model_stream({"tool_calls": [{"index": 0, "id": "forbidden", "function": {"name": "write_workspace", "arguments": "{}"}}]} if failure == "tools" else {})
+                with patch.object(service, "GENERATION_SECONDS", -1), patch.object(service, "_open", side_effect=model), \
+                     patch.object(workspace, "dispatch") as dispatch:
+                    _, run = self.send(conversation)
+                    result = self.wait_run(run)
+                self.assertEqual(result["status"], "completed", result)
+                dispatch.assert_not_called()
+                self.assertEqual(len(attempts), 1, "at most one paid summary request, never an unbounded retry")
+                _, detail = self.api(f"/conversations/{conversation['id']}")
+                self.assertIn("本轮未能取得模型的最终总结", detail["messages"][-1]["content"])
+                self.assertIn("总时限", detail["messages"][-1]["content"])
+
+    def test_revoked_project_access_never_sends_a_summary_request(self):
+        conversation = self.conversation(self.connection(), "task-alice")
+        current = copy.deepcopy(PROJECTS)
+        def dispatch(*args, **kwargs):
+            current["projects"] = []
+            return {"content": "x" * 200}
+        delta = {"tool_calls": [{"index": 0, "id": "before_revocation", "function": {"name": "read_workspace", "arguments": '{"path":"project/test.txt"}'}}]}
+        with patch.object(service, "load_db", return_value=current), patch.object(service, "TOOL_RESULT_CHARS", 100), \
+             patch.object(service, "_open", return_value=model_stream(delta)) as opened, \
+             patch.object(workspace, "dispatch", side_effect=dispatch):
+            _, run = self.send(conversation)
+            # 撤权后公开运行接口同样拒绝读取，隔离测试直接查询自己的临时库。
+            for _ in range(150):
+                with store.database() as db:
+                    row = db.execute("SELECT status FROM runs WHERE id=?", (run["id"],)).fetchone()
+                    content = db.execute("SELECT content FROM messages WHERE id=(SELECT message_id FROM runs WHERE id=?)", (run["id"],)).fetchone()[0]
+                if row[0] not in ("running", "queued"):
+                    break
+                time.sleep(0.02)
+        self.assertEqual(opened.call_count, 1, "revocation forbids any further model request with cached project context")
+        self.assertEqual(row[0], "failed")
+        self.assertIn("无权访问", content)
 
     def test_model_queries_recent_inspections_then_evidence_and_plan_on_demand(self):
         task_id = "task-alice"

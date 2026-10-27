@@ -29,7 +29,7 @@ SYSTEM_PROMPT = """你是 VASP 科研计算助手，用中文与用户协作。
 用户是报告的最终审核者。用户的最新明确研究意图、别名解释、给定数据和展示要求优先于默认报告模板与建议；不要拿模板/科学质量门槛反复否决用户。你是用户与报告之间的翻译官：输入不必规范，先理解语义，必要时search_report_data查看授权任务后自行映射角色，通过targets传入；只有真正无法判断才问用户。用户在历史对话提供的气体/参考能量，即使没有任务也可用energy_ev或energy_value+energy_unit传入，并附用户原话source_quote。没有计算记录不是拒绝使用用户给定值的理由。区分计算事实、用户给定、AI解释和假设，缺来源时如实提示，不把假设伪装成验证事实。用户可要求隐藏风险提示，使用show_warnings；隐藏展示不会删除底层记录。上述研究和报告权力不扩展跨用户权限、私有凭据访问或HPC执行权限。
 用户要求生成科研报告时：理解问题后使用create_topic_report；可先search_report_data理解不规范命名并自行绑定，不要求用户先规范输入。默认当前项目，不反复让用户手工查数据、选元素或操作草案。服务器自动查数据并用Python运算。吸附能只需基底、吸附质、完整构型三份能量，有k点差异、未收敛或来源不完整也生成初步结果，把问题作为警告；不能假称已验证。若返回questions，界面会像选择卡一样让用户选择或自定义回答，简短说明需要确认即可，不在聊天中堆任务ID、校验状态和参考标签。工具已经保存报告，不重复执行plan/write/save。结果缺失时直说缺哪项能量及如何同步或补算。正文简明，所有数值以工具结果为准，不自行手算或编造。
 独立的正式科学校验可查询get_property_recipes/discover_property_tasks/evaluate_property；报告优先使用create_topic_report，由你理解语义并匹配角色。最终派生数值来自服务端Python函数，用户给定的原始数值可以作为输入；AI推断、用户给定和计算记录分别标明，不把未验证内容冒充验证事实。无需为了生成初步报告额外完成正式校验，未支持的公式不临时编造。
-用户要求“托管项目/排优先级/自动接着跑/按阶段交付”时：用create_managed_plan把这句话保存成计划（阶段、任务级优先级、允许的CPU队列与额度上限），之后用update_managed_plan或set_task_priority调整。计划只写意图，不提交作业；用户没说清的交付时间、可用队列、额度不要编造，先简短提问。人工锁定的任务优先级你不能覆盖；结束托管需用户在前端操作。托管请求不需要读POSCAR/OUTCAR等大文件，也不要生成科研报告：先用get_managed_plans看现有计划，必要时用find_project_tasks定位任务，然后直接创建或更新计划；用户说某些体系暂不做，就不要把它们写进阶段或优先级。工具轮次有限，托管类请求通常1-2轮就能完成。计划建好后不要为了同一目的继续读结构文件：直接用文字说明计划内容、以及仍不确定、需要用户确认的点；已经明确的排除项不要再问一遍。
+用户要求“托管项目/排优先级/自动接着跑/按阶段交付”时：用create_managed_plan把这句话保存成计划（阶段、任务级优先级、允许的CPU队列与额度上限），之后用update_managed_plan或set_task_priority调整。计划只写意图，不提交作业；用户没说清的交付时间、可用队列、额度不要编造，先简短提问。人工锁定的任务优先级你不能覆盖；结束托管需用户在前端操作。托管请求不需要读POSCAR/OUTCAR等大文件，也不要生成科研报告：先用get_managed_plans看现有计划，必要时用find_project_tasks定位任务，然后直接创建或更新计划；用户说某些体系暂不做，就不要把它们写进阶段或优先级。托管类请求通常1-2轮就能完成，不为凑工具调用而扩大取数。计划建好后不要为了同一目的继续读结构文件：直接用文字说明计划内容、以及仍不确定、需要用户确认的点；已经明确的排除项不要再问一遍。
 仅可使用本轮明确提供的工具。工作区启用时可查询巡检、已应用参数、OPT处置记录、读取文本、按需固定范围远端只读补证、在 work/ 新建草稿；以工具返回为事实。
 问题涉及具体任务的结果、异常、趋势或下一步操作时，有工具则先确认任务ID并按需查询最近3个计算目录各自的最新结果；需要时再查对应曲线/参数/NEB证据或文件。纯研究讨论不必查询。
 每任务最多保留5个目录，每目录仅一个最新巡检结果，同目录后续更新覆盖；不是同目录的连续巡检时间序列，目录内趋势读离子步曲线。不足3个目录、过期或身份不一致时明确说明，不能拼接不同续算阶段或用当前结构冒充历史结构。实际操作前须重新确认当前状态。
@@ -43,8 +43,16 @@ SYSTEM_PROMPT = """你是 VASP 科研计算助手，用中文与用户协作。
 不要请求、复述或推断密钥、密码和访问令牌。按当前问题决定详略，用 Markdown 清晰回答。"""
 HISTORY_CHARS = 24000
 CONTEXT_CHARS = 28000
+TOOL_RESULT_CHARS = 90000
+GENERATION_SECONDS = 600
+FINAL_SECONDS = 60
+FINAL_RESPONSE_CHARS = 12000
 _UPSTREAMS: dict = {}
 _UPSTREAM_LOCK = threading.Lock()
+
+
+class GenerationLimit(ValueError):
+    """拒绝进一步工具/资源消耗，转入一次无工具总结，不把已完成工作判作失败。"""
 
 
 def clean(value, secrets: tuple = ()):
@@ -340,7 +348,8 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
     # 工具是模型的双手：项目会话总是提供工具，由模型按需选择；只有模型能力不支持时才降级。
     enabled = bool(conversation.get("project_id"))
     tool_note = ("当前会话可调用项目工具（巡检与参数证据、目录/文件读取、专题报告、项目托管计划等），"
-                 "由你根据用户意图按需选择，不需要用户逐次授权；最多14次工具调用。") if enabled else (
+                 "由你根据用户意图按需选择，不需要用户逐次授权；不设固定总调用次数。"
+                 "工具拒绝时说明原因并利用已有证据回答，不重复无效调用；资源额度用完后直接总结。") if enabled else (
                  "当前会话没有项目工具；仅分析已附加的摘要和对话，不能声称读取了文件。")
     tools_disabled_reason = ""
     try:
@@ -537,7 +546,7 @@ def _pseudo_tool_calls(text: str) -> list:
     if marker:
         body = body[marker.end():]
     calls = []
-    for name, block in _INVOKE_RE.findall(body)[:12]:
+    for name, block in _INVOKE_RE.findall(body)[:13]:
         arguments = {str(key)[:80]: value.strip() for key, value in _PARAM_RE.findall(block)}
         calls.append(_pseudo_call(name, arguments, len(calls)))
     if calls:
@@ -556,7 +565,7 @@ def _pseudo_tool_calls(text: str) -> list:
                     break
                 items = data.get("tool_calls") if isinstance(data, dict) else None
                 if isinstance(items, list):
-                    for item in items[:12]:
+                    for item in items[:13]:
                         function = (item or {}).get("function") or item or {}
                         name = function.get("name")
                         arguments = function.get("arguments")
@@ -584,17 +593,17 @@ def _pseudo_args_ok(call: dict) -> bool:
 
 
 def _stream_final_text(connection: dict, key: str, payload: dict, run_id: str, authorize, usage: dict) -> str:
-    """兜底"直接回答"请求：只收 content，不接收思考/工具；用于思考耗尽额度时补一次回答。"""
-    parts: list = []
-    checks = 0
+    """一次有界的无工具收尾；不执行模型仍然发出的工具请求。"""
+    parts, size, last_auth = [], 0, 0.0
+    authorize()
     with _open(connection, key, "/chat/completions", payload) as response:
         with _UPSTREAM_LOCK:
             _UPSTREAMS[run_id] = response
         try:
             while True:
-                checks += 1
-                if checks % 200 == 0:
+                if time.monotonic() - last_auth > 1:
                     authorize()
+                    last_auth = time.monotonic()
                 line = response.readline(1024 * 1024)
                 if not line:
                     break
@@ -615,9 +624,14 @@ def _stream_final_text(connection: dict, key: str, payload: dict, run_id: str, a
                                   if k in ("prompt_tokens", "completion_tokens", "total_tokens") and type(v) is int})
                 for choice in part.get("choices") or []:
                     delta = choice.get("delta") or {}
-                    chunk = delta.get("content")
+                    if delta.get("tool_calls") or delta.get("function_call"):
+                        raise ValueError("总结阶段的工具调用已拒绝，未执行")
+                    chunk = delta.get("content") or delta.get("refusal")
                     if isinstance(chunk, str):
                         parts.append(chunk)
+                        size += len(chunk)
+                        if size >= FINAL_RESPONSE_CHARS:
+                            return "".join(parts)[:FINAL_RESPONSE_CHARS] + "\n\n（总结达到显示长度限制，以上为已收到的内容。）"
         finally:
             with _UPSTREAM_LOCK:
                 _UPSTREAMS.pop(run_id, None)
@@ -628,34 +642,96 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
     text, usage = "", {}
     hold = max(96, len(key))
     started = time.monotonic()
-    tool_count = tool_bytes = 0
+    tool_bytes = 0
+    final_deadline = None
 
-    def authorize():
+    def authorize(*, check_time=True):
         if _cancelled(run_id):
             raise ValueError("回答已停止")
-        if time.monotonic() - started > 600:
-            raise ValueError("本次生成超过 10 分钟，已停止接收，可重新生成")
+        if check_time and final_deadline is not None:
+            if time.monotonic() > final_deadline:
+                raise ValueError("最终总结超过时限")
+        elif check_time and time.monotonic() - started > GENERATION_SECONDS:
+            raise GenerationLimit("本轮分析已达到总时限，拒绝继续工具调用")
         with store.database() as db:
             run = store.owned(db, "runs", run_id, str(user["user_id"]))
             conversation = store.owned(db, "conversations", run["conversation_id"], str(user["user_id"]))
         ensure_conversation(user, conversation)
         return conversation
 
-    reasoning_text, reasoning_total = "", ""
+    reasoning_text, reasoning_total, round_text = "", "", ""
+    round_usage = {}
+    round_recorded = True
+
+    def fail(exc):
+        for k, v in round_usage.items():
+            usage[k] = usage.get(k, 0) + v
+        error = str(exc) if isinstance(exc, (ValueError, permissions.PermissionDenied)) and not isinstance(exc, json.JSONDecodeError) else "模型请求失败或响应格式不兼容，请检查连接后重试"
+        status = "cancelled" if _cancelled(run_id) else "failed"
+        answer = text.strip() or ("回答已停止。" if status == "cancelled" else "本轮未能完成回答：" + error + "。未确认的操作不能视为已完成。")
+        store.update_answer(run_id, clean(answer, (key,)), status=status, error=clean(error, (key,)), usage=usage,
+                            reasoning=(reasoning_total + reasoning_text)[:200000])
+
+    def finalize(reason):
+        nonlocal final_deadline
+        final_deadline = time.monotonic() + FINAL_SECONDS
+        authorize()  # 撤权或人工停止后不能再请求模型。
+        rejection = {"error": reason, "denied": True, "executed": False}
+        # 总时限可能在一批工具中途触发：补齐未执行调用的拒绝结果，保持协议与审计完整。
+        assistant = next((i for i in reversed(range(len(messages))) if messages[i].get("tool_calls")), None)
+        if assistant is not None:
+            answered = {m.get("tool_call_id") for m in messages[assistant + 1:] if m.get("role") == "tool"}
+            for call in messages[assistant]["tool_calls"]:
+                if call["id"] in answered:
+                    continue
+                try:
+                    arguments = json.loads(call["function"]["arguments"])
+                except ValueError:
+                    arguments = {}
+                store.append_tool_event(run_id, clean({"id": call["id"], "name": call["function"]["name"],
+                    "arguments": arguments, "result": rejection, "status": "failed", "at": now_iso()}, (key,)))
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(rejection, ensure_ascii=False)})
+        final_payload = completion_payload(connection, messages + [{"role": "system", "content":
+            "进一步工具调用/资源请求已被拒绝，原因：" + reason + "。请直接给出最终回答："
+            "仅根据已有成功工具结果和对话，用中文总结已确认的结论、未完成事项及原因；不要再调用工具或展开新的思考。"
+            "被拒绝或未返回成功的操作不能声称完成；缺少证据时明确说明。"}])
+        if ai_reasoning.capabilities(connection)["provider"] == "deepseek":
+            final_payload["thinking"] = {"type": "disabled"}
+        final_usage, final_text = {}, ""
+        timer = threading.Timer(FINAL_SECONDS, cancel_stream, args=(run_id,))
+        timer.daemon = True
+        timer.start()
+        try:
+            final_text = _stream_final_text(connection, key, final_payload, run_id, authorize, final_usage)
+            if _PSEUDO_RE.search(final_text):
+                final_text = ""
+        except permissions.PermissionDenied:
+            raise
+        except Exception:
+            # 不重试已可能计费的请求；本地说明也必须有正文。
+            authorize(check_time=False)
+        finally:
+            timer.cancel()
+            for k, v in final_usage.items():
+                usage[k] = usage.get(k, 0) + v
+        if not final_text.strip():
+            final_text = "本轮未能取得模型的最终总结。" + reason + "。已完成的工具记录已保留；被拒绝或未确认的操作没有视为完成，现有证据不足的部分仍待核实。"
+        answer = text.rstrip() + ("\n\n" if text.strip() else "") + final_text
+        authorize(check_time=False)
+        store.update_answer(run_id, clean(answer, (key,)), status="completed", usage=usage,
+                            reasoning=(reasoning_total + reasoning_text)[:200000])
+
     try:
         authorize()
         store.update_answer(run_id, "")
-        for round_index in range(9):
+        while True:
             authorize()
             # 工具后续轮是新的推理请求，不是失败重试；每轮实际 usage 累计。
             payload = completion_payload(connection, messages)
             if workspace_enabled:
-                force_none = round_index == 8 or tool_count >= 14
-                payload.update(tools=workspace.TOOLS, tool_choice="none" if force_none else "auto")
-                if force_none and ai_reasoning.capabilities(connection)["provider"] == "deepseek":
-                    # 思考与回答共用 max_tokens：最后一轮不再展开思考，保证能产出最终回答。
-                    payload["thinking"] = {"type": "disabled"}
+                payload.update(tools=workspace.TOOLS, tool_choice="auto")
             calls, round_text, finished, saw_reasoning = {}, "", False, False
+            round_recorded = False
             reasoning_text, pseudo = "", False
             keep_reasoning=workspace_enabled and ai_reasoning.capabilities(connection)["provider"]=="deepseek"
             round_usage = {}
@@ -671,7 +747,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                     if not line:
                         break
                     if len(line) >= 1024 * 1024:
-                        raise ValueError("模型流式响应过大，已停止接收")
+                        raise GenerationLimit("模型流式响应超过单条大小限制，该响应未继续接收")
                     if not line.startswith(b"data:"):
                         continue
                     data = line[5:].strip()
@@ -691,8 +767,9 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                         saw_reasoning = saw_reasoning or bool(delta.get("reasoning_content"))
                         if isinstance(delta.get('reasoning_content'), str):
                             reasoning_text += delta['reasoning_content']
-                            if len(reasoning_text) > 200000:
-                                raise ValueError('本轮思考内容超过内存预算，请降低思考深度')
+                            if len(reasoning_total) + len(reasoning_text) > 200000:
+                                reasoning_text = reasoning_text[:max(0, 200000 - len(reasoning_total))]
+                                raise GenerationLimit('本轮思考内容达到内存预算，拒绝继续展开思考')
                         chunk = delta.get("content") or delta.get("refusal") or ""
                         if isinstance(chunk, str):
                             round_text += chunk
@@ -700,23 +777,22 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                             # 标记可能只到一半：继续读，收完整个调用再决定执行/收尾。
                             pseudo = True
                         if pseudo and len(round_text) > 20000:
-                            finished = True
-                            break
+                            raise GenerationLimit("工具调用文本超过长度限制，该请求未执行")
                         for item in delta.get("tool_calls") or []:
                             index = item.get("index")
                             if not workspace_enabled or type(index) is not int or not 0 <= index < 12:
-                                raise ValueError("模型返回了未授权或过量的工具调用")
+                                raise GenerationLimit("本次响应包含未授权或过多的并行工具调用，该批请求未执行")
                             call = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
                             call["id"] += item.get("id") or ""
                             function = item.get("function") or {}
                             for field in ("name", "arguments"):
                                 call["function"][field] += function.get(field) or ""
                             if len(call["function"]["arguments"]) > 150000 or len(call["function"]["name"]) > 64 or len(call["id"]) > 128:
-                                raise ValueError("工具调用参数超过限制")
+                                raise GenerationLimit("工具调用参数或标识超过大小限制，该批请求未执行")
                         if choices[0].get("finish_reason"):
                             finished = True
                     if len(text)+len(round_text) > 200000:
-                        raise ValueError("回答超过长度限制，已停止生成")
+                        raise GenerationLimit("回答达到长度限制，拒绝继续扩展正文")
                     if time.monotonic()-last_write > 0.2:
                         combined = text+round_text
                         safe = combined[:-hold] if len(combined) > hold else ""
@@ -726,65 +802,49 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                 _UPSTREAMS.pop(run_id, None)
             for k, v in round_usage.items():
                 usage[k] = usage.get(k, 0)+v
+            round_usage = {}
+            round_reasoning = reasoning_text
             reasoning_total += reasoning_text
+            reasoning_text = ""
             if not finished:
                 raise ValueError("模型响应意外中断，可重新生成")
             if pseudo:
                 # 伪工具标记之前的正文仍要保留（用户至少能看到模型已经写到哪）。
                 text += round_text.split('<', 1)[0]
+                round_recorded = True
                 parsed = [call for call in _pseudo_tool_calls(round_text) if _pseudo_args_ok(call)]
-                if not parsed or round_index == 8 or tool_count + len(parsed) > 14:
-                    # 工具是模型的双手，但收尾不能把已完成的工作变成“失败”：保留正文、说明未执行的那一步。
-                    note = ("（本轮有一次工具调用没有按标准格式发出，未执行；已完成的工具结果与计划都已保留。"
-                            "如仍需继续，请回复“继续”。）")
-                    store.update_answer(run_id, clean((text + note).strip(), (key,)), status="completed",
-                                        usage=usage, reasoning=reasoning_total)
+                if len(parsed) > 12:
+                    raise GenerationLimit("本次响应包含过多的并行工具调用，该批请求未执行")
+                if not parsed:
+                    finalize("有一次工具调用没有按标准格式发出，未执行")
                     return
                 round_text = ""
+                for call in parsed:
+                    call["id"] += "_" + store.uid()  # 伪协议每轮从0编号，审计不能覆盖上一轮。
                 calls = {index: call for index, call in enumerate(parsed)}
             text += round_text
+            round_recorded = True
             if not calls:
                 if not round_text.strip():
                     if saw_reasoning:
-                        # 思考把 max_tokens 用完了（deepseek-flash 常见）：补一次不带思考的直接回答。
-                        final_payload = completion_payload(connection, messages + [{
-                            "role": "system",
-                            "content": "请直接给出最终回答：基于以上证据用简洁中文总结结论与建议，不要再展开新的思考，也不要调用工具。",
-                        }])
-                        final_payload.pop("tools", None)
-                        if ai_reasoning.capabilities(connection)["provider"] == "deepseek":
-                            final_payload["thinking"] = {"type": "disabled"}
-                        final_usage: dict = {}
-                        try:
-                            final_text = _stream_final_text(connection, key, final_payload, run_id, authorize, final_usage)
-                        except ValueError:
-                            final_text = ""
-                        for k, v in final_usage.items():
-                            usage[k] = usage.get(k, 0) + v
-                        if final_text.strip():
-                            store.update_answer(run_id, clean(text + final_text, (key,)), status="completed",
-                                                usage=usage, reasoning=reasoning_total)
-                            return
-                        raise ValueError(
-                            f"思考用完了输出额度（max_tokens={connection['max_tokens']}），未生成最终回答；"
-                            "请提高连接的最大输出或降低思考深度后重试"
-                        )
-                    raise ValueError("模型未返回可显示的文字，请检查模型及接口协议")
+                        finalize(f"思考用完了输出额度（max_tokens={connection['max_tokens']}），需要直接总结；后续可提高最大输出或降低思考深度")
+                    else:
+                        finalize("模型未返回可显示的文字，需要直接给出回答")
+                    return
                 store.update_answer(run_id, clean(text, (key,)), status="completed", usage=usage, reasoning=reasoning_total)
                 return
-            if round_index == 8 or tool_count+len(calls) > 14:
-                raise ValueError("已达到本轮工作区工具调用上限，请继续提问")
             if len({c["id"] for c in calls.values()}) != len(calls) or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", c["id"]) for c in calls.values()):
-                raise ValueError("工具调用标识不合法")
+                raise GenerationLimit("工具调用标识不合法，该批请求未执行")
             ordered = [calls[i] for i in sorted(calls)]
             messages.append({"role": "assistant", "content": clean(round_text, (key,)) or None, "tool_calls": ordered,
-                             **({"reasoning_content":reasoning_text} if keep_reasoning and reasoning_text else {})})
+                             **({"reasoning_content":round_reasoning} if keep_reasoning and round_reasoning else {})})
+            limit_reason = ""
             for call in ordered:
                 conversation = authorize()
                 project = project_for(user, conversation["project_id"])
-                tool_count += 1
                 name = call["function"]["name"]
                 arguments = {}
+                denied = bool(limit_reason)
                 try:
                     arguments = json.loads(call["function"]["arguments"])
                     # 写文件也不允许保存已知连接密钥或明显凭据。
@@ -792,26 +852,46 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                         arguments["content"] = clean(arguments["content"], (key,))
                     store.append_tool_event(run_id, clean({"id": call["id"], "name": name, "arguments": arguments,
                         "result": {}, "status": "running", "at": now_iso()}, (key,)))
+                    if limit_reason:
+                        raise ValueError(limit_reason)
                     result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"]), name, arguments, user=user, run_id=run_id)
                     result = clean(result, (key,))
                     status = "completed"
                 except Exception as exc:
                     error = str(exc) if isinstance(exc, (ValueError, permissions.PermissionDenied)) and not isinstance(exc, json.JSONDecodeError) else "证据或文件不可访问，请重新查询；草稿使用新文件名"
                     result, status = {"error": clean(error, (key,))}, "failed"
+                    if denied:
+                        result.update(denied=True, executed=False)
                 encoded = json.dumps(result, ensure_ascii=False)
-                tool_bytes += len(encoded)
-                if tool_bytes > 90000:
-                    raise ValueError("本轮文件读取预算已用完，请继续提问")
+                if not denied and tool_bytes + len(encoded) > TOOL_RESULT_CHARS:
+                    limit_reason = "本轮工具结果总量达到预算，拒绝继续读取或调用工具"
+                    # 操作可能已成功（如保存报告），不能把省略返回值伪装成执行失败或重做。
+                    summary = {k: result[k] for k in ("path", "report_id", "topic_id", "id", "applied")
+                               if isinstance(result, dict) and k in result and isinstance(result[k], (str, bool, int)) and len(str(result[k])) <= 256}
+                    result = {**summary, "error": limit_reason, "result_omitted": True, "operation_status": status,
+                              "note": "原操作状态见operation_status，不要重复执行；未展示的数据不能当作已审阅"}
+                    encoded = json.dumps(result, ensure_ascii=False)
+                elif not denied:
+                    tool_bytes += len(encoded)
                 store.append_tool_event(run_id, clean({"id": call["id"], "name": name, "arguments": arguments,
                     "result": result, "status": status, "at": now_iso()}, (key,)))
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": encoded})
+            if limit_reason:
+                raise GenerationLimit(limit_reason)
             if round_text:
                 text += "\n\n"
-        raise ValueError("工作区分析达到轮次上限，请继续提问")
+    except GenerationLimit as exc:
+        for k, v in round_usage.items():
+            usage[k] = usage.get(k, 0) + v
+        round_usage = {}
+        if not round_recorded:
+            text = (text + (round_text.split('<', 1)[0] if _PSEUDO_RE.search(round_text) else round_text))[:200000]
+        try:
+            finalize(str(exc))
+        except Exception as final_exc:
+            fail(final_exc)
     except Exception as exc:
-        error = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "模型请求失败或响应格式不兼容，请检查连接后重试；不支持工具的接口可在会话设置关闭工作区"
-        status = "cancelled" if _cancelled(run_id) else "failed"
-        store.update_answer(run_id, clean(text, (key,)), status=status, error=clean(error, (key,)), usage=usage, reasoning=reasoning_total+reasoning_text)
+        fail(exc)
     finally:
         with _UPSTREAM_LOCK:
             _UPSTREAMS.pop(run_id, None)

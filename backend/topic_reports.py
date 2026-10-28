@@ -465,7 +465,7 @@ def summary(doc):
             'note':'报告正文只展示已确认的结论、问题影响、解决办法和证据。必要缺项用对话选择卡确认；非必要警告/读取错误在对话中简短总结，不要写进报告或补充说明。已自动保存，不必重复计划/保存。'}
         if doc['simple'].get('version') == 'reaction.topic.1':
             result.update(research_context=data['research_context'],answers=doc['simple']['answers'],
-                path_evidence=[{k:item[k] for k in ('path_name','path_task_id','sources','candidate_reaction_bonds','interface_contacts','framework_shape','constraints','parameters','deformation_energy')} for item in data['reaction_reviews']])
+                path_evidence=[{k:item[k] for k in ('path_name','path_task_id','sources','candidate_reaction_bonds','interface_contacts','framework_shape','constraints','parameters','deformation_energy','energy_profile')} for item in data['reaction_reviews']])
         return result
     return {k:doc[k] for k in ('topic_id','report_type','title','revision','stage','conversation_id','original_question','project_ids','sections')} | {
         'preparation_status':data['preparation_status'],'property_definition':data['science'].get('recipe'),

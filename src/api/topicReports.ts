@@ -12,7 +12,7 @@ export interface TopicReport extends Omit<TopicMeta,'simple'> {
   sections:{section_id:string;title:string}[];
   blocks:TopicBlock[];hidden_block_ids:string[];deleted_block_ids:string[];
   narratives:Record<string,{ai_text:string;user_text:string|null;kind:string;model:string}>;
-  request:{property_id:string;model_queries:string[];adsorbate_reference_type?:string};
+  request:{property_id:string;model_queries:string[];adsorbate_reference_type?:string;objective?:string};
   data:{assessment?:{conclusion?:string;recommendation?:string};science?:{inputs:{role:string;task?:{task_id:string;model_name?:string};observations?:{observation_id:string;archive:string;directory:{path:string|null}}[]}[]};facts:TopicFact[];gaps:{check:string;status:string;detail:string}[];targets:Record<string,unknown>[];
     candidates:TopicCandidate[];library:{blocks:TopicBlock[]};preparation_status:string;
     choices:{label:string;target_label?:string;role?:string;adsorption_relations?:{complex:Record<string,string>;surface:Record<string,string>;adsorbate:Record<string,string>;site:{adsorbate_atom_indices:number[];fractional:number[][]}}[];relations?:{pristine:Record<string,string>;defect:Record<string,string>;removed_oxygen_index:number;site:{fractional:number[]}}[];tasks?:{task_id:string;model_name:string;selector:Record<string,string>}[]}[];
@@ -33,4 +33,4 @@ export const regenerateTopicParagraph=(id:string,block:string,revision:number,co
 
 export const answerTopic=(id:string,revision:number,answers:Record<string,string>)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/questions`,{method:'POST',body:JSON.stringify({expected_revision:revision,answers,continue_analysis:true})});
 export const rebuildTopic=(id:string)=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/rebuild`,{method:'POST',body:'{}'});
-export const updateTopicContent=(id:string,body:{expected_revision:number;title:string;notes:string;show_warnings?:boolean;assessment?:{conclusion?:string;recommendation?:string};blocks:string[];deleted_block_ids:string[]})=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/content`,{method:'PUT',body:JSON.stringify(body)});
+export const updateTopicContent=(id:string,body:{expected_revision:number;title:string;objective?:string;notes:string;show_warnings?:boolean;assessment?:{conclusion?:string;recommendation?:string};blocks:string[];deleted_block_ids:string[]})=>request<TopicReport>(`${root}/${encodeURIComponent(id)}/content`,{method:'PUT',body:JSON.stringify(body)});

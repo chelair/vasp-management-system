@@ -16,6 +16,7 @@ import properties
 import reaction_review as review
 import topic_reports as topics
 from storage import load_db
+from topic_content import validate_assessment
 
 VERSION = 'reaction.topic.1'
 esc = lambda value: html.escape(str(value), quote=True)
@@ -35,18 +36,10 @@ def _questions(reviews, answers, statements):
         key = 'bond.' + item['path_task_id']
         if answers.get(key) not in {r['label'] for r in item['candidate_reaction_bonds']} and item['candidate_reaction_bonds']:
             questions.append({'id':key,'title':item['path_name']+'：要研究图中哪一条反应键？',
-                'options':[{'value':r['label'],'label':'标注 '+r['label']+' 的 '+ '–'.join(r['elements'])+' 键',
+                'options':[{'value':r['label'],'label':r['label']+' · '+r['elements'][0]+str(r['atoms'][0])+'–'+r['elements'][1]+str(r['atoms'][1]),
                             'description':f"初态 {r['initial_angstrom']:.3f} Å → 末态 {r['final_angstrom']:.3f} Å"} for r in item['candidate_reaction_bonds']],
                 'hint':'可查看已有结构标注后选择；也可描述你的反应意图，不必手工查任务编号。'})
     return questions
-
-
-def validate_assessment(assessment):
-    if not isinstance(assessment,dict) or set(assessment)-{'conclusion','recommendation'} or any(not isinstance(v,str) or len(v)>1800 for v in assessment.values()):
-        raise ValueError('分析结论只接受简短的定性结论和建议')
-    if any(re.search(r'\d+(?:\.\d+)?\s*(?:eV|Å|埃|电子伏)|<[^>]+>',v) for v in assessment.values()):
-        raise ValueError('数值和结构由Python证据块提供；结论只写定性解释，不接受自填数值或HTML')
-    return assessment
 
 
 def _findings(item, answers):
@@ -69,10 +62,10 @@ def _findings(item, answers):
             'problem':'当前初态并非该键处于常见短距离的起点。',
             'impact':'直接继续这组端点，可能无法描述你要研究的完整断键过程。',
             'solution':'回到真正的反应物构型确认该键，并在相同吸附方式下重新定义初、末态；不能仅靠延长运行时间解决。'})
-    centers = {i for r in item['candidate_reaction_bonds'] for i in r['atoms']}
-    if centers.intersection(item['constraints']['changed_atom_indices']):
-        findings.append({'title':'反应中心的固定方式不一致',
-            'problem':'初、末态对候选反应中心使用了不同的固定约束。',
+    changed = item['constraints']['changed_atom_indices']
+    if changed:
+        findings.append({'title':'两端的固定方式不一致',
+            'problem':'初、末态的固定约束有差异，涉及原子：'+ '、'.join(map(str,changed))+'。',
             'impact':'路径可能比较不同约束条件下的结构，而不是同一反应的连续变化。',
             'solution':'统一反应中心和基底的约束定义，再重新确认两端及映像；保留实现研究目标所需的自由度。'})
     differences = [p for p in item['parameters'] if p['status'] == 'different']
@@ -217,13 +210,24 @@ def render_html(doc, *, auto_print=False, stale=False):
             evidence = data['library']['evidence'][block['source_refs'][0]['evidence_id']]
             views.append('<figure><figcaption>'+esc(block['title'])+'</figcaption>'+topics.r2._widget(block,'structure-3d')+'<div class="static-structure">'+_static_structure(evidence['payload'])+'</div></figure>')
         rows = item['candidate_reaction_bonds']
-        pairs = '<table><thead><tr><th>反应键标注</th><th>初态 / Å</th><th>末态 / Å</th></tr></thead><tbody>'+''.join(f"<tr><td>{esc(r['label'])} · {esc('–'.join(r['elements']))}（{r['atoms'][0]}–{r['atoms'][1]}）</td><td>{r['initial_angstrom']:.3f}</td><td>{r['final_angstrom']:.3f}</td></tr>" for r in rows)+'</tbody></table>'
+        selected=simple['answers'].get('bond.'+item['path_task_id'])
+        pairs = '<table><thead><tr><th>反应键标注</th><th>初态 / Å</th><th>末态 / Å</th></tr></thead><tbody>'+''.join(f"<tr{' style=\"font-weight:600;background:#e9f2f7\"' if r['label']==selected else ''}><td>{esc(r['label'])}{'（已选）' if r['label']==selected else ''} · {esc('–'.join(r['elements']))}（{r['atoms'][0]}–{r['atoms'][1]}）</td><td>{r['initial_angstrom']:.3f}</td><td>{r['final_angstrom']:.3f}</td></tr>" for r in rows)+'</tbody></table>'
         changed = [r for r in item['interface_contacts'] if r['state']!='both']
         if changed:
             pairs += '<h4>发生变化的 O–Li 近邻</h4><table><thead><tr><th>原子对</th><th>初态 / Å</th><th>末态 / Å</th></tr></thead><tbody>'+''.join(f"<tr><td>{esc(r['elements'][0])}{r['atoms'][0]}–{esc(r['elements'][1])}{r['atoms'][1]}</td><td>{r['initial_angstrom']:.3f}</td><td>{r['final_angstrom']:.3f}</td></tr>" for r in changed[:8])+'</tbody></table>'
         rms = item['framework_shape']['pair_distance_rms_change_angstrom']
         if rms is not None:
-            pairs += f'<p class="caption">非离去骨架内部距离变化 RMS：<strong>{rms:.3f} Å</strong>（排除整体平移与转动）</p>'
+            excluded=rows[0]['elements'][1] if rows else '离去元素'
+            pairs += f'<p class="caption">排除所有 {esc(excluded)} 的片段内部距离变化 RMS：<strong>{rms:.3f} Å</strong>（排除整体平移与转动）</p>'
+        profile=item.get('energy_profile') or {};images=profile.get('images') or []
+        if images:
+            def number(v):return f'{v:.6f}' if type(v) in (int,float) and math.isfinite(v) else '—'
+            pairs+='<h4>已有路径能量与受力</h4><table><thead><tr><th>映像</th><th>相对初态 / eV</th><th>最大力 / eV·Å⁻¹</th></tr></thead><tbody>'+''.join('<tr><td>'+esc(r['label'])+'</td><td>'+number(r.get('relative'))+'</td><td>'+number(r.get('max_force'))+'</td></tr>' for r in images)+'</tbody></table>'
+            energies=[r.get('energy') for r in images]
+            if all(type(v) in (int,float) and math.isfinite(v) for v in energies):
+                peak=max(range(len(images)),key=lambda i:energies[i])
+                label='初态' if peak==0 else '末态' if peak==len(images)-1 else '内部映像 '+str(images[peak]['label'])
+                pairs+='<p class="caption">当前采样最高点：'+esc(label)+'。'+('已采样到高于两端的内部点。' if profile.get('interior_peak_observed') else '尚未采样到高于两端的内部峰值。')+'</p>'
         sources = '<details class="sources"><summary>查看数据来源</summary>'+''.join('<p>'+esc(name)+' · '+esc(src.get('task_name'))+' · '+esc(src.get('remote_path') or src.get('local_path'))+'<br>SHA256 '+esc(src['sha256'])+'</p>' for name,src in item['sources'].items())+'</details>'
         parts.append('<section><h2>'+esc(item['path_name'])+'</h2>'+body+'<div class="views">'+''.join(views)+'</div>'+pairs+sources+'</section>')
     assessment = {**data['assessment'], **doc.get('assessment_edits',{})}
@@ -232,9 +236,9 @@ def render_html(doc, *, auto_print=False, stale=False):
     conclusion = assessment.get('conclusion') or default_conclusion
     objective = doc['request'].get('objective') or data['research_context']['calculation_goal']
     scope = '尽量隔离目标断键，保持两端非反应骨架和吸附方式可比。' if simple['answers'].get('scope')=='isolate_bond' else '按选定的研究过程核对两端结构与路径。'
-    body = '<header><div class="eyebrow">结构与反应路径诊断</div><h1>'+esc(doc['title'])+'</h1></header><aside class="conclusion"><span>关键结论</span><strong>'+esc(conclusion)+'</strong></aside><div class="goal"><b>研究目标</b><p>'+esc(objective).replace('\n','<br>')+'</p><p>'+esc(scope)+'</p></div>'+''.join(parts)
+    body = '<header><div class="eyebrow">结构与反应路径诊断</div><h1>'+esc(doc['title'])+'</h1></header><aside class="conclusion"><span>关键结论</span><strong style="white-space:pre-wrap">'+esc(conclusion)+'</strong></aside><div class="goal"><b>研究目标</b><p>'+esc(objective).replace('\n','<br>')+'</p><p>'+esc(scope)+'</p></div>'+''.join(parts)
     if assessment.get('recommendation'):
-        body += '<section><h2>建议先做什么</h2><p>'+esc(assessment['recommendation'])+'</p></section>'
+        body += '<section><h2>建议先做什么</h2><p style="white-space:pre-wrap">'+esc(assessment['recommendation'])+'</p></section>'
     body += '<details class="method"><summary>能垒的定义</summary><p>E<sub>a</sub> = max(E<sub>路径映像</sub>) − E<sub>IS</sub></p><p>先确认反应对应关系，再用一致条件下的完整路径识别目标过程的峰值。</p></details>'
     composition = {'blocks':[b for b in doc['blocks'] if b['block_id'] not in deleted], 'evidence':data['library']['evidence']}
     runtime = topics.r2._interactive(composition)

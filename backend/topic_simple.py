@@ -13,6 +13,7 @@ from dates import now_iso
 from property_science import digest
 from storage import load_db
 from task_paths import is_auxiliary_task
+from topic_content import validate_assessment, assessment_html
 
 TYPES={'ele':'单点/电子结构','opt':'结构优化','neb':'NEB'}
 
@@ -29,6 +30,7 @@ def create(user,conversation,question,request,*,run_id='',project_ids=None,previ
     if not isinstance(question,str) or not question.strip() or len(question)>16000:raise ValueError('请用一句话说明研究问题')
     allowed={'property_id','model_queries','adsorbate_query','targets','title','notes','show_warnings','assessment','objective','bond_elements','fragment_elements','contact_elements'}
     if not isinstance(request,dict) or set(request)-allowed:raise ValueError('请只提供研究性质、体系名称和吸附物名称')
+    if 'assessment' in request:validate_assessment(request['assessment'])
     queries=request.get('model_queries') or []
     if not isinstance(queries,list) or not 1<=len(queries)<=4 or any(not isinstance(q,str) or not q.strip() or len(q)>100 for q in queries):raise ValueError('请说明要研究的体系名称（最多四个）')
     ads=request.get('adsorbate_query','')
@@ -173,12 +175,13 @@ def create(user,conversation,question,request,*,run_id='',project_ids=None,previ
             bid = 'expectation_' + digest([item['project_id'], comparison['expectation_key']])[:16]
             doc['blocks'].append(topics._text_block('预期与结果对照', content, 'results', 'expectation_fact', block_id=bid))
     doc['evidence_fingerprint']=digest(doc['data'])
+    if 'assessment' in request and not previous:doc['assessment_edits']=copy.deepcopy(request['assessment'])
     return topics._commit(user,doc,(previous or {}).get('revision'))
 
 
 def create_generic(user,conversation,question,request,**kwargs):
     """Existing registered recipes/blocks; a useful report does not require LLM planning rounds."""
-    display={k:request[k] for k in ('title','notes','show_warnings') if k in request}
+    display={k:request[k] for k in ('title','notes','show_warnings','assessment','objective') if k in request}
     request={k:v for k,v in request.items() if k not in display}
     doc=topics.prepare(user,conversation,question,request,**kwargs)
     core={'ele.pdos','ele.work_function','group.neb','task.structure','task.energy_force'}
@@ -187,6 +190,8 @@ def create_generic(user,conversation,question,request,**kwargs):
     doc=topics.plan(user,doc['topic_id'],{'expected_revision':doc['revision'],'title':'科研报告','selections':selections})
     doc['simple']={'version':'simple.1','questions':[],'warnings':list(dict.fromkeys(g['detail'] for g in doc['data']['gaps'])),'notes':str(display.get('notes',''))[:8000],'show_warnings':display.get('show_warnings',True)}
     if display.get('title'):doc['title']=str(display['title'])[:200]
+    if 'assessment' in display:doc['assessment_edits']=copy.deepcopy(display['assessment'])
+    doc['request'].update(display)
     doc['stage']='saved'
     return topics._commit(user,doc,doc['revision'])
 
@@ -238,11 +243,12 @@ def answer(user,topic_id,payload):
 def update_content(user,topic_id,payload):
     doc=topics.load(user,topic_id)
     if not doc.get('simple'):raise ValueError('请先重新生成简明报告')
-    if set(payload)-{'expected_revision','title','notes','blocks','deleted_block_ids','show_warnings','assessment'}:raise ValueError('只可编辑标题、文字和展示顺序')
+    if set(payload)-{'expected_revision','title','objective','notes','blocks','deleted_block_ids','show_warnings','assessment'}:raise ValueError('只可编辑标题、文字和展示顺序')
     if 'assessment' in payload:
-        if doc['simple'].get('version') != 'reaction.topic.1':raise ValueError('此报告没有路径诊断文字')
-        from topic_reaction import validate_assessment
         doc['assessment_edits']={**doc.get('assessment_edits',{}),**validate_assessment(payload['assessment'])}
+    if 'objective' in payload:
+        if not isinstance(payload['objective'],str) or len(payload['objective'])>1000:raise ValueError('分析重点最多1000字')
+        doc['request']['objective']=payload['objective']
     title=payload.get('title',doc['title']);notes=payload.get('notes',doc['simple'].get('notes',''))
     if not isinstance(title,str) or not 1<=len(title.strip())<=200 or not isinstance(notes,str) or len(notes)>8000:raise ValueError('标题或文字过长')
     order=payload.get('blocks',[b['block_id'] for b in doc['blocks']]);original={b['block_id']:b for b in doc['blocks']};deleted=payload.get('deleted_block_ids',doc['deleted_block_ids'])
@@ -312,4 +318,6 @@ def render_html(doc,*,auto_print=False,stale=False):
     css="""*{box-sizing:border-box}body{margin:0;background:#f7f8fa;color:#202838;font:15px/1.65 system-ui,'Microsoft Yahei',sans-serif}main{max-width:1040px;margin:auto;padding:32px 24px}h1{font-size:25px;margin:0 0 10px}h2{font-size:18px;margin:0 0 12px}.subtitle,small,details{color:#667085}.card,.result,.missing,.warnings{padding:24px;margin:20px 0;border-radius:16px;background:white;border:1px solid #e8ebef;break-inside:avoid}.result{background:#eef5ff;border-color:#c7dcff}.value{font-size:42px;font-weight:700;letter-spacing:-1px;color:#245cc5}.value span{font-size:20px}.equation{font-family:monospace;overflow-wrap:anywhere}.metrics{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:16px}.metrics strong{font-size:20px}.warnings{background:#fff8e8;border-color:#f3dfad}.missing{background:#fff1ee}.missing span{color:#667085}details{font-size:12px;margin-top:14px}pre{white-space:pre-wrap;overflow-wrap:anywhere}img{max-width:100%;max-height:400px}li{margin:8px 0}.rb-image{display:none}.report-widget{min-height:180px}@media print{body{background:white}main{padding:0}.rb-image{display:block}.report-widget{min-height:0}.report-static-taken-over{display:block!important}.card:has(figure) .report-widget{display:none!important}.card{page-break-inside:avoid}}"""
     status='研究结果' if science.get('results') else '已确认的数据与结构'
     stale_note=''
-    return f"<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; base-uri 'none'\"><title>{esc(doc['title'])}</title><style>{css}</style></head><body><main><h1>{esc(doc['title'])}</h1><div class='subtitle'>{esc(status)} · {esc(doc['updated_at'])}</div>{stale_note}{''.join(parts)}</main>{runtime}{script}</body></html>"
+    objective=doc['request'].get('objective','')
+    goal='<p>'+esc(objective)+'</p>' if objective else ''
+    return f"<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; base-uri 'none'\"><title>{esc(doc['title'])}</title><style>{css}</style></head><body><main><h1>{esc(doc['title'])}</h1><div class='subtitle'>{esc(status)} · {esc(doc['updated_at'])}</div>{goal}{assessment_html(doc)}{stale_note}{''.join(parts)}</main>{runtime}{script}</body></html>"

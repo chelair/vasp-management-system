@@ -4,7 +4,9 @@
 
 ## 统一链路
 
-**用户问题 → AI 理解与角色映射 → 只读数据发现 → PropertyRecipe 检查与 Python 运算 → R2 ReportBlock/Evidence → 原 AI 文字 → 独立 topic 保存、编辑、导出。**
+**用户问题 → AI 理解与角色映射 → 只读数据发现 → PropertyRecipe 检查与 Python 运算 → R2 ReportBlock/Evidence → 原 AI 文字 → 独立 topic 保存 → 读回实际正文核对 → 编辑、导出。**
+
+各性质共用报告读写：`list_topic_reports` 找原报告，`get_topic_report` 读取当前正文与冻结数据，`update_topic_report` 修改同一修订的分析重点、结论和建议。正文从预览/导出的同一渲染器提取，包含人工编辑；DOS等曲线可按图表编号读取冻结数据。性质计算仍各用原有配方，不把NEB检查套到吸附能或DOS。
 
 默认简明报告由 create_topic_report 一次服务调用完成；不是强制模型分四轮 prepare/plan/write/save。高级分步入口仍兼容。[报告说明](docs/reports.md)
 

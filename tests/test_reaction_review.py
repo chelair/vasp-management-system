@@ -176,5 +176,23 @@ class ReactionReviewTests(unittest.TestCase):
                 service.start_run(self.user,'alice',other['id'],'继续',False,'wrong-chat-'+doc['topic_id'],topic_id=doc['topic_id'])
             thread.assert_not_called()
 
+    def test_model_readback_and_export_include_energy_order_and_selected_bond(self):
+        import topic_tools
+        images=[{'label':'0','energy':0,'relative':0,'max_force':.01},
+            {'label':'1','energy':3.0072,'relative':3.0072,'max_force':.324072},
+            {'label':'2','energy':3.2072,'relative':3.2072,'max_force':.01}]
+        with patch.object(review,'merged_results',return_value={'path':{'neb_barrier':{'images':images}}}):
+            doc=topic_simple.create(self.user,self.conversation,'核对端点和能量',{'property_id':'neb.barrier','model_queries':['PATH']})
+        doc=topic_simple.answer(self.user,doc['topic_id'],{'expected_revision':1,'answers':{'scope':'isolate_bond','bond.path':'A'}})
+        output=topic_simple.render_html(doc)
+        self.assertIn('当前采样最高点：末态',output)
+        self.assertIn('3.207200',output)
+        self.assertIn('0.324072',output)
+        self.assertIn('A（已选）',output)
+        result=topic_tools.dispatch(self.user,self.conversation,'','get_topic_report',{'topic_id':doc['topic_id']})
+        self.assertEqual(result['path_evidence'][0]['energy_profile']['interior_peak_observed'],False)
+        self.assertIn('当前采样最高点：末态',result['content']['text'])
+        self.assertIn('排除所有 F',result['content']['text'])
+
 
 if __name__=='__main__':unittest.main()

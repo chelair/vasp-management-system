@@ -2,7 +2,7 @@
 
 维护日期：2026-10-28；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
 
-## 项目需求登记与预期对应（本地实现，待发布）
+## 项目需求登记与预期对应
 
 通用会话提供 `get_project_setup_options/create_project_from_request`；创建成功只允许从通用会话绑定新项目，不改绑已有项目会话。项目会话增加 `create_calculation_contents/update_project_details/get_project_requirements/save_project_requirements`。均限登录的人类用户并逐项目鉴权；复用原项目/分组创建核心，仅本地登记，不接SSH或提交。文本引用真实用户消息，原文与AI解释分开；重复登记核对类型和数量，冲突不覆盖。
 

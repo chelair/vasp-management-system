@@ -6,6 +6,9 @@ import ThinkingText from './ThinkingText';
 import AnimatedCollapse from '../common/AnimatedCollapse';
 
 export const TOOL_NAMES: Record<string, string> = {
+  get_project_setup_options: '查询项目创建选项', create_project_from_request: '建立项目与计算任务',
+  create_calculation_contents: '登记计算任务', update_project_details: '更新项目资料',
+  get_project_requirements: '读取计算内容与预期', save_project_requirements: '关联计算内容与预期',
   get_project_research_context: '读取研究目标与路径', analyze_reaction_path: '检查反应路径与端点结构',
   search_work_experience: '检索个人操作经验', list_workspace: '浏览目录', read_workspace: '读取文件', write_workspace: '创建草稿',
   find_project_tasks: '查找项目任务', get_task_inspections: '查看巡检结果', get_inspection_evidence: '读取巡检证据',

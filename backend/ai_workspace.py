@@ -272,7 +272,11 @@ from managed_tools import TOOLS as MANAGED_TOOLS
 
 from structure_tools import TOOLS as STRUCTURE_TOOLS
 
-TOOLS = TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE_TOOLS + [
+from project_setup_tools import TOOLS as PROJECT_TOOLS, NAMES as PROJECT_TOOL_NAMES, GENERAL_NAMES
+
+GENERAL_TOOLS = [t for t in PROJECT_TOOLS if t["function"]["name"] in GENERAL_NAMES]
+
+TOOLS = PROJECT_TOOLS + TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE_TOOLS + [
     {'type':'function','function':{'name':'search_work_experience',
         'description':'按当前问题检索本人历史操作经验，最多5条，优先当前项目；仅包含本人目前可访问项目的经验。类似故障/参数处理或用户习惯时按需调用，中文关键词即可。跨项目先核对适用条件，候选不代表规律或计算已收敛，最新用户指令优先；不提供执行授权。',
         'parameters':{'type':'object','properties':{'query':{'type':'string','minLength':1,'maxLength':200}},'required':['query'],'additionalProperties':False}}},
@@ -301,6 +305,11 @@ TOOLS = TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE_TOOLS + [
 def dispatch(project: dict, conversation: dict, context: dict, name: str, arguments: dict, *, user=None, run_id='') -> dict:
     if name not in {tool["function"]["name"] for tool in TOOLS} or not isinstance(arguments, dict):
         raise ValueError("不支持的工作区工具")
+    if name in PROJECT_TOOL_NAMES:
+        from project_setup_tools import dispatch as setup_dispatch
+        return setup_dispatch(project, conversation, user, name, arguments, run_id)
+    if project is None:
+        raise ValueError("此工具需要绑定项目的会话")
     if name == 'search_work_experience':
         query=arguments.get('query')
         if set(arguments)!={'query'} or not isinstance(query,str) or not 1<=len(query.strip())<=200:

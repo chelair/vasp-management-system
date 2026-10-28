@@ -161,6 +161,17 @@ def create(user,conversation,question,request,*,run_id='',project_ids=None,previ
                data={'science':science,'projects':[{'project_id':p['project_id'],'name':p['name']} for p in projects],'targets':targets,
                      'library':library,'candidates':[],'choices':[],'reference_candidates':[],'facts':[],
                      'gaps':science['gaps'],'preparation_status':'NEEDS_SELECTION' if questions else science['status'],'assumptions':[],'task_observations':[]})
+    from project_requirements import report_snapshot
+    snapshot = report_snapshot(projects, user, [i['task_id'] for i in science['inputs'] if i.get('task_id')], science)
+    doc['data']['requirements'] = snapshot
+    for item in snapshot:
+        for comparison in item['comparisons']:
+            if comparison['status'] not in ('matches', 'differs'):
+                continue
+            content = ('原始预期：' + comparison['expected_quote'] + '\n\n' + comparison['conclusion'] +
+                f"。{comparison['left_label']} 的初步吸附能为 {comparison['left_ev']:+.6f} eV，{comparison['right_label']} 为 {comparison['right_ev']:+.6f} eV；差值（前者减后者）为 {comparison['difference_ev']:+.6f} eV。")
+            bid = 'expectation_' + digest([item['project_id'], comparison['expectation_key']])[:16]
+            doc['blocks'].append(topics._text_block('预期与结果对照', content, 'results', 'expectation_fact', block_id=bid))
     doc['evidence_fingerprint']=digest(doc['data'])
     return topics._commit(user,doc,(previous or {}).get('revision'))
 
@@ -270,6 +281,8 @@ def render_html(doc,*,auto_print=False,stale=False):
                 equation=f"({values['complex']['value']:.8f}) − ({values['surface']['value']:.8f}) − ({values['adsorbate']['value']:.8f})"
                 results+=f"<div class='result'><small>{esc(result['label'])} · 初步吸附能</small><div class='value'>{value:+.6f}<span> eV</span></div><p>吸附能 = 完整构型能量 − 基底能量 − 吸附质能量</p><p class='equation'>{esc(equation)} = {value:+.8f} eV</p><small>负值表示按这一参考吸附后能量更低；正值表示更高。</small></div>"
             parts.append(results)
+        elif block['origin']=='expectation_fact':
+            parts.append('<section class="card"><h2>'+esc(block['title'])+'</h2><p style="white-space:pre-wrap">'+esc(block['text'])+'</p></section>')
         elif block.get('input_role'):
             item=inputs.get(block['input_role'],{});energy=item.get('energy_ev');metric='' if energy is None else f'{energy:.8f} eV'
             refs=block.get('source_refs') or [];evidence=doc['data']['library']['evidence'].get(refs[0]['evidence_id'],{}) if refs else {}

@@ -95,6 +95,10 @@ def _prune_backups() -> None:
 def save_db(db: Dict[str, Any], backup: bool = True) -> None:
     """原子写入：先写临时文件再 os.replace，写入前自动备份现有文件。"""
     ensure_data_dirs()
+    try:
+        previous = load_db()
+    except (ValueError, OSError):
+        previous = None  # Unknown baseline must not trigger model work for every project.
     if backup:
         backup_db()
     fd, tmp_name = tempfile.mkstemp(
@@ -107,6 +111,13 @@ def save_db(db: Dict[str, Any], backup: bool = True) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, DB_PATH)
+        # Derived research intent must never turn a committed project save into a failure.
+        try:
+            from project_requirements import projects_saved
+            projects_saved(db, previous)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("项目已保存，需求对应表待下次读取时更新")
     except BaseException:
         try:
             os.unlink(tmp_name)

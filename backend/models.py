@@ -41,6 +41,7 @@ class ProjectIn(BaseModel):
     # 允许"只建组"的项目：前端创建项目后立刻调 /api/groups 建自由能/NEB 组，
     # 组内任务由后端登记；因此这里不再强制至少一个独立任务
     tasks: List[TaskIn] = Field(default_factory=list)
+    original_request: Optional[str] = Field(default=None, max_length=16000)
     # Web 端扩展字段（原 Schema additionalProperties=false 之外显式放行）
     description: Optional[str] = None
     estimated_hours: Optional[Union[int, float]] = None

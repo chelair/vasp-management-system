@@ -1,6 +1,19 @@
 # 接口文档
 
-维护日期：2026-10-27；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
+维护日期：2026-10-28；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
+
+## 项目需求登记与预期对应（本地实现，待发布）
+
+通用会话提供 `get_project_setup_options/create_project_from_request`；创建成功只允许从通用会话绑定新项目，不改绑已有项目会话。项目会话增加 `create_calculation_contents/update_project_details/get_project_requirements/save_project_requirements`。均限登录的人类用户并逐项目鉴权；复用原项目/分组创建核心，仅本地登记，不接SSH或提交。文本引用真实用户消息，原文与AI解释分开；重复登记核对类型和数量，冲突不覆盖。
+
+| 方法与路径 | 合同 |
+| --- | --- |
+| GET `/api/projects/{id}/requirements` | 最新原文、source_hash/revision、计算内容/预期/任务绑定和已有Python比较；只读本地证据并更新派生结果，不发模型/SSH |
+| POST `/api/projects/{id}/requirements/refresh` | 异步整理待更新对应表，使用当前用户自己的默认模型连接；原文不变，无连接/失败保留pending |
+
+ProjectIn新增可选original_request（最多16000字符），既有description/calc_description/expected_results与deadline不变。save_project_requirements传source_hash、expected_revision和mapping；后端拒绝迟到版本、跨项目任务、伪造引文和未给定的能量。update_project_details只允许四个资料字段，并要求当前source_hash。后台失败不改变项目保存成功状态。
+
+巡检事件只按已有绑定运行adsorption.estimate和固定数值比较；没有预期不生成排序，未支持性质只登记目标。AI上下文附有界摘要，完整关联按需读取。吸附能专题只在两组实际输入与对应表比较完全一致时冻结预期对照；历史观测不套当前结果，查看/导出不重读。完整边界见[项目需求](docs/project-requirements.md)。
 
 ## 默认简明专题报告
 

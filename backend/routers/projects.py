@@ -77,6 +77,29 @@ def _find_project(db, project_id: str):
     )
 
 
+@router.get("/{project_id}/requirements")
+def get_requirements(project_id: str, request: Request):
+    from project_requirements import evaluate
+    try:
+        return JSONResponse(content=ok("计算内容与预期对应表", evaluate(project_id, getattr(request.state, 'user', None))), headers={'Cache-Control':'no-store'})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content=fail(str(exc)))
+
+
+@router.post("/{project_id}/requirements/refresh")
+def refresh_requirements(project_id: str, request: Request):
+    from project_requirements import schedule, view
+    project = _find_project(load_db(), project_id)
+    user = getattr(request.state, 'user', None)
+    permissions.ensure_project_owner(project, user)
+    if not project:
+        return JSONResponse(status_code=404, content=fail('项目不存在'))
+    if (user or {}).get('role') == 'agent':
+        raise permissions.PermissionDenied('需求整理仅供已登录用户使用')
+    schedule(project_id, user)
+    return JSONResponse(content=ok('已安排整理；原文保持不变', view(project)), headers={'Cache-Control':'no-store'})
+
+
 @router.get("/{project_id}")
 def get_project(project_id: str, request: Request):
     """单个项目详情（第 4 步）：非 owner 且非 admin → 403。"""
@@ -98,6 +121,12 @@ def get_project(project_id: str, request: Request):
 
 @router.post("")
 def create_project(payload: AddProjectPayload, request: Request):
+    from storage import _db_lock
+    with _db_lock:
+        return core_create_project(payload, request)
+
+
+def core_create_project(payload: AddProjectPayload, request: Request, *, local_only=False, creation_signature=None):
     try:
         p = payload.project
         # 归属（第 3 步）：新建项目自动记当前登录用户（用户名归一化，与账号模块一致）
@@ -135,6 +164,7 @@ def create_project(payload: AddProjectPayload, request: Request):
 
         project = {
             **p.model_dump(),
+            **({"ai_creation_signature": creation_signature} if creation_signature else {}),
             # 报告辅助字段统一存空串（缺省不写 null，报告端渲染更省事）
             "description": str(p.description or ""),
             "calc_description": str(p.calc_description or ""),
@@ -191,7 +221,7 @@ def create_project(payload: AddProjectPayload, request: Request):
             )
 
         # 可选：在服务器上同步创建任务目录（失败回滚本地目录）
-        if _sync_enabled(settings):
+        if not local_only and _sync_enabled(settings):
             try:
                 for task in project["tasks"]:
                     # remote_dir 为相对路径，必须拼接远程根目录后再创建，否则会建到服务器 home 下

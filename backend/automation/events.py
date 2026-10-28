@@ -96,6 +96,12 @@ def _handle(event: Dict[str, Any]) -> None:
 
     if event_type == "inspection_completed":
         task_id = str(event.get("task_id") or "")
+        try:
+            from project_requirements import inspection_updated
+            inspection_updated(task_id)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("巡检结果已保存，预期比较待按需刷新")
         from automation import gateway, opt_loop
         # 不信任巡检的科学完成状态作为LSF终态；独立只读对账，不改变巡检回传。
         gateway.reconcile(task_id=task_id)

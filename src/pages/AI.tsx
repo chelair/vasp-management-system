@@ -111,7 +111,7 @@ export default function AI() {
 
   useEffect(() => {
     if (detail) setScope(targets.some((project) => project.id === detail.project_id && !project.closed) ? detail.project_id! : 'general');
-  }, [detail?.id, targets]);
+  }, [detail?.id, detail?.project_id, targets]);
 
   useEffect(() => {
     if (!active || !selected) return;
@@ -128,7 +128,15 @@ export default function AI() {
             messages: old.messages.some((m) => m.id === answer.id) ? old.messages.map((m) => m.id === answer.id ? answer : m) : [...old.messages, answer],
             runs: [run, ...old.runs.filter((r) => r.id !== run.id)],
           } : old);
-          if (!isActiveRun(run)) { void reloadList().catch(() => undefined); }
+          if (!isActiveRun(run)) {
+            void reloadList().catch(() => undefined);
+            if (run.tool_events.some(event => ['create_project_from_request', 'create_calculation_contents', 'update_project_details', 'save_project_requirements'].includes(event.name) && event.status === 'completed')) {
+              void Promise.all([listAITargets(), getAIConversation(conversationId), getAIContext(conversationId)]).then(([projects, current, snapshot]) => {
+                setTargets(projects.items);
+                if (selectedRef.current === conversationId) { setDetail(current); setContextState({ id: conversationId, value: snapshot }); }
+              }).catch(e => setError(errorText(e)));
+            }
+          }
         });
       } catch (e) {
         if (controller.signal.aborted || selectedRef.current !== conversationId) return;
@@ -273,7 +281,7 @@ export default function AI() {
                 runs: [...old.runs, ...older.runs.filter((r) => !old.runs.some((existing) => existing.id === r.id))], has_more: older.has_more } : old); }
               catch (e) { void message.error(errorText(e)); }
             }}>加载更早的消息</Button>}
-            {!detail.messages.length && <div className="ai-welcome"><span className="ai-welcome-mark" aria-hidden="true">✳</span><h2>今天想研究什么？</h2><p>{detail.project_id ? '每次发问会附加整个项目的目标、预期、任务状态与结果摘要。' : '这里可以讨论研究思路和计算计划。选择项目后可创建带项目上下文的会话。'}</p>
+            {!detail.messages.length && <div className="ai-welcome"><span className="ai-welcome-mark" aria-hidden="true">✳</span><h2>今天想研究什么？</h2><p>{detail.project_id ? '每次发问会附加整个项目的目标、预期、任务状态与结果摘要。' : '可以讨论研究思路，也可以把原始需求发来，让AI建立项目和计算任务。'}</p>
               {['帮我梳理整个项目的结果与缺失信息', '对比已有结果与预期，提出下一步验证计划', '比较两个模型的科学性质，生成专题科研报告'].map((text) => <Button key={text} onClick={() => { setDraft(text); drafts.current[detail.id] = text; }}>{text}</Button>)}</div>}
             {detail.messages.map((item) => {
               const run = detail.runs.find((r) => r.message_id === item.id);
@@ -341,6 +349,7 @@ export default function AI() {
                 { key: 'deadline', label: '截止时间', children: show(project.deadline) },
               ]} /><div className="ai-actions">{Object.entries(asObject(summary.status_counts)).map(([status, count]) => <Tag key={status}>{TASK_STATUS[status] ?? status} {show(count)}</Tag>)}</div>
               <h4>项目说明</h4><p className="ai-context-text">{show(project.description)}</p>
+              <h4>需求对应</h4><p className="ai-context-text">{asObject(context?.requirements).status === 'ready' ? '计算内容与预期已整理，AI可按需读取关联任务和结果。' : asObject(context?.requirements).status === 'pending' ? '资料已保存，计算内容与预期对应表待整理。' : '尚未填写项目需求。'}</p>
               <h4>计算目标</h4><p className="ai-context-text">{show(project.calc_description)}</p><h4>预期结果</h4><p className="ai-context-text">{show(project.expected_results)}</p>
               <h4>项目任务概览{projectTasks.length > 10 ? `（前 10 / 共 ${projectTasks.length}）` : ''}</h4>{projectTasks.slice(0, 10).map((task) => <div className="ai-record" key={String(task.task_id)}>
                 <strong>{show(task.task_name)}</strong><span>{TYPES[String(task.task_type)] ?? show(task.task_type)} · {TASK_STATUS[String(task.status)] ?? show(task.status)}</span>

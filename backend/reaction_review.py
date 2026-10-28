@@ -18,8 +18,10 @@ KEYS = {'path_task_id', 'initial', 'final', 'source', 'bond_elements', 'fragment
 
 
 def research_context(project):
+    from project_requirements import summary
     return {'project_id': project['project_id'], 'project_name': project['name'],
             'calculation_goal': project.get('calc_description') or '',
+            'requirements': summary(project),
             'expected_results': project.get('expected_results') or '',
             'description': project.get('description') or '',
             'rule': '最新用户目标优先；预期用于定义要检验的过程，不预设结论。名称不是反应身份的证据。'}

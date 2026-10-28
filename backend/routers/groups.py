@@ -70,9 +70,14 @@ class AddStructuresPayload(BaseModel):
     count: int = Field(default=1, ge=1, le=50)
 
 
+_LAST_TASK_TS = 0
+
+
 def _task_id(project: Dict[str, Any]) -> str:
     """生成不重复 task_id。"""
-    ts = int(time.time() * 1000)
+    global _LAST_TASK_TS
+    ts = max(int(time.time() * 1000), _LAST_TASK_TS + 1)
+    _LAST_TASK_TS = ts
     used = {t.get("task_id") for t in project.get("tasks", [])}
     seq = 1
     while f"task_{ts}_{seq}" in used:
@@ -158,6 +163,12 @@ def _try_remote_mkdir(server: str, remote_dir: str) -> Optional[str]:
 
 @router.post("")
 def create_group(payload: dict, request: Request):
+    from storage import _db_lock
+    with _db_lock:
+        return core_create_group(payload, request)
+
+
+def core_create_group(payload: dict, request: Request, *, local_only=False):
     """创建自由能组或 NEB 组，自动生成组内任务、目录与默认输入文件。"""
     try:
         db = load_db()
@@ -177,9 +188,10 @@ def create_group(payload: dict, request: Request):
             for t in project["tasks"]
             if isinstance(t.get("group"), dict)
         }
-        group_id = f"{group_type}_{int(time.time() * 1000)}"
-        while group_id in existing:
-            group_id = f"{group_type}_{int(time.time() * 1000) + 1}"
+        group_ts = int(time.time() * 1000)
+        while f"{group_type}_{group_ts}" in existing:
+            group_ts += 1
+        group_id = f"{group_type}_{group_ts}"
 
         group_ids = {
             t["group"]["group_id"]
@@ -190,6 +202,8 @@ def create_group(payload: dict, request: Request):
         seq = len(group_ids) + 1
         default_name = f"PATH{seq}"
         root_name = payload.get("name") or default_name
+        if any((t.get("group") or {}).get("name") == root_name for t in project["tasks"]):
+            return JSONResponse(status_code=409, content=fail("项目中已存在同名计算组"))
         if not GROUP_NAME_PATTERN.fullmatch(root_name):
             return JSONResponse(
                 status_code=400,
@@ -198,6 +212,8 @@ def create_group(payload: dict, request: Request):
 
         category = "free_energy" if group_type == "free_energy" else "neb"
         project_root = PROJECTS_DIR / project["name"] / category / root_name
+        if local_only and project_root.exists():
+            return JSONResponse(status_code=409, content=fail("该组目录已有文件，不能覆盖，请先核对现有内容"))
         remote_base = _project_remote_base(project["server"], project["name"])
         remote_category_base = f"{remote_base}/{category}"
         tasks: List[Dict[str, Any]] = []
@@ -268,7 +284,7 @@ def create_group(payload: dict, request: Request):
                     "potcar_from": None,
                     "kpoints_from": None,
                 }
-                warn = _try_remote_mkdir(
+                warn = None if local_only else _try_remote_mkdir(
                     project["server"], f"{remote_category_base}/{root_name}/{label}"
                 )
                 if warn:
@@ -294,7 +310,7 @@ def create_group(payload: dict, request: Request):
                     else f"{remote_category_base}/{root_name}/neb"
                 )
                 # 每个任务目录都要在远端创建（与 free_energy 分支一致）
-                warn = _try_remote_mkdir(project["server"], remote_dir)
+                warn = None if local_only else _try_remote_mkdir(project["server"], remote_dir)
                 if warn:
                     warnings.append(warn)
                 task = _base_record(
@@ -309,10 +325,11 @@ def create_group(payload: dict, request: Request):
                         "group_type": "neb",
                         "group_role": role,
                         "structure_label": sub_dir,
+                        "images": images,
                     },
                 )
                 tasks.append(task)
-            warn = _try_remote_mkdir(
+            warn = None if local_only else _try_remote_mkdir(
                 project["server"], f"{remote_category_base}/{root_name}"
             )
             if warn:
@@ -434,6 +451,12 @@ def add_group_structures(group_id: str, payload: AddStructuresPayload, request: 
 
 @router.post("/tasks")
 def create_independent_task(payload: IndependentTaskPayload, request: Request):
+    from storage import _db_lock
+    with _db_lock:
+        return core_create_independent_task(payload, request)
+
+
+def core_create_independent_task(payload: IndependentTaskPayload, request: Request, *, local_only=False):
     """创建独立任务（group=None），目录位于 <项目>/<模型名>。"""
     try:
         registry = load_task_registry()
@@ -456,6 +479,8 @@ def create_independent_task(payload: IndependentTaskPayload, request: Request):
 
         category = CATEGORY_DIRS.get(payload.task_type, "结构优化")
         task_path = PROJECTS_DIR / project["name"] / category / payload.model_name
+        if local_only and task_path.exists():
+            return JSONResponse(status_code=409, content=fail("该任务目录已有文件，不能覆盖，请先核对现有内容"))
         _make_task_dirs(task_path)
         _write_default_inputs(task_path, payload.task_type)
         remote_dir = (
@@ -475,9 +500,9 @@ def create_independent_task(payload: IndependentTaskPayload, request: Request):
         save_db(db)
         # 顺手在远端建出任务目录（v0.9.30，与建组/加结构一致；失败只警告不阻塞）
         # 以前这里完全不碰远端，新建的任务第一次「同步到远端」会因为目录不存在而失败
-        warn = _try_remote_mkdir(project["server"], remote_dir)
+        warn = None if local_only else _try_remote_mkdir(project["server"], remote_dir)
         return ok(
-            "独立任务已创建" + (f"（{warn}）" if warn else "（已在远端建好目录）"),
+            "独立任务已创建" + ("（本地登记）" if local_only else f"（{warn}）" if warn else "（已在远端建好目录）"),
             {"task_id": task["task_id"], "dir_path": task["dir_path"], "remote_warning": warn},
         )
     except permissions.PermissionDenied:

@@ -23,6 +23,7 @@ from task_context import AUDIT_FILE
 from task_paths import is_auxiliary_task
 
 SYSTEM_PROMPT = """你是 VASP 科研计算助手，用中文与用户协作。
+用户明确要求建立项目时，通用会话先get_project_setup_options，再create_project_from_request；保留用户原文与明确期限，不猜服务器、数量或映像口径。创建成功后会话绑定新项目，可继续get_project_requirements/save_project_requirements整理模型、计算内容、预期及任务关联。用户只讨论实现思路时不创建项目。当前项目补任务用create_calculation_contents，改项目资料用update_project_details，不上传/提交。描述和预期变更后对应表pending时，按最新原文更新对应表；原文未写预期就不编造。一个模型一个电子结构主任务可承载多个分析。预期比较和派生数值引用get_project_requirements的Python结果，numeric大小不等于吸附强弱。
 研究分析先明确用户目标：读取project.calc_description/expected_results，不因预期字段为空忽略计算内容；不清楚可调用get_project_research_context。预期是评价路径是否适合的问题，不是预设结论。用户问NEB/断键能垒是否继续时，必须先analyze_reaction_path核对两端候选反应键、片段内部形变与额外界面接触，再讨论收敛/资源，不能只看组成晶胞相同就建议续算。两端有差异时围绕目标解释是否混入脱配位/重排/形变；几何近邻不是成键证明，不能从位移或端点总能拆出形变能。目标键和研究范围不明确时用报告选择卡确认，不能断言初态错误或能垒为零。应自动读取已有INCAR/KPOINTS和来源，读不到才简明说明，不能把自己未查询说成数据不存在。
 客户报告只需关键结论、现在遇到的问题、影响与解决办法，配上必要结构对照和标注。必要数据/研究意图缺失，在对话用选择卡或简短提问；其他警告、工具报错、校验UNKNOWN和缺口在对话总结，不放报告/补充说明。NEB诊断用create_topic_report(property_id=neb.barrier,model_queries=相关路径)，传objective和定性assessment；不先跑正式数值配方把报告变成缺口表。只读到部分数据也保留已确认的问题与方案，不假装已得到可靠能垒。
 区分计算事实、解释、假设、预期和缺失证据。结论给出对应上下文字段或来源目录，不能编造结果。
@@ -199,7 +200,8 @@ def context_for(user: dict, task_id: str | None = None, *, project_id: str | Non
     priority = {"running": 0, "unconverged": 1, "zombied": 1, "queued": 2, "completed": 3, "pending": 4, "archived": 5}
     tasks.sort(key=lambda t: (priority.get(t["status"], 6), t["task_name"]))
     checks.sort(key=lambda r: str(r["checked_at"] or ""), reverse=True)
-    return clean({"scope": "project", "generated_at": now_iso(),
+    from project_requirements import summary as requirements_summary
+    return clean({"scope": "project", "requirements": requirements_summary(project), "generated_at": now_iso(),
                   "project": {k: project.get(k) for k in ("project_id", "name", "description", "calc_description", "expected_results", "deadline", "closed")},
                   "research_goal": {"calculation_goal": project.get("calc_description") or "", "expected_results": project.get("expected_results") or "", "rule": "先目标，再结构合理性/反应路径，再参数；用事实检验目标，不迎合预期。"},
                   "summary": {"task_count": len(tasks), "status_counts": counts}, "tasks": tasks,
@@ -230,6 +232,10 @@ def _bounded(value, depth=0):
 def _context_budget(context: dict) -> dict:
     if context.get("scope") == "project":
         result = _bounded({k: v for k, v in context.items() if k != "tasks"})
+        if "requirements" in context and (len(json.dumps(context["requirements"], ensure_ascii=False)) > 6000 or
+                any(isinstance(v, list) and len(v) > 12 for v in context["requirements"].values())):
+            result["requirements"] = {k:context["requirements"][k] for k in ("status","revision","source_hash")}
+            result["requirements"]["note"] = "对应表较多，本轮未附完整内容；请调用get_project_requirements按需读取，不能当作没有预期。"
         tasks = [_bounded(row) for row in context.get("tasks", [])]
         result["tasks"] = tasks
         result["summary"].update(included_task_count=len(tasks), omitted_task_count=0)
@@ -349,11 +355,11 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
     while selected and selected[0]["role"] != "user":
         selected.pop(0)
     # 工具是模型的双手：项目会话总是提供工具，由模型按需选择；只有模型能力不支持时才降级。
-    enabled = bool(conversation.get("project_id"))
+    enabled = True
     tool_note = ("当前会话可调用项目工具（巡检与参数证据、目录/文件读取、专题报告、项目托管计划等），"
                  "由你根据用户意图按需选择，不需要用户逐次授权；不设固定总调用次数。"
-                 "工具拒绝时说明原因并利用已有证据回答，不重复无效调用；资源额度用完后直接总结。") if enabled else (
-                 "当前会话没有项目工具；仅分析已附加的摘要和对话，不能声称读取了文件。")
+                 "工具拒绝时说明原因并利用已有证据回答，不重复无效调用；资源额度用完后直接总结。") if conversation.get("project_id") else (
+                 "通用会话可查询项目创建选项并按用户要求创建项目；创建成功后绑定该项目。没有项目文件读取或作业提交能力。")
     tools_disabled_reason = ""
     try:
         ai_reasoning.validate_tools(connection, enabled)
@@ -459,7 +465,7 @@ class TextGenerationControl:
 
 
 def readonly_json_completion(owner: str, connection_id: str, messages: list,
-                             control: TextGenerationControl | None = None) -> tuple[dict, str]:
+                             control: TextGenerationControl | None = None, *, max_output_tokens: int = 4096) -> tuple[dict, str]:
     """复用私有连接、密钥解密与兼容流式请求；固定无工具，只返回完整 JSON。"""
     control = control or TextGenerationControl()
     control.check()
@@ -469,7 +475,7 @@ def readonly_json_completion(owner: str, connection_id: str, messages: list,
         connection = store.owned(db, "connections", connection_id, owner)
     key = store.decrypt(connection["secret"])
     messages = clean(messages, (key,))
-    payload = completion_payload({**connection, "max_tokens": min(connection["max_tokens"], 4096)}, messages)
+    payload = completion_payload({**connection, "max_tokens": min(connection["max_tokens"], max_output_tokens)}, messages)
     timer = threading.Timer(120, control.cancel)
     timer.daemon = True
     timer.start()
@@ -729,14 +735,15 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                             reasoning=(reasoning_total + reasoning_text)[:200000])
 
     try:
-        authorize()
+        conversation = authorize()
+        review_required = review_required and bool(conversation.get("project_id")) and not bool(re.search(r"创建|新建|登记", question))
         store.update_answer(run_id, "")
         while True:
-            authorize()
+            conversation = authorize()
             # 工具后续轮是新的推理请求，不是失败重试；每轮实际 usage 累计。
             payload = completion_payload(connection, messages)
             if workspace_enabled:
-                payload.update(tools=workspace.TOOLS, tool_choice="auto")
+                payload.update(tools=workspace.TOOLS if conversation.get("project_id") else workspace.GENERAL_TOOLS, tool_choice="auto")
             calls, round_text, finished, saw_reasoning = {}, "", False, False
             round_recorded = False
             reasoning_text, pseudo = "", False
@@ -858,12 +865,14 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             limit_reason = ""
             for call in ordered:
                 conversation = authorize()
-                project = project_for(user, conversation["project_id"])
+                project = project_for(user, conversation["project_id"]) if conversation.get("project_id") else None
                 name = call["function"]["name"]
                 arguments = {}
                 denied = bool(limit_reason)
                 try:
                     arguments = json.loads(call["function"]["arguments"])
+                    if name not in {t["function"]["name"] for t in payload.get("tools", [])}:
+                        raise ValueError("本轮没有开放该工具")
                     # 写文件也不允许保存已知连接密钥或明显凭据。
                     if name == "write_workspace" and isinstance(arguments, dict) and isinstance(arguments.get("content"), str):
                         arguments["content"] = clean(arguments["content"], (key,))
@@ -871,7 +880,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                         "result": {}, "status": "running", "at": now_iso()}, (key,)))
                     if limit_reason:
                         raise ValueError(limit_reason)
-                    result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"]), name, arguments, user=user, run_id=run_id)
+                    result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"] if project else None), name, arguments, user=user, run_id=run_id)
                     result = clean(result, (key,))
                     status = "completed"
                     if name == 'analyze_reaction_path' or (name == 'create_topic_report' and arguments.get('property_id') == 'neb.barrier') or (name == 'get_topic_report' and result.get('path_evidence')):
@@ -885,7 +894,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                 if not denied and tool_bytes + len(encoded) > TOOL_RESULT_CHARS:
                     limit_reason = "本轮工具结果总量达到预算，拒绝继续读取或调用工具"
                     # 操作可能已成功（如保存报告），不能把省略返回值伪装成执行失败或重做。
-                    summary = {k: result[k] for k in ("path", "report_id", "topic_id", "id", "applied", "revision", "stage", "report_ready")
+                    summary = {k: result[k] for k in ("path", "report_id", "topic_id", "project_id", "project_created", "contents_complete", "id", "applied", "revision", "stage", "report_ready")
                                if isinstance(result, dict) and k in result and isinstance(result[k], (str, bool, int)) and len(str(result[k])) <= 256}
                     result = {**summary, "notice" if status == "completed" else "error": limit_reason,
                               "result_omitted": True, "operation_status": status,

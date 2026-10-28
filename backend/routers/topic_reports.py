@@ -77,7 +77,7 @@ def questions(topic_id:str,request:Request,payload:dict=Body()):
         try:
             run,_=start_run(user,str(user['user_id']),doc['conversation_id'],
                 '我对报告“'+doc['title']+'”的确认：\n'+'\n'.join(lines)+'\n请继续同一报告的分析。必要缺项在对话中问我，其他警告在对话总结，不要放进报告。',
-                False,'topic-answer-'+topic_id+'-'+str(old['revision']))
+                False,'topic-answer-'+topic_id+'-'+str(old['revision']),topic_id=topic_id)
             doc={**doc,'continuation':run}
         except ValueError as exc:
             doc={**doc,'continuation_error':'回答已保存，但AI暂未继续：'+str(exc)}

@@ -1,5 +1,6 @@
 """Endpoint diagnosis and customer report. Temporary data; no model, SSH or jobs."""
 import copy
+import json
 import math
 import os
 from pathlib import Path
@@ -115,6 +116,65 @@ class ReactionReviewTests(unittest.TestCase):
         start.assert_called_once()
         self.assertEqual(start.call_args.args[2],self.conversation['id'])
         self.assertIn('尽量只比较目标断键',start.call_args.args[3])
+        self.assertEqual(start.call_args.kwargs['topic_id'],doc['topic_id'])
+
+    def test_card_run_reuses_confirmed_topic_even_if_model_calls_create_again(self):
+        import ai_chat_service as service
+        import topic_tools
+        from starlette.requests import Request
+        from routers.topic_reports import questions
+        connection=store.save_connection('alice',{'name':'mock','base_url':'https://mock.invalid/v1',
+            'model':'mock','api_key':'isolated-test-key','max_tokens':4096})
+        with store.database() as db:
+            db.execute('UPDATE conversations SET connection_id=? WHERE id=?',(connection['id'],self.conversation['id']))
+        doc=topic_simple.create(self.user,self.conversation,'诊断断键路径',{'property_id':'neb.barrier','model_queries':['PATH']})
+        before=len(topics.list_for(self.user,self.conversation['id']))
+        with patch.object(service.threading,'Thread'), patch.object(service,'context_for',return_value={}):
+            response=questions(doc['topic_id'],Request({'type':'http','state':{'user':self.user}}),
+                {'expected_revision':1,'answers':{'scope':'isolate_bond','bond.path':'A'},'continue_analysis':True})
+        confirmed=response['data'];run_id=confirmed['continuation']['id']
+        with store.database() as db:
+            run=store.owned(db,'runs',run_id,'alice');snapshot=json.loads(run['snapshot'])
+        self.assertEqual(snapshot['topic_continuation']['topic_id'],doc['topic_id'])
+        self.assertEqual(snapshot['topic_continuation']['answers']['bond.path'],'A')
+        self.assertEqual(snapshot['messages'][-1]['role'],'user')
+        self.assertTrue(any('不要新建同名报告' in m['content'] for m in snapshot['messages']))
+        with patch.object(review,'load_many',side_effect=AssertionError('continuation must not reread sources')):
+            for name in ('create_topic_report','prepare_topic_report'):
+                result=topic_tools.dispatch(self.user,self.conversation,run_id,name,{'property_id':'neb.barrier','model_queries':['PATH']})
+                self.assertEqual(result['topic_id'],doc['topic_id'])
+                self.assertEqual(result['stage'],'saved')
+                self.assertEqual(result['questions'],[])
+                self.assertEqual(result['revision'],confirmed['revision'])
+            edited=topic_tools.dispatch(self.user,self.conversation,run_id,'update_topic_report',{'topic_id':doc['topic_id'],
+                'expected_revision':confirmed['revision'],'assessment':{'conclusion':'围绕已选目标核对端点与路径。'}})
+        self.assertEqual(edited['revision'],3)
+        saved=topics.load(self.user,doc['topic_id'])
+        self.assertEqual(saved['data']['reaction_reviews'],confirmed['data']['reaction_reviews'])
+        self.assertEqual(saved['simple']['answers'],confirmed['simple']['answers'])
+        self.assertEqual(len(topics.list_for(self.user,self.conversation['id'])),before)
+        with self.assertRaisesRegex(ValueError,'其他性质'):
+            topic_tools.dispatch(self.user,self.conversation,run_id,'create_topic_report',{'property_id':'dos.comparison','model_queries':['PATH']})
+        # Regenerating a pre-fix card answer also recovers its original topic, without a new click.
+        snapshot.pop('topic_continuation')
+        with store.database() as db:
+            db.execute("UPDATE runs SET status='completed',snapshot=? WHERE id=?",(json.dumps(snapshot),run_id))
+        with patch.object(service.threading,'Thread'), patch.object(service,'context_for',return_value={}):
+            retried,_=service.start_run(self.user,'alice',self.conversation['id'],'',True,'retry-card-'+run_id)
+        with store.database() as db:
+            retry_snapshot=json.loads(store.owned(db,'runs',retried['id'],'alice')['snapshot'])
+        self.assertEqual(retry_snapshot['topic_continuation']['topic_id'],doc['topic_id'])
+
+    def test_card_continuation_does_not_bind_a_report_from_another_chat(self):
+        import ai_chat_service as service
+        doc=topic_simple.create(self.user,self.conversation,'诊断断键路径',{'property_id':'neb.barrier','model_queries':['PATH']})
+        connection=store.save_connection('alice',{'name':'mock','base_url':'https://mock.invalid/v1',
+            'model':'mock','api_key':'isolated-test-key','max_tokens':4096})
+        other=store.create_conversation('alice','other',None,connection['id'],'p')
+        with patch.object(service.threading,'Thread') as thread, patch.object(service,'context_for',return_value={}):
+            with self.assertRaises(permissions.PermissionDenied):
+                service.start_run(self.user,'alice',other['id'],'继续',False,'wrong-chat-'+doc['topic_id'],topic_id=doc['topic_id'])
+            thread.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

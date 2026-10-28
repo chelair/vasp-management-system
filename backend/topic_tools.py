@@ -83,7 +83,16 @@ def dispatch(user,conversation,run_id,name,arguments):
         with ai_chat_store.database() as db:
             run=ai_chat_store.owned(db,'runs',run_id,str(user['user_id']))
         if run['conversation_id']!=conversation['id']:raise permissions.PermissionDenied('运行不属于当前对话')
-        messages=json.loads(run['snapshot'])['messages']
+        snapshot=json.loads(run['snapshot'])
+        continuation=snapshot.get('topic_continuation')
+        if continuation:
+            doc=topics.load(user,continuation['topic_id'])
+            if doc['conversation_id']!=conversation['id']:raise permissions.PermissionDenied('专题不属于当前对话')
+            if arguments['property_id']!=doc['request']['property_id']:
+                raise ValueError('本轮是已确认报告的续写；如需其他性质的报告，请另发起请求')
+            # Card continuation must never create a second topic or reload its scientific inputs.
+            return topics.summary(doc) | {'continuation_note':'用户回答已保存，已打开原报告，未新建。请使用此topic_id和revision调用update_topic_report继续分析，保留冻结证据和已确认答案。'}
+        messages=snapshot['messages']
         if not messages or messages[-1]['role']!='user':raise ValueError('运行缺少原始用户问题')
         question=messages[-1]['content']
         if name=='create_topic_report' or arguments.get('property_id') in ('adsorption.simple','adsorption.estimate'):

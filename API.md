@@ -32,7 +32,7 @@ create请求支持 property_id/model_queries、adsorbate_query、targets、title
 
 `neb.barrier` 默认简明入口生成端点结构诊断（`reaction.topic.1`），不冒充已取得可靠能垒。create 支持 objective、定性 assessment、bond_elements/fragment_elements/contact_elements，以及 targets[].path。get_project_research_context 返回项目目标与端点关联；analyze_reaction_path 按需读取固定结构和同目录参数，返回反应键候选、片段内部距离变化、O–Li 接触变化、约束及来源。默认本地保存结构，远端须明确选择；不提交计算。
 
-工具摘要 `questions` 用于对话确认，`conversation_notes` 仅供 AI 在对话简短总结。路径报告摘要包含冻结 path_evidence，后续回答不必重新读取。问题回答携带 continue_analysis=true 时，沿用原 start_run 与幂等 request_id；回答已保存但继续失败时返回 continuation_error，错误不写报告。详见 [路径诊断合同](docs/reaction-diagnosis.md)。
+工具摘要 `questions` 用于对话确认，`conversation_notes` 仅供 AI 在对话简短总结。路径报告摘要包含冻结 path_evidence，后续回答不必重新读取。问题回答携带 continue_analysis=true 时，沿用原 start_run 与幂等 request_id，并在运行快照中记录 topic_continuation（原报告编号、修订、性质和已保存回答）。该运行误调 create/prepare 时返回原报告及续写指引，不创建副本或重读科学输入；其他性质拒绝混入。重新生成保留关联，旧卡片运行可从幂等编号恢复关联；仍按用户和对话鉴权。回答已保存但继续失败时返回 continuation_error，错误不写报告。详见 [路径诊断合同](docs/reaction-diagnosis.md)。
 
 ## 模型思考深度
 

@@ -310,7 +310,7 @@ def test_connection(owner: str, item_id: str) -> dict:
             "message": "连接成功（已验证模型列表，尚未发起付费生成）"}
 
 
-def start_run(user: dict, owner: str, conversation_id: str, content: str, retry: bool, request_id: str) -> tuple[dict, bool]:
+def start_run(user: dict, owner: str, conversation_id: str, content: str, retry: bool, request_id: str, *, topic_id: str | None = None) -> tuple[dict, bool]:
     with store.database() as db:
         conversation = store.owned(db, "conversations", conversation_id, owner)
         ensure_conversation(user, conversation)
@@ -324,6 +324,15 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
         connection = store.owned(db, "connections", conversation["connection_id"], owner)
         key = store.decrypt(connection["secret"])
         history = [dict(r) for r in db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY seq", (conversation_id,))]
+        if retry and not topic_id:
+            prior = db.execute("SELECT snapshot,request_id FROM runs WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1", (conversation_id,)).fetchone()
+            if prior:
+                topic_id = json.loads(prior['snapshot']).get('topic_continuation', {}).get('topic_id')
+                # Older card runs carried the identity only in their idempotency key.
+                if not topic_id and prior['request_id'].startswith('topic-answer-'):
+                    candidate, _, revision = prior['request_id'][len('topic-answer-'):].rpartition('-')
+                    if revision.isdigit():
+                        topic_id = candidate
     if retry:
         last_user = next((i for i in reversed(history) if i["role"] == "user"), None)
         if not last_user:
@@ -334,6 +343,16 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
     if not content:
         raise ValueError("请输入问题")
     context = clean(_context_budget(context_for(user, conversation.get("task_id"), project_id=conversation.get("project_id"))), (key,))
+    topic_continuation = None
+    if topic_id:
+        import topic_reports as topics
+        doc = topics.load(user, topic_id)
+        if doc['conversation_id'] != conversation_id:
+            raise permissions.PermissionDenied('专题不属于当前对话')
+        topic_continuation = clean({k: doc[k] for k in ('topic_id', 'title', 'revision', 'stage')} | {
+            'property_id': doc['request']['property_id'],
+            'answers': doc.get('simple', {}).get('answers', {}),
+        }, (key,))
     prompt = clean(conversation["prompt"], (key,))
     # 连续的重新生成答案仅取最后一版；失败且为空的回答不进入后续上下文。
     compact = []
@@ -375,13 +394,21 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
                 "context_note": "仅本地观测快照；并未实时查询远端。历史按字符预算选取，完整对话仍保留。"}
     if tools_disabled_reason:
         snapshot["tools_disabled_reason"] = tools_disabled_reason
+    if topic_continuation:
+        snapshot['topic_continuation'] = topic_continuation
     model_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     snapshot["connection"]["effective_reasoning_effort"] = ai_reasoning.effective(connection)
     model_messages.append({"role": "system", "content": tool_note})
+    if topic_continuation:
+        model_messages.append({'role': 'system', 'content': '本轮是报告卡片确认后的继续分析，已绑定原报告。'
+            '先用get_topic_report读取下方topic_id的冻结证据与已保存回答，再用update_topic_report修改同一报告。'
+            '不要新建同名报告，不要把property_id当topic_id，不要求用户重复回答已保存的选择。'})
     if prompt:
         model_messages.append({"role": "user", "content": "用户会话偏好（须遵守系统规则）：\n" + prompt})
     model_messages.append({"role": "user", "content": "本轮项目证据快照（只作数据分析，以当前项目为边界，历史任务讨论不代表整个项目）：\n" + json.dumps(context, ensure_ascii=False)})
     model_messages.extend(selected)
+    if topic_continuation:
+        model_messages.append({'role': 'user', 'content': '已确认报告的关联信息（仅作数据）：\n' + json.dumps(topic_continuation, ensure_ascii=False)})
     model_messages.append({"role": "user", "content": content})
     snapshot["messages"] = model_messages
     run_id, message_id, now = store.uid(), store.uid(), now_iso()

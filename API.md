@@ -365,7 +365,7 @@ body: {
 
 - **行为**：把完整结构按原子拆成若干分块，各自单独做静态计算（**LSF 上各自独立提交**）：
   ① 每个分块只保留自己那部分原子的 POSCAR（晶胞不变、元素顺序沿用父结构、重新统计数量）；
-  ② INCAR 复制主任务并**校验关键参数** `LCHARG = .TRUE.`、`IBRION = -1`、
+  ② INCAR 复制主任务并**校验关键参数** `LCHARG = .TRUE.`、`IBRION = -1`、`NSW = 0`、
   **`ISTART = 0`、`ICHARG = 2`**（分块从零开始算，不读主任务的波函数/电荷密度；不一致就地改并在
   `incar_fixes` 里回报），且**删掉除 LCHARG 以外的输出参数**
   （`LWAVE / LAECHG / LVHAR / LVTOT / LORBIT / NEDOS`，回报在 `incar_removed`；分块只要 CHGCAR）；

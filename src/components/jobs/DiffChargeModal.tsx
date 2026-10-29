@@ -268,7 +268,7 @@ export default function DiffChargeModal({
                 共 {totalAtoms} 个原子 · 已分块 {assignedCount} · 未分块 <b>{remaining}</b>
                 <span className="preview-note" style={{ marginLeft: 12 }}>
                   各分块只保留自己那部分原子（晶胞不变）；KPOINTS / vasp.lsf 复制主任务，
-                  INCAR 校验 LCHARG=.TRUE. / IBRION=-1，POTCAR 由远端 pos2pot 生成
+                  INCAR 校验 LCHARG=.TRUE. / IBRION=-1 / NSW=0，POTCAR 由远端 pos2pot 生成
                 </span>
               </span>
             }

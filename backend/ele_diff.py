@@ -30,7 +30,7 @@
 - POSCAR 来自**主任务的 POSCAR**（电子结构主任务是静态计算，不用 CONTCAR）；
 - 分块由用户在作业管理里框选原子指定（复用 POSCAR 页的选择逻辑），各块不重叠且合起来 = 全部原子；
 - 每个分块只保留自己那部分原子（晶胞不变、元素顺序沿用父结构、重新统计元素数量）；
-- INCAR 复制主任务的 INCAR 并**校验关键参数**：`LCHARG = .TRUE.`、`IBRION = -1`、
+- INCAR 复制主任务的 INCAR 并**校验关键参数**：`LCHARG = .TRUE.`、`IBRION = -1`、`NSW = 0`、
   `ISTART = 0`、`ICHARG = 2`（不一致就地改并回报；MAGMOM 暂不改，留后续自动化）；
 - KPOINTS / vasp.lsf 直接复制主任务的；
 - POTCAR 用远端 `pos2pot`（递归）生成 —— 在主任务目录跑一次，主结构与各分块一起出。
@@ -60,8 +60,8 @@ from task_paths import (
 
 #: 差分电荷必须校验的 INCAR 关键参数（不一致就改，并在返回里说明）。
 #: 分块**从零开始算**（不读主任务的波函数/电荷密度）：ISTART=0 + ICHARG=2；
-#: 静态单点 IBRION=-1；同时要写 CHGCAR 供后续差分（LCHARG=.TRUE.）。
-REQUIRED_INCAR = {"LCHARG": ".TRUE.", "IBRION": -1, "ISTART": 0, "ICHARG": 2}
+#: 静态单点 IBRION=-1、NSW=0；同时要写 CHGCAR 供后续差分（LCHARG=.TRUE.）。
+REQUIRED_INCAR = {"LCHARG": ".TRUE.", "IBRION": -1, "NSW": 0, "ISTART": 0, "ICHARG": 2}
 #: 分块 INCAR **不保留**的输出类参数（用户 2026-10-13 口径：除了 LCHARG 以外不要其它输出参数）。
 #: 键名与作业管理 INCAR 页「输出与文件」分组一致；MAGMOM/ENCUT/ISMEAR 这些照常复制。
 DROP_INCAR_KEYS = ("LWAVE", "LAECHG", "LVHAR", "LVTOT", "LORBIT", "NEDOS")
@@ -343,7 +343,7 @@ def strip_incar_keys(
 def check_incar(incar_text: str, extra: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, str], List[str]]:
     """复制 INCAR 时：先**去掉分块不需要的输出参数**，再校验关键参数（不一致就地改）。
 
-    `LCHARG = .TRUE.`、`IBRION = -1`、`ISTART = 0`、`ICHARG = 2`。
+    `LCHARG = .TRUE.`、`IBRION = -1`、`NSW = 0`、`ISTART = 0`、`ICHARG = 2`。
     其它输出类参数（`LWAVE/LAECHG/LVHAR/LVTOT/LORBIT/NEDOS`）整行删除 —— 分块只需要 CHGCAR。
 
     返回 `(新文本, 改了什么, 警告)`。MAGMOM 不动（用户口径：先直接复制，后续再做自动化）。
@@ -771,7 +771,7 @@ def build_block_task(
         "input_source": {
             "kind": "diff_charge",
             "from_task_id": str(task.get("task_id") or ""),
-            "source": "主任务 POSCAR / INCAR（LCHARG=.TRUE. / IBRION=-1 已校验）",
+            "source": "主任务 POSCAR / INCAR（LCHARG=.TRUE. / IBRION=-1 / NSW=0 已校验）",
         },
         "ele_block": index,
         "ele_block_label": str(item.get("label") or f"分块{index}"),

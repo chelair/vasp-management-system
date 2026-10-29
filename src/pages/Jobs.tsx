@@ -270,13 +270,15 @@ export default function Jobs() {
       .then(([ps, tts]) => {
         setProjects(ps);
         setTaskTypes(tts);
-        const ws: Record<string, JobWorkspace> = {};
-        for (const p of ps) {
-          for (const t of p.tasks) {
-            ws[t.task_id] = makeWorkspace(t);
+        setWorkspaces((prev) => {
+          const ws: Record<string, JobWorkspace> = {};
+          for (const p of ps) {
+            for (const t of p.tasks) {
+              ws[t.task_id] = prev[t.task_id] ?? makeWorkspace(t);
+            }
           }
-        }
-        setWorkspaces(ws);
+          return ws;
+        });
         const queryTask = searchParams.get('task');
         const initialTask = queryTask
           ? ps
@@ -286,10 +288,18 @@ export default function Jobs() {
         if (initialTask) {
           const owner = ps.find((p) => p.tasks.some((t) => t.task_id === initialTask.task_id));
           setSelectedProjectId(owner?.id ?? ps[0]?.id ?? null);
+          const eleParent = initialTask.subtype === 'diff_charge'
+            ? owner?.tasks.find((t) => t.task_id === initialTask.parent_task_id && t.task_type === 'ele')
+            : undefined;
           // 组内任务：和"在树里点该任务"一个效果 —— NEB 打开组页面、自由能打开结构页面，
           // 否则左侧树定位不到（组内成员在树里不是一个独立节点，2026-10-13）
           const gtype = initialTask.group?.group_type;
-          if (gtype === 'neb' && owner) {
+          if (eleParent) {
+            setSelectedTaskId(eleParent.task_id);
+            setSelectedStructureKey(null);
+            setSelectedNebGroupKey(null);
+            setEleActiveTab(`block:${initialTask.task_id}`);
+          } else if (gtype === 'neb' && owner) {
             setNebActiveTab(
               initialTask.group?.group_role === 'final_opt'
                 ? 'fs'
@@ -307,6 +317,7 @@ export default function Jobs() {
             setSelectedStructureKey(`s:${initialTask.group?.group_id}:${label}`);
           } else {
             setSelectedTaskId(initialTask.task_id);
+            setEleActiveTab('main');
           }
         } else if (ps.length > 0) {
           setSelectedProjectId(ps[0].id);

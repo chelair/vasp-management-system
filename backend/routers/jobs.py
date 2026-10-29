@@ -704,7 +704,7 @@ def core_create_diff_charge(
 
     - 分块由前端框选原子给出：`blocks=[{label, atoms:[1,2,…]}, …]`（1 起，覆盖全部原子）；
     - POSCAR 来自主任务（静态计算，不用 CONTCAR），各分块只保留自己那部分原子；
-    - INCAR 复制主任务并校验 `LCHARG=.TRUE.` / `IBRION=-1`；KPOINTS / vasp.lsf 直接复制；
+    - INCAR 复制主任务并校验 `LCHARG=.TRUE.` / `IBRION=-1` / `NSW=0`；KPOINTS / vasp.lsf 直接复制；
     - POTCAR 用远端 `pos2pot`（递归）在主任务目录生成；
     - 每个分块登记一个 `ele_diff` 子任务（`parent_task_id` = 主任务，归档/重开跟随主任务，
       不单独出现在清单/统计里）。

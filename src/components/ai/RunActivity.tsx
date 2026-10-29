@@ -3,6 +3,7 @@ import { CheckOutlined, CloseCircleOutlined, CodeOutlined, LoadingOutlined, Paus
 import { isActiveRun } from '../../api/aiChat';
 import type { AIRun } from '../../api/aiChat';
 import ThinkingText from './ThinkingText';
+import { activityTimeline } from './activityTimeline';
 import AnimatedCollapse from '../common/AnimatedCollapse';
 
 export const TOOL_NAMES: Record<string, string> = {
@@ -44,40 +45,49 @@ export function runProgress(run: AIRun, hasAnswer: boolean) {
   return run.reasoning ? '正在思考' : '正在分析';
 }
 
-/** 仅展示已有运行快照。思考是服务商汇总文本，不伪装为与工具交错的时间线。 */
+/** 新运行按后端记录的思考偏移穿插工具；旧记录保留分开展示。 */
 function RunActivity({ run, hasAnswer }: { run: AIRun; hasAnswer: boolean }) {
   const active = isActiveRun(run);
   const [expanded, setExpanded] = useState<boolean>();
-  const open = expanded ?? active;
+  const open = expanded ?? false;
   const events = run.tool_events ?? [];
   const failed = events.filter((event) => event.status === 'failed').length;
   const elapsed = duration(run);
+  const timeline = activityTimeline(run);
+  const renderTool = (event: AIRun['tool_events'][number]) => {
+    // 已停止的运行可能保留未收尾的工具状态，不继续显示旋转图标。
+    const status = !active && isPending(event.status) ? 'interrupted' : event.status;
+    const target = event.arguments?.query ?? event.arguments?.path ?? event.arguments?.task_name ?? event.arguments?.title;
+    return <DetailOnOpen className={`ai-tool-call ai-tool-call--${status}`} key={event.id} summary={<>
+        <span className={`ai-state-icon ai-state-icon--${status}`}><StateIcon status={status} /></span>
+        <span className="ai-tool-call-title">{TOOL_NAMES[event.name] ?? event.name}</span>
+        {target != null && <span className="ai-tool-target" title={typeof target === 'string' ? target : undefined}>{typeof target === 'string' ? target : JSON.stringify(target)}</span>}
+        <span className="ai-tool-status">{STATUS[status] ?? status}</span><RightOutlined className="ai-tool-chevron" />
+      </>}>
+      <ToolDetail event={event} status={status} />
+    </DetailOnOpen>;
+
+  };
+
   return <div className={`ai-activity${active ? ' ai-activity--active' : ''}`}>
     <button className="ai-activity-summary" aria-expanded={open} onClick={() => setExpanded(!open)}>
       <span className={`ai-state-icon ai-state-icon--${run.status}`}><StateIcon status={run.status} /></span>
-      <span>{runProgress(run, hasAnswer)}</span>
-      {events.length > 0 && <span className="ai-activity-count">{events.length} 次工具调用</span>}
-      {failed > 0 && <span className="ai-activity-issues">{failed} 次调用失败</span>}
-      {elapsed && <span className="ai-activity-duration">{elapsed}</span>}
+      <span className="ai-activity-title">{active ? runProgress(run, hasAnswer) : run.status === 'completed' ? (elapsed ? '思考过程 · ' + elapsed : '思考过程') : STATUS[run.status] ?? run.status}</span>
+      {events.length > 0 && <span className="ai-activity-count">{events.length} 项操作</span>}
+      {failed > 0 && <span className="ai-activity-issues">{failed} 项失败</span>}
+      {elapsed && run.status !== 'completed' && <span className="ai-activity-duration">{elapsed}</span>}
       <RightOutlined className={`ai-activity-chevron collapse-chevron${open ? ' collapse-chevron--open' : ''}`} />
     </button>
     <AnimatedCollapse open={open}><div className="ai-activity-body">
-      {run.reasoning && <DetailOnOpen className="ai-thought" summary={<>模型思考 <span>{active ? run.reasoning.trim().split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 90) : '查看过程'}</span></>}>
+      {timeline ? timeline.map(part => part.kind === 'tool' ? renderTool(part.event) :
+        <div className="ai-thought-segment" key={part.id}>
+          <ThinkingText text={part.text} active={active && part.id === 'thought-tail'} />
+        </div>) : <>
+      {run.reasoning && <DetailOnOpen className="ai-thought" summary={<>分析思路 <span>展开查看</span></>}>
         <ThinkingText text={run.reasoning} active={active} />
       </DetailOnOpen>}
-      {events.map((event) => {
-        // 已停止的运行可能保留未收尾的工具状态，不继续显示旋转图标。
-        const status = !active && isPending(event.status) ? 'interrupted' : event.status;
-        const target = event.arguments?.path ?? event.arguments?.query ?? event.arguments?.task_name ?? event.arguments?.task_id;
-        return <DetailOnOpen className="ai-tool-call" key={event.id} summary={<>
-            <span className={`ai-state-icon ai-state-icon--${status}`}><StateIcon status={status} /></span>
-            <span className="ai-tool-call-title">{TOOL_NAMES[event.name] ?? event.name}</span>
-            {target != null && <span className="ai-tool-target">{typeof target === 'string' ? target : JSON.stringify(target)}</span>}
-            <span className="ai-tool-status">{STATUS[status] ?? status}</span><RightOutlined className="ai-tool-chevron" />
-          </>}>
-          <ToolDetail event={event} status={status} />
-        </DetailOnOpen>;
-      })}
+      {events.map(renderTool)}
+      </>}
       {!run.reasoning && !events.length && <p className="ai-muted">等待模型返回思考、工具调用或回答。</p>}
     </div></AnimatedCollapse>
   </div>;

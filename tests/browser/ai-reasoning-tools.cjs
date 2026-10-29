@@ -112,12 +112,25 @@ const connection = { id: 'model', name: 'DeepSeek', model: 'deepseek-flash', bas
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.getByRole('button', { name: '停止生成', exact: true }).waitFor();
     await page.getByRole('status').filter({ hasText: '分析原子环境' }).waitFor();
+    const firstThought='### 先核对结构🧪\n\n需要查看**原子环境**。\n';
+    const nextThought='\n### 再比较电场\n\n- 核对 EFIELD\n- 比较偶极设置\n';
+    live.reasoning=firstThought+nextThought;
+    live.tool_events=[{...live.tool_events[0],status:'completed',reasoning_offset:Array.from(firstThought).length},
+      {...TOOL,id:'fieldTool',name:'compare_structures',status:'running',result:{},reasoning_offset:Array.from(live.reasoning).length}];
+    for(const stream of streams)stream.write('data: '+JSON.stringify({run:live,message:detail.messages.at(-1)})+'\n\n');
+    const liveActivity=page.locator('.ai-activity').last();
+    await liveActivity.locator('.ai-activity-summary').click();
+    await liveActivity.locator('.ai-thought-segment').nth(1).waitFor();
+    assert.deepEqual(await liveActivity.locator('.ai-activity-body > *').evaluateAll(nodes=>nodes.map(n=>n.classList.contains('ai-tool-call')?'tool':'thought')),['thought','tool','thought','tool']);
+    assert.equal(await liveActivity.locator('.ai-thought-segment :is(h1,h2,h3,h4,h5,h6)').count(),2);
+    assert.equal(await liveActivity.locator('.ai-thought-segment strong').first().innerText(),'原子环境');
+    await page.screenshot({path:'/tmp/vasp-ai-activity-interleaved.png'});
     assert.equal(requests.filter(r => r.url.endsWith('/messages')).length, 1, 'one send creates exactly one run');
     await page.getByRole('textbox', { name: '输入 AI 对话消息' }).fill('保留下一条草稿');
     await page.getByRole('button', { name: '停止生成', exact: true }).click();
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
     assert.equal(await page.getByRole('textbox', { name: '输入 AI 对话消息' }).inputValue(), '保留下一条草稿');
-    await page.locator('.ai-activity-summary').last().click();
+    if(await page.locator('.ai-activity-summary').last().getAttribute('aria-expanded')==='false')await page.locator('.ai-activity-summary').last().click();
     assert.equal(await page.locator('.ai-tool-call').last().locator('summary').innerText().then(t => t.includes('已中断')), true, 'unfinished tools stop spinning after cancellation');
     await page.getByRole('textbox', { name: '搜索对话' }).fill('下一步');
     assert.equal(await page.locator('.ai-session').count(), 1);

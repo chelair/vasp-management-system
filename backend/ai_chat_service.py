@@ -734,7 +734,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                 except ValueError:
                     arguments = {}
                 store.append_tool_event(run_id, clean({"id": call["id"], "name": call["function"]["name"],
-                    "arguments": arguments, "result": rejection, "status": "failed", "at": now_iso()}, (key,)))
+                    "arguments": arguments, "result": rejection, "status": "failed", "reasoning_offset": len(reasoning_total + reasoning_text), "at": now_iso()}, (key,)))
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(rejection, ensure_ascii=False)})
         final_payload = completion_payload(connection, messages + [{"role": "system", "content":
             "进一步工具调用/资源请求已被拒绝，原因：" + reason + "。请直接给出最终回答："
@@ -892,6 +892,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             if len({c["id"] for c in calls.values()}) != len(calls) or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", c["id"]) for c in calls.values()):
                 raise GenerationLimit("工具调用标识不合法，该批请求未执行")
             ordered = [calls[i] for i in sorted(calls)]
+            store.update_answer(run_id, clean(text, (key,)), usage=usage, reasoning=reasoning_total)
             messages.append({"role": "assistant", "content": clean(round_text, (key,)) or None, "tool_calls": ordered,
                              **({"reasoning_content":round_reasoning} if keep_reasoning and round_reasoning else {})})
             limit_reason = ""
@@ -909,7 +910,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                     if name == "write_workspace" and isinstance(arguments, dict) and isinstance(arguments.get("content"), str):
                         arguments["content"] = clean(arguments["content"], (key,))
                     store.append_tool_event(run_id, clean({"id": call["id"], "name": name, "arguments": arguments,
-                        "result": {}, "status": "running", "at": now_iso()}, (key,)))
+                        "result": {}, "status": "running", "reasoning_offset": len(reasoning_total), "at": now_iso()}, (key,)))
                     if limit_reason:
                         raise ValueError(limit_reason)
                     result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"] if project else None), name, arguments, user=user, run_id=run_id)
@@ -935,7 +936,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                 elif not denied:
                     tool_bytes += len(encoded)
                 store.append_tool_event(run_id, clean({"id": call["id"], "name": name, "arguments": arguments,
-                    "result": result, "status": status, "at": now_iso()}, (key,)))
+                    "result": result, "status": status, "reasoning_offset": len(reasoning_total), "at": now_iso()}, (key,)))
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": encoded})
             if limit_reason:
                 raise GenerationLimit(limit_reason)

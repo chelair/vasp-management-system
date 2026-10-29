@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import ChatMarkdown from './ChatMarkdown';
 
 /**
  * 思考链路的打字机效果：只平滑显示后端已收到的文本，内容与运行状态仍以后端为准。
  * 与 `StreamingAnswer` 同一套追赶算法（大批量到达时加速，避免拖太久），
- * 但按纯文本渲染（思考不是 Markdown）。
+ * 复用正文的安全排版，流式到达的段落、列表和代码保持可读。
  */
 export default function ThinkingText({
   text,
@@ -69,7 +70,7 @@ export default function ThinkingText({
 
   return (
     <div className="ai-reasoning__text">
-      {shown}
+      <ChatMarkdown text={shown} />
       {shown.length < text.length && <span className="ai-typing-cursor" aria-hidden="true" />}
     </div>
   );

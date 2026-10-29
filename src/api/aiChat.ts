@@ -29,7 +29,7 @@ export interface AIRun {
   error: string; created_at: string; finished_at: string | null;
   usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   snapshot?: Record<string, unknown>;
-  tool_events: { id: string; name: string; arguments: Record<string, unknown>; result: Record<string, unknown>; status: string; at: string }[];
+  tool_events: { id: string; name: string; arguments: Record<string, unknown>; result: Record<string, unknown>; status: string; at: string; reasoning_offset?: number }[];
   /** 可选展示：模型思考链路（服务商返回时才有，后端截断到 6 万字符） */
   reasoning?: string;
 }

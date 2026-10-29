@@ -627,6 +627,27 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(store.name_conversation('alice',conversation['id'],'不能覆盖我的标题'),{'title':title,'renamed':False})
         self.assertTrue(store.needs_title({'title':'alice · 2'},'alice'))
 
+    def test_tool_events_preserve_their_positions_between_reasoning_rounds(self):
+        conversation=self.conversation(self.connection(),'task-alice')
+        reasoning=['先查看结构🧪。','再比较外电场。','现在可以归纳。']
+        payloads=[]
+        def model(_connection,_key,_path,payload):
+            index=len(payloads);payloads.append(payload)
+            delta={'reasoning_content':reasoning[index]}
+            if index<2:
+                delta['tool_calls']=[{'index':0,'id':'step'+str(index),'function':{
+                    'name':'find_project_tasks','arguments':'{"query":"model"}'}}]
+            else:delta['content']='已经完成本轮分析。'
+            return model_stream(delta)
+        with patch.object(service,'_open',side_effect=model),patch.object(workspace,'dispatch',return_value={'matches':[]}):
+            _,run=self.send(conversation)
+            result=self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        self.assertEqual(result['reasoning'],''.join(reasoning))
+        self.assertEqual([e['reasoning_offset'] for e in result['tool_events']],[len(reasoning[0]),len(reasoning[0]+reasoning[1])])
+        _,saved=self.api('/conversations/'+conversation['id'])
+        self.assertEqual(saved['runs'][0]['tool_events'],result['tool_events'])
+
     def test_workspace_model_tools_stream_audit_and_draft(self):
         connection = self.connection("workspace-model")
         conversation = self.conversation(connection, "task-alice")

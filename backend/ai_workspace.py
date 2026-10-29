@@ -274,9 +274,14 @@ from structure_tools import TOOLS as STRUCTURE_TOOLS
 
 from project_setup_tools import TOOLS as PROJECT_TOOLS, NAMES as PROJECT_TOOL_NAMES, GENERAL_NAMES
 
-GENERAL_TOOLS = [t for t in PROJECT_TOOLS if t["function"]["name"] in GENERAL_NAMES]
+CHAT_TOOLS = [{'type':'function','function':{'name':'set_conversation_title',
+    'description':'为仍使用默认名称的当前对话起一个简短、具体的中文标题，概括用户真正讨论的主题，通常8至20字；如“PMS电荷转移与电场对比”。不用项目名加序号，不照抄整段提问，不在正文说明起名过程。已有自定义标题保持原样。仅命名当前对话。',
+    'parameters':{'type':'object','properties':{'title':{'type':'string','minLength':1,'maxLength':120}},
+                  'required':['title'],'additionalProperties':False}}}]
 
-TOOLS = PROJECT_TOOLS + TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE_TOOLS + [
+GENERAL_TOOLS = CHAT_TOOLS + [t for t in PROJECT_TOOLS if t["function"]["name"] in GENERAL_NAMES]
+
+TOOLS = CHAT_TOOLS + PROJECT_TOOLS + TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE_TOOLS + [
     {'type':'function','function':{'name':'search_work_experience',
         'description':'按当前问题检索本人历史操作经验，最多5条，优先当前项目；仅包含本人目前可访问项目的经验。类似故障/参数处理或用户习惯时按需调用，中文关键词即可。跨项目先核对适用条件，候选不代表规律或计算已收敛，最新用户指令优先；不提供执行授权。',
         'parameters':{'type':'object','properties':{'query':{'type':'string','minLength':1,'maxLength':200}},'required':['query'],'additionalProperties':False}}},
@@ -305,6 +310,11 @@ TOOLS = PROJECT_TOOLS + TOPIC_TOOLS + PROPERTY_TOOLS + MANAGED_TOOLS + STRUCTURE
 def dispatch(project: dict, conversation: dict, context: dict, name: str, arguments: dict, *, user=None, run_id='') -> dict:
     if name not in {tool["function"]["name"] for tool in TOOLS} or not isinstance(arguments, dict):
         raise ValueError("不支持的工作区工具")
+    if name == 'set_conversation_title':
+        title = arguments.get('title')
+        if set(arguments) != {'title'} or not isinstance(title,str) or not 1 <= len(title.strip()) <= 120:
+            raise ValueError('请使用简短的对话标题')
+        return store.name_conversation(str(user['user_id']),conversation['id'],title.strip(),(project or {}).get('name',''))
     if name in PROJECT_TOOL_NAMES:
         from project_setup_tools import dispatch as setup_dispatch
         return setup_dispatch(project, conversation, user, name, arguments, run_id)

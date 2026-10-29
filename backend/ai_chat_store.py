@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import threading
@@ -207,6 +208,22 @@ def create_conversation(owner: str, title: str, task_id: str | None, connection_
             VALUES (?,?,?,?,?,?,1,?,?,?,?)""",
                    (item_id, owner, task_id, title, connection_id, "", now, now, project_id, 1))
         return owned(db, "conversations", item_id, owner)
+
+
+def needs_title(conversation: dict, project_name: str = '') -> bool:
+    title = conversation['title']
+    return title in ('新会话', '新对话', '新建对话') or any(
+        re.fullmatch(re.escape(name) + r'\s*·\s*\d+', title)
+        for name in ('通用对话', project_name) if name)
+
+
+def name_conversation(owner: str, item_id: str, title: str, project_name: str = '') -> dict:
+    with database() as db:
+        conversation = owned(db, 'conversations', item_id, owner)
+        if not needs_title(conversation, project_name):
+            return {'title': conversation['title'], 'renamed': False}
+        db.execute('UPDATE conversations SET title=?,updated_at=? WHERE id=?', (title, now_iso(), item_id))
+    return {'title': title, 'renamed': True}
 
 
 def public_run(row, *, snapshot: bool = False) -> dict:

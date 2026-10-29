@@ -123,8 +123,12 @@ export default function AI() {
         await watchAIRun(active.id, controller.signal, ({ run, message: answer }) => {
           if (selectedRef.current !== conversationId) return;
           setError('');
+          const title = run.tool_events.find(event => event.name === 'set_conversation_title' && event.status === 'completed')?.result.title;
+          if (typeof title === 'string') setConversations(old => old.some(item => item.id === conversationId && item.title !== title)
+            ? old.map(item => item.id === conversationId ? { ...item, title } : item) : old);
           setDetail((old) => old?.id === conversationId ? {
             ...old,
+            title: typeof title === 'string' ? title : old.title,
             messages: old.messages.some((m) => m.id === answer.id) ? old.messages.map((m) => m.id === answer.id ? answer : m) : [...old.messages, answer],
             runs: [run, ...old.runs.filter((r) => r.id !== run.id)],
           } : old);
@@ -158,7 +162,6 @@ export default function AI() {
     { label: '通用对话 · 不附加项目', value: 'general' },
     ...targets.filter((project) => !project.closed).map((project) => ({ label: `${project.name} · ${project.tasks.length} 个任务`, value: project.id })),
   ], [targets]);
-  const scopeName = targets.find((p) => p.id === scope)?.name ?? '通用对话';
   const visibleConversations = useMemo(() => {
     const openProjects = new Set(targets.filter((project) => !project.closed).map((project) => project.id));
     return conversations.filter((conversation) => !conversation.project_id || openProjects.has(conversation.project_id))
@@ -190,8 +193,7 @@ export default function AI() {
     }
     setBusy(true);
     try {
-      const count = conversations.filter((conversation) => (conversation.project_id ?? 'general') === scope).length;
-      const result = await createAIConversation({ title: `${scopeName} · ${count + 1}`, project_id: scope === 'general' ? undefined : scope });
+      const result = await createAIConversation({ title: '新对话', project_id: scope === 'general' ? undefined : scope });
       await reloadList(); if (scopeRef.current === requestedScope) choose(result.id);
     } catch (e) { void message.error(errorText(e)); }
     finally { setBusy(false); }
@@ -240,6 +242,7 @@ export default function AI() {
         <div className="ai-session-list">{conversationGroups.map((group) => <details className="ai-session-group" open key={group.id} aria-label={`${group.name}的对话`}>
           <summary className="ai-session-group-title"><FolderOpenOutlined /><strong>{group.name}</strong><span>{group.conversations.length}</span></summary>
           {group.conversations.map((conversation) => <button key={conversation.id}
+          title={conversation.title}
           aria-current={selected === conversation.id ? 'page' : undefined} className={`ai-session${selected === conversation.id ? ' selected' : ''}`} onClick={() => choose(conversation.id)}>
           <strong>{conversation.title}</strong><span>{conversation.updated_at.replace('T', ' ').slice(0, 16)}</span>
         </button>)}</details>)}</div>

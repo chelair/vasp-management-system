@@ -6,6 +6,7 @@ import ThinkingText from './ThinkingText';
 import AnimatedCollapse from '../common/AnimatedCollapse';
 
 export const TOOL_NAMES: Record<string, string> = {
+  set_conversation_title: '概括对话主题',
   get_project_setup_options: '查询项目创建选项', create_project_from_request: '建立项目与计算任务',
   create_calculation_contents: '登记计算任务', update_project_details: '更新项目资料',
   get_project_requirements: '读取计算内容与预期', save_project_requirements: '关联计算内容与预期',

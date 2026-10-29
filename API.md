@@ -46,6 +46,10 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 `GET /api/ai/chat/reasoning-capabilities?base_url=...&model=...&reasoning_api=auto` 只读本地定义，不请求模型。公开连接附能力和生效档位，verified仅指内置文档匹配，不是账号实测。DeepSeek工具轮思考只在运行内存延续，不进SSE/历史；不静默降深度或重试付费请求。设置和发送键旁快捷档位已接前端。
 
+## 对话主题标题
+
+项目/通用对话共用工具 `set_conversation_title({title})`：仅命名本人当前仍为默认名称的对话，沿用标题1至120字符合同，返回 `{title,renamed}`。模型按主题概括短标题，已命名对话返回原题和renamed=false。默认包括“新对话/新会话”及旧“当前项目名/通用对话·序号”。沿用原tool_events/SSE和会话title，不新增命名接口或持久化状态；侧栏/顶部即时同步，人工改名入口保留。
+
 ## 项目托管 M0（计划与预览）
 
 | 方法与路径 | 用途 |

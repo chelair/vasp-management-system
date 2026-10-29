@@ -402,6 +402,8 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
     model_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     snapshot["connection"]["effective_reasoning_effort"] = ai_reasoning.effective(connection)
     model_messages.append({"role": "system", "content": tool_note})
+    if enabled and store.needs_title(conversation, (context.get('project') or {}).get('name','')):
+        model_messages.append({'role':'system','content':'当前对话仍为默认名称。请根据本轮提问与已有对话，优先调用set_conversation_title生成一个简短具体的主题标题，再继续处理用户问题；可以和其他工具一起调用，不在回答中解释起名过程。'})
     if topic_continuation:
         model_messages.append({'role': 'system', 'content': '本轮是报告卡片确认后的继续分析，已绑定原报告。'
             '先用get_topic_report读取下方topic_id的冻结证据与已保存回答，再用update_topic_report修改同一报告。'

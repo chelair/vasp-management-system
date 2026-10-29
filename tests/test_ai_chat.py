@@ -605,6 +605,28 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(len(detail['runs'][0]['tool_events']),3)
         self.assertEqual(self.api(f"/conversations/{conversation['id']}",user='bob')[0],403)
 
+    def test_default_conversation_gets_topic_title_in_normal_tool_run_and_preserves_custom_title(self):
+        connection=self.connection()
+        _,conversation=self.api('/conversations','POST',{'title':'新对话','connection_id':connection['id']})
+        title='PMS电荷转移与电场对比'
+        payloads=[]
+        def model(_connection,_key,_path,payload):
+            payloads.append(payload)
+            if len(payloads)==1:
+                self.assertIn('set_conversation_title',{t['function']['name'] for t in payload['tools']})
+                return model_stream({'tool_calls':[{'index':0,'id':'name-chat','function':{
+                    'name':'set_conversation_title','arguments':json.dumps({'title':title})}}]})
+            return model_stream({'content':'下面继续分析电荷与外场条件。'})
+        with patch.object(service,'_open',side_effect=model):
+            _,run=self.send(conversation)
+            result=self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        _,detail=self.api('/conversations/'+conversation['id'])
+        self.assertEqual(detail['title'],title)
+        self.assertEqual(result['tool_events'][0]['result'],{'title':title,'renamed':True})
+        self.assertEqual(store.name_conversation('alice',conversation['id'],'不能覆盖我的标题'),{'title':title,'renamed':False})
+        self.assertTrue(store.needs_title({'title':'alice · 2'},'alice'))
+
     def test_workspace_model_tools_stream_audit_and_draft(self):
         connection = self.connection("workspace-model")
         conversation = self.conversation(connection, "task-alice")

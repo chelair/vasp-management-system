@@ -5,10 +5,21 @@ import html
 import re
 import json
 
+ASSESSMENT_FIELDS = ('background', 'problem', 'impact', 'decision', 'explanation', 'conclusion', 'recommendation')
+ASSESSMENT_SCHEMA = {'type': 'object', 'properties': {
+    key: {'type': 'string', 'maxLength': 1800, 'description': description}
+    for key, description in zip(ASSESSMENT_FIELDS, (
+        '一句话说明研究背景，不铺陈项目清单。', '一句话指出最重要的问题或判断。',
+        '一句话说明对结论、交付或下一步的影响。', '确需用户选择时用一句话说明；没有则省略。',
+        '摘要之后解释为什么，只写支持重点的依据，避免复述摘要和逐项罗列。',
+        '兼容旧报告的详细结论；新报告使用背景、问题、影响和解释。', '兼容旧报告的处理建议。'))},
+    'additionalProperties': False}
+BRIEF_CSS = '.report-brief{background:#edf5fa!important;border-left:4px solid #2c6c94!important}.report-brief h2{margin-bottom:14px}.report-brief p{display:grid;grid-template-columns:5.5em 1fr;gap:12px;margin:10px 0}.report-brief b{color:#285675}.report-brief span{white-space:pre-wrap}.report-why{margin:28px 0 12px}@media print{.report-brief{print-color-adjust:exact}}'
+
 
 def validate_assessment(value):
-    if not isinstance(value, dict) or set(value)-{'conclusion','recommendation'} or any(not isinstance(v,str) or len(v)>1800 for v in value.values()):
-        raise ValueError('分析结论只接受简短的定性结论和建议')
+    if not isinstance(value, dict) or set(value)-set(ASSESSMENT_FIELDS) or any(not isinstance(v,str) or len(v)>1800 for v in value.values()):
+        raise ValueError('报告文字只接受背景、问题、影响、待决策项和解释；兼容旧结论与建议')
     if any(re.search(r'\d+(?:\.\d+)?\s*(?:eV|Å|埃|电子伏)|<[^>]+>',v) for v in value.values()):
         raise ValueError('数值由Python证据块提供；结论只写定性解释，不接受自填数值或HTML')
     return value
@@ -18,11 +29,23 @@ def assessment(doc):
     return {**doc['data'].get('assessment', {}), **doc.get('assessment_edits', {})}
 
 
-def assessment_html(doc):
+def assessment_html(doc, defaults=None):
     value = assessment(doc)
-    return ''.join('<section class="card"><h2>'+title+'</h2><p style="white-space:pre-wrap">'+
-        html.escape(value[key])+'</p></section>' for key, title in
-        (('conclusion', '关键结论'), ('recommendation', '建议先做什么')) if value.get(key))
+    objective = doc['request'].get('objective', '')
+    fallback = {'background': objective, 'problem': doc.get('original_question', ''),
+                'impact': value.get('conclusion', ''), **(defaults or {})}
+    labels = (('background', '背景'), ('problem', '问题'), ('impact', '影响'), ('decision', '待决策项'))
+    # Old narrative stays intact below; only its first complete sentence is reused in the brief.
+    brief = {key: value[key].strip() if key in value else re.split(r'(?<=[。！？])|\n', fallback.get(key, '').strip())[0]
+             for key, _ in labels}
+    rows = ''.join('<p><b>'+label+'</b><span>'+html.escape(brief[key])+'</span></p>' for key, label in labels if brief[key])
+    opening = '<section class="card report-brief"><h2>报告重点</h2>'+rows+'</section>' if rows else ''
+    details = [('判断依据', value['explanation'])] if 'explanation' in value else [
+        ('研究目标', objective if objective != brief['background'] else ''),
+        ('关键结论', value.get('conclusion', '')), ('建议先做什么', value.get('recommendation', ''))]
+    body = ''.join('<section class="card"><h3>'+label+'</h3><p style="white-space:pre-wrap">'+html.escape(text)+
+                   '</p></section>' for label, text in details if text)
+    return opening+'<h2 class="report-why">为什么</h2>'+body
 
 
 class _ReportText(HTMLParser):

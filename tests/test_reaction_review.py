@@ -72,8 +72,9 @@ class ReactionReviewTests(unittest.TestCase):
         self.assertEqual(doc['stage'],'waiting')
         self.assertEqual({q['id'] for q in doc['simple']['questions']},{'scope','bond.path'})
         output=topic_simple.render_html(doc)
-        for text in ('关键结论','问题','影响','解决办法','距离','O–Li','<sub>a</sub>'):
+        for text in ('报告重点','背景','问题','影响','为什么','解决办法','距离','O–Li','<sub>a</sub>'):
             self.assertIn(text,output)
+        self.assertLess(output.index('报告重点'),output.index('为什么'))
         for text in ('INTERNAL_ERROR_UNKNOWN_DO_NOT_RENDER','数据缺口','补充说明','还缺什么','使用这个结果前'):
             self.assertNotIn(text,output)
         self.assertTrue(topics.summary(doc)['conversation_notes'])

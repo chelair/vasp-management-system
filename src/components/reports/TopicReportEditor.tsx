@@ -2,12 +2,12 @@ import {useEffect,useState} from 'react';
 import {Alert,App,Button,Card,Drawer,Empty,Input,Space,Spin,Typography} from 'antd';
 import {ArrowDownOutlined,ArrowUpOutlined,DeleteOutlined,EditOutlined} from '@ant-design/icons';
 import {exportTopic,fetchTopic,previewTopic,rebuildTopic,updateTopicContent} from '../../api/topicReports';
-import type {TopicReport} from '../../api/topicReports';
+import type {TopicReport,TopicAssessment} from '../../api/topicReports';
 import {ReportQuestions} from '../ai/TopicReportLinks';
 
 export default function TopicReportEditor({topicId,onClose,onSaved}: {topicId:string;connectionId?:string|null;onClose:()=>void;onSaved?:()=>void}) {
   const {message,modal}=App.useApp();const [id,setId]=useState(topicId);const [doc,setDoc]=useState<TopicReport>();const [html,setHtml]=useState('');const [busy,setBusy]=useState(false);const [error,setError]=useState('');
-  const [assessment,setAssessment]=useState<{conclusion?:string;recommendation?:string}>({});
+  const [assessment,setAssessment]=useState<TopicAssessment>({});
   const [objective,setObjective]=useState('');
   const [editing,setEditing]=useState(false);const [dirty,setDirty]=useState(false);const [title,setTitle]=useState('');const [notes,setNotes]=useState('');const [order,setOrder]=useState<string[]>([]);const [deleted,setDeleted]=useState<string[]>([]);const [showWarnings]=useState(false);
   const accept=async(value:TopicReport)=>{setDoc(value);setTitle(value.title);setNotes(value.simple?.notes||'');setObjective(value.request.objective||'');setAssessment({...value.data.assessment,...value.assessment_edits});setOrder(value.blocks.map(b=>b.block_id));setDeleted(value.deleted_block_ids);setDirty(false);if(value.simple)setHtml((await previewTopic(value.topic_id)).html);};
@@ -28,13 +28,23 @@ export default function TopicReportEditor({topicId,onClose,onSaved}: {topicId:st
       </Space>
       {!!doc.simple.questions.length&&<ReportQuestions item={{topic_id:id,revision:doc.revision,questions:doc.simple.questions}} onDone={()=>void run(async()=>{await accept(await fetchTopic(id));onSaved?.();})}/>}
       {editing&&<Card size="small" style={{marginBottom:16}}>
-        <Typography.Paragraph type="secondary">可修改分析重点、结论和建议，或调整图表顺序。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">先用各一句话突出背景、问题和影响；有待决策项再补一句，随后解释为什么。</Typography.Paragraph>
         <Input aria-label="报告标题" value={title} maxLength={200} onChange={e=>{setTitle(e.target.value);setDirty(true);}} style={{marginBottom:12}}/>
         <Input.TextArea aria-label="分析重点" placeholder="这份报告要回答什么问题" value={objective} maxLength={1000} autoSize={{minRows:2,maxRows:3}} onChange={e=>{setObjective(e.target.value);setDirty(true);}} style={{marginBottom:12}}/>
-        <>
+        {([
+          ['background','背景','一句话说明为什么开展这项研究'],
+          ['problem','问题','一句话指出最重要的问题或判断'],
+          ['impact','影响','一句话说明对结论、交付或下一步的影响'],
+          ['decision','待决策项','确需选择时再填，用一句话说明'],
+          ['explanation','为什么','解释支撑上述重点的依据，不重复摘要'],
+        ] as const).map(([key,label,placeholder])=><div key={key} style={{marginBottom:12}}>
+          <Typography.Text strong>{label}</Typography.Text>
+          <Input.TextArea aria-label={label} placeholder={placeholder} value={assessment[key]||''} maxLength={1800} autoSize={{minRows:key==='explanation'?3:1,maxRows:key==='explanation'?6:3}} onChange={e=>{setAssessment(old=>({...old,[key]:e.target.value}));setDirty(true);}}/>
+        </div>)}
+        {!(['background','problem','impact','decision'].some(key=>assessment[key as keyof TopicAssessment]))&&<>
           <Input.TextArea aria-label="关键结论" placeholder="用一句话说明最重要的判断" value={assessment.conclusion||''} maxLength={1800} autoSize={{minRows:2,maxRows:4}} onChange={e=>{setAssessment(old=>({...old,conclusion:e.target.value}));setDirty(true);}} style={{marginBottom:12}}/>
           <Input.TextArea aria-label="建议先做什么" placeholder="给客户可以执行的下一步" value={assessment.recommendation||''} maxLength={1800} autoSize={{minRows:2,maxRows:4}} onChange={e=>{setAssessment(old=>({...old,recommendation:e.target.value}));setDirty(true);}}/>
-        </>
+        </>}
         <Typography.Paragraph type="secondary" style={{marginTop:14}}>必要缺项在对话中确认，其他警告由 AI 在对话中总结；报告只展示结论和证据。</Typography.Paragraph>
         {order.map((bid,index)=>{const b=doc.blocks.find(b=>b.block_id===bid)!;const removed=deleted.includes(bid);return <div key={bid} style={{display:'flex',gap:8,alignItems:'center',marginTop:12,opacity:removed?.5:1}}><span style={{flex:1}}>{b.title}</span><Button aria-label={`上移-${b.title}`} size="small" icon={<ArrowUpOutlined/>} disabled={!index} onClick={()=>move(index,-1)}/><Button aria-label={`下移-${b.title}`} size="small" icon={<ArrowDownOutlined/>} disabled={index===order.length-1} onClick={()=>move(index,1)}/><Button aria-label={`${removed?'恢复':'删除'}-${b.title}`} size="small" icon={<DeleteOutlined/>} onClick={()=>{setDeleted(removed?deleted.filter(x=>x!==bid):[...deleted,bid]);setDirty(true);}}>{removed?'恢复':'删除'}</Button></div>;})}
         <Button type="primary" disabled={!dirty||busy} loading={busy} onClick={()=>void save()} style={{marginTop:16}}>保存修改</Button>

@@ -76,6 +76,24 @@ class ContentTests(unittest.TestCase):
         self.assertNotIn('后来的手工编辑',text)
         self.assertEqual(len(text),page['content']['total_chars'])
 
+    def test_report_brief_precedes_explanation_and_optional_decision_preserves_data(self):
+        conv,doc=self.adsorption();frozen=json.loads(json.dumps(doc['data']))
+        summary={'background':'比较现有体系的吸附行为。','problem':'需要确认吸附能是否支持预期。',
+                 'impact':'参考态决定比较结果的含义。','explanation':'下面的能量表保留计算依据。'}
+        result=tools.dispatch(self.user,conv,'','update_topic_report',{'topic_id':doc['topic_id'],
+            'expected_revision':doc['revision'],'assessment':summary})
+        text=result['content']['text']
+        self.assertLess(text.index(summary['background']),text.index(summary['problem']))
+        self.assertLess(text.index(summary['problem']),text.index(summary['impact']))
+        self.assertLess(text.index(summary['impact']),text.index('为什么'))
+        self.assertLess(text.index('为什么'),text.index(summary['explanation']))
+        self.assertNotIn('待决策项',text)
+        self.assertIn('-2.000000',text)
+        changed=tools.dispatch(self.user,conv,'','update_topic_report',{'topic_id':doc['topic_id'],
+            'expected_revision':result['revision'],'assessment':{'decision':'是否按相同参考态继续比较？'}})
+        self.assertLess(changed['content']['text'].index('待决策项'),changed['content']['text'].index('为什么'))
+        self.assertEqual(topics.load(self.user,doc['topic_id'])['data'],frozen)
+
     def test_dos_and_registered_energy_recipe_share_the_content_round_trip(self):
         import r3_fixtures
         from r2_science_fixtures import seed_science

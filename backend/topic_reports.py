@@ -462,7 +462,7 @@ def summary(doc):
             'blocks':[{'block_id':b['block_id'],'title':b['title']} for b in doc['blocks']],
             'results':[{k:r[k] for k in ('label','value','units')} for r in data['science'].get('results',[])],
             'conversation_notes':list(dict.fromkeys(notes))[:6],
-            'note':'报告正文只展示已确认的结论、问题影响、解决办法和证据。必要缺项用对话选择卡确认；非必要警告/读取错误在对话中简短总结，不要写进报告或补充说明。已自动保存，不必重复计划/保存。'}
+            'note':'报告先以背景、问题、影响各一句话突出重点，有待决策项才补一句，随后解释为什么并展示依据。必要缺项用对话选择卡确认；非必要警告/读取错误在对话中简短总结，不要写进报告或补充说明。已自动保存，不必重复计划/保存。'}
         if doc['simple'].get('version') == 'reaction.topic.1':
             result.update(research_context=data['research_context'],answers=doc['simple']['answers'],
                 path_evidence=[{k:item[k] for k in ('path_name','path_task_id','sources','candidate_reaction_bonds','interface_contacts','framework_shape','constraints','parameters','deformation_energy','energy_profile')} for item in data['reaction_reviews']])

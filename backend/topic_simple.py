@@ -13,7 +13,7 @@ from dates import now_iso
 from property_science import digest
 from storage import load_db
 from task_paths import is_auxiliary_task
-from topic_content import validate_assessment, assessment_html
+from topic_content import validate_assessment, assessment_html, BRIEF_CSS
 
 TYPES={'ele':'单点/电子结构','opt':'结构优化','neb':'NEB'}
 
@@ -318,6 +318,4 @@ def render_html(doc,*,auto_print=False,stale=False):
     css="""*{box-sizing:border-box}body{margin:0;background:#f7f8fa;color:#202838;font:15px/1.65 system-ui,'Microsoft Yahei',sans-serif}main{max-width:1040px;margin:auto;padding:32px 24px}h1{font-size:25px;margin:0 0 10px}h2{font-size:18px;margin:0 0 12px}.subtitle,small,details{color:#667085}.card,.result,.missing,.warnings{padding:24px;margin:20px 0;border-radius:16px;background:white;border:1px solid #e8ebef;break-inside:avoid}.result{background:#eef5ff;border-color:#c7dcff}.value{font-size:42px;font-weight:700;letter-spacing:-1px;color:#245cc5}.value span{font-size:20px}.equation{font-family:monospace;overflow-wrap:anywhere}.metrics{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:16px}.metrics strong{font-size:20px}.warnings{background:#fff8e8;border-color:#f3dfad}.missing{background:#fff1ee}.missing span{color:#667085}details{font-size:12px;margin-top:14px}pre{white-space:pre-wrap;overflow-wrap:anywhere}img{max-width:100%;max-height:400px}li{margin:8px 0}.rb-image{display:none}.report-widget{min-height:180px}@media print{body{background:white}main{padding:0}.rb-image{display:block}.report-widget{min-height:0}.report-static-taken-over{display:block!important}.card:has(figure) .report-widget{display:none!important}.card{page-break-inside:avoid}}"""
     status='研究结果' if science.get('results') else '已确认的数据与结构'
     stale_note=''
-    objective=doc['request'].get('objective','')
-    goal='<p>'+esc(objective)+'</p>' if objective else ''
-    return f"<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; base-uri 'none'\"><title>{esc(doc['title'])}</title><style>{css}</style></head><body><main><h1>{esc(doc['title'])}</h1><div class='subtitle'>{esc(status)} · {esc(doc['updated_at'])}</div>{goal}{assessment_html(doc)}{stale_note}{''.join(parts)}</main>{runtime}{script}</body></html>"
+    return f"<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; base-uri 'none'\"><title>{esc(doc['title'])}</title><style>{css}{BRIEF_CSS}</style></head><body><main><h1>{esc(doc['title'])}</h1><div class='subtitle'>{esc(status)} · {esc(doc['updated_at'])}</div>{assessment_html(doc)}{stale_note}{''.join(parts)}</main>{runtime}{script}</body></html>"

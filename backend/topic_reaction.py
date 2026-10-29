@@ -16,7 +16,7 @@ import properties
 import reaction_review as review
 import topic_reports as topics
 from storage import load_db
-from topic_content import validate_assessment
+from topic_content import validate_assessment, assessment_html, BRIEF_CSS
 
 VERSION = 'reaction.topic.1'
 esc = lambda value: html.escape(str(value), quote=True)
@@ -230,18 +230,14 @@ def render_html(doc, *, auto_print=False, stale=False):
                 pairs+='<p class="caption">当前采样最高点：'+esc(label)+'。'+('已采样到高于两端的内部点。' if profile.get('interior_peak_observed') else '尚未采样到高于两端的内部峰值。')+'</p>'
         sources = '<details class="sources"><summary>查看数据来源</summary>'+''.join('<p>'+esc(name)+' · '+esc(src.get('task_name'))+' · '+esc(src.get('remote_path') or src.get('local_path'))+'<br>SHA256 '+esc(src['sha256'])+'</p>' for name,src in item['sources'].items())+'</details>'
         parts.append('<section><h2>'+esc(item['path_name'])+'</h2>'+body+'<div class="views">'+''.join(views)+'</div>'+pairs+sources+'</section>')
-    assessment = {**data['assessment'], **doc.get('assessment_edits',{})}
-    default_conclusion = '先处理端点的额外形变与接触变化，再决定如何继续 NEB。' if any(_findings(r,simple['answers']) for r in data['reaction_reviews']) else '先围绕目标反应确认端点，再评估路径能垒。'
-    if simple['answers'].get('scope')=='full_reaction':default_conclusion='按完整反应过程解释结构重排，并先统一端点约束与计算条件。'
-    conclusion = assessment.get('conclusion') or default_conclusion
-    objective = doc['request'].get('objective') or data['research_context']['calculation_goal']
-    scope = '尽量隔离目标断键，保持两端非反应骨架和吸附方式可比。' if simple['answers'].get('scope')=='isolate_bond' else '按选定的研究过程核对两端结构与路径。'
-    body = '<header><div class="eyebrow">结构与反应路径诊断</div><h1>'+esc(doc['title'])+'</h1></header><aside class="conclusion"><span>关键结论</span><strong style="white-space:pre-wrap">'+esc(conclusion)+'</strong></aside><div class="goal"><b>研究目标</b><p>'+esc(objective).replace('\n','<br>')+'</p><p>'+esc(scope)+'</p></div>'+''.join(parts)
-    if assessment.get('recommendation'):
-        body += '<section><h2>建议先做什么</h2><p style="white-space:pre-wrap">'+esc(assessment['recommendation'])+'</p></section>'
+    findings = [finding for item in data['reaction_reviews'] for finding in _findings(item,simple['answers'])]
+    defaults = {'background':doc['request'].get('objective') or data['research_context']['calculation_goal'],
+                'problem':findings[0]['problem'] if findings else '需要核对两端是否描述选定的目标反应。',
+                'impact':findings[0]['impact'] if findings else '端点对应关系决定路径能垒能否用于目标结论。'}
+    body = '<header><div class="eyebrow">结构与反应路径诊断</div><h1>'+esc(doc['title'])+'</h1></header>'+assessment_html(doc,defaults)+''.join(parts)
     body += '<details class="method"><summary>能垒的定义</summary><p>E<sub>a</sub> = max(E<sub>路径映像</sub>) − E<sub>IS</sub></p><p>先确认反应对应关系，再用一致条件下的完整路径识别目标过程的峰值。</p></details>'
     composition = {'blocks':[b for b in doc['blocks'] if b['block_id'] not in deleted], 'evidence':data['library']['evidence']}
     runtime = topics.r2._interactive(composition)
     css = """*{box-sizing:border-box}body{margin:0;background:#f4f6f8;color:#253347;font:15px/1.75 system-ui,'Microsoft Yahei',sans-serif}main{max-width:1080px;margin:auto;padding:36px 28px}h1{font-size:28px;line-height:1.4;margin:8px 0 24px}h2{font-size:21px;margin:0 0 22px}h3{font-size:17px;margin:0 0 10px}h4{margin-bottom:10px}.eyebrow,.caption,.sources,.method{font-size:12px;color:#68788c}.conclusion{padding:24px 28px;border-left:4px solid #2c6c94;border-radius:0 12px 12px 0;background:#e9f2f7;margin:24px 0}.conclusion span{display:block;font-size:12px;color:#526f84;margin-bottom:8px}.conclusion strong{font-size:22px;line-height:1.5}.goal{padding:8px 4px 18px}.goal p{margin:5px 0 10px}section{background:white;border:1px solid #e1e7ed;border-radius:16px;padding:28px;margin:22px 0}.finding{border-bottom:1px solid #edf0f4;padding:0 0 16px;margin-bottom:22px}.finding p{margin:7px 0}.finding b{display:inline-block;color:#526b82;margin-right:14px;min-width:4em}.views{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:24px 0}figure{margin:0;min-width:0}figcaption{font-weight:600;margin:0 0 10px}svg{width:100%;height:auto;background:#f8fafc;border-radius:10px}.static-structure{display:block}.report-widget:not(:empty)+.static-structure{display:none}.report-widget:empty{display:none}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #e7edf2}th{color:#5f7187;background:#f7f9fb}details{margin-top:18px}details p{overflow-wrap:anywhere}.method{padding:8px 4px}summary{cursor:pointer}.report-widget{min-height:0}sub{font-size:.75em}@media(max-width:700px){main{padding:20px 14px}.views{grid-template-columns:1fr}section{padding:20px 16px}.conclusion{padding:20px}h1{font-size:23px}.conclusion strong{font-size:19px}}@media print{body{background:white}main{padding:0}.report-widget{display:none!important}.static-structure{display:block!important}.views{grid-template-columns:1fr 1fr}section{break-inside:avoid}.sources,.method{display:none}.conclusion{print-color-adjust:exact}}"""
     printer = '<script>window.addEventListener("load",()=>setTimeout(()=>window.print(),1500))</script>' if auto_print else ''
-    return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; worker-src blob:; base-uri \'none\'"><title>'+esc(doc['title'])+'</title><style>'+css+'</style></head><body><main>'+body+'</main>'+runtime+printer+'</body></html>'
+    return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; worker-src blob:; base-uri \'none\'"><title>'+esc(doc['title'])+'</title><style>'+css+BRIEF_CSS+'</style></head><body><main>'+body+'</main>'+runtime+printer+'</body></html>'

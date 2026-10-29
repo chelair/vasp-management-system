@@ -34,6 +34,16 @@ t.doCleanups()
   let html=await fs.readFile(prefix+'.html','utf8');
   const confirmedHtml=await fs.readFile(prefix+'-confirmed.html','utf8');
   const scientificData=JSON.stringify(doc.data),writes=[];
+  const render=async doc=>{const output=path.join(temp,'edited.html');execFileSync('.venv/bin/python',['-c',`
+import sys,json,os
+from pathlib import Path
+from unittest.mock import patch
+os.environ['VASP_WEB_DATA_DIR']=sys.argv[1]
+sys.path.insert(0,'backend')
+import topic_simple,report_interactive
+with patch.object(report_interactive,'RUNTIME_PATH',Path(sys.argv[2])):
+ Path(sys.argv[3]).write_text(topic_simple.render_html(json.load(sys.stdin)))
+`,temp,runtime,output],{input:JSON.stringify(doc),encoding:'utf8'});return fs.readFile(output,'utf8');};
   const bundle=await build({stdin:{contents:`import {createRoot} from 'react-dom/client';import {App} from 'antd';import TopicReportEditor from './src/components/reports/TopicReportEditor';import './src/styles/global.css';createRoot(document.getElementById('root')).render(<App><TopicReportEditor topicId={window.TOPIC_ID} onClose={()=>{}}/></App>);`,loader:'tsx',resolveDir:path.resolve('.')},bundle:true,write:false,outfile:'app.js',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'}});
   const files=Object.fromEntries(bundle.outputFiles.map(f=>[f.path.endsWith('.css')?'/app.css':'/app.js',f.text]));
   server=http.createServer(async(req,res)=>{
@@ -47,7 +57,7 @@ t.doCleanups()
     else if(pathname.endsWith('/questions')){doc=structuredClone(confirmed);html=confirmedHtml;result=doc;}
     else if(pathname.endsWith('/content')){
      const body=JSON.parse(raw);doc={...doc,title:body.title,revision:doc.revision+1,assessment_edits:body.assessment};
-     html=html.replace(/<h1>[^<]*<\/h1>/,'<h1>'+body.title+'</h1>');result=doc;
+     html=await render(doc);result=doc;
     }else if(pathname.endsWith('/export.html')){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(html);return;}
     res.setHeader('Content-Type','application/json');res.end(JSON.stringify({success:true,data:result}));return;
    }
@@ -61,7 +71,8 @@ t.doCleanups()
   const base='http://127.0.0.1:'+server.address().port;
   await page.goto(base);await page.locator('iframe').waitFor();
   const frame=page.frameLocator('iframe[title="科研报告预览"]');
-  await frame.locator('.conclusion').waitFor();
+  await frame.locator('.report-brief').waitFor();
+  assert.equal(await frame.locator('.report-brief p').count(),3);
   assert.equal(await frame.locator('.warnings,.missing').count(),0);
   assert.equal(await frame.getByText('补充说明',{exact:true}).count(),0);
   const groups=page.locator('.ant-radio-group');
@@ -73,12 +84,17 @@ t.doCleanups()
   assert.equal(await page.evaluate(()=>window.topicEvents[0].conversationId),doc.conversation_id);
   await page.getByRole('button',{name:'编辑报告',exact:true}).click();
   await page.getByRole('textbox',{name:'报告标题',exact:true}).fill('断键路径：问题、影响和下一步');
+  const brief={背景:'研究目标断键在两种模型上的差异。',问题:'两端还包含目标之外的结构变化。',影响:'现有路径难以单独解释目标断键。',待决策项:'是否优先隔离目标断键？',为什么:'先核对端点对照，再结合下面的几何与能量证据说明原因。'};
+  for(const [name,text] of Object.entries(brief))await page.getByRole('textbox',{name,exact:true}).fill(text);
   assert.equal(await page.getByRole('switch',{name:'显示风险提示'}).count(),0);
   await page.getByRole('button',{name:'保存修改',exact:true}).click();
   await frame.locator('h1').getByText('断键路径：问题、影响和下一步',{exact:true}).waitFor();
+  assert.equal(await frame.locator('.report-brief p').count(),4);
+  for(const text of Object.values(brief))assert.ok((await frame.locator('body').innerText()).includes(text));
   assert.equal(JSON.stringify(doc.data),scientificData,'editing and answers preserve scientific evidence');
   const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'下载 HTML',exact:true}).click()]);
   const exported=await fs.readFile(await download.path(),'utf8');
+  assert(exported.indexOf(brief.背景)<exported.indexOf('class="report-why"'));
   assert(exported.includes('<sub>a</sub>'));assert(!exported.includes('<section class="warnings">'));
   await page.screenshot({path:'/tmp/vasp-reaction-editor.png'});
   await page.goto(base+'/standalone');await page.locator('h1').waitFor();

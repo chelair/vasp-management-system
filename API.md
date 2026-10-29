@@ -25,10 +25,12 @@ ProjectIn新增可选original_request（最多16000字符），既有description
 | --- | --- |
 | POST `/api/reports/topic/quick` | conversation_id、question、request，可选project_ids；创建独立简明报告 |
 | POST `/api/reports/topic/{id}/questions` | expected_revision、answers，可选布尔 continue_analysis（默认 false）；选择/自定义回答保存后，可继续原 AI 对话 |
-| PUT `/api/reports/topic/{id}/content` | expected_revision、title/objective/notes/blocks/deleted_block_ids/show_warnings；各类简明报告均可传 assessment={conclusion,recommendation}，显示为结论/建议；不修改科学结果 |
+| PUT `/api/reports/topic/{id}/content` | expected_revision、title/objective/notes/blocks/deleted_block_ids/show_warnings；各类简明报告均可传 assessment={background,problem,impact,decision?,explanation}；兼容conclusion/recommendation，不修改科学结果 |
 | POST `/api/reports/topic/{id}/rebuild` | 生成新独立报告，旧报告保留 |
 
 create请求支持 property_id/model_queries、adsorbate_query、targets、title/notes/show_warnings 等。targets的角色可绑定 task_id/project_id/observation_id，也可用 energy_ev 或 energy_value+energy_unit，并附 label/source_quote/note。用户给定的参考能量不要求对应任务，服务端记录原话/归属，转换单位并由Python计算；AI解释或假设不能冒充验证记录。
+
+create/update共用assessment文字合同：background/problem/impact分别用一句话说明背景、核心问题和影响，decision仅有真实待决策项时填写，explanation在后面的“为什么”解释依据。预览、读回和HTML/PDF共用顺序，空decision不占栏；编辑器支持单独修改各项。沿用每字段1800字符与定性文字校验，不新增句数或额外审批门槛。
 
 报告工具共用读写：`list_topic_reports(query?,offset?)` 返回当前对话已有报告；`get_topic_report(topic_id,revision?,offset?,limit?,block_id?)` 默认读取实际预览/导出的正文和有效编辑，传block_id时读取对应冻结图表数据（如DOS曲线）。分页默认8000、最多12000字符，返回next_offset，后续页可指定同一revision。创建/修改工具同时返回正文节选、正文指纹和修订；notes不显示在正文。原摘要字段保留，新增content、editable_content、science、evidence_index；图表模式返回evidence。所有读取沿用原用户/项目/对话权限。
 

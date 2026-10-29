@@ -192,7 +192,7 @@ def check(target, reference, evidence, pbc, same_task=False):
                 'convergence_verdict':'NOT_DETERMINED',
                 'guidance':['结构主线判断之后，再核对真实电子/离子收敛、力和能量趋势、固定约束、优化算法与步长；正常结束/达到NSW不等于收敛。',
                     '按目标精度检查截断能、k点、EDIFF/EDIFFG；不凭单份INCAR建议盲目加大POTIM或放宽收敛。',
-                    '磁性、DFT+U、SOC、电荷态若改变目标电子态或结构稳定性，应提升到物理模型层面处理；MAGMOM初值不等于最终磁矩。'],
+                    '外电场/偶极、磁性、DFT+U、SOC、电荷态若改变目标电子态或结构稳定性，应提升到物理模型层面处理；MAGMOM初值不等于最终磁矩。'],
                 'evidence_gaps':['未读取KPOINTS或完整收敛曲线，未判定最终磁态；需要时用原参数/巡检工具补证。']},
             'recommended_focus':findings or ['结合预期结构和项目目标复核主要骨架/界面；当前筛查不足以断言结构合理或未变性。'],
             'pbc':list(pbc), 'companion_evidence':evidence}

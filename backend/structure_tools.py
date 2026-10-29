@@ -1,6 +1,8 @@
 """AI structure tools: project-authorized, bounded read-only geometry evidence."""
 import math
+from pathlib import Path
 
+from ai_inspections import parameter_diff
 import permissions
 from storage import load_db
 import structure_geometry as geometry
@@ -47,7 +49,7 @@ TOOLS = [
         {'structure':SELECTOR,'pbc':PBC,'atom_indices':{'type':'array','items':INDEX,'minItems':1,'maxItems':6},
          'elements':ELEMENTS,'neighbor_elements':ELEMENTS,'cutoff_angstrom':{'type':'number','minimum':.1,'maximum':6,'default':3}},['structure']),
     tool('compare_structures',
-        '由Python比较两份结构的组成/晶格、原子位移与指定原子对距离变化。优化前后通常选同任务POSCAR与CONTCAR，逐一使用已读取的selector指纹。同任务同映像同元素顺序仅按原编号对应，须说明未验证同元素重排。跨任务不猜原子映射，只返回组成/晶胞；变胞不输出含混逐原子位移。pairs可指定最多8对1起原子编号。',
+        '比较两份结构及对应目录的计算参数。发现跨任务结构近似、总能接近或怀疑任务误绑时主动调用，parameter_comparison直接列出EFIELD/电场、磁性、U、NELECT等INCAR差异与K点变化，保留来源；不能凭几何相似认定同一物理模型。参数缺失不阻断几何结果。优化前后通常选同任务POSCAR与CONTCAR，沿用selector指纹。同任务同映像同元素顺序仅按原编号对应，未验证同元素重排；跨任务不猜原子映射，变胞不输出含混逐原子位移。pairs可指定最多8对1起原子编号。',
         {'reference':SELECTOR,'target':SELECTOR,'pbc':PBC,
          'pairs':{'type':'array','items':{'type':'array','items':INDEX,'minItems':2,'maxItems':2},'maxItems':8}},['reference','target']),
 ]
@@ -133,7 +135,28 @@ def dispatch(project,user,name,arguments):
         (before,source_a),(after,source_b) = sources
         result = geometry.compare(geometry.parse(before),geometry.parse(after),
             same_task=source_a['task_id']==source_b['task_id'] and source_a['image']==source_b['image'], pbc=pbc,pairs=pairs)
-        return {**result,'reference_source':source_a,'target_source':source_b}
+        inputs, provenance, cache = [], [], {}
+        for source in (source_a,source_b):
+            folder = str(Path(source.get('remote_path') or source['local_path']).parent)
+            key = (source['kind'],folder)
+            if key not in cache:
+                try:
+                    cache[key] = load_check_evidence(current,source,'INCAR','KPOINTS')
+                except (OSError,ValueError) as exc:
+                    cache[key] = {'files':{},'error':str(exc)}
+            evidence = cache[key]
+            files = evidence['files']
+            inputs.append({'incar':files.get('INCAR',{}).get('settings'),
+                           'kpoints':files.get('KPOINTS',{}).get('grid')})
+            provenance.append({'directory':folder,'kind':source['kind'],'error':evidence.get('error'),
+                               'files':{name:{k:v for k,v in row.items() if k in ('status','source','reason')}
+                                        for name,row in files.items() if name in ('INCAR','KPOINTS')}})
+        diff = parameter_diff(inputs[1],inputs[0])
+        comparison = {k:diff[k] for k in ('incar_available','incar_changes','kpoints_available','kpoints_change')}
+        comparison.update(reference_source=provenance[0],target_source=provenance[1],
+            note='比较结构所在目录的输入参数；未设置的键保留为空，不冒充已验证默认值。'
+                 '本地是镜像，同目录输入不证明该次输出实际采用，必要时结合已应用记录/OUTCAR核对。')
+        return {**result,'reference_source':source_a,'target_source':source_b,'parameter_comparison':comparison}
     if name == 'get_structure_summary':
         axis = arguments.get('axis','c')
         offset = arguments.get('atom_offset',0)

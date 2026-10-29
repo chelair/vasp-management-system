@@ -210,6 +210,31 @@ class StructureToolTests(unittest.TestCase):
         self.assertEqual(result[1]['net_charge_difference_from_first_e'],0)
         self.assertEqual(result[0]['source']['element_source'],'charge-header')
 
+    def test_similar_cross_task_structures_report_field_and_parameter_changes(self):
+        other = self.root/'projects/P/opt/field/files'
+        other.mkdir(parents=True)
+        (other/'CONTCAR').write_text(self.after)
+        self.project['tasks'].append({'task_id':'field','task_type':'opt','dir_path':'P/opt/field'})
+        (self.files/'INCAR').write_text('ISPIN=2; IBRION=-1; NSW=0; LDAUTYPE=1\n')
+        (other/'INCAR').write_text('ISPIN=2; IBRION=2; NSW=500; LDAUTYPE=1\nEFIELD=0.05\n')
+        (self.files/'KPOINTS').write_text('auto\n0\nGamma\n2 3 1\n0 0 0\n')
+        (other/'KPOINTS').write_text('auto\n0\nGamma\n3 3 1\n0 0 0\n')
+        args = {'reference':{'task_id':'t'},'target':{'task_id':'field'}}
+        result = self.call('compare_structures',args)
+        self.assertEqual(result['reference_composition'],result['target_composition'])
+        diff = result['parameter_comparison']
+        changes = {r['key']:(r['before'],r['after']) for r in diff['incar_changes']}
+        self.assertEqual(changes['EFIELD'],(None,'0.05'))
+        self.assertEqual(changes['IBRION'],('-1','2'))
+        self.assertNotIn('ISPIN',changes)
+        self.assertEqual(diff['kpoints_change']['after']['mesh'],[3,3,1])
+        self.assertEqual(set(diff['target_source']['files']),{'INCAR','KPOINTS'})
+        (other/'INCAR').unlink()
+        partial = self.call('compare_structures',args)
+        self.assertEqual(partial['reference_composition'],partial['target_composition'])
+        self.assertFalse(partial['parameter_comparison']['incar_available'])
+        self.assertEqual(partial['parameter_comparison']['incar_changes'],[])
+
     def test_bader_missing_zval_partial_results_and_project_scope(self):
         folder = self.files.parent/'bader'
         folder.mkdir()
@@ -313,7 +338,7 @@ class StructureToolTests(unittest.TestCase):
         self.assertEqual(server,'fixture')
         args = shlex.split(command)
         self.assertEqual(args[:2],['python3','-c'])
-        self.assertEqual(args[2],sources._REMOTE_READ)
+        self.assertIn(args[2],(sources._REMOTE_READ,Path(probe.__file__).read_text()))
         response = subprocess.run(args,capture_output=True,text=True,timeout=timeout)
         return {'exit_code':response.returncode,'stdout':response.stdout,'stderr':response.stderr}
 
@@ -326,7 +351,7 @@ class StructureToolTests(unittest.TestCase):
             remote.reset_mock()
             reference = {'task_id':'t','source':'remote','directory':'CURRENT','file':'POSCAR'}
             self.call('compare_structures',{'reference':reference,'target':value['source']['selector']})
-            self.assertEqual(remote.call_count,1,'two same-task structures must share one fixed remote call')
+            self.assertEqual(remote.call_count,2,'one batched structure read and one shared directory parameter read')
             (self.remote/'con2/CONTCAR').unlink()
             with self.assertRaisesRegex(ValueError,'不自动回退'):
                 self.call('get_structure_summary',{'structure':{'task_id':'t','source':'remote'}})

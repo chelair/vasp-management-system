@@ -57,14 +57,14 @@ def titles(text, pattern):
     return [value[:160] for value in re.findall(pattern, text, re.M)[:64]]
 
 
-def probe(folder, filename, expected_sha256):
+def probe(folder, filename, expected_sha256, *companions):
     fd = open_directory(folder)
     try:
         _, original = read_file(fd, filename)
         if original['sha256'] != expected_sha256:
             raise ValueError('structure changed before companion read')
         result = {}
-        for name in ('INCAR', 'KPOINTS', 'POTCAR', 'OUTCAR'):
+        for name in companions or ('INCAR', 'KPOINTS', 'POTCAR', 'OUTCAR'):
             try:
                 text, meta = read_file(fd, name)
                 row = {'status':'AVAILABLE', 'source':meta}
@@ -72,7 +72,8 @@ def probe(folder, filename, expected_sha256):
                     # Return only numeric/control settings, never arbitrary input text.
                     keys = {'ENCUT','EDIFF','EDIFFG','IBRION','ISIF','NSW','POTIM','NELM','ISPIN',
                             'MAGMOM','LDAU','LDAUL','LDAUU','LDAUJ','LSORBIT','PREC','ALGO','LREAL',
-                            'GGA','IVDW','LDIPOL','IDIPOL','DIPOL','ISMEAR','SIGMA','NELECT','NUPDOWN'}
+                            'GGA','IVDW','LDIPOL','IDIPOL','DIPOL','EFIELD','EFIELD_PEAD',
+                            'LDAUTYPE','ISMEAR','SIGMA','NELECT','NUPDOWN'}
                     values = {}
                     for line in text.splitlines():
                         for item in re.split(';', re.split('[!#]', line)[0]):

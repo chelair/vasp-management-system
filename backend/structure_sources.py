@@ -188,16 +188,16 @@ def load_many(project, selections):
     return result
 
 
-def load_check_evidence(project, source):
+def load_check_evidence(project, source, *companions):
     """Only called with a trusted source returned by load_many, never model paths."""
     import structure_check_evidence as probe
     task_for(project, source['task_id'])
     if source['kind'] == 'local':
-        evidence = probe.probe(str(Path(source['local_path']).parent), source['file'], source['sha256'])
+        evidence = probe.probe(str(Path(source['local_path']).parent), source['file'], source['sha256'], *companions)
     else:
         import ssh
         script = Path(probe.__file__).read_text()
-        args = [str(Path(source['remote_path']).parent), source['file'], source['sha256']]
+        args = [str(Path(source['remote_path']).parent), source['file'], source['sha256'], *companions]
         command = 'python3 -c ' + shlex.quote(script) + ' ' + ' '.join(shlex.quote(x) for x in args)
         response = ssh.run_remote(project['server'], command, timeout=30)
         if response.get('exit_code') != 0:

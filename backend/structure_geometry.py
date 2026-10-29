@@ -126,6 +126,10 @@ def layers(parsed, axis, gap, pbc):
 def summary(parsed, *, atom_offset=0, axis='c', layer_gap_angstrom=.75, pbc=(True,True,True)):
     n = len(parsed['atoms'])
     page = [atom_record(parsed,i) for i in range(atom_offset,min(n,atom_offset+24))]
+    if atom_offset:
+        return {'schema_version':VERSION,'atom_count':n,'atoms':page,'atom_offset':atom_offset,
+                'next_atom_offset':atom_offset+len(page) if atom_offset+len(page)<n else None,
+                'note':'后续页只返回原子坐标；组成、晶胞和分层见同一结构指纹的首页。'}
     return {'schema_version':VERSION,'atom_count':n,'composition':parsed['composition'],
             'cell':cell_summary(parsed['lattice']),
             'constraints':{'partially_or_fully_fixed_atoms':sum(any(f) for f in parsed['fixed_axes']),

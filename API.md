@@ -463,6 +463,8 @@ GET    /api/jobs/tasks/{task_id}/bader           # 解析结果（ACF 原子表 
 DELETE /api/jobs/tasks/{task_id}/bader           # 清除本地 ACF.dat / meta（远端不动）
 ```
 
+AI工具 `get_bader_charges({targets:[{task_id,atom_indices?,reference_charge?}]})` 只读当前项目的已有本地分析。返回 `results[]`：选中原子的组成、bader_electrons、neutral_valence_electrons、net_charge_e、紧凑 atoms/columns、ZVAL及分析来源；未指定编号时返回全体系。reference_charge为明确参考片段净电荷，electron_gain_from_reference_e=reference_charge−net_charge_e，未给参考不冒充电荷转移量。同组成结果附相对首项的 net_charge_difference_from_first_e 和 bader_electrons_difference_from_first_e。缺ZVAL仅缺净电荷，单项缺文件/无效编号返回该项error，其余结果保留；不提交计算。模型工具说明见[AI工作台](docs/ai-workspace.md)。
+
 - **状态返回**：`status`（`running|done|failed|idle`）、`stage` + `stage_label`
   （`checking` 校验 / `summing` chgsum / `bader` 分析 / `downloading` 回传 / `parsing` 解析 / `done`）、
   `elapsed_seconds`、`error`、`local`（`{has_acf, acf_path, acf_bytes, acf_mtime}`）、

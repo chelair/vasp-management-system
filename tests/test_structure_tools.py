@@ -178,6 +178,9 @@ class StructureToolTests(unittest.TestCase):
         self.assertEqual(value['source']['recorded_structure_directory'],'con8')
         self.assertFalse(value['source']['remote_verified'])
         pinned = value['source']['selector']
+        page = self.call('get_structure_summary',{'structure':pinned,'atom_offset':1})
+        self.assertEqual(page['atoms'][0]['index'],2)
+        self.assertNotIn('layering',page)
         env = self.call('get_structure_environment',{'structure':pinned,'atom_indices':[1],'cutoff_angstrom':3})
         self.assertEqual(env['environments'][0]['neighbors'][0]['distance_angstrom'],2)
         compare = self.call('compare_structures',{'reference':{'task_id':'t','file':'POSCAR'},'target':pinned,'pairs':[[1,2]]})
@@ -186,6 +189,42 @@ class StructureToolTests(unittest.TestCase):
         (self.files/'CONTCAR').write_text(self.before)
         with self.assertRaisesRegex(ValueError,'已变化'):
             self.call('get_structure_environment',{'structure':pinned,'atom_indices':[1]})
+
+    def test_bader_fragment_uses_analysis_order_and_charged_reference(self):
+        folder = self.files.parent/'bader'
+        folder.mkdir()
+        # The analysis order differs from today's POSCAR; numbering belongs to ACF.
+        (self.files/'POSCAR').write_text(self.before.replace('\nH\n2\n','\nH S\n1 1\n'))
+        (folder/'meta.json').write_text(json.dumps({'charge_header':{'elements':['S','H'],'counts':[1,1]},
+                                                  'zval':{'S':6,'H':1},'run_id':'frozen-analysis'}))
+        (folder/'ACF.dat').write_text('# X Y Z CHARGE MIN DIST ATOMIC VOL\n---\n'
+            '1 0 0 0 2.4 0.4 6\n2 1 0 0 0.3 0.1 2\n---\nNUMBER OF ELECTRONS: 2.7\n')
+        with patch('storage.load_db',return_value={'projects':[self.project]}):
+            result = self.call('get_bader_charges',{'targets':[
+                {'task_id':'t','atom_indices':[1],'reference_charge':0},
+                {'task_id':'t','atom_indices':[1],'reference_charge':-1}]})['results']
+        self.assertEqual(result[0]['composition'],{'S':1})
+        self.assertEqual(result[0]['net_charge_e'],3.6)
+        self.assertEqual(result[0]['electron_gain_from_reference_e'],-3.6)
+        self.assertEqual(result[1]['electron_gain_from_reference_e'],-4.6)
+        self.assertEqual(result[1]['net_charge_difference_from_first_e'],0)
+        self.assertEqual(result[0]['source']['element_source'],'charge-header')
+
+    def test_bader_missing_zval_partial_results_and_project_scope(self):
+        folder = self.files.parent/'bader'
+        folder.mkdir()
+        (folder/'ACF.dat').write_text('# X Y Z CHARGE MIN DIST\n---\n'
+            '1 0 0 0 0.8 0.1\n2 1 0 0 1.2 0.1\n---\nNUMBER OF ELECTRONS: 2\n')
+        with patch('storage.load_db',return_value={'projects':[self.project]}):
+            result = self.call('get_bader_charges',{'targets':[{'task_id':'t'},
+                {'task_id':'t','atom_indices':[3]}]})['results']
+            self.assertEqual(result[0]['bader_electrons'],2)
+            self.assertIsNone(result[0]['net_charge_e'])
+            self.assertIn('error',result[1])
+            with self.assertRaises(permissions.PermissionDenied):
+                self.call('get_bader_charges',{'targets':[{'task_id':'other-project-task'}]})
+            with self.assertRaises(permissions.PermissionDenied):
+                self.call('get_bader_charges',{'targets':[{'task_id':'t'}]},user={'username':'bob','role':'user'})
 
     def test_check_order_runtime_mismatch_and_read_only_missing_evidence(self):
         before = self.before.replace('\nH\n2\n','\nLi Mn\n1 1\n')

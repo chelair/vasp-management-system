@@ -38,7 +38,7 @@ TOOLS = [
         '检查模型合理性或结构优化问题时优先调用。按影响从整体结构合理性/优化重构迹象、局部配位与界面、最后计算参数输出Python筛查证据；不自动判定物相/变性。元素赝势对应仅基础核对，不作为默认最高优先级。自动只读目标目录INCAR/POTCAR摘要及OUTCAR头部，缺失标未知。reference可显式选真正初始结构；省略时CONTCAR尝试同任务POSCAR（remote尝试MAIN，local仅镜像），不是完整续算历史。当前/指定con用remote。返回来源指纹，沿用selector细查。',
         {'structure':SELECTOR,'reference':SELECTOR,'pbc':PBC},['structure']),
     tool('get_structure_summary',
-        '读取当前项目POSCAR/CONTCAR结构概览：组成、晶格、逐方向固定约束、几何分层/平面间隙和原子坐标分页（每页24）。先find_project_tasks定位。默认本地镜像，不保证最新；用户问最新/指定con时可按需source=remote只读固定文件。远端缺文件不跨目录回退，NEB指定image。后续查询沿用返回的source.selector锁定文件指纹。几何层/间隙不是材料相或真空的验证结论。',
+        '读取当前项目POSCAR/CONTCAR结构概览：组成、晶格、逐方向固定约束、几何分层/平面间隙和原子坐标分页（每页24，后续页仅坐标）。先find_project_tasks定位。层内composition和atom_indices可定位候选片段，不必逐页抄全结构。默认本地镜像，不保证最新；用户问最新/指定con时可按需source=remote只读固定文件。远端缺文件不跨目录回退，NEB指定image。后续查询沿用返回的source.selector锁定文件指纹。几何层/间隙不是材料相或真空的验证结论。',
         {'structure':SELECTOR,'pbc':PBC,'axis':{'type':'string','enum':['a','b','c'],'default':'c'},
          'atom_offset':{'type':'integer','minimum':0,'maximum':geometry.MAX_ATOMS},
          'layer_gap_angstrom':{'type':'number','minimum':.1,'maximum':3,'default':.75}},['structure']),

@@ -30,7 +30,9 @@
 from __future__ import annotations
 
 import base64
+from collections import Counter
 import json
+import math
 import re
 import threading
 import time
@@ -655,6 +657,43 @@ def load_data(project_name: str, task: Dict[str, Any]) -> Dict[str, Any]:
     parsed["bytes"] = path.stat().st_size
     parsed["mtime"] = int(path.stat().st_mtime)
     return parsed
+
+
+def charge_summary(project_name: str, task: Dict[str, Any], atom_indices=None,
+                   reference_charge=None) -> Dict[str, Any]:
+    """复用分析时的元素/ZVAL口径，返回紧凑原子表和指定片段求和；纯本地只读。"""
+    data = load_data(project_name, task)
+    atoms = {a["index"]: a for a in data["atoms"]}
+    if atom_indices is not None and any(i not in atoms for i in atom_indices):
+        raise ValueError("片段原子编号不在该次 Bader 表中")
+    selected = [atoms[i] for i in atom_indices] if atom_indices is not None else list(atoms.values())
+    element_map = dict(zip(atoms, data.get("elements", [])))
+    composition = dict(Counter(element_map.get(a["index"], "unknown") for a in selected))
+    electrons = math.fsum(a["charge"] for a in selected)
+    available = data["net_charge_available"]
+    valence = math.fsum(a["zval"] for a in selected) if available else None
+    net = round(valence - electrons, 6) if available else None
+    return {
+        "task_id": task["task_id"], "name": task.get("model_name"),
+        "scope": "selected_atoms" if atom_indices is not None else "whole_system",
+        "atom_count": len(selected), "total_atom_count": data["n_atoms"], "composition": composition,
+        "bader_electrons": round(electrons, 6),
+        "neutral_valence_electrons": round(valence, 6) if available else None,
+        "net_charge_e": net, "reference_charge_e": reference_charge,
+        "electron_gain_from_reference_e": round(reference_charge - net, 6)
+            if reference_charge is not None and available else None,
+        "net_charge_available": available, "net_charge_reason": data.get("net_charge_reason"),
+        "columns": ["index", "element", "bader_electrons", "net_charge_e", "x_A", "y_A", "z_A"],
+        "atoms": [[a["index"], element_map.get(a["index"]), a["charge"], a.get("net_charge"),
+                   a["x"], a["y"], a["z"]] for a in selected],
+        "zval": data["zval"],
+        "source": {"path": data["source"], "mtime": data["mtime"], "bytes": data["bytes"],
+                   "analysis_run_id": data["meta"].get("run_id"),
+                   "element_source": data["element_source"], "element_note": data.get("element_note")},
+        "definition": "净电荷=ΣZVAL−ΣBader电子数，负值表示相对中性原子得电子；"
+                      "转移电子数=参考片段净电荷−当前片段净电荷，仅在明确reference_charge时给出。"
+                      "坐标和编号来自该次ACF；低电子数本身不证明Bader异常。",
+    }
 
 
 # ------------------------------------------------------------------ 远端探测

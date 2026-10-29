@@ -14,7 +14,7 @@ export const TOOL_NAMES: Record<string, string> = {
   find_project_tasks: '查找项目任务', get_task_inspections: '查看巡检结果', get_inspection_evidence: '读取巡检证据',
   get_opt_runs: '查看结构优化记录', get_task_parameter_history: '查看实际参数记录', get_remote_task_evidence: '远端只读补证',
   check_structure: '检查结构合理性与变化', get_structure_summary: '读取结构概览', get_structure_environment: '分析原子环境', compare_structures: '对比模型结构',
-  get_property_recipes: '查找性质计算方法', discover_property_tasks: '查找性质相关任务', evaluate_property: '计算科学性质',
+  get_bader_charges: '统计片段电荷', get_property_recipes: '查找性质计算方法', discover_property_tasks: '查找性质相关任务', evaluate_property: '计算科学性质',
   search_report_data: '搜索报告数据', create_topic_report: '生成专题报告', update_topic_report: '更新专题报告',
   list_topic_projects: '查找可访问项目', list_topic_reports: '查找已有报告', prepare_topic_report: '准备报告数据', plan_topic_report: '组织报告内容',
   write_topic_draft: '撰写报告草案', save_topic_report: '保存专题报告', get_topic_report: '读取专题报告',

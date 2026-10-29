@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import { CheckOutlined, CloseCircleOutlined, CodeOutlined, LoadingOutlined, PauseOutlined, RightOutlined } from '@ant-design/icons';
 import { isActiveRun } from '../../api/aiChat';
 import type { AIRun } from '../../api/aiChat';
@@ -45,7 +45,7 @@ export function runProgress(run: AIRun, hasAnswer: boolean) {
 }
 
 /** 仅展示已有运行快照。思考是服务商汇总文本，不伪装为与工具交错的时间线。 */
-export default function RunActivity({ run, hasAnswer }: { run: AIRun; hasAnswer: boolean }) {
+function RunActivity({ run, hasAnswer }: { run: AIRun; hasAnswer: boolean }) {
   const active = isActiveRun(run);
   const [expanded, setExpanded] = useState<boolean>();
   const open = expanded ?? active;
@@ -62,31 +62,43 @@ export default function RunActivity({ run, hasAnswer }: { run: AIRun; hasAnswer:
       <RightOutlined className={`ai-activity-chevron collapse-chevron${open ? ' collapse-chevron--open' : ''}`} />
     </button>
     <AnimatedCollapse open={open}><div className="ai-activity-body">
-      {run.reasoning && <details className="ai-thought">
-        <summary>模型思考 <span>{active ? run.reasoning.trim().split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 90) : '查看过程'}</span></summary>
+      {run.reasoning && <DetailOnOpen className="ai-thought" summary={<>模型思考 <span>{active ? run.reasoning.trim().split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 90) : '查看过程'}</span></>}>
         <ThinkingText text={run.reasoning} active={active} />
-      </details>}
+      </DetailOnOpen>}
       {events.map((event) => {
         // 已停止的运行可能保留未收尾的工具状态，不继续显示旋转图标。
         const status = !active && isPending(event.status) ? 'interrupted' : event.status;
         const target = event.arguments?.path ?? event.arguments?.query ?? event.arguments?.task_name ?? event.arguments?.task_id;
-        return <details className="ai-tool-call" key={event.id}>
-          <summary>
+        return <DetailOnOpen className="ai-tool-call" key={event.id} summary={<>
             <span className={`ai-state-icon ai-state-icon--${status}`}><StateIcon status={status} /></span>
             <span className="ai-tool-call-title">{TOOL_NAMES[event.name] ?? event.name}</span>
             {target != null && <span className="ai-tool-target">{typeof target === 'string' ? target : JSON.stringify(target)}</span>}
             <span className="ai-tool-status">{STATUS[status] ?? status}</span><RightOutlined className="ai-tool-chevron" />
-          </summary>
-          <div className="ai-tool-detail">
-            <div className="ai-tool-signature"><CodeOutlined /><code>{event.name}</code><span>工具调用</span></div>
-            <div className="ai-tool-detail-label">输入</div><pre>{JSON.stringify(event.arguments, null, 2)}</pre>
-            <div className="ai-tool-detail-label">{isPending(status) ? '等待工具返回' : status === 'interrupted' ? '已返回的记录 · 执行结果未确认' : '返回结果'}</div>
-            {Object.keys(event.result ?? {}).length > 0 && <pre>{JSON.stringify(event.result, null, 2)}</pre>}
-            {event.at && <div className="ai-tool-detail-label">记录时间 {event.at.replace('T', ' ')}</div>}
-          </div>
-        </details>;
+          </>}>
+          <ToolDetail event={event} status={status} />
+        </DetailOnOpen>;
       })}
       {!run.reasoning && !events.length && <p className="ai-muted">等待模型返回思考、工具调用或回答。</p>}
     </div></AnimatedCollapse>
   </div>;
 }
+
+function ToolDetail({ event, status }: { event: AIRun['tool_events'][number]; status: string }) {
+  return <div className="ai-tool-detail">
+    <div className="ai-tool-signature"><CodeOutlined /><code>{event.name}</code><span>工具调用</span></div>
+    <div className="ai-tool-detail-label">输入</div><pre>{JSON.stringify(event.arguments, null, 2)}</pre>
+    <div className="ai-tool-detail-label">{isPending(status) ? '等待工具返回' : status === 'interrupted' ? '已返回的记录 · 执行结果未确认' : '返回结果'}</div>
+    {Object.keys(event.result ?? {}).length > 0 && <pre>{JSON.stringify(event.result, null, 2)}</pre>}
+    {event.at && <div className="ai-tool-detail-label">记录时间 {event.at.replace('T', ' ')}</div>}
+  </div>;
+}
+
+function DetailOnOpen({ className, summary, children }: { className: string; summary: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <details className={className} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{summary}</summary>
+    {open && children}
+  </details>;
+}
+
+export default memo(RunActivity);

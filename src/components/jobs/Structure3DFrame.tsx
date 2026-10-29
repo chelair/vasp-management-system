@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Button, Checkbox, Empty, Segmented, Slider } from 'antd';
+import use3Dmol from '../../hooks/use3Dmol';
 import { ReloadOutlined } from '@ant-design/icons';
 import { ELEMENT_COLORS, computeBonds, parseCif, type Structure3D } from '../../utils/structure3d';
 
@@ -96,6 +97,7 @@ export default function Structure3DFrame({
   atomReadouts,
   atomReadoutTitle,
 }: Props) {
+  const { ready: molReady, error: molError } = use3Dmol(Boolean(cif));
   const holderRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
   const modelRef = useRef<any>(null);
@@ -439,7 +441,7 @@ export default function Structure3DFrame({
     holder.innerHTML = '';
     viewerRef.current = null;
     modelRef.current = null;
-    if (!cif || !structure || !window.$3Dmol) {
+    if (!cif || !structure || !molReady) {
       viewerReadyRef.current?.(null);
       return undefined;
     }
@@ -503,7 +505,7 @@ export default function Structure3DFrame({
       viewerReadyRef.current?.(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cif, structure]);
+  }, [cif, structure, molReady]);
 
   // 选中/样式变化 → 只重绘样式
   useEffect(() => {
@@ -520,6 +522,7 @@ export default function Structure3DFrame({
 
   return (
     <div className="s3d-editor">
+      {cif && !molReady && <div role="status">{molError || '正在加载 3D 视图…'}</div>}
       <div className="s3d-editor__toolbar">
         <Segmented
           size="small"

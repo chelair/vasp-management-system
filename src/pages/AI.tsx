@@ -1,14 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Collapse, Descriptions, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Spin, Tabs, Tag, Tooltip } from 'antd';
 import { ApiOutlined, ArrowDownOutlined, ArrowUpOutlined, BookOutlined, DeleteOutlined, EditOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
-import ConnectionSettings from '../components/ai/ConnectionSettings';
-import WorkExperience from '../components/ai/WorkExperience';
 import StreamingAnswer from '../components/ai/StreamingAnswer';
 import RunActivity, { runProgress } from '../components/ai/RunActivity';
 import WorkspacePanel from '../components/ai/WorkspacePanel';
 import TopicReportLinks from '../components/ai/TopicReportLinks';
-import TopicReportEditor from '../components/reports/TopicReportEditor';
 import {
   createAIConversation, deleteAIConversation, getAIContext, getAIConversation, getAIRun,
   isActiveRun, listAIConnections, listAIConversations, listAITargets, sendAIMessage,
@@ -16,6 +13,10 @@ import {
 } from '../api/aiChat';
 import type { AIConnection, AIContext, AIConversation, AIConversationDetail, AIRun, AITarget } from '../api/aiChat';
 import '../styles/ai.css';
+
+const ConnectionSettings = lazy(() => import('../components/ai/ConnectionSettings'));
+const WorkExperience = lazy(() => import('../components/ai/WorkExperience'));
+const TopicReportEditor = lazy(() => import('../components/reports/TopicReportEditor'));
 
 const STATUS: Record<string, string> = { queued: '等待响应', running: '生成中', completed: '已完成', cancelled: '已停止', failed: '失败', interrupted: '已中断' };
 const TYPES: Record<string, string> = { opt: '结构优化', neb: 'NEB', frac: '频率矫正', ele: '电子结构' };
@@ -104,10 +105,18 @@ export default function AI() {
     void getAIConversation(selected).then((data) => {
       if (cancelled) return;
       setDetail(data);
-      return getAIContext(selected).then((snapshot) => { if (!cancelled) setContext(snapshot); });
     }).catch((e) => { if (!cancelled) setError(errorText(e)); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [selected]);
+
+  useEffect(() => {
+    if (!contextOpen || !selected) return;
+    let cancelled = false;
+    void getAIContext(selected).then(snapshot => {
+      if (!cancelled) setContextState({ id: selected, value: snapshot });
+    }).catch(e => { if (!cancelled) void message.error(errorText(e)); });
+    return () => { cancelled = true; };
+  }, [contextOpen, selected, message]);
 
   useEffect(() => {
     if (detail) setScope(targets.some((project) => project.id === detail.project_id && !project.closed) ? detail.project_id! : 'general');
@@ -226,7 +235,7 @@ export default function AI() {
 
 
   return <div className="ai-page">
-    {topicId&&<TopicReportEditor key={topicId} topicId={topicId} connectionId={detail?.connection_id} onClose={()=>setTopicId(undefined)} onSaved={()=>setTopicRevision(r=>r+1)}/>}
+    {topicId&&<Suspense fallback={<Spin />}><TopicReportEditor key={topicId} topicId={topicId} connectionId={detail?.connection_id} onClose={()=>setTopicId(undefined)} onSaved={()=>setTopicRevision(r=>r+1)}/></Suspense>}
     <div className={`ai-workspace${sidebarOpen ? ' ai-workspace--sidebar' : ''}`}>
       {sidebarOpen && <button className="ai-session-overlay" aria-label="关闭会话栏" onClick={() => setSidebarOpen(false)} />}
       <aside className="ai-sessions" aria-label="会话列表" aria-hidden={!sidebarOpen} {...(!sidebarOpen ? { inert: '' } : {})}>
@@ -382,8 +391,8 @@ export default function AI() {
         </> : <div className="ai-empty-hint ai-muted">选择会话后展示对应数据。每次发问会重新读取本地快照；刷新不会发起远端同步。</div>}
       </aside>
     </Drawer>
-    <WorkExperience open={experienceOpen} close={()=>setExperienceOpen(false)} connections={connections}/>
-    <ConnectionSettings open={settingsOpen} close={() => setSettingsOpen(false)} connections={connections} reload={reloadConnections} />
+    {experienceOpen && <Suspense fallback={<Spin />}><WorkExperience open close={()=>setExperienceOpen(false)} connections={connections}/></Suspense>}
+    {settingsOpen && <Suspense fallback={<Spin />}><ConnectionSettings open close={() => setSettingsOpen(false)} connections={connections} reload={reloadConnections} /></Suspense>}
     <Modal title="会话设置" forceRender open={editOpen} onCancel={() => setEditOpen(false)} onOk={async () => {
       if (!detail) return;
       const values = await form.validateFields(), id = detail.id;

@@ -34,7 +34,6 @@ export default defineConfig({
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           'antd-vendor': ['antd', '@ant-design/icons'],
-          'motion-vendor': ['framer-motion'],
           // ECharts 只被总览页使用，单独成块便于缓存（按需注册见 components/dashboard/useEcharts.ts）
           'echarts-vendor': ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'],
         },

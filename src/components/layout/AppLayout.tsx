@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
-import { Alert, App } from 'antd';
+import { Alert, App, Spin } from 'antd';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import { request, setForbiddenHandler } from '../../api/client';
@@ -95,7 +95,7 @@ export default function AppLayout() {
               description={`缺失：${missingDeps.join('、')}。请在后端目录执行：pip install -r requirements.txt（可选依赖不影响当前功能，后续功能将用到）`}
             />
           )}
-          <Outlet />
+          <Suspense fallback={<div className="app-loading"><Spin size="large" tip="正在加载页面…" /></div>}><Outlet /></Suspense>
         </main>
       </div>
     </div>

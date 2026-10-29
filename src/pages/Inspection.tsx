@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import AnimatedCollapse from '../components/common/AnimatedCollapse';
+import InspectionProjectTable from '../components/inspection/InspectionProjectTable';
 import { useAuth } from '../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -14,6 +15,7 @@ import {
   Modal,
   Popconfirm,
   Skeleton,
+  Spin,
   Switch,
   Tag,
   Table,
@@ -42,16 +44,17 @@ import {
 } from '../api/inspections';
 import type { InspectionMeta } from '../api/inspections';
 import { archiveTask, calculateCorrection, unarchiveTask } from '../api/jobs';
-import ForceHistoryCharts from '../components/inspection/ForceHistoryCharts';
 import CheckErrorsPanel from '../components/inspection/CheckErrorsPanel';
-import EleAnalysisPanel from '../components/inspection/EleAnalysisPanel';
-import PathSummaryModal from '../components/inspection/PathSummaryModal';
-import StructurePanel from '../components/inspection/StructurePanel';
-import NebImageMasterDetail from '../components/inspection/NebImageMasterDetail';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
 import OutcarTailDialog from '../components/inspection/OutcarTailDialog';
 import StatusTag from '../components/common/StatusTag';
+
+const ForceHistoryCharts = lazy(() => import('../components/inspection/ForceHistoryCharts'));
+const EleAnalysisPanel = lazy(() => import('../components/inspection/EleAnalysisPanel'));
+const PathSummaryModal = lazy(() => import('../components/inspection/PathSummaryModal'));
+const StructurePanel = lazy(() => import('../components/inspection/StructurePanel'));
+const NebImageMasterDetail = lazy(() => import('../components/inspection/NebImageMasterDetail'));
 
 /**
  * 详情分区（可折叠）：`defaultOpen` 的分区**直接渲染**，其余仍「点一下再加载」。
@@ -378,12 +381,13 @@ export default function Inspection() {
   };
 
   useEffect(() => {
-    Promise.all([fetchInspectionResults(), fetchInspectionMeta()])
-      .then(([rows, m]) => {
-        setResults(rows);
-        setMeta(m);
-      })
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    void fetchInspectionResults().then(rows => { if (!cancelled) setResults(rows); })
+      .catch(e => { if (!cancelled) void message.error(e instanceof Error ? e.message : '巡检结果加载失败'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    void fetchInspectionMeta().then(value => { if (!cancelled) setMeta(value); })
+      .catch(e => { if (!cancelled) void message.error(e instanceof Error ? e.message : '巡检配置加载失败'); });
+    return () => { cancelled = true; };
   }, []);
 
   // 筛选变化时重置折叠状态（关闭项目仍保持默认折叠）
@@ -539,45 +543,6 @@ export default function Inspection() {
     });
     return blocks;
   }, [filtered]);
-
-  /** 自由能路径 / NEB 组跨行合并：同项目同组的连续行合并为一格（按项目块分别计算） */
-  const rowSpanByProject = useMemo(() => {
-    const result: Record<string, Record<string, number>> = {};
-    projectBlocks.forEach((block) => {
-      const rows = block.rows;
-      const map: Record<string, number> = {};
-      let i = 0;
-      while (i < rows.length) {
-        const row = rows[i];
-        const grouped =
-          row.task_category === '自由能' ||
-          (row.task_category === 'NEB' && Boolean(row.group_name));
-        if (!grouped) {
-          i += 1;
-          continue;
-        }
-        // 键必须带 task_category：同一项目下自由能组与 NEB 组可能同名（如都有 PATH1），
-        // 只按项目 + 组名会在两者排序相邻时被误并成一格（v0.8.6 修）。
-        const key = `${row.project_name}|${row.task_category}|${row.group_name}`;
-        let j = i + 1;
-        while (
-          j < rows.length &&
-          (rows[j].task_category === '自由能' ||
-            (rows[j].task_category === 'NEB' && Boolean(rows[j].group_name))) &&
-          `${rows[j].project_name}|${rows[j].task_category}|${rows[j].group_name}` === key
-        ) {
-          j += 1;
-        }
-        map[row.task_id] = j - i;
-        for (let k = i + 1; k < j; k += 1) {
-          map[rows[k].task_id] = 0;
-        }
-        i = j;
-      }
-      result[block.projectName] = map;
-    });
-    return result;
-  }, [projectBlocks]);
 
   /** 开关自动巡检（写入 settings.json，调度线程下一轮生效） */
   const handleToggleAuto = async (enabled: boolean) => {
@@ -1037,16 +1002,9 @@ export default function Inspection() {
                   </span>
                 </button>
                 <AnimatedCollapse open={expanded}>
-                  <Table
-                    rowKey="id"
-                    dataSource={block.rows}
-                    columns={buildColumns(rowSpanByProject[block.projectName] ?? {})}
-                    loading={loading}
-                    pagination={false}
-                    size="middle"
-                    rowClassName={() =>
-                      block.closed ? 'inspection-row--closed' : ''
-                    }
+                  <InspectionProjectTable
+                    rows={block.rows} closed={block.closed} loading={loading}
+                    buildColumns={buildColumns}
                   />
                 </AnimatedCollapse>
               </div>
@@ -1147,6 +1105,7 @@ export default function Inspection() {
         destroyOnClose
         styles={{ body: { maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' } }}
       >
+        <Suspense fallback={<Skeleton active paragraph={{ rows: 8 }} />}>
         {detailLoading ? (
           <Skeleton active paragraph={{ rows: 12 }} />
         ) : detailData ? (
@@ -1511,6 +1470,7 @@ export default function Inspection() {
         ) : (
           <Empty description="暂无详情数据" />
         )}
+        </Suspense>
       </Modal>
 
       <OutcarTailDialog
@@ -1520,13 +1480,13 @@ export default function Inspection() {
         onClose={() => setOutcarTail(null)}
       />
 
-      <PathSummaryModal
+      {pathSummaryOpen && <Suspense fallback={<Spin />}><PathSummaryModal
         open={pathSummaryOpen}
         groupId={pathGroup?.id ?? null}
         groupName={pathGroup?.name}
         onCancel={() => setPathSummaryOpen(false)}
         onOpenDetail={openDetailById}
-      />
+      /></Suspense>}
     </PageTransition>
   );
 }

@@ -1,20 +1,19 @@
-import { Route, Routes, useLocation } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import { Route, Routes } from 'react-router-dom';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { Navigate, useLocation as useLocationRaw } from 'react-router-dom';
 import { Spin } from 'antd';
-import { AnimatePresence } from 'framer-motion';
 import AppLayout from './components/layout/AppLayout';
 import { useAuth } from './context/AuthContext';
-import Automation from './pages/Automation';
-import Dashboard from './pages/Dashboard';
-import Inspection from './pages/Inspection';
-import Jobs from './pages/Jobs';
-import Login from './pages/Login';
-import Report from './pages/Report';
-import SSH from './pages/SSH';
 import ErrorBoundary from './components/common/ErrorBoundary';
-import AI from './pages/AI';
-import Settings from './pages/Settings';
+const Automation = lazy(() => import('./pages/Automation'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Inspection = lazy(() => import('./pages/Inspection'));
+const Jobs = lazy(() => import('./pages/Jobs'));
+const Login = lazy(() => import('./pages/Login'));
+const Report = lazy(() => import('./pages/Report'));
+const SSH = lazy(() => import('./pages/SSH'));
+const AI = lazy(() => import('./pages/AI'));
+const Settings = lazy(() => import('./pages/Settings'));
 
 /** 受保护路由：未登录（或本地 token 失效）时跳登录页，并记住原地址 */
 export function RequireAuth({ children }: { children: ReactNode }) {
@@ -50,13 +49,9 @@ export function AdminRoute({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
-  const location = useLocation();
-
   return (
-    // key=location.pathname 让 AnimatePresence 感知路由变化，
-    // 页面切换时先播放旧页面退场动画（250ms），再进入新页面
-    <AnimatePresence mode="wait">
-      <Routes location={location} key={location.pathname}>
+    <Suspense fallback={<div className="app-loading"><Spin size="large" tip="正在加载页面…" /></div>}>
+      <Routes>
         <Route path="/login" element={<Login />} />
         <Route
           element={
@@ -94,6 +89,6 @@ export default function App() {
           <Route path="*" element={<Dashboard />} />
         </Route>
       </Routes>
-    </AnimatePresence>
+    </Suspense>
   );
 }

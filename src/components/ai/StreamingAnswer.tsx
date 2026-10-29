@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import ChatMarkdown from './ChatMarkdown';
 
 /** 仅平滑显示已收到的文字，完整回答和运行状态仍由后端维护。 */
-export default function StreamingAnswer({ text, status, fresh, onProgress }: {
+function StreamingAnswer({ text, status, fresh, onProgress }: {
   text: string; status: string; fresh: boolean; onProgress: () => void;
 }) {
   const active = status === 'queued' || status === 'running';
@@ -49,3 +49,5 @@ export default function StreamingAnswer({ text, status, fresh, onProgress }: {
     {typing && <span className="ai-typing-cursor" aria-hidden="true" />}
   </div>;
 }
+
+export default memo(StreamingAnswer);

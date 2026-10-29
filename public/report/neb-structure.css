@@ -1,0 +1,617 @@
+/* Shared by inspection, report preview and self-contained HTML. */
+.s3d-editor {
+  position: relative;
+}
+
+.s3d-editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 10px 10px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.s3d-editor__label {
+  color: var(--color-text-muted);
+}
+
+.s3d-editor__stage {
+  position: relative;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f7f9fc;
+}
+
+/* Shift 框选覆盖层：默认不拦截鼠标，Shift 按住时激活 */
+.s3d-editor__band-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.s3d-editor__band-layer.is-active {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* 3D 结构视图：任何拖拽都不应触发浏览器文本选择 */
+.s3d-editor__canvas,
+.s3d-editor__canvas canvas {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 框选原子期间（Shift+点击/拖拽）临时禁用整页文本选择 */
+body.is-atom-selecting,
+body.is-atom-selecting * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: crosshair !important;
+}
+
+.s3d-editor__band {
+  position: absolute;
+  border: 1px dashed var(--color-primary);
+  background: rgba(91, 141, 239, 0.14);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.s3d-editor__band-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(91, 141, 239, 0.92);
+  color: #fff;
+  font-size: 11.5px;
+  pointer-events: none;
+}
+
+/* 结构图左上角：选中原子的分数坐标（灰色小字，不拦截鼠标事件） */
+.s3d-editor__coords {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  max-width: 62%;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.s3d-editor__coords-title {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* 受力模式：每行更长（Fx Fy Fz |F|），放宽面板宽度 */
+.s3d-editor__coords--force {
+  max-width: 82%;
+}
+
+.s3d-editor__coord-row {
+  display: flex;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.s3d-editor__coord-label {
+  min-width: 42px;
+}
+
+.s3d-editor__coords-more {
+  color: var(--color-text-secondary);
+}
+
+.s3d-editor__canvas {
+  width: 100%;
+  position: relative;
+}
+
+.s3d-editor__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fe-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.fe-stat {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, #fbfdff, #f3f8fd);
+}
+
+.fe-stat__label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.fe-stat__value {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--color-primary-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+
+.fe-stat__value-sub {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.fe-stat__sub {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.nebmd {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ① 能量曲线 */
+.nebmd__row {
+  display: grid;
+  /* 左：曲线（宽一点）；右：映像明细表。两侧**固定同高**，3/5/7/20 个映像都不会忽长忽短 */
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.nebmd__row > * {
+  height: 304px;
+}
+
+.nebmd-curve {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.nebmd-curve__head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  margin-bottom: 2px;
+  flex: 0 0 auto;
+}
+
+.nebmd-curve__titleline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 曲线画布：高度跟着面板走（之前是固定 196px 且占满整页宽 → 很扁） */
+.nebmd-curve__plot {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.nebmd-curve__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.nebmd-curve__hint {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+/* 读数单独一行、不换行：之前和标题/说明挤一行，末尾的「鞍点」标签被顶到第二行 */
+.nebmd-curve__read {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 各项之间用分隔点，避免看上去连成一片 */
+.nebmd-curve__read > span:not(:first-child)::before {
+  content: '·';
+  margin-right: 8px;
+  color: var(--color-text-muted);
+}
+
+.nebmd-curve__read-img {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.nebmd-curve__saddle {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 11px;
+  color: #c8434b;
+  background: #fdeced;
+  border: 1px solid #f3c3c7;
+  border-radius: 999px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* 曲线改用 ECharts（v0.9.62）：画布高度由组件传入（默认 240，与旧 SVG 一致），
+   宽度跟着容器走；空状态用浮层文案（与旧图里的居中提示同一位置） */
+.nebmd-curve__plot {
+  position: relative;
+}
+
+.nebmd-curve__canvas {
+  width: 100%;
+}
+
+.nebmd-curve__canvas canvas {
+  cursor: pointer;
+}
+
+.nebmd-curve__empty {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+/* ② 主视图 */
+.nebmd__stage {
+  position: relative;
+}
+
+.nebmd__extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.nebmd__no-structure {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 0 24px;
+  border: 1px dashed var(--color-border-soft);
+  border-radius: 14px;
+  background: #f9fbfd;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+.nebmd__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.nebmd__nav {
+  position: absolute;
+  top: 55%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  /* 平时就看得见，鼠标移到 3D 区域/按钮上时变实心。
+     （原来是 opacity:0 + 依赖 .nebmd__stage--hover 淡入，那个 class 在重写组件时丢了，
+      导致左右切换箭头永远不出现 —— 2026-10-06 用户反馈） */
+  opacity: 0.6;
+  box-shadow: 0 2px 8px rgba(35, 48, 67, 0.16);
+  transition:
+    opacity 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+  z-index: 2;
+}
+
+.nebmd__stage:hover .nebmd__nav:not(:disabled),
+.nebmd__nav:hover:not(:disabled),
+.nebmd__nav:focus-visible {
+  opacity: 1;
+}
+
+.nebmd__nav:hover:not(:disabled) {
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(35, 48, 67, 0.14);
+  color: var(--color-primary);
+}
+
+.nebmd__nav:disabled {
+  cursor: default;
+  opacity: 0.18;
+  box-shadow: none;
+}
+
+.nebmd__nav--prev {
+  left: 12px;
+}
+
+.nebmd__nav--next {
+  right: 12px;
+}
+
+.nebmd__hint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+/* 离屏 3Dmol viewer：只为生成缩略图，不参与可见布局 */
+.nebmd__offscreen {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ③ 缩略图条 */
+.nebmd__thumbs {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 2px 8px;
+  scroll-behavior: smooth;
+}
+
+.nebmd__thumb {
+  flex: 0 0 auto;
+  width: 168px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.nebmd__thumb:hover {
+  box-shadow: 0 8px 20px rgba(35, 48, 67, 0.1);
+}
+
+.nebmd__thumb.is-saddle {
+  border-color: rgba(217, 83, 91, 0.5);
+}
+
+.nebmd__thumb.is-selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(91, 141, 239, 0.28);
+}
+
+.nebmd__thumb.is-selected.is-saddle {
+  border-color: #d9535b;
+  box-shadow: 0 0 0 2px rgba(217, 83, 91, 0.28);
+}
+
+.nebmd__thumb.is-empty {
+  opacity: 0.75;
+}
+
+.nebmd__thumb-none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 104px;
+  background: repeating-linear-gradient(
+    45deg,
+    #f4f7fb,
+    #f4f7fb 8px,
+    #eef2f8 8px,
+    #eef2f8 16px
+  );
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.nebmd__thumb canvas {
+  display: block;
+  width: 100%;
+  height: 104px;
+  background: #fbfcfe;
+}
+
+.nebmd__thumb-cap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--color-border-soft);
+  background: #f9fbfd;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.nebmd__thumb-idx {
+  font-weight: 700;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.nebmd__thumb-role {
+  color: var(--color-text-muted);
+}
+
+.nebmd__thumb-metrics {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* 映像明细表：不用悬停曲线也能看到每个映像的能量/受力 */
+.nebmd__table {
+  height: 100%;
+  max-height: none;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.nebmd__table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nebmd__table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: #f9fbfd;
+  border-bottom: 1px solid var(--color-border-soft);
+  white-space: nowrap;
+}
+
+.nebmd__table tbody td {
+  padding: 5px 10px;
+  border-bottom: 1px solid #f4f7fb;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.nebmd__table tbody tr {
+  cursor: pointer;
+}
+
+.nebmd__table tbody tr:hover td {
+  background: #f6f9ff;
+}
+
+.nebmd__table tbody tr.is-selected td {
+  background: rgba(91, 141, 239, 0.1);
+}
+
+.nebmd__table tbody tr.is-saddle td {
+  color: #c8434b;
+}
+
+.nebmd__table tbody tr.is-selected.is-saddle td {
+  background: rgba(217, 83, 91, 0.1);
+}
+
+.nebmd__table-idx {
+  font-weight: 700;
+}
+
+.nebmd__table-struct {
+  color: var(--color-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nebmd__thumb,
+  .nebmd__nav {
+    transition: none;
+  }
+  .nebmd__thumbs {
+    scroll-behavior: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .nebmd__hint {
+    display: none;
+  }
+}
+
+/* 窄屏：曲线与明细表改成上下排列（窄屏一行塞两列会挤扁曲线） */
+@media (max-width: 1100px) {
+  .nebmd__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nebmd__row > * {
+    height: 260px;
+  }
+}
+
+
+.report-neb {--color-primary:#527bc5;--color-primary-strong:#4266ad;--color-text:#263449;--color-text-secondary:#65758b;--color-text-muted:#8492a5;--color-border-soft:#ebeff5;position:relative;min-width:0}
+.report-neb *, .report-neb *::before, .report-neb *::after {box-sizing:border-box}
+.report-neb .nebmd__extra {flex-wrap:wrap}
+.report-neb .nebmd__table {height:304px}
+.report-neb .fe-chip,.report-neb .fe-badge {padding:2px 7px;border-radius:6px;background:#edf3fa;font-size:12px}
+.report-neb .fe-footnote {font-size:12px;color:var(--color-text-muted)}
+.report-neb__print {display:none;max-width:100%}
+.report-neb-energy-table--static {display:none}
+.report-neb .anticon svg {width:1em;height:1em;background:transparent}
+@media(max-width:1100px){.report-neb .nebmd__table {height:260px}}
+@media(max-width:720px){.report-neb .fe-stat-grid {grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media print {
+ .report-neb-energy-table--static {display:block}
+ .report-widget .report-neb__interactive {display:none!important}
+ .report-neb .nebmd__stage,.report-neb .nebmd__thumbs,.report-neb .nebmd__offscreen {display:none!important}
+ .report-neb__print:not([hidden]) {display:block!important}
+ .report-widget:has(> .report-neb) {display:block!important;min-height:0}
+}

@@ -13,6 +13,7 @@ import { useMemo } from 'react';
 import NebEnergyCurve, { type NebCurveImage } from '../inspection/NebEnergyCurve';
 import PathStepChart from '../inspection/PathStepChart';
 import type { FreeEnergyStructure } from '../../api/inspections';
+import ReportNeb3D from './ReportNeb3D';
 
 /** 一排统计卡（对齐静态图 `stat_cards`：浅渐变底 + 圆角 12 + 三行文字） */
 export function ReportStatCards({
@@ -308,6 +309,7 @@ export interface ReportNebItem {
     energy_ev?: number | null;
     max_force_ev_per_a?: number | null;
     dialog?: string | null;
+    cif?: string | null;
   }[];
 }
 
@@ -377,6 +379,7 @@ export function NebReportPanel({
   }, [images, saddle]);
 
   if (!images.length) return null;
+  if (images.some(image => image.cif)) return <ReportNeb3D item={item} />;
 
   return (
     <div className="report-panel">

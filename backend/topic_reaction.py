@@ -135,6 +135,8 @@ def create(user, conversation, question, request, *, project_ids=None, run_id=''
                              'validation':{'status':'CONDITIONAL'},'provenance':[source]}
             blocks.append({'block_id':bid,'type':'task.structure','renderer':'structure','origin':'r2','title':item['path_name']+' · '+('初态' if name=='initial' else '末态'),
                            'section':'structures','source_refs':[{'evidence_id':eid,'version':version}],'options':{},'task_id':source['task_id'],'data_status':'available','review_path':item['path_task_id'],'endpoint':name})
+    from report_neb import append_review_blocks
+    append_review_blocks(project, reviews, blocks, evidence, previous if previous and not refresh else None)
     doc = copy.deepcopy(previous) if previous else {'schema_version':'topic.1.0.0','report_type':'topic','topic_id':'topic_'+uuid.uuid4().hex,
           'owner':topics._owner(user),'conversation_id':conversation['id'],'run_id':run_id,'original_question':question,'created_at':now_iso(),
           'hidden_block_ids':[],'deleted_block_ids':[],'narratives':{},'selections':[]}
@@ -205,7 +207,7 @@ def render_html(doc, *, auto_print=False, stale=False):
             body = '<p>已整理两端结构对照。围绕选定的反应键确认端点，并核实路径是否包含目标以外的变化。</p>'
         views = []
         for block in doc['blocks']:
-            if block.get('review_path')!=item['path_task_id'] or block['block_id'] in deleted:
+            if block['renderer'] != 'structure' or block.get('review_path')!=item['path_task_id'] or block['block_id'] in deleted:
                 continue
             evidence = data['library']['evidence'][block['source_refs'][0]['evidence_id']]
             views.append('<figure><figcaption>'+esc(block['title'])+'</figcaption>'+topics.r2._widget(block,'structure-3d')+'<div class="static-structure">'+_static_structure(evidence['payload'])+'</div></figure>')
@@ -220,14 +222,18 @@ def render_html(doc, *, auto_print=False, stale=False):
             excluded=rows[0]['elements'][1] if rows else '离去元素'
             pairs += f'<p class="caption">排除所有 {esc(excluded)} 的片段内部距离变化 RMS：<strong>{rms:.3f} Å</strong>（排除整体平移与转动）</p>'
         profile=item.get('energy_profile') or {};images=profile.get('images') or []
+        from report_neb import review_html
+        neb_html = review_html(doc, item['path_task_id'], deleted)
         if images:
             def number(v):return f'{v:.6f}' if type(v) in (int,float) and math.isfinite(v) else '—'
-            pairs+='<h4>已有路径能量与受力</h4><table><thead><tr><th>映像</th><th>相对初态 / eV</th><th>最大力 / eV·Å⁻¹</th></tr></thead><tbody>'+''.join('<tr><td>'+esc(r['label'])+'</td><td>'+number(r.get('relative'))+'</td><td>'+number(r.get('max_force'))+'</td></tr>' for r in images)+'</tbody></table>'
+            table = '<h4>已有路径能量与受力</h4><table><thead><tr><th>映像</th><th>相对初态 / eV</th><th>最大力 / eV·Å⁻¹</th></tr></thead><tbody>'+''.join('<tr><td>'+esc(r['label'])+'</td><td>'+number(r.get('relative'))+'</td><td>'+number(r.get('max_force'))+'</td></tr>' for r in images)+'</tbody></table>'
+            pairs += '<div class="report-neb-energy-table">'+table+'</div>' if neb_html else table
             energies=[r.get('energy') for r in images]
             if all(type(v) in (int,float) and math.isfinite(v) for v in energies):
                 peak=max(range(len(images)),key=lambda i:energies[i])
                 label='初态' if peak==0 else '末态' if peak==len(images)-1 else '内部映像 '+str(images[peak]['label'])
                 pairs+='<p class="caption">当前采样最高点：'+esc(label)+'。'+('已采样到高于两端的内部点。' if profile.get('interior_peak_observed') else '尚未采样到高于两端的内部峰值。')+'</p>'
+        pairs += neb_html
         sources = '<details class="sources"><summary>查看数据来源</summary>'+''.join('<p>'+esc(name)+' · '+esc(src.get('task_name'))+' · '+esc(src.get('remote_path') or src.get('local_path'))+'<br>SHA256 '+esc(src['sha256'])+'</p>' for name,src in item['sources'].items())+'</details>'
         parts.append('<section><h2>'+esc(item['path_name'])+'</h2>'+body+'<div class="views">'+''.join(views)+'</div>'+pairs+sources+'</section>')
     findings = [finding for item in data['reaction_reviews'] for finding in _findings(item,simple['answers'])]

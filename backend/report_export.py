@@ -466,6 +466,9 @@ def widget_renderer_for(doc: Dict[str, Any]) -> Callable[[str, str], Optional[st
     by_id = _ele_tasks_by_id(doc)
 
     def render(kind: str, task_id: str) -> Optional[str]:
+        if kind == "neb-3d":
+            from report_neb import widget_html
+            return widget_html(task_id)
         item = by_id.get(str(task_id)) or {}
         if kind in ("pdos-chart", "work-function-chart"):
             return (

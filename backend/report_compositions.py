@@ -524,6 +524,11 @@ def _block_body(block: Dict[str, Any], evidence: Dict[str, Any], values=None) ->
     if renderer == "structure":
         return _widget(block, "structure-3d") + _images(payload) + "<p class='rb-note'>" + _esc(payload.get("note")) + "；PDF只包含已有结构图片，交互3D请用HTML查看。</p>"
     if renderer in ("path_panel", "neb_panel"):
+        if renderer == "neb_panel":
+            from report_neb import has_structures, widget_html
+            if any(has_structures(item) for item in payload.get("items", [])):
+                return ("<figure>" + "".join(payload.get("charts") or []) + "</figure>"
+                        + widget_html(block["block_id"]))
         charts = "".join(payload.get("charts") or [])
         return (charts or "<p class='rb-note'>缺少可绘图的路径/映像数据</p>") + "<p class='rb-note'>" + _esc(payload.get("note")) + "</p>"
     if renderer in ("pdos_panel", "work_function_panel"):
@@ -553,7 +558,7 @@ def _images(payload):
 
 def _interactive(doc):
     from report_interactive import runtime_js, mol_js, data_script
-    data = {"structure": {}, "bader": {}, "pdos": {}, "work_function": {}}
+    data = {"structure": {}, "bader": {}, "pdos": {}, "work_function": {}, "neb": {}}
     for block in doc.get("blocks", []):
         if block["block_id"] in doc.get("hidden_block_ids", []) + doc.get("deleted_block_ids", []):
             continue
@@ -570,12 +575,14 @@ def _interactive(doc):
             data["pdos"][key] = payload["view"]
         elif block["renderer"] == "work_function_panel" and payload.get("summary"):
             data["work_function"][key] = payload["summary"]
+        elif block["renderer"] == "neb_panel":
+            data["neb"][key] = payload.get("items", [])
     if not any(data.values()):
         return ""
     runtime = runtime_js()
     if not runtime:
         return "<p class='rb-note'>交互运行时不可用，显示冻结的静态图表和数值。</p>"
-    mol = mol_js() if data["structure"] or data["bader"] else ""
+    mol = mol_js() if data["structure"] or data["bader"] or data["neb"] else ""
     def script(value):
         return "<script>" + value.replace("</script", "<\\/script") + "</script>"
     return script("window.__VASP_REPORT_DATA__=" + data_script(data)) + script(mol) + script(runtime)

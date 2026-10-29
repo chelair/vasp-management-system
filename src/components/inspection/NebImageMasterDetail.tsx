@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import use3Dmol from '../../hooks/use3Dmol';
 import { Switch, Tooltip } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { InspectionDetail } from '../../types';
@@ -31,6 +32,8 @@ interface Props {
   barrier?: BarrierImage[] | null;
   /** 该 NEB 推进的离子步数（仅展示） */
   steps?: number | null;
+  /** Reports use frozen evidence and must not request current remote forces. */
+  report?: boolean;
 }
 
 /** 主视图高度（与作业管理同一套 3Dmol 视图） */
@@ -66,7 +69,7 @@ const normLabel = (value: unknown) => {
  * 能量曲线用 nebef.pl 的**全部**映像（还没同步结构的映像也画点），结构缺失的映像在主视图/
  * 缩略图里显示占位，保证三段索引始终对齐。
  */
-export default function NebImageMasterDetail({ taskId, images, barrier, steps }: Props) {
+export default function NebImageMasterDetail({ taskId, images, barrier, steps, report = false }: Props) {
   /** 合并映像列表（曲线/缩略图/主视图共用同一份索引） */
   const entries = useMemo<NebEntry[]>(() => {
     const byLabel = new Map<string, NebImage>();
@@ -101,6 +104,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
   }, [images, barrier]);
 
   const count = entries.length;
+  const imageLabel = (index: number) => entries[index]?.label.padStart(2, '0') ?? pad2(index);
   const [selected, setSelected] = useState(0);
   const [syncRotate, setSyncRotate] = useState(true);
   const [selectedAtoms, setSelectedAtoms] = useState<AtomRef[]>([]);
@@ -165,10 +169,11 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
   }, [entries, saddle, count]);
 
   const hasAnyStructure = entries.some((e) => e.cif);
+  const { ready: molReady } = use3Dmol(hasAnyStructure);
 
   // 「查看原子受力」：按当前映像取（切映像再切回来走组件内缓存）；无结构时禁用
   const currentEntry = entries[selected] ?? null;
-  const currentDirLabel = currentEntry?.dirLabel ?? pad2(selected);
+  const currentDirLabel = currentEntry?.dirLabel ?? imageLabel(selected);
   const force = useAtomicForces(taskId, currentEntry?.cif ? currentDirLabel : null);
   const cifElements = useMemo(() => {
     const parsed = structures[selected];
@@ -259,7 +264,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
   useEffect(() => {
     const host = offscreenHostRef.current;
     const $3Dmol = (window as any).$3Dmol;
-    if (!host || !$3Dmol || !hasAnyStructure) return undefined;
+    if (!host || !molReady || !$3Dmol || !hasAnyStructure) return undefined;
     host.innerHTML = '';
     let viewer: any = null;
     try {
@@ -279,7 +284,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
         /* ignore */
       }
     };
-  }, [entries, hasAnyStructure]);
+  }, [entries, hasAnyStructure, molReady]);
 
   /** 主视图 viewer 就绪：记下引用；相机变化（拖拽/滚轮）时同步缩略图视角 */
   const handleViewerReady = useCallback(
@@ -383,7 +388,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
           <div className="fe-stat__label">能垒 Ea</div>
           <div className="fe-stat__value">{signed(stats.saddleRel)}</div>
           <div className="fe-stat__sub">
-            {saddle >= 0 ? `最高点：映像 ${pad2(saddle)}` : '暂无数据'}
+            {saddle >= 0 ? `最高点：映像 ${imageLabel(saddle)}` : '暂无数据'}
           </div>
         </div>
         <div className="fe-stat">
@@ -392,7 +397,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
             {stats.maxForce == null ? '—' : stats.maxForce.toFixed(3)}
           </div>
           <div className="fe-stat__sub">
-            {stats.maxForceIdx >= 0 ? `映像 ${pad2(stats.maxForceIdx)}（eV/Å）` : '暂无数据'}
+            {stats.maxForceIdx >= 0 ? `映像 ${imageLabel(stats.maxForceIdx)}（eV/Å）` : '暂无数据'}
           </div>
         </div>
         <div className="fe-stat">
@@ -431,9 +436,9 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
                       isSaddle ? ' is-saddle' : ''
                     }`}
                     onClick={() => goto(i)}
-                    title={`切换到映像 ${pad2(i)}`}
+                    title={`切换到映像 ${imageLabel(i)}`}
                   >
-                    <td className="nebmd__table-idx">{pad2(i)}</td>
+                    <td className="nebmd__table-idx">{imageLabel(i)}</td>
                     <td>
                       {isSaddle ? '鞍点' : i === 0 ? '初态' : i === count - 1 ? '末态' : '中间态'}
                     </td>
@@ -451,8 +456,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
 
       {!hasAnyStructure ? (
         <div className="analysis-chart-empty">
-          尚未同步 NEB 映像结构：需要巡检推进到 25 离子步桶后自动抓取各映像 CONTCAR
-          （能量曲线与统计已可用）
+          {report ? '该报告未保存映像结构，能量曲线与统计仍可查看。' : '尚未同步 NEB 映像结构：需要巡检推进到 25 离子步桶后自动抓取各映像 CONTCAR（能量曲线与统计已可用）'}
         </div>
       ) : (
         <>
@@ -483,7 +487,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
                 onViewerReady={handleViewerReady}
                 toolbarExtra={
                   <span className="nebmd__extra">
-                    <span className="fe-chip">映像 {pad2(selected)}</span>
+                    <span className="fe-chip">映像 {imageLabel(selected)}</span>
                     <span className={`fe-badge ${roleClass}`}>{roleLabel}</span>
                     {current.relative != null && (
                       <span className="fe-num fe-num--strong">
@@ -500,19 +504,19 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
                         <Switch size="small" checked={syncRotate} onChange={setSyncRotate} />
                       </span>
                     </Tooltip>
-                    <AtomicForceControl
+                    {!report && <AtomicForceControl
                       state={force}
                       note={forceNote}
                       disabledReason={
                         current.cif ? null : '该映像尚未同步结构（缺 CONTCAR），无法对应原子受力'
                       }
-                    />
+                    />}
                   </span>
                 }
               />
             ) : (
               <div className="nebmd__no-structure">
-                映像 {pad2(selected)} 尚未同步结构（缺 CONTCAR），暂不能显示 3D 视图
+                映像 {imageLabel(selected)} 尚未同步结构（缺 CONTCAR），暂不能显示 3D 视图
               </div>
             )}
 
@@ -555,7 +559,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
                     itemSaddle ? ' is-saddle' : ''
                   }${entry.cif ? '' : ' is-empty'}`}
                   onClick={() => goto(i)}
-                  title={`映像 ${pad2(i)}${itemSaddle ? ' · 鞍点' : ''}${
+                  title={`映像 ${imageLabel(i)}${itemSaddle ? ' · 鞍点' : ''}${
                     entry.cif ? '' : ' · 尚未同步结构'
                   }`}
                 >
@@ -571,7 +575,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
                     <span className="nebmd__thumb-none">无结构</span>
                   )}
                   <span className="nebmd__thumb-cap">
-                    <span className="nebmd__thumb-idx">{pad2(i)}</span>
+                    <span className="nebmd__thumb-idx">{imageLabel(i)}</span>
                     <span className="nebmd__thumb-role">
                       {itemSaddle ? '鞍点' : i === 0 ? '初态' : i === count - 1 ? '末态' : '中间'}
                     </span>
@@ -593,10 +597,12 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps }:
       )}
 
       <div className="fe-footnote">
+        {report ? '结构与能量来自生成报告时保存的巡检数据；点击曲线、表格或缩略图切换映像，拖拽旋转，滚轮缩放。' : <>
         能量曲线来自 nebef.pl（全部映像）；3D 展示各映像<b>优化后</b>的结构（只取 CONTCAR，
         还没有 CONTCAR 的映像在缩略图里显示「无结构」占位）。3D 与其它任务共用同一套 3Dmol 视图，
         可点选原子、Shift 框选、a/b/c 视角；拖动主视图时缩略图跟着一起转（可在工具栏关掉「同步旋转」）。
         {steps != null ? ` 当前 NEB 推进约 ${steps} 离子步。` : ''}
+        </>}
       </div>
 
       {/* 离屏 3Dmol viewer：只用于把每张映像渲染成缩略图，不额外占用可见 WebGL 上下文 */}

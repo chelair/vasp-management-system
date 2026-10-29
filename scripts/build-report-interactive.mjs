@@ -28,6 +28,8 @@ await esbuild.build({
   format: 'iife',
   target: ['es2019'],
   platform: 'browser',
+  jsx: 'automatic',
+  define: { 'process.env.NODE_ENV': '"production"' },
   outfile,
   logLevel: 'error',
 });

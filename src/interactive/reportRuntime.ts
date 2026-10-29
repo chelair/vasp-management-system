@@ -16,6 +16,8 @@ import { mountPdosWidget } from './pdosWidget';
 import { mountWorkFunctionWidget, type WorkFunctionWidgetData } from './workFunctionWidget';
 import { mountStructure3D, type Structure3DPayload } from './structure3dWidget';
 import { mountFreeEnergy3D, type FreeEnergyStructure3D } from './structure3dWidget';
+import { mountNebWidget } from './nebWidget';
+import type { ReportNebItem } from '../components/reports/ReportPanels';
 
 interface ReportData {
   pdos?: Record<string, unknown>;
@@ -26,6 +28,7 @@ interface ReportData {
   bader?: Record<string, Structure3DPayload>;
   /** 自由能路径的中间体结构（3D 切换用），v0.9.73 */
   free_energy?: Record<string, FreeEnergyStructure3D[]>;
+  neb?: Record<string, ReportNebItem[]>;
 }
 
 function reportData(): ReportData {
@@ -41,7 +44,8 @@ function reportData(): ReportData {
  * —— 用户口径（2026-10-15）："HTML 只导出可交互的，不可交互的图留给 PDF 兜底"。
  */
 function hideStaticFigure(host: HTMLElement): void {
-  const prev = host.previousElementSibling;
+  let prev = host.previousElementSibling;
+  while (prev?.tagName === 'STYLE') prev = prev.previousElementSibling;
   if (prev && prev.tagName === 'FIGURE') {
     const figure = prev as HTMLElement;
     figure.classList.add('report-static-taken-over');
@@ -53,6 +57,12 @@ function mountOne(host: HTMLElement, data: ReportData): boolean {
   const kind = host.getAttribute('data-report-widget') || '';
   const taskId = host.getAttribute('data-task-id') || '';
   if (!taskId) return false;
+  if (kind === 'neb-3d') {
+    const items = data.neb?.[taskId];
+    if (!items || !mountNebWidget(host, items)) return false;
+    hideStaticFigure(host);
+    return true;
+  }
   if (kind === 'pdos-chart') {
     const view = data.pdos?.[taskId];
     if (!view) return false;

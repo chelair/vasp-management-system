@@ -38,6 +38,10 @@ MOL_MAX_BYTES = 4 * 1024 * 1024
 _RUNTIME_CACHE: Dict[str, Any] = {"stamp": None, "text": ""}
 
 
+def neb_css() -> str:
+    return (PROJECT_ROOT / "public" / "report" / "neb-structure.css").read_text(encoding="utf-8")
+
+
 def runtime_js() -> str:
     """读运行时 JS（按 mtime/size 缓存）。读不到返回空串 → 调用方走静态导出。"""
     try:
@@ -113,6 +117,7 @@ def interactive_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
         "structure": {},
         "bader": {},
         "free_energy": {},
+        "neb": {},
     }
     project_name = str(((doc.get("metadata") or {}).get("project_name")) or "")
     # 结构 3D（v0.9.72）：结构优化任务的 POSCAR/CONTCAR CIF 就在结构化数据里（无需读盘）
@@ -139,6 +144,10 @@ def interactive_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
         ]
         if group_id and items:
             payload["free_energy"][group_id] = items
+    from report_neb import has_structures
+    for item in (doc.get("science") or {}).get("neb") or []:
+        if has_structures(item):
+            payload["neb"][str(item["task_id"])] = [item]
     tasks = (((doc.get("science") or {}).get("ele") or {}).get("tasks")) or []
     for item in tasks:
         if not isinstance(item, dict):
@@ -172,6 +181,7 @@ def has_payload(payload: Optional[Dict[str, Any]]) -> bool:
         or (payload.get("structure") or {})
         or (payload.get("bader") or {})
         or (payload.get("free_energy") or {})
+        or (payload.get("neb") or {})
     )
 
 
@@ -209,6 +219,7 @@ def interactive_kwargs(doc: Dict[str, Any], *, interactive: bool) -> Dict[str, A
         (payload.get("structure") or {})
         or (payload.get("bader") or {})
         or (payload.get("free_energy") or {})
+        or (payload.get("neb") or {})
     )
     mol = mol_js() if need_mol else ""
     return {"interactive_js": runtime, "interactive_data": payload, "mol_js": mol}

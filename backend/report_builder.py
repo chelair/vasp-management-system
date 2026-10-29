@@ -1252,6 +1252,8 @@ def _sections_markdown(report, charts):
                 lines.append(f"![{item['task_name']} NEB 能垒看板]({item['chart']})")
             images = item.get("images") or []
             if images:
+                if any(img.get("cif") for img in images):
+                    lines.append(f"@[neb-3d:{item['task_id']}]")
                 saddle_label = item.get("transition_state_image")
                 max_force_label = None
                 force_values = [
@@ -1894,6 +1896,8 @@ def build_report(
             ),
             {},
         )
+        from report_neb import attach_structures
+        attach_structures(project, neb_obj, item)
         views_by_label = structure_images.neb_views(project_name, neb_obj) if neb_obj else {}
         for img in item["images"]:
             label_key = structure_images.image_label_key(img["label"])

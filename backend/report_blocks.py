@@ -770,6 +770,9 @@ def resolve_evidence(
             availability = "available" if any(s.get("free_energy_ev") is not None for p in items for s in p["structures"]) else "unparsed"
         else:
             items = _neb_details(members)
+            from report_neb import attach_structures
+            for item in items:
+                attach_structures(project, by_id[item["task_id"]], item)
             # Correct incomplete-image transition-state selection locally; do not invent force convergence.
             for item in items:
                 valid = [i for i in item["images"] if i.get("relative_energy_ev") is not None]

@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,7 +30,17 @@ ROOT = DATA_DIR / 'project_requirements'
 _LOCK = threading.RLock()
 _PENDING: dict = {}
 _WORKING = False
+_DEFER_EXTRACTION = ContextVar('project_requirements_defer_extraction', default=False)
 TEXT_FIELDS = ('description', 'calc_description', 'expected_results', 'original_request')
+
+
+@contextmanager
+def defer_extraction():
+    token = _DEFER_EXTRACTION.set(True)
+    try:
+        yield
+    finally:
+        _DEFER_EXTRACTION.reset(token)
 
 
 class Strict(BaseModel):
@@ -150,8 +162,17 @@ def view(project):
     if doc.get('mapped_hash') != doc['source_hash']:
         doc['mapping'] = {}
         doc['comparisons'] = []
-    doc['note'] = '用户原文是依据；对应表为AI解释，名称匹配不是科学关系验证。预期不代表实际结论。'
+    doc['binding_summary'] = binding_summary(doc.get('mapping', {}))
+    doc['note'] = 'ready仅表示原文已整理，不代表任务全部关联或可执行；以binding_summary核对缺项。对应表为AI解释，名称匹配不是科学关系验证。预期不代表实际结论。'
     return doc
+
+
+def binding_summary(mapping):
+    calculations = mapping.get('calculations', [])
+    missing = [{'key':c['key'], 'title':c['title']} for c in calculations
+               if not (c.get('task_ids') or c.get('group_ids') or
+                       any(i.get('task_id') or i.get('energy_value') is not None for i in c.get('inputs', {}).values()))]
+    return {'total':len(calculations), 'bound':len(calculations)-len(missing), 'unbound':missing}
 
 
 def summary(project):
@@ -159,6 +180,7 @@ def summary(project):
     doc = view(project)
     mapping = doc.get('mapping', {})
     return {'status': doc['status'], 'revision': doc['revision'], 'source_hash': doc['source_hash'],
+            'binding_summary':doc['binding_summary'],
             'models': mapping.get('models', []),
             'calculations': [{k:c[k] for k in ('key','title','kind','model_keys','task_ids','analyses')} for c in mapping.get('calculations', [])],
             'expectations': mapping.get('expectations', []),
@@ -180,6 +202,7 @@ def _validate(project, mapping):
         for item in collection:
             if item.source.quote not in raw[item.source.field]:
                 raise ValueError('对应表引用必须来自当前项目原文，不能改写来源')
+    electronic_analyses = {'dos', 'pdos', 'diff_charge', 'charge_density_difference', 'bader', 'work_function'}
     for calc in model.calculations:
         if calc.source.field == 'original_request':
             raise ValueError('计算内容必须以当前描述为准，不能从历史原始请求恢复已删除内容')
@@ -187,6 +210,8 @@ def _validate(project, mapping):
             raise ValueError('计算内容引用了不存在的模型')
         if not set(calc.task_ids) <= task_map.keys() or not set(calc.group_ids) <= groups:
             raise ValueError('对应表只能关联当前项目的真实任务和分组')
+        if (calc.kind == 'ele' or set(calc.analyses) & electronic_analyses) and any(task_map[tid].get('task_type') != 'ele' for tid in calc.task_ids):
+            raise ValueError('电子结构分析必须关联电子结构主任务，不能挂到优化或其他任务')
         if set(calc.inputs) - {'surface', 'adsorbate', 'complex'}:
             raise ValueError('吸附能只接受基底、吸附物和完整构型三个角色')
         for item in calc.inputs.values():
@@ -208,6 +233,17 @@ def _validate(project, mapping):
             raise ValueError('预期引用了不存在的计算内容')
         if exp.left and exp.left == exp.right:
             raise ValueError('预期比较的两项计算不能相同')
+    # Reuse an explicitly bound electronic calculation for another analysis of
+    # the exact same model set. Do not infer model identity from similar names.
+    for calc in model.calculations:
+        if calc.task_ids or calc.group_ids or not calc.model_keys or not (set(calc.analyses) & electronic_analyses):
+            continue
+        candidates = {tuple(sorted(other.task_ids)) for other in model.calculations
+                      if other is not calc and set(other.model_keys) == set(calc.model_keys)
+                      and other.task_ids and all(task_map[tid].get('task_type') == 'ele' for tid in other.task_ids)}
+        if len(candidates) == 1:
+            calc.task_ids = list(next(iter(candidates)))
+            calc.kind = 'ele'
     return model.model_dump(exclude_none=True)
 
 
@@ -319,7 +355,7 @@ def evaluate(project_id, user):
 
 EXTRACTION_PROMPT = '''你是VASP项目需求翻译器。只返回符合给定schema的JSON，不执行操作。
 当前description/calc_description/expected_results是最新权威原文；original_request仅补充模型背景，不能恢复已删除预期。
-提取模型/别名、计算内容、预期与真实task_id/group_id对应。一个模型一个电子结构主任务可含DOS/PDOS/差分等多个analyses。
+提取模型/别名、计算内容、预期与真实task_id/group_id对应。一个模型一个电子结构主任务可含DOS/PDOS/差分等多个analyses；相同model_keys的这些分析复用同一组ele任务，不能只在回复中声称关联。无任务关联的条目需如实列为待关联，ready不是可执行状态。
 每项source必须引用相应字段的原文连续子串，原文没写预期就不编造。AI推断仅记details/questions，不伪装原文。
 尚未创建任务可保留空task_ids。多个候选/位点不随机选择，在questions说明。inputs仅绑定明确的surface/adsorbate/complex；缺项留空。
 吸附能property_id用adsorption.estimate；其他性质可记录名称但不假定已支持自动计算。比较left/right引用计算key。
@@ -409,7 +445,7 @@ def projects_saved(db, previous=None):
         if not any(sources(project).values()) and not _path(project['project_id']).exists():
             continue
         doc = touch(project)
-        if doc['status'] == 'pending' and user and permissions.owned_by(project, user):
+        if doc['status'] == 'pending' and user and permissions.owned_by(project, user) and not _DEFER_EXTRACTION.get():
             schedule(project['project_id'], user)
 
 

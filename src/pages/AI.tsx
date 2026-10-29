@@ -217,6 +217,8 @@ export default function AI() {
     catch (e) { if (selectedRef.current === id) void message.error(errorText(e)); }
   };
   const project = asObject(context?.project), summary = asObject(context?.summary);
+  const requirements = asObject(context?.requirements), bindings = asObject(requirements.binding_summary);
+  const unbound = Array.isArray(bindings.unbound) ? bindings.unbound.length : 0;
   const projectTasks = Array.isArray(context?.tasks) ? context.tasks.map(asObject) : [];
   const checks = asObject(context?.checks), actions = asObject(context?.actions);
 
@@ -349,7 +351,7 @@ export default function AI() {
                 { key: 'deadline', label: '截止时间', children: show(project.deadline) },
               ]} /><div className="ai-actions">{Object.entries(asObject(summary.status_counts)).map(([status, count]) => <Tag key={status}>{TASK_STATUS[status] ?? status} {show(count)}</Tag>)}</div>
               <h4>项目说明</h4><p className="ai-context-text">{show(project.description)}</p>
-              <h4>需求对应</h4><p className="ai-context-text">{asObject(context?.requirements).status === 'ready' ? '计算内容与预期已整理，AI可按需读取关联任务和结果。' : asObject(context?.requirements).status === 'pending' ? '资料已保存，计算内容与预期对应表待整理。' : '尚未填写项目需求。'}</p>
+              <h4>需求对应</h4><p className="ai-context-text">{requirements.status === 'ready' ? unbound ? `计算内容与预期已整理，仍有${unbound}项计算内容待关联。` : '计算内容与预期已整理，AI可按需读取关联任务和结果。' : requirements.status === 'pending' ? '资料已保存，计算内容与预期对应表待整理。' : '尚未填写项目需求。'}</p>
               <h4>计算目标</h4><p className="ai-context-text">{show(project.calc_description)}</p><h4>预期结果</h4><p className="ai-context-text">{show(project.expected_results)}</p>
               <h4>项目任务概览{projectTasks.length > 10 ? `（前 10 / 共 ${projectTasks.length}）` : ''}</h4>{projectTasks.slice(0, 10).map((task) => <div className="ai-record" key={String(task.task_id)}>
                 <strong>{show(task.task_name)}</strong><span>{TYPES[String(task.task_type)] ?? show(task.task_type)} · {TASK_STATUS[String(task.status)] ?? show(task.status)}</span>

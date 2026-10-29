@@ -9,7 +9,7 @@ const detail={id:'c1',title:'新项目需求',task_id:null,project_id:null,conne
   created_at:stamp,updated_at:stamp,messages:[],runs:[],has_more:false};
 const task={id:'alloy',name:'Alloy_opt',type:'opt',status:'pending',group:''};
 const project={id:'p1',name:'RuCu_NG',closed:false,tasks:[task]};
-let live, created=false;
+let live, created=false, unresolved=false;
 const requests=[];
 (async()=>{
   const bundle=await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import{App}from'antd';import{MemoryRouter}from'react-router-dom';import{AppearanceProvider}from'./src/context/AppearanceContext';import AI from'./src/pages/AI';import'./src/styles/global.css';createRoot(document.getElementById('root')).render(<AppearanceProvider><App><MemoryRouter initialEntries={['/ai?conversation=c1']}><AI/></MemoryRouter></App></AppearanceProvider>);`,loader:'tsx',resolveDir:path.resolve('.')},bundle:true,write:false,outfile:'app.js',jsx:'automatic',define:{'process.env.NODE_ENV':'"development"'}});
@@ -36,7 +36,7 @@ const requests=[];
     else if(route.endsWith('/targets')) data={items:created?[project]:[]};
     else if(route.endsWith('/conversations')) data={items:[detail]};
     else if(route.endsWith('/conversations/c1')) data=detail;
-    else if(route.endsWith('/context')) data=created?{scope:'project',project:{name:'RuCu_NG',calc_description:'三个结构优化',expected_results:'预期吸附能 A > B'},requirements:{status:'ready'},tasks:[{task_id:'alloy',task_name:'Alloy_opt',task_type:'opt',status:'pending'}],summary:{task_count:1},source:{kind:'local_project_snapshot'}}:{scope:'general'};
+    else if(route.endsWith('/context')) data=created?{scope:'project',project:{name:'RuCu_NG',calc_description:'三个结构优化',expected_results:'预期吸附能 A > B'},requirements:{status:'ready',binding_summary:{unbound:unresolved?[{key:'diff',title:'差分电荷'}]:[]}},tasks:[{task_id:'alloy',task_name:'Alloy_opt',task_type:'opt',status:'pending'}],summary:{task_count:1},source:{kind:'local_project_snapshot'}}:{scope:'general'};
     else if(route.endsWith('/messages')){
       let raw='';for await(const part of req)raw+=part;assert.equal(JSON.parse(raw).content,'按原始需求建立RuCu_NG项目');
       live={id:'live',conversation_id:'c1',message_id:'a1',status:'running',model:'mock',connection_name:'测试模型',prompt_version:1,error:'',created_at:stamp,finished_at:null,usage:{},tool_events:[{id:'create',name:'create_project_from_request',arguments:{},result:{},status:'running',at:stamp}]};
@@ -58,11 +58,12 @@ const requests=[];
     await page.getByText('计算内容与预期已整理，AI可按需读取关联任务和结果。',{exact:true}).waitFor();
     await page.getByText('预期吸附能 A > B',{exact:true}).waitFor();
     await page.locator('.ant-drawer-close').click();
+    unresolved=true;
     await page.setViewportSize({width:390,height:844});
     await page.reload();
     await page.getByRole('button',{name:'项目资料',exact:true}).click();
     await page.getByRole('tab',{name:'基本信息',exact:true}).click();
-    await page.getByText('计算内容与预期已整理，AI可按需读取关联任务和结果。',{exact:true}).waitFor();
+    await page.getByText('计算内容与预期已整理，仍有1项计算内容待关联。',{exact:true}).waitFor();
     assert.equal(requests.filter(r=>r.method==='POST').length,1);
     assert.ok(requests.filter(r=>r.path.endsWith('/targets')).length>=2);
     assert.deepEqual(errors,[]);

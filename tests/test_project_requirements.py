@@ -34,7 +34,8 @@ RAW = '''模型：合金、界面、分离三个模型。
 自由能：合金六个构型。
 H迁移：界面五个中间映像。
 预期吸附能 A > B。
-交付：2026-12-15'''
+交付：2026-12-15
+服务器：server1'''
 
 
 def stream(delta):
@@ -65,8 +66,8 @@ class RequirementsTests(unittest.TestCase):
             'original_request':RAW, 'description':RAW.splitlines()[0],
             'calc_description':'\n'.join(RAW.splitlines()[1:4]), 'expected_results':'预期吸附能 A > B。',
             'tasks':[{'model_name':f'{name}_{kind}', 'task_type':kind} for name in ('Alloy','Interface','Separated') for kind in ('opt','ele')],
-            'groups':[{'name':'Alloy_NO3RR', 'group_type':'free_energy','structures':6},
-                      {'name':'Interface_H', 'group_type':'neb','images':5}]}
+            'groups':[{'name':'Alloy_NO3RR', 'group_type':'free_energy','structures':6,'quantity_source':'合金六个构型'},
+                      {'name':'Interface_H', 'group_type':'neb','images':5,'quantity_source':'界面五个中间映像'}]}
         result = setup.dispatch(None, self.conv, ALICE, 'create_project_from_request', args)
         self.assertTrue(result.get('contents_complete'), result)
         project = storage.load_db()['projects'][0]
@@ -90,6 +91,138 @@ class RequirementsTests(unittest.TestCase):
             for key in ('A','B')], 'expectations':[{'key':'ads-order','description':'A的吸附能大于B',
             'source':{'field':'expected_results','quote':'预期吸附能 A > B。'},'property_id':'adsorption.estimate',
             'left':'A','right':'B','operator':'gt','meaning':'numeric'}]}
+
+    def user_message(self, text, conversation=None):
+        conversation = conversation or self.conv
+        with store.database() as db:
+            db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES (?,?,'user',?,'completed','now')",
+                       (store.uid(), conversation['id'], text))
+
+    def test_ambiguous_counts_deferred_short_model_names_and_confirmed_resume(self):
+        raw = ('模型1为合金，模型2为异质结，模型3为分离团簇。\n'
+               '3个NO3RR台阶图，共6个中间体，预期：性能2>1>3。\n'
+               '3条H迁移能垒，5个点，预期：性能1>2>3。\n服务器：server1')
+        self.user_message(raw)
+        args = {'name':'ShortNames', 'deadline':'2026-12-15', 'server':'server1', 'original_request':raw,
+                'description':raw.splitlines()[0], 'calc_description':'\n'.join(raw.splitlines()[1:3]),
+                'expected_results':'预期：性能2>1>3\n预期：性能1>2>3\n交付：2026-12-15',
+                'tasks':[{'model_name':label,'task_type':kind} for label in ('M1_Alloy','M2_Hetero','M3_Ru_Cu') for kind in ('opt','ele')],
+                'groups':[{'name':label+'_NO3RR','group_type':'free_energy','structures':2,'quantity_source':'6个中间体'} for label in ('Alloy','Hetero','Ru_Cu')] +
+                         [{'name':label+'_H','group_type':'neb','images':5,'quantity_source':'5个点'} for label in ('Alloy','Hetero','Ru_Cu')]}
+        permissions.set_current_user(ALICE)
+        result = setup.dispatch(None,self.conv,ALICE,'create_project_from_request',args)
+        self.assertFalse(result['contents_complete'])
+        self.assertEqual(len(result['pending_contents']),6)
+        project = storage.load_db()['projects'][0]
+        self.assertEqual(len(project['tasks']),6)
+        self.assertEqual({t['model_name'] for t in project['tasks']}, {label+'_'+kind for label in ('M1_Alloy','M2_Hetero','M3_Ru_Cu') for kind in ('opt','ele')})
+        self.assertFalse((config.PROJECTS_DIR / project['name'] / 'free_energy').exists())
+        self.assertFalse((config.PROJECTS_DIR / project['name'] / 'neb').exists())
+        self.assertIn('3个NO3RR台阶图',project['expected_results'])
+        self.assertIn('3条H迁移能垒',project['expected_results'])
+        self.assertNotIn('交付',project['expected_results'])
+        self.schedule.assert_not_called()
+        confirmed = '每个模型6个中间体；H迁移含初末态共5个点。'
+        self.user_message(confirmed)
+        groups = copy.deepcopy(args['groups'])
+        for g in groups:
+            if g['group_type'] == 'free_energy':
+                g.update(structures=6,quantity_source='每个模型6个中间体')
+            else:
+                g.update(images=3,quantity_source='含初末态共5个点')
+        with store.database() as db:
+            conversation=store.owned(db,'conversations',self.conv['id'],ALICE['user_id'])
+        result=setup.dispatch(project,conversation,ALICE,'create_calculation_contents',{'groups':groups})
+        self.assertTrue(result['contents_complete'])
+        latest=storage.load_db()['projects'][0]
+        self.assertEqual(len(latest['tasks']),51)
+        self.assertEqual(latest['workload'],'large')
+        self.assertEqual(latest['priority_quadrant'],'not_urgent_large')
+        setup.dispatch(latest,conversation,ALICE,'create_calculation_contents',{'groups':groups})
+        self.assertEqual(len(storage.load_db()['projects'][0]['tasks']),51)
+        self.schedule.assert_not_called()
+        self.ssh.assert_not_called()
+
+    def test_unconfirmed_server_does_not_create_anything(self):
+        conversation=store.create_conversation(ALICE['user_id'],'无服务器',None,self.conn['id'])
+        raw='建立合金优化项目，2026-12-15交付。'
+        self.user_message(raw,conversation)
+        result=setup.dispatch(None,conversation,ALICE,'create_project_from_request',{
+            'name':'NoServer','deadline':'2026-12-15','server':'server1','original_request':raw,
+            'tasks':[{'model_name':'Alloy_opt','task_type':'opt'}]})
+        self.assertFalse(result['project_created'])
+        self.assertTrue(result['questions'])
+        self.assertEqual(storage.load_db()['projects'],[])
+        self.assertFalse((config.PROJECTS_DIR/'NoServer').exists())
+        self.assertFalse(setup._server_selected('server1',['使用server10']))
+        self.assertFalse(setup._server_selected('server1',['不要用默认服务器']))
+        self.assertTrue(setup._server_selected('server1',['就用默认服务器']))
+
+    def test_quantities_require_real_unambiguous_source_and_matching_count(self):
+        for kwargs, text in [
+            ({'structures':2,'quantity_source':'每个模型2个中间体'},'共6个中间体'),
+            ({'structures':2,'quantity_source':'6个中间体'},'共6个中间体'),
+            ({'structures':5,'quantity_source':'每模型6个中间体'},'每模型6个中间体'),
+            ({'structures':5,'quantity_source':'5个中间体'},'1.5个中间体'),
+        ]:
+            with self.subTest(kwargs=kwargs):
+                group=setup.Group(name='Alloy_NO3RR',group_type='free_energy',**kwargs)
+                self.assertTrue(setup._quantity_problem(group,[text]))
+        group=setup.Group(name='Alloy_NO3RR',group_type='free_energy',structures=6,quantity_source='模型1共6个中间体')
+        self.assertEqual(setup._quantity_problem(group,['模型1共6个中间体']), '')
+        group=setup.Group(name='Alloy_H',group_type='neb',images=5,quantity_source='5个点')
+        self.assertTrue(setup._quantity_problem(group,['H迁移5个点']))
+
+    def test_saved_electronic_bindings_reused_only_for_same_unambiguous_models(self):
+        project,_=self.create()
+        electrons=[t['task_id'] for t in project['tasks'] if t['task_type']=='ele']
+        mapping={'models':[{'key':name,'name':name,'source':{'field':'description','quote':'合金、界面、分离三个模型'}} for name in ('alloy','interface','separate')],
+                 'calculations':[
+                     {'key':'dos','title':'DOS/PDOS','kind':'ele','model_keys':['alloy','interface','separate'], 'task_ids':electrons,'analyses':['dos','pdos'],
+                      'source':{'field':'calc_description','quote':'DOS/PDOS'}},
+                     {'key':'diff','title':'差分电荷','kind':'other','model_keys':['alloy','interface','separate'], 'analyses':['charge_density_difference'],
+                      'source':{'field':'calc_description','quote':'差分电荷'}}]}
+        result=req.save_mapping(project['project_id'],ALICE,req.fingerprint(project),mapping)
+        diff=result['mapping']['calculations'][1]
+        self.assertEqual(set(diff['task_ids']),set(electrons))
+        self.assertEqual(diff['kind'],'ele')
+        self.assertEqual(result['binding_summary'],{'total':2,'bound':2,'unbound':[]})
+        mapping['calculations'][1]['model_keys']=['alloy']
+        result=req.save_mapping(project['project_id'],ALICE,req.fingerprint(project),mapping)
+        self.assertEqual(result['binding_summary']['unbound'],[{'key':'diff','title':'差分电荷'}])
+        self.assertEqual(req.summary(project)['binding_summary'],result['binding_summary'])
+        mapping['calculations'][1]['model_keys']=['alloy','interface','separate']
+        alternate=copy.deepcopy(mapping['calculations'][0]);alternate.update(key='another_dos',task_ids=electrons[:1])
+        mapping['calculations'].append(alternate)
+        result=req.save_mapping(project['project_id'],ALICE,req.fingerprint(project),mapping)
+        self.assertEqual(result['binding_summary']['unbound'],[{'key':'diff','title':'差分电荷'}])
+        mapping['calculations'][1]['task_ids']=[project['tasks'][0]['task_id']]
+        with self.assertRaisesRegex(ValueError,'电子结构主任务'):
+            req.save_mapping(project['project_id'],ALICE,req.fingerprint(project),mapping)
+
+    def test_mapping_tool_receipt_reports_real_bindings_without_repeating_sources(self):
+        project=self.adsorption_project()
+        doc=req.view(project)
+        result=setup.dispatch(project,self.conv,ALICE,'save_project_requirements',{
+            'source_hash':doc['source_hash'],'expected_revision':doc['revision'],'mapping':self.mapping()})
+        self.assertIn('mapping',result)
+        self.assertIn('binding_summary',result)
+        self.assertNotIn('sources',result)
+        self.assertNotIn('tasks',result)
+        self.assertEqual(result['mapping'],req.view(project)['mapping'])
+
+    def test_separate_requests_for_same_model_reuse_names_without_renaming_files(self):
+        project,_=self.create()
+        original_names=[t['model_name'] for t in project['tasks']]
+        result=setup.dispatch(project,self.conv,ALICE,'create_calculation_contents',{'tasks':[{'model_name':'Alloy','task_type':'opt'}]})
+        self.assertTrue(result['contents'][0]['existing'])
+        self.assertEqual([t['model_name'] for t in storage.load_db()['projects'][0]['tasks']],original_names)
+        setup.dispatch(project,self.conv,ALICE,'create_calculation_contents',{'tasks':[{'model_name':'NewAlloy','task_type':'opt'}]})
+        result=setup.dispatch(project,self.conv,ALICE,'create_calculation_contents',{'tasks':[{'model_name':'NewAlloy','task_type':'ele'}]})
+        self.assertEqual(result['contents'][0]['model_name'],'NewAlloy_ele')
+        result=setup.dispatch(project,self.conv,ALICE,'create_calculation_contents',{'tasks':[{'model_name':'NewAlloy','task_type':'ele'}]})
+        self.assertTrue(result['contents'][0]['existing'])
+        self.assertEqual(len(storage.load_db()['projects'][0]['tasks']),len(original_names)+2)
 
     def test_intake_reuses_core_unique_ids_idempotent_no_remote(self):
         project,args = self.create()
@@ -204,9 +337,16 @@ class RequirementsTests(unittest.TestCase):
 
     def test_partial_registration_resume_protects_existing_files_and_default_group_name(self):
         project,args=self.create()
-        from routers.groups import core_create_group
+        from routers.groups import core_create_group, add_group_structures, AddStructuresPayload, _register_tasks
         result=core_create_group({'project':project['name'],'group_type':'free_energy','structures':1},SimpleNamespace(state=SimpleNamespace(user=ALICE)),local_only=True)
         self.assertTrue(result.get('success'),result)
+        db=storage.load_db();db['projects'][0]['workload']='small';storage.save_db(db,backup=False)
+        added=add_group_structures(result['data']['group_id'],AddStructuresPayload(count=1),SimpleNamespace(state=SimpleNamespace(user=ALICE)))
+        self.assertTrue(added.get('success'),added)
+        self.assertEqual(storage.load_db()['projects'][0]['workload'],'large')
+        legacy={'projects':[{'name':'Legacy','tasks':[]}]}
+        _register_tasks(legacy,'Legacy',[{'task_type':'opt'}])
+        self.assertEqual(len(legacy['projects'][0]['tasks']),1)
         orphan=config.PROJECTS_DIR / project['name'] / 'ele' / 'Unregistered'
         orphan.mkdir(parents=True)
         (orphan / 'INCAR').write_text('existing-computation-do-not-overwrite')

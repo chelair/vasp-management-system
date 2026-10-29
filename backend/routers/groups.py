@@ -24,7 +24,7 @@ from envelope import fail, ok
 import permissions
 from paths import remote_root, to_local_rel, to_remote_rel
 from storage import load_db, save_db
-from task_paths import CATEGORY_DIRS
+from task_paths import CATEGORY_DIRS, is_auxiliary_task
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
@@ -147,6 +147,12 @@ def _write_default_inputs(task_path: Path, task_type: str, images: Optional[int]
 def _register_tasks(db: Dict[str, Any], project_name: str, tasks: List[Dict[str, Any]]) -> None:
     project = next(p for p in db["projects"] if p["name"] == project_name)
     project["tasks"].extend(tasks)
+    if not project.get('deadline'):
+        return  # Legacy records without a date must still be able to register tasks.
+    from priority import compute_priority
+    priority = compute_priority(project['deadline'],
+        [t for t in project['tasks'] if not is_auxiliary_task(t)], load_task_registry(), load_settings())
+    project.update(workload=priority['workload'], urgency=priority['urgency'], priority_quadrant=priority['quadrant'])
 
 
 def _try_remote_mkdir(server: str, remote_dir: str) -> Optional[str]:
@@ -433,7 +439,7 @@ def add_group_structures(group_id: str, payload: AddStructuresPayload, request: 
                 input_source={"poscar_from": f"{opt_path}/CONTCAR"},
             )
             new_tasks.append(frac_task)
-        project["tasks"].extend(new_tasks)
+        _register_tasks(db, project['name'], new_tasks)
         save_db(db)
         return ok(
             "结构已添加",

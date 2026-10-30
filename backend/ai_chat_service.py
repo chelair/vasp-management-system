@@ -517,7 +517,7 @@ class TextGenerationControl:
 
 
 def readonly_json_completion(owner: str, connection_id: str, messages: list,
-                             control: TextGenerationControl | None = None, *, max_output_tokens: int = 4096) -> tuple[dict, str]:
+                             control: TextGenerationControl | None = None, *, max_output_tokens: int | None = None) -> tuple[dict, str]:
     """复用私有连接、密钥解密与兼容流式请求；固定无工具，只返回完整 JSON。"""
     control = control or TextGenerationControl()
     control.check()
@@ -527,7 +527,9 @@ def readonly_json_completion(owner: str, connection_id: str, messages: list,
         connection = store.owned(db, "connections", connection_id, owner)
     key = store.decrypt(connection["secret"])
     messages = clean(messages, (key,))
-    payload = completion_payload({**connection, "max_tokens": min(connection["max_tokens"], max_output_tokens)}, messages)
+    output_connection = connection if max_output_tokens is None else {
+        **connection, "max_tokens": min(connection["max_tokens"], max_output_tokens)}
+    payload = completion_payload(output_connection, messages)
     timer = threading.Timer(120, control.cancel)
     timer.daemon = True
     timer.start()

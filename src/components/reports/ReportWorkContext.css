@@ -1,0 +1,17 @@
+.report-work-drawer .ant-drawer-body { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.report-work-hint { color: var(--text-secondary, #666); margin-bottom: 0; }
+.report-work-progress { flex-shrink: 0; }
+.report-work-messages { flex: 1; min-height: 100px; overflow-y: auto; overflow-wrap: anywhere; }
+.report-work-message { padding: 12px; margin-block: 10px; border: 1px solid var(--border-color, #eee); border-radius: 10px; }
+.report-work-message--user { background: var(--bg-secondary, #f7f9fb); }
+.report-work-message small, .report-work-composer small { display: block; color: var(--text-secondary, #666); }
+.report-work-message pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-work-message .ai-activity-summary { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 8px 0; cursor: pointer; color: inherit; }
+.report-work-message .ai-activity-body { padding: 8px; background: var(--bg-secondary, #f7f9fb); }
+.report-work-message .ai-tool-call summary { display: flex; gap: 8px; cursor: pointer; }
+.report-work-message .ai-tool-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-work-drafts { max-height: 140px; overflow-y: auto; flex-shrink: 0; }
+.report-work-drafts > div { margin-block: 10px; }
+.report-work-composer { flex-shrink: 0; background: var(--bg-primary, white); padding-top: 8px; }
+.report-work-composer > button { margin-top: 8px; }
+@media (max-width: 720px) { .report-work-drawer .ant-drawer-content-wrapper { width: 100% !important; } }

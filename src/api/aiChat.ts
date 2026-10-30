@@ -32,6 +32,7 @@ export interface AIRun {
   tool_events: { id: string; name: string; arguments: Record<string, unknown>; result: Record<string, unknown>; status: string; at: string; reasoning_offset?: number }[];
   /** 可选展示：模型思考链路（服务商返回时才有，后端截断到 6 万字符） */
   reasoning?: string;
+  report_progress?: { done: number; total: number; label: string };
 }
 export interface AIConversation {
   id: string; task_id: string | null; title: string; connection_id: string | null;

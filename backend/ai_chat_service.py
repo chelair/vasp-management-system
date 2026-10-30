@@ -117,6 +117,8 @@ def task_pair(user: dict, task_id: str):
 
 
 def ensure_conversation(user: dict, conversation: dict):
+    from report_background import ensure_scope
+    ensure_scope(user, conversation)
     if conversation.get("project_id"):
         project_for(user, conversation["project_id"])
     elif conversation.get("task_id"):
@@ -471,6 +473,8 @@ def _cancelled(run_id: str) -> bool:
 
 def cancel_stream(run_id: str):
     """关闭本次上游流；停止标记已持久化，关闭失败也不会继续接收答案。"""
+    from report_background import stop
+    stop(run_id)
     with _UPSTREAM_LOCK:
         response = _UPSTREAMS.get(run_id)
     if response is not None:
@@ -710,7 +714,11 @@ def _required_path_reviews(question, answer, project):
     return {t['task_id'] for t in mentioned or paths}
 
 
-def _generate(run_id: str, connection: dict, key: str, messages: list, user: dict, workspace_enabled: bool = False):
+def _generate(run_id: str, connection: dict, key: str, messages: list, user: dict, workspace_enabled: bool = False, *, report_job=None):
+    if report_job is not None:
+        from report_background import execute
+        execute(run_id, user, report_job)
+        return
     text, usage = "", {}
     hold = max(96, len(key))
     started = time.monotonic()

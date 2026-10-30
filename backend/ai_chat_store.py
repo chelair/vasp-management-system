@@ -233,6 +233,9 @@ def public_run(row, *, snapshot: bool = False) -> dict:
     out["tool_events"] = json.loads(row["tool_events"])
     # 思考链路只作可选展示；限制长度，避免单条消息把接口拖大。
     out["reasoning"] = str(row["reasoning"] or "")[:60000]
+    saved = json.loads(row['snapshot'])
+    if 'report_progress' in saved:
+        out['report_progress'] = saved['report_progress']
     if snapshot:
         out["snapshot"] = json.loads(row["snapshot"])
     return out
@@ -263,7 +266,7 @@ def detail(owner: str, item_id: str, before: int | None = None) -> dict:
             f"""SELECT * FROM runs WHERE conversation_id=? AND
                 (message_id IN ({placeholders}) OR id IN
                  (SELECT id FROM runs WHERE conversation_id=? ORDER BY created_at DESC LIMIT 30))
-                ORDER BY created_at DESC""", (item_id, *ids, item_id))]
+                ORDER BY created_at DESC,rowid DESC""", (item_id, *ids, item_id))]
         return convo
 
 

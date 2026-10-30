@@ -37,11 +37,11 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await page.getByRole('button',{name:'保存批注',exact:true}).click();
   const comment=page.locator('.report-review-comment').last();await comment.getByText('待处理',{exact:true}).waitFor();
   await page.getByRole('combobox',{name:'批注处理模型'}).click();await page.getByText('隔离模型 · mock',{exact:true}).click();
-  await comment.getByRole('button',{name:'让AI处理',exact:true}).click();await comment.getByText('已完成',{exact:true}).waitFor();
+  await comment.getByRole('button',{name:'让AI处理',exact:true}).click();
   await page.locator('.report-content').getByText('浏览器核对后的报告解释，原有结构交互继续保留。',{exact:true}).waitFor();
+  await page.locator('.report-work-drawer').getByRole('button',{name:'Close',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.REVIEW_XSS),undefined);assert.deepEqual(external,[]);
   assert.ok(await page.locator('.report-3d').count()>=2);
-  await page.getByRole('button',{name:'Close',exact:true}).last().click();
   await page.locator('.report-3d').first().getByText('初始（POSCAR）',{exact:true}).click();
   await page.locator('[data-panel="free-energy"]').waitFor();
   await page.locator('.report-content h6').filter({hasText:'Path'}).getByRole('button',{name:'批注',exact:true}).click();
@@ -50,8 +50,9 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   const pathComment=page.locator('.report-review-comment').last();
   await pathComment.getByText('待处理',{exact:true}).waitFor();
   await pathComment.getByRole('button',{name:'让AI处理',exact:true}).click();
-  await pathComment.getByText('已完成',{exact:true}).waitFor();
-  await page.getByRole('button',{name:'Close',exact:true}).last().click();
+  await page.locator('.report-work-drawer').getByText('已经复用原台阶图、结构窗口和表格，按要求显示所选四项。',{exact:true}).waitFor();
+  await page.locator('.report-work-drawer').getByRole('button',{name:'Close',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.report-fe3d__btn').length===4);
   assert.equal(await page.locator('.report-fe3d__btn').count(),4);
   assert.equal((await page.locator('.report-fe3d__btn').first().textContent()).trim(),'结构 4');
   await page.locator('.report-fe3d__btn').filter({hasText:'结构 1'}).click();

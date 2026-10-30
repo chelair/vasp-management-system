@@ -82,6 +82,12 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 完整报告AI注解：项目ai_report_notes_enabled默认false，开关位于智能报告页。`GET /api/reports/project/{id}/notes/ai-status`，`POST .../notes/ai-preview`接收key/connection_id仅返回草稿；原PUT notes可带draft_token/expected_revision及restore_previous。普通generate不等待模型，不接HPC工具。
 
+完整报告后台入口：`GET /api/reports/assistant/{scope}`恢复本人报告对话和待审草稿；scope为项目ID或all（仅当前可见未关闭项目批量生成）。`POST`同路径接收`action=generate/notes/comment/chat`、幂等request_id、可选本人connection_id/report_id/keys/comment_id/content，立即返回原AIRun，不等待生成结束；notes/comment/chat须本人连接，comment须comment_id，chat须content。前端生成、批量注解及批注入口均使用该接口，旧同步generate/ai-preview/review/process供兼容调用，不作为页面后台任务入口。
+
+后台沿用原`/api/ai/chat/runs/{id}`、`/{id}/events`和`/{id}/cancel`；public run可带report_progress(done/total/label)，表示当前真实阶段数量，不模拟耗时百分比。关闭SSE不取消任务，只有显式cancel停止。GET返回conversation（原消息/运行格式）和drafts[{report_id,run_id,title,draft}]；`DELETE /api/reports/assistant/{scope}/drafts/{run_id}/{key}`移除本人待审草稿，key为URL编码的`report_id:注解key`。草稿复用原保存来源凭据、指纹和修订检查，未保存不进导出。运行快照新增report_job/report_progress/report_drafts，无新表或新列；服务重启标记interrupted，不自动重试模型。
+
+原AI项目工具轮新增get_full_project_report、generate_full_project_report、generate_project_report_notes、reply_project_report_comment、process_project_report_comment。工具只操作当前已授权项目，用户补充由服务器取本轮用户原话保存；正文分页每次12000字符。回复/缺项留在原对话，修改仍复用原报告、注解及批注核心。详见[报告后台流程](docs/reports.md#完整项目报告-ai-注解)。
+
 完整报告批注：`GET /api/reports/project/{id}/review` 返回当前 `revision/source`、章节/模块目录及批注；`POST .../review` 接收 `revision`、`operation=add/reply/status`，分别携带 `target+text`、`comment_id+text`、`comment_id+status(open/done/blocked)`。用户回复会重新打开批注。`POST .../review/process` 接收 `revision/comment_id/connection_id`，显式调用本人模型、验证对应模块修改并保存回复/状态；已完成项直接返回，不重复模型调用。项目AI开关及权限、私有连接、科学事实引用和修改范围均由后端检查，版本冲突409。成功响应no-store；失败/取消不覆盖原报告。
 
 批注与展示修改复用 `edits.review`（`report.review.1`），旧PUT edits保留该字段。原report.json与科学快照不改写；详情、Markdown、图表、HTML及打印视图按保存的展示修改生成。批注正文/回复/状态不进入导出或交互数据；报告重新生成后旧版展示修改失效，旧批注保留。支持的修改与计算范围见[报告批注说明](docs/reports.md#完整报告模块批注)。

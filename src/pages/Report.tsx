@@ -21,15 +21,12 @@ import {
   ExportOutlined,
   FileTextOutlined,
   PrinterOutlined,
-  ReloadOutlined,
   RightOutlined,
-  ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
   deleteProjectReport,
   fetchProjectReport,
   fetchProjectReports,
-  generateProjectReports,
   reportChartUrl,
   reportImageUrl,
   reportHtmlUrl,
@@ -48,6 +45,7 @@ import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
 import { ReportAIProvider, ReportAIControls } from '../components/reports/ReportAIContext';
 import { ReportReviewProvider, ReportReviewControls } from '../components/reports/ReportReview';
+import { ReportGenerateButton, ReportWorkControls, ReportWorkProvider } from '../components/reports/ReportWorkContext';
 import { applyHiddenBlocks, collectHiddenBlocks, hiddenKeyLabel } from '../utils/reportHidden';
 import {
   BaderChargePanel,
@@ -159,11 +157,9 @@ export default function Report() {
   const [compositionOpen, setCompositionOpen] = useState(false);
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
-  const [detailRevision, setDetailRevision] = useState(0);
   const [detail, setDetail] = useState<ProjectReportDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [generating, setGenerating] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
   /** 报告注解（结果分析 / 论文参考）：key = type_* / task_id / path:<组>（2026-10-13） */
@@ -181,7 +177,6 @@ export default function Report() {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [showClosedReports, setShowClosedReports] = useState(false);
   const [reportAIConnection, setReportAIConnection] = useState('');
-  const [autoAIReports, setAutoAIReports] = useState<string[]>([]);
   /** 「AI 报告撰写」开关（项目级设置，2026-10-20 从项目编辑弹窗移到这里） */
   const [aiNotesSaving, setAINotesSaving] = useState(false);
 
@@ -212,14 +207,19 @@ export default function Report() {
     Promise.all([fetchProjects(), loadReports()])
       .then(([ps, list]) => {
         setProjects(ps);
-        setSelectedProject(ps[0]?.id ?? null);
         // 默认选中**未关闭项目**的第一份报告，已关闭项目默认折叠、不主动抢焦点
         const closedNames = new Set(ps.filter((p) => p.closed).map((p) => p.name));
         const preferred = list.find((r) => !closedNames.has(r.project_name)) ?? list[0];
+        setSelectedProject(preferred?.project_id ?? ps[0]?.id ?? null);
         setSelectedReportId((prev) => prev ?? preferred?.report_id ?? null);
       })
       .finally(() => setLoading(false));
   }, [loadReports]);
+
+  useEffect(() => {
+    if (reports.some(r => r.report_id === selectedReportId && r.project_id === selectedProject)) return;
+    setSelectedReportId(reports.find(r => r.project_id === selectedProject)?.report_id ?? null);
+  }, [reports, selectedProject, selectedReportId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -241,35 +241,7 @@ export default function Report() {
         if (!cancelled) setDetailLoading(false);
       });
     return () => { cancelled = true; };
-  }, [selectedReportId, detailRevision, message]);
-
-  const handleGenerate = async (scope: { project_id?: string; all?: boolean }) => {
-    const key = scope.all ? 'all' : scope.project_id ?? '';
-    setGenerating(key);
-    try {
-      const result = await generateProjectReports({ ...scope, window_days: 7 });
-      message.success(
-        `已生成 ${result.reports.length} 份报告` +
-          (result.failed.length ? `，失败 ${result.failed.length} 份` : ''),
-      );
-      if (result.failed.length) {
-        message.warning(`${result.failed[0].project}：${result.failed[0].error}`);
-      }
-      const list = await loadReports();
-      const fresh = result.reports[0] ?? list[0];
-      if (fresh) {
-        setSelectedReportId(fresh.report_id);
-        // 同一项目重新生成会沿用 report_id，仍需重新读取详情。
-        setDetailRevision((revision) => revision + 1);
-        // 同批重建详情后才允许自动草稿，避免旧 Provider 提前启动后随刷新被取消。
-        setAutoAIReports(result.reports.map(r => r.report_id));
-      }
-    } catch (err) {
-      message.error(err instanceof Error ? err.message : '生成报告失败');
-    } finally {
-      setGenerating(null);
-    }
-  };
+  }, [selectedReportId, message]);
 
   const handleDelete = async (reportId: string) => {
     try {
@@ -880,7 +852,7 @@ export default function Report() {
             type="button"
             key={item.report_id}
             className={`report-item${selectedReportId === item.report_id ? ' is-active' : ''}`}
-            onClick={() => setSelectedReportId(item.report_id)}
+            onClick={() => { setSelectedReportId(item.report_id); setSelectedProject(item.project_id); }}
           >
             <span className="report-item__top">
               <Tag color={meta.color} bordered={false}>
@@ -923,21 +895,26 @@ export default function Report() {
     </div>
   );
 
-  const reloadReviewedReport = useCallback(async () => {
-    const reportId = detail?.meta.report_id;
+  const selection = useRef({ project: selectedProject, report: selectedReportId });
+  selection.current = { project: selectedProject, report: selectedReportId };
+  const reloadBackgroundReport = useCallback(async () => {
+    const before = selection.current;
+    const list = await loadReports();
+    if (before.project !== selection.current.project) return;
+    const reportId = before.report ?? list.find(r => r.project_id === before.project)?.report_id;
     if (!reportId) return;
     const updated = await fetchProjectReport(reportId);
-    setDetail(old => old?.meta.report_id === reportId ? updated : old);
-  }, [detail?.meta.report_id]);
+    if (before.project !== selection.current.project || before.report !== selection.current.report) return;
+    setSelectedReportId(reportId); setDetail(updated);
+  }, [loadReports]);
 
   return (
-    <ReportAIProvider key={`${detail?.meta.report_id ?? ''}:${detailRevision}`}
+    <ReportWorkProvider projectId={selectedProject ?? ''} connectionId={reportAIConnection} onConnectionChange={setReportAIConnection} onChanged={reloadBackgroundReport}>
+    <ReportAIProvider key={`${detail?.meta.report_id ?? ''}:${aiNotesEnabled}`}
       reportId={detail?.meta.report_id ?? ''} notes={notes} onSaved={setNotes}
-      connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}
-      autoGenerate={Boolean(detail && autoAIReports.includes(detail.meta.report_id))}
-      onAutoStarted={() => setAutoAIReports(old => old.filter(id => id !== detail?.meta.report_id))}>
-    <ReportReviewProvider key={`${detail?.meta.report_id ?? ''}:${detailRevision}`}
-      reportId={detail?.meta.report_id ?? ''} contentRef={contentRef} version={renderedSections} onChanged={reloadReviewedReport}
+      connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}>
+    <ReportReviewProvider key={detail?.meta.report_id ?? ''}
+      reportId={detail?.meta.report_id ?? ''} contentRef={contentRef} version={renderedSections}
       connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}>
     <PageTransition>
       {propertiesOpen && selectedProject && <ScientificPropertiesPanel key={selectedProject} projectRef={selectedProject} projects={projects} onClose={() => setPropertiesOpen(false)}/>}
@@ -1014,22 +991,9 @@ export default function Report() {
                 </>
               )}
             />
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              loading={generating === selectedProject}
-              disabled={!selectedProject}
-              onClick={() => selectedProject && handleGenerate({ project_id: selectedProject })}
-            >
-              生成报告
-            </Button>
-            <Button
-              icon={<ReloadOutlined />}
-              loading={generating === 'all'}
-              onClick={() => handleGenerate({ all: true })}
-            >
-              生成所有项目
-            </Button>
+            <ReportGenerateButton projectId={selectedProject} />
+            <ReportGenerateButton all />
+            <ReportWorkControls />
           </div>
         }
       />
@@ -1504,5 +1468,6 @@ export default function Report() {
     </PageTransition>
     </ReportReviewProvider>
     </ReportAIProvider>
+    </ReportWorkProvider>
   );
 }

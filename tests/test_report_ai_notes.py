@@ -144,6 +144,9 @@ class ReportAINotesTests(unittest.TestCase):
             return JSONResponse(status_code=403, content={"success": False, "message": str(exc)})
         app.include_router(project_reports.router, prefix="/api")
         app.include_router(projects.router, prefix="/api")
+        from routers import ai_chat, report_assistant
+        app.include_router(ai_chat.router, prefix='/api')
+        app.include_router(report_assistant.router, prefix='/api')
         sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
         cls.server = uvicorn.Server(uvicorn.Config(app, log_level="error"))
         cls.web_thread = threading.Thread(target=lambda: cls.server.run(sockets=[sock]), daemon=True)

@@ -5,6 +5,7 @@ import { request } from '../../api/client';
 import { listAIConnections, type AIConnection } from '../../api/aiChat';
 import { renderMarkdown } from '../../utils/markdown';
 import './ReportReview.css';
+import { useReportWork } from './ReportWorkContext';
 
 interface Module { key: string; title: string; section: string; level: number; parent: string | null }
 interface Comment {
@@ -19,11 +20,12 @@ export function ReportReviewControls() {
   return review ? <Button onClick={() => review.open()}>报告批注{review.count ? `（${review.count}条待处理）` : ''}</Button> : null;
 }
 
-export function ReportReviewProvider({ reportId, contentRef, version, onChanged, connectionId, onConnectionChange, children }: {
+export function ReportReviewProvider({ reportId, contentRef, version, connectionId, onConnectionChange, children }: {
   reportId: string; contentRef: RefObject<HTMLDivElement>; version: unknown;
-  onChanged: () => Promise<void>; connectionId: string; onConnectionChange: (id: string) => void; children: ReactNode;
+  connectionId: string; onConnectionChange: (id: string) => void; children: ReactNode;
 }) {
   const [review, setReview] = useState<Review | null>(null);
+  const work = useReportWork();
   const [target, setTarget] = useState<string>();
   const [opened, setOpened] = useState(false);
   const [text, setText] = useState('');
@@ -33,7 +35,6 @@ export function ReportReviewProvider({ reportId, contentRef, version, onChanged,
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [anchors, setAnchors] = useState<{ key: string; el: HTMLElement }[]>([]);
-  const abort = useRef<AbortController | null>(null);
   const active = useRef(true);
   const base = `/reports/project/${encodeURIComponent(reportId)}/review`;
   const load = useCallback(async () => {
@@ -45,8 +46,12 @@ export function ReportReviewProvider({ reportId, contentRef, version, onChanged,
     active.current = true;
     setReview(null); setOpened(false); setText(''); setAnchors([]);
     void load().catch(e => { if (active.current) setError(e.message || '无法加载批注'); });
-    return () => { active.current = false; abort.current?.abort(); };
+    return () => { active.current = false; };
   }, [load]);
+  const finishedRun = work?.run && !work.busy ? work.run.id : '';
+  useEffect(() => {
+    if (finishedRun) void load().catch(e => setError(e.message));
+  }, [finishedRun, load]);
   useEffect(() => {
     if (!opened) return;
     let alive = true;
@@ -89,14 +94,12 @@ export function ReportReviewProvider({ reportId, contentRef, version, onChanged,
   const process = async (id: string) => {
     if (!review || busy) return;
     if (!model) { message.info('请先选择自己的模型连接'); return; }
-    const pending = new AbortController(); abort.current = pending; setBusy(id); setError('');
+    setBusy(id); setError(''); setOpened(false);
     try {
-      const result = await request<Review>(base + '/process', { method: 'POST', body: JSON.stringify({ revision: review.revision, comment_id: id, connection_id: model }), signal: pending.signal });
-      if (!active.current) return;
-      setReview(result); await onChanged();
+      await work?.start({ action: 'comment', report_id: reportId, comment_id: id });
     } catch (e) {
-      if (active.current) { setError(pending.signal.aborted ? '已取消处理；请刷新核对最新状态。' : e instanceof Error ? e.message : '处理失败，原批注保留'); await load().catch(() => {}); }
-    } finally { if (active.current) setBusy(''); if (abort.current === pending) abort.current = null; }
+      if (active.current) setError(e instanceof Error ? e.message : '处理失败，原批注保留');
+    } finally { if (active.current) setBusy(''); }
   };
   const pending = review?.comments.filter(c => c.status !== 'done').length ?? 0;
   const shown = review?.comments.filter(c => !target || c.target === target) ?? [];
@@ -105,7 +108,7 @@ export function ReportReviewProvider({ reportId, contentRef, version, onChanged,
     {anchors.map(anchor => contentRef.current?.contains(anchor.el) ? createPortal(<Button size="small" type="link" onClick={() => open(anchor.key)}>
       批注{review?.comments.some(c => c.target === anchor.key && c.status !== 'done') ? ' · 待处理' : ''}
     </Button>, anchor.el, anchor.key) : null)}
-    <Drawer rootClassName="report-review-drawer" title="报告批注" open={opened} width={540} onClose={() => { abort.current?.abort(); setOpened(false); }}>
+    <Drawer rootClassName="report-review-drawer" title="报告批注" open={opened} width={540} onClose={() => setOpened(false)}>
       <p>批注只在系统内保留，不进入 HTML、Markdown 或 PDF。AI修改后的正文和原有交互会进入报告。</p>
       {error && <Alert type="warning" showIcon message={error} action={<Button size="small" onClick={() => void load().catch(() => {})}>刷新</Button>} />}
       {review?.stale && <Alert type="info" message="报告已重新生成，旧批注保留供追溯；在当前模块添加新批注即可继续。" />}
@@ -115,7 +118,7 @@ export function ReportReviewProvider({ reportId, contentRef, version, onChanged,
         <Input.TextArea aria-label="新的报告批注" value={text} maxLength={8000} rows={3} onChange={e => setText(e.target.value)} placeholder="例如：先展示这几项结构对比，再解释能量差；请保留原来的交互图。" />
         <Button type="primary" disabled={!target || !text.trim() || Boolean(busy)} onClick={async () => { if (await mutate({ operation: 'add', target, text }, 'add')) setText(''); }}>保存批注</Button>
         <Select aria-label="批注处理模型" placeholder="选择自己的模型连接" value={model || undefined} onChange={onConnectionChange} disabled={Boolean(busy)} style={{ width: '100%' }} options={models.map(m => ({ value: m.id, label: `${m.name} · ${m.model}` }))} />
-        {busy && abort.current && <Button onClick={() => abort.current?.abort()}>取消处理</Button>}
+        <Button onClick={() => { setOpened(false); work?.open(); }}>查看后台进度与对话</Button>
       </Space>
       {shown.map(comment => <article className="report-review-comment" key={comment.id}>
         <Space wrap><strong>{review?.modules.find(m => m.key === comment.target)?.title || '旧版模块'}</strong>
@@ -126,7 +129,7 @@ export function ReportReviewProvider({ reportId, contentRef, version, onChanged,
         {comment.replies.map((item, i) => <div className="report-review-reply" key={i}><small>{item.author === 'AI' ? `AI · ${item.model || ''}` : '回复'} · {item.created_at}</small>
           <div dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, { allowImages: false }) }} /></div>)}
         <Space wrap>
-          <Button disabled={Boolean(busy) || !model || comment.status === 'done' || comment.source !== review?.source} loading={busy === comment.id} onClick={() => void process(comment.id)}>让AI处理</Button>
+          <Button disabled={Boolean(busy) || work?.busy || !model || comment.status === 'done' || comment.source !== review?.source} loading={busy === comment.id} onClick={() => void process(comment.id)}>让AI处理</Button>
           <Button disabled={Boolean(busy)} onClick={() => void mutate({ operation: 'status', comment_id: comment.id, status: comment.status === 'done' ? 'open' : 'done' }, comment.id)}>{comment.status === 'done' ? '重新打开' : '标记完成'}</Button>
         </Space>
         <Input.TextArea aria-label={`回复批注 ${comment.id}`} value={reply[comment.id] || ''} onChange={e => setReply(old => ({ ...old, [comment.id]: e.target.value }))} rows={2} maxLength={8000} placeholder="补充说明或回复AI，无需重新输入原批注" />

@@ -1702,11 +1702,14 @@ def build_report(
     window_days: int = 7,
     report_id: Optional[str] = None,
     refresh_cluster: bool = False,
+    progress=None,
 ) -> Dict[str, Any]:
     """构建单个项目的报告。
 
     返回 {"report": 结构化对象, "charts": {文件名: SVG 文本}, "markdown": 全文}
     """
+    progress = progress or (lambda done, total, label: None)
+    progress(0, 1, '读取项目与已有巡检数据')
     db = load_db()
     project = _find_project(db, project_ref)
     if project is None:
@@ -1755,7 +1758,9 @@ def build_report(
     opt_facts = [f for f in facts if f["task_type"] == "opt" and _task_category(f) == "结构优化"]
     opt_total = len([f for f in opt_facts if f.get("force_history")])
     opt_skipped_unconverged = 0
-    for fact in opt_facts:
+    progress_total = len(opt_facts) + 5
+    for index, fact in enumerate(opt_facts):
+        progress(index + 1, progress_total, '整理结构：' + fact['task_name'])
         history = fact.get("force_history") or []
         if not history:
             continue
@@ -1848,6 +1853,7 @@ def build_report(
             }
         )
 
+    progress(len(opt_facts) + 1, progress_total, '生成自由能路径与结构')
     free_paths = _free_energy_paths(project, facts)
     for path in free_paths:
         # 每个中间体的三视图弹窗（点「结构 N」打开）——**与"有没有频率矫正"无关**：
@@ -1888,6 +1894,7 @@ def build_report(
         charts[name] = free_energy_panel(path, title=f"{path['group_name']} 自由能路径看板")
         path["chart"] = f"charts/{name}"
 
+    progress(len(opt_facts) + 2, progress_total, '生成NEB路径与图表')
     neb_science = _neb_details(facts)
     for item in neb_science:
         if not item["images"]:
@@ -2541,6 +2548,7 @@ def build_report(
     report["dialogs"] = dialogs
     report["images"] = dialog_images
 
+    progress(len(opt_facts) + 3, progress_total, '整理正文与导出内容')
     sections = _sections_markdown(report, charts)
     report["markdown_sections"] = sections
     # 报告注解（结果分析 / 论文参考）：统一入口见 attach_report_notes（生成时 / 详情 / 导出前都调）
@@ -2563,4 +2571,5 @@ def build_report(
         [f"# {project_name} · 项目报告", f"> 报告 ID：`{report_id}` · 生成时间：{now} · schema {SCHEMA_VERSION}", ""]
         + [f"## {s['title']}\n\n{s['markdown']}" for s in sections]
     )
+    progress(progress_total - 1, progress_total, '准备保存完整报告')
     return {"report": report, "charts": charts, "markdown": markdown}

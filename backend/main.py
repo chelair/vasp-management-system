@@ -18,6 +18,7 @@ from routers import auth as auth_router
 from routers import pending_actions as pending_actions_router
 from routers import ai as ai_router
 from routers import ai_chat as ai_chat_router
+from routers import report_assistant
 from routers import agent_execution as agent_execution_router
 from routers import automation as automation_router
 from routers import auxiliary as aux
@@ -213,6 +214,7 @@ app.include_router(paths.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(project_reports.router, prefix="/api")
+app.include_router(report_assistant.router, prefix="/api")
 app.include_router(report_compositions.router, prefix="/api")
 app.include_router(topic_reports_router.router, prefix="/api")
 app.include_router(properties_router.router, prefix="/api")

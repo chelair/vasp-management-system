@@ -61,14 +61,19 @@ export default function ReportNoteDialog({
 
   useEffect(() => () => { active.current = false; }, []);
 
-  const close = () => { if (generating) ai?.cancel(); onClose(); };
+  const close = () => { onClose(); };
+
+  const backgroundDraft = ai?.drafts[noteKey];
+  useEffect(() => {
+    if (open && backgroundDraft) setPreview(backgroundDraft);
+  }, [open, backgroundDraft]);
 
   const generate = async () => {
     const startedFor = identity.current;
     setFeedback('');
     try {
-      const draft = await ai?.generate(noteKey);
-      if (draft && active.current && identity.current === startedFor) setPreview(draft);
+      await ai?.generate(noteKey);
+      if (active.current && identity.current === startedFor) setFeedback('已交给后台，可关闭弹窗，在“报告进度与对话”中查看进度和草稿。');
     } catch (e) {
       if (active.current && identity.current === startedFor) setFeedback(e instanceof Error ? e.message : '生成失败');
     }

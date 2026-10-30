@@ -18,6 +18,8 @@ export const TOOL_NAMES: Record<string, string> = {
   check_structure: '检查结构合理性与变化', get_structure_summary: '读取结构概览', get_structure_environment: '分析原子环境', compare_structures: '对比模型结构',
   get_bader_charges: '统计片段电荷', get_property_recipes: '查找性质计算方法', discover_property_tasks: '查找性质相关任务', evaluate_property: '计算科学性质',
   search_report_data: '搜索报告数据', create_topic_report: '生成专题报告', update_topic_report: '更新专题报告',
+  get_full_project_report: '读取完整项目报告', generate_full_project_report: '生成完整项目报告',
+  generate_project_report_notes: '生成报告注解草稿', process_project_report_comment: '处理报告批注', reply_project_report_comment: '保存补充要求',
   list_topic_projects: '查找可访问项目', list_topic_reports: '查找已有报告', prepare_topic_report: '准备报告数据', plan_topic_report: '组织报告内容',
   write_topic_draft: '撰写报告草案', save_topic_report: '保存专题报告', get_topic_report: '读取专题报告',
   get_managed_plans: '查看托管计划', create_managed_plan: '创建托管计划', update_managed_plan: '更新托管计划', set_task_priority: '调整任务优先级',

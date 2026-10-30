@@ -196,18 +196,22 @@ def _facts_text(data):
     return text
 
 
-def prepare(user,conversation,question,request,*,run_id='',project_ids=None):
+def prepare(user,conversation,question,request,*,run_id='',project_ids=None,preliminary=False):
     _owner(user)
     from ai_chat_service import ensure_conversation
     ensure_conversation(user,conversation)
     if not isinstance(question,str) or not question.strip() or len(question)>16000:raise ValueError('研究问题必须是1至16000字符')
     refs=project_ids or [conversation.get('project_id')]
-    fingerprint=digest({'request':request,'projects':refs,'question':question})
+    fingerprint=digest({'request':request,'projects':refs,'question':question,**({'evaluation_mode':'preliminary.1'} if preliminary else {})})
     if run_id:
         for meta in list_for(user,conversation['id']):
             old=load(user,meta['topic_id'])
             if old.get('run_id')==run_id and old.get('request_fingerprint')==fingerprint:return old
-    data=topic_discovery.prepare(user,refs,request)
+    data=topic_discovery.prepare(user,refs,request,preliminary=preliminary)
+    if preliminary and request['property_id']!='dos.comparison' and not data['science'].get('results'):
+        gaps=data.get('gaps',[])
+        needed=[g['detail'] for g in gaps if g['check'] in ('required_energy','task_binding','observation','mu_O','work_function','vacancy_relation','source_identity','structure_safety','composition','single_oxygen_vacancy','direction','reference_side')]
+        raise ValueError('还不能计算这项结果：'+'；'.join(dict.fromkeys(needed or [g['detail'] for g in gaps]))[:1600])
     question_block=_text_block('研究问题',question,'question','question')
     fact_block=_text_block('性质定义与关键数据',_facts_text(data),'results','property_fact')
     doc={'schema_version':'topic.1.0.0','report_type':'topic','topic_id':'topic_'+uuid.uuid4().hex,
@@ -281,7 +285,7 @@ def validate_text(text,doc):
     facts={f['fact_id']:f for f in doc['data']['facts']}
     cited=re.findall(r'\[\[?(F\d+)\]?\]',text)
     if any(key not in facts for key in cited):raise ValueError('文字引用了不存在的可信数值')
-    if any(facts[key]['validation_status'] not in ('AVAILABLE','CONDITIONAL') for key in cited):raise ValueError('未通过校验的原始数值仅可在来源表追溯，不能作为科研段落的数值结论')
+    if any(facts[key]['validation_status'] not in ('AVAILABLE','CONDITIONAL','PRELIMINARY') for key in cited):raise ValueError('未通过校验的原始数值仅可在来源表追溯，不能作为科研段落的数值结论')
     remainder=re.sub(r'\[\[?F\d+\]?\]','',text)
     # Model names/chemical formulas and orbital labels are identifiers, not
     # numerical results. Quantities must use [[Fxx]], expanded only by Python.
@@ -387,7 +391,7 @@ def resolve(user,topic_id,payload):
     if 'targets' in payload:request['targets']=payload['targets']
     for key in ('reference_report_id','common_oxygen_reference','adsorbate_reference_type'):
         if key in payload:request[key]=payload[key]
-    data=topic_discovery.prepare(user,doc['project_ids'],request)
+    data=topic_discovery.prepare(user,doc['project_ids'],request,preliminary=doc['data']['science'].get('evaluation_mode')=='preliminary.1')
     doc.update(request=request,data=data,evidence_fingerprint=digest(data),stage='prepared',selections=[],narratives={},hidden_block_ids=[],deleted_block_ids=[])
     doc['blocks']=[_text_block('研究问题',doc['original_question'],'question','question'),_text_block('性质定义与关键数据',_facts_text(data),'results','property_fact')]
     return _commit(user,doc,payload.get('expected_revision'))

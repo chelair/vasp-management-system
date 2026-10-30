@@ -94,7 +94,7 @@ def evaluate(db,user,payload):
     if not isinstance(targets,list) or not 1<=len(targets)<=4:raise ValueError('请选择一至四个待计算体系')
     recipe=asdict(properties.RECIPES['adsorption.estimate']);inputs=[];results=[];gaps=[];warnings=[]
     for index,target in enumerate(targets):
-        bound={}
+        bound={};structures={};blocked=False
         for role in ROLES:
             selector=target.get(role) or {}
             project=pmap.get(selector.get('project_id') or projects[0]['project_id'])
@@ -108,6 +108,19 @@ def evaluate(db,user,payload):
             item.update(role=f'{index}.{role}',role_label=LABELS[role]);bound[role]=item;inputs.append(item)
             if item['energy_ev'] is None:gaps.append({'role':item['role'],'detail':f'没有找到{LABELS[role]}“{item["model_name"]}”的能量。','action':'在任务详情同步计算结果（OUTCAR或OSZICAR）；尚未计算时再安排计算。'})
             for text in item['warnings']:warnings.append(f'{item["model_name"]}：{text}')
+            from property_preliminary import structure_checks, calculable
+            parsed,cs=structure_checks(item['row']);structures[role]={'structure':parsed}
+            if not calculable(cs,True):
+                blocked=True
+                issue=next(c for c in cs if c['status']=='INVALID')
+                gaps.append({'role':item['role'],'check':issue['check'],'detail':f'“{item["model_name"]}”：'+issue['detail'],'action':'核对对应结构、计算目录和结果来源。'})
+            warnings.extend(c['detail'] for c in cs if c['status']=='UNKNOWN')
+        if len(structures)==3:
+            from adsorption_science import relationship
+            cs,_=relationship(*(structures[r] for r in ('complex','surface','adsorbate')))
+            if not calculable(cs,True):
+                blocked=True
+                gaps.append({'role':f'{index}.complex','check':'stoichiometry','detail':'所选完整构型的组成不等于基底加一份吸附质，请核对构型或吸附质数量。','action':'确认三个角色对应的是同一吸附过程。'})
         settings=[i['row'].get('incar') or {} for i in bound.values()]
         for key,label in [('ENCUT','截断能'),('GGA','泛函'),('LDAU','U设置'),('ISPIN','自旋设置')]:
             values={str(s[key]) for s in settings if key in s}
@@ -115,7 +128,7 @@ def evaluate(db,user,payload):
         meshes={str((i['row'].get('kpoints') or {}).get('mesh')) for i in bound.values() if (i['row'].get('kpoints') or {}).get('mesh')}
         if len(meshes)>1:warnings.append('这些构型的k点网格不同。分子与表面采用不同网格可能合理，但需检查能量是否已收敛。')
         if any(not i['row'].get('kpoints') for i in bound.values()):warnings.append('部分旧结果没有k点记录，建议后续核对计算条件。')
-        if len(bound)==3 and all(i['energy_ev'] is not None for i in bound.values()):
+        if not blocked and len(bound)==3 and all(i['energy_ev'] is not None for i in bound.values()):
             result=properties.adsorption(bound['complex']['energy_ev'],bound['surface']['energy_ev'],bound['adsorbate']['energy_ev'])
             results.append({'key':f'{index}.adsorption','label':target.get('label') or '吸附能','value':result,'units':'eV','formula':recipe['formula'],
                             'formula_version':recipe['version'],'validation_status':'PRELIMINARY','formal_conclusion_allowed':False,

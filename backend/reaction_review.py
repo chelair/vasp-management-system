@@ -13,6 +13,11 @@ from task_paths import is_auxiliary_task
 from structure_sources import load_many, load_check_evidence
 import structure_geometry as g
 
+
+class MissingEndpointEvidence(ValueError):
+    """Geometry diagnosis is unavailable; an existing energy profile may suffice."""
+
+
 VERSION = 'reaction.review.1'
 KEYS = {'path_task_id', 'initial', 'final', 'source', 'bond_elements', 'fragment_indices', 'fragment_elements', 'contact_elements', 'contact_cutoff', 'pbc'}
 
@@ -68,7 +73,7 @@ def analyze(project, user, arguments, *, illustrations=False):
     for role, name in (('initial_opt', 'initial'), ('final_opt', 'final')):
         matches = [t for t in current['tasks'] if not is_auxiliary_task(t) and gid and (t.get('group') or {}).get('group_id') == gid and (t.get('group') or {}).get('group_role') == role]
         if len(matches) != 1:
-            raise ValueError('该路径无法唯一定位两端结构，请先确认端点关联')
+            raise MissingEndpointEvidence('该路径无法唯一定位两端结构，请先确认端点关联')
         endpoints[name] = matches[0]
     source_kind = arguments.get('source', 'local')
     if source_kind not in ('local', 'remote'):
@@ -82,7 +87,12 @@ def analyze(project, user, arguments, *, illustrations=False):
         if not isinstance(selection, dict) or selection.get('task_id') != task['task_id']:
             raise ValueError('结构选择必须属于这条路径的对应端点')
         selectors.append(selection)
-    loaded = load_many(current, selectors)
+    try:
+        loaded = load_many(current, selectors)
+    except ValueError as exc:
+        if str(exc).startswith('本地结构不存在'):
+            raise MissingEndpointEvidence(str(exc)) from exc
+        raise
     parsed = [g.parse(text) for text, _ in loaded]
     if parsed[0]['atoms'] != parsed[1]['atoms']:
         raise ValueError('两端元素顺序或原子数量不同，不能猜测原子映射；请先核对端点')

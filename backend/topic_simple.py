@@ -28,7 +28,8 @@ def create(user,conversation,question,request,*,run_id='',project_ids=None,previ
     from ai_chat_service import ensure_conversation
     ensure_conversation(user,conversation)
     if not isinstance(question,str) or not question.strip() or len(question)>16000:raise ValueError('请用一句话说明研究问题')
-    allowed={'property_id','model_queries','adsorbate_query','targets','title','notes','show_warnings','assessment','objective','bond_elements','fragment_elements','contact_elements'}
+    allowed={'property_id','model_queries','adsorbate_query','targets','title','notes','show_warnings','assessment','objective','bond_elements','fragment_elements','contact_elements',
+             'common_oxygen_reference','reference_report_id','surface_side','reference_conditions','adsorbate_reference_type','reaction_correspondence'}
     if not isinstance(request,dict) or set(request)-allowed:raise ValueError('请只提供研究性质、体系名称和吸附物名称')
     if 'assessment' in request:validate_assessment(request['assessment'])
     queries=request.get('model_queries') or []
@@ -117,8 +118,9 @@ def create(user,conversation,question,request,*,run_id='',project_ids=None,previ
     for gap in science.get('gaps',[]):
         key=gap.get('role','')
         if key and not any(q['id']==key for q in questions):
-            questions.append({'id':key,'title':gap['detail']+' 你有可用的结果或参考能量吗？','options':[],
-                              'hint':'可以直接给出已知能量和来源，或告诉AI哪项计算已经完成，继续核对。'})
+            mismatch=gap.get('check') in ('structure_safety','stoichiometry','source_identity')
+            questions.append({'id':key,'title':gap['detail']+('' if mismatch else ' 你有可用的结果或参考能量吗？'),'options':[],
+                              'hint':gap.get('action') if mismatch else '可以直接给出已知能量和来源，或告诉AI哪项计算已经完成，继续核对。'})
     doc=copy.deepcopy(previous) if previous else {'schema_version':'topic.1.0.0','report_type':'topic','topic_id':'topic_'+uuid.uuid4().hex,
         'owner':topics._owner(user),'conversation_id':conversation['id'],'run_id':run_id,'original_question':question,'created_at':now_iso(),
         'hidden_block_ids':[],'deleted_block_ids':[],'narratives':{}}
@@ -179,16 +181,16 @@ def create(user,conversation,question,request,*,run_id='',project_ids=None,previ
     return topics._commit(user,doc,(previous or {}).get('revision'))
 
 
-def create_generic(user,conversation,question,request,**kwargs):
+def create_generic(user,conversation,question,request,*,conversation_notes=(),**kwargs):
     """Existing registered recipes/blocks; a useful report does not require LLM planning rounds."""
     display={k:request[k] for k in ('title','notes','show_warnings','assessment','objective') if k in request}
     request={k:v for k,v in request.items() if k not in display}
-    doc=topics.prepare(user,conversation,question,request,**kwargs)
+    doc=topics.prepare(user,conversation,question,request,preliminary=True,**kwargs)
     core={'ele.pdos','ele.work_function','group.neb','task.structure','task.energy_force'}
     selections=[{'block_id':c['block_id'],'reason':'与本次研究问题有关的已有结果','section':'sources','order':i,'essential':False}
                 for i,c in enumerate(doc['data']['candidates']) if c['type'] in core]
     doc=topics.plan(user,doc['topic_id'],{'expected_revision':doc['revision'],'title':'科研报告','selections':selections})
-    doc['simple']={'version':'simple.1','questions':[],'warnings':list(dict.fromkeys(g['detail'] for g in doc['data']['gaps'])),'notes':str(display.get('notes',''))[:8000],'show_warnings':display.get('show_warnings',True)}
+    doc['simple']={'version':'simple.1','questions':[],'warnings':list(dict.fromkeys(list(conversation_notes)+doc['data']['science'].get('warnings',[])+[g['detail'] for g in doc['data']['gaps']])),'notes':str(display.get('notes',''))[:8000],'show_warnings':display.get('show_warnings',True)}
     if display.get('title'):doc['title']=str(display['title'])[:200]
     if 'assessment' in display:doc['assessment_edits']=copy.deepcopy(display['assessment'])
     doc['request'].update(display)
@@ -304,7 +306,11 @@ def render_html(doc,*,auto_print=False,stale=False):
         elif block['origin']=='property_fact':
             # Legacy recipe facts remain available without internal status/version tables.
             recipe=science.get('recipe') or {};body='<p>'+esc(recipe.get('definition','这项性质暂未支持'))+'</p><p>'+esc(recipe.get('formula',''))+'</p>'
-            for result in science.get('results',[]):body+='<div class="value">'+esc(result['value'])+' <span>'+esc(result['units'])+'</span></div><p>'+esc(result['label'])+'</p>'
+            if science.get('evaluation_mode')=='preliminary.1':body='<p>初步计算结果</p>'+body
+            for result in science.get('results',[]):
+                body+='<div class="value">'+esc(result['value'])+' <span>'+esc(result['units'])+'</span></div><p>'+esc(result['label'])+'</p>'
+                if (result.get('reference_state') or {}).get('type')=='shared_oxygen_reference_cancelled':
+                    body+='<small>按两个体系采用相同氧参考的条件计算差值；此处未给出绝对形成能。</small>'
             if science.get('results'):parts.append('<section class="card"><h2>计算结果与方法</h2>'+body+'</section>')
         elif block['origin']=='r2':
             refs=block.get('source_refs') or [];evidence=doc['data']['library']['evidence'].get(refs[0]['evidence_id'],{}) if refs else {}

@@ -36,7 +36,9 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 报告工具共用读写：`list_topic_reports(query?,offset?)`返回本人当前项目已有报告，含原conversation_id；`get_topic_report(topic_id,revision?,offset?,limit?,block_id?,include_evidence?)`读取实际正文和有效编辑。分页默认4000、最多12000字符，返回next_offset，后续页指定同一revision。默认仅返回path_evidence_index，完整端点诊断显式include_evidence=true；图表冻结数据仍用block_id。本人同项目可跨对话读取/修改原报告，owner与全部相关项目权限重新核对；分步流程和选择卡仍绑定原对话。GET `/api/reports/topic?conversation_id=...`也返回该对话最近20次运行实际读取/修改过的同项目报告，供原界面显示入口，不复制报告。创建/修改返回正文节选、指纹和修订；notes不进正文。
 
-吸附能默认 `adsorption.estimate`（adsorption.minimum.1.1.0），三个有限能量即给初步值，质量问题为提醒。简明报告不展示报错、缺项或警告，冻结风险和来源保留；show_warnings保留兼容。所有操作重新鉴权、no-store，修订冲突409；真正缺能量/角色时返回明确问题/操作建议。
+吸附能默认 `adsorption.estimate`（adsorption.minimum.1.2.0），三个有限能量即给初步值，质量问题为提醒。简明报告不展示报错、缺项或警告，冻结风险和来源保留；show_warnings保留兼容。所有操作重新鉴权、no-store，修订冲突409；真正缺能量/角色时返回明确问题/操作建议。
+
+`create_topic_report` 的通用数值报告默认采用内部 `preliminary.1` 评估，支持相对能量、氧空位及已有功函数差值；科学结果/事实标记 `PRELIMINARY`，正文标明初步计算，质量提醒返回 `conversation_notes`。可传 `common_oxygen_reference`、已有 `reference_report_id`、`surface_side`，不允许模型设置氧化学势。缺必要数值、已知组成不符、严重结构异常或目录串用只拦截对应结果；完全无可计算结果时返回具体缺口且不保存空白完成稿。正式 `/api/properties/evaluate` 及高级分步准备维持严格模式，不接受客户端绕过验证的开关。
 
 `neb.barrier` 默认简明入口生成端点结构诊断（`reaction.topic.1`），不冒充已取得可靠能垒。create 支持 objective、定性 assessment、bond_elements/fragment_elements/contact_elements，以及 targets[].path。get_project_research_context 返回项目目标与端点关联；analyze_reaction_path 按需读取固定结构和同目录参数，返回反应键候选、片段内部距离变化、O–Li 接触变化、约束及来源。默认本地保存结构，远端须明确选择；不提交计算。
 

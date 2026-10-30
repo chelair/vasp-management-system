@@ -9,7 +9,7 @@ POT = {el:f'TITEL = PAW_PBE {el} 01Jan2001\n ZVAL = {z}\nEnd of Dataset\n' for e
 
 def poscar(interface=False,defect=False,site=4):
     species = ['Li','Mn']+(['Cl'] if interface else [])+['O']
-    atoms = [('Li',[0,0,0]),('Mn',[.5,.5,.5])]+([('Cl',[.2,.2,.2])] if interface else [])+[('O',[.25,.25,.25]),('O',[.75,.75,.75])]
+    atoms = [('Li',[0,0,0]),('Mn',[.5,.5,.5])]+([('Cl',[.8,.2,.5])] if interface else [])+[('O',[.25,.25,.25]),('O',[.75,.75,.75])]
     if defect: atoms.pop(site-1)
     counts = [sum(el == a[0] for a in atoms) for el in species]
     return 'fixture\n1\n5 0 0\n0 5 0\n0 0 5\n'+' '.join(species)+'\n'+' '.join(map(str,counts))+'\nDirect\n'+'\n'.join(' '.join(map(str,c)) for el,c in atoms)+'\n'

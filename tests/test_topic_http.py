@@ -67,7 +67,7 @@ class TopicHTTPTests(unittest.TestCase):
         _,items=self.api('/api/reports/topic?conversation_id='+cid)
         self.assertTrue(items['items'],run)
         if expect=='completed':
-            expected=['prepare_topic_report'] if 'report_ready' in run['tool_events'][0]['result'] else ['prepare_topic_report','plan_topic_report','write_topic_draft','save_topic_report']
+            expected=[run['tool_events'][0]['name']] if 'report_ready' in run['tool_events'][0]['result'] else ['prepare_topic_report','plan_topic_report','write_topic_draft','save_topic_report']
             self.assertEqual([t['name'] for t in run['tool_events']],expected)
             self.assertTrue(all(e['status']=='completed' for e in run['tool_events']),run)
             topic_id=run['tool_events'][-1]['result']['topic_id']
@@ -146,6 +146,19 @@ class TopicHTTPTests(unittest.TestCase):
         status,output=self.api('/api/reports/topic/'+doc['topic_id']+'/export.html',raw=True)
         self.assertEqual(status,200);self.assertIn('-2.000000',output)
         self.assertTrue(any('不等同于吸附自由能' in w for w in doc['simple']['warnings']))
+
+    def test_preliminary_report_uses_unconverged_data_through_chat_and_export(self):
+        status,connections=self.api('/api/ai/chat/connections')
+        original=next(c for c in connections['items'] if c['id']==self.fixture['connection'])
+        status,connection=self.api('/api/ai/chat/connections','POST',{'name':'初步报告模拟','base_url':original['base_url'],'model':'preliminary-report-model','api_key':'mock'})
+        self.assertEqual(status,200,connection)
+        cid,doc=self.report('unconverged','用已有结果比较两种体系的氧空位形成能差，生成初步报告。',connection=connection['id'])
+        self.assertEqual([r['value'] for r in doc['data']['science']['results']],[1])
+        self.assertEqual(doc['stage'],'saved');self.assertTrue(doc['simple']['warnings'])
+        self.assertTrue(all(r['validation_status']=='PRELIMINARY' for r in doc['data']['science']['results']))
+        status,output=self.api('/api/reports/topic/'+doc['topic_id']+'/export.html',raw=True)
+        self.assertEqual(status,200);self.assertIn('初步计算结果',output)
+        self.assertNotIn('最后电子周期',output)
 
     def test_adsorption_missing_reference_and_multi_site(self):
         _,missing=self.report('ads_missing','比较 LMR 与 LIC@LMR 对 H2 的吸附能并生成报告。')

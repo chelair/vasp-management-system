@@ -114,7 +114,7 @@ def r2_observation_project(project,raw):
     return view
 
 
-def prepare(user,project_ids,request):
+def prepare(user,project_ids,request,*,preliminary=False):
     if not isinstance(request,dict) or set(request)-{'property_id','model_queries','targets','common_oxygen_reference','reference_report_id','surface_side','reaction_correspondence','adsorbate_query','adsorbate_reference_type','reference_conditions'}:
         raise ValueError('专题数据请求只接受已注册性质、目标与受限参考，不接受公式、数值或文件路径')
     db = load_db()
@@ -164,6 +164,13 @@ def prepare(user,project_ids,request):
         selectors[key] = _selector(p,t)
         if pid != 'dos.comparison':
             inspected[key] = properties._input(db,user,projects,selectors[key],'candidate')
+            if preliminary and not inspected[key]['data'].get('structure'):
+                from property_science import structure
+                row=inspected[key].get('frozen_observation') or {}
+                text=(((row.get('property_evidence') or {}).get('files') or {}).get('POSCAR') or {}).get('text')
+                if text:
+                    try:inspected[key]['data']['structure']=structure(text)
+                    except (ValueError,IndexError):pass
     choices,targets,gaps = [],[],[]
     def unique(pool,query):
         if len(pool)==1:
@@ -192,16 +199,17 @@ def prepare(user,project_ids,request):
                     pristine = inspected[(p['project_id'],a['task_id'])]['data']
                     defect = inspected[(q['project_id'],b['task_id'])]['data']
                     cs,site = vacancy(pristine,defect)
-                    # Structural relation can be identified even when convergence
-                    # or method compatibility is incomplete; R3 still blocks values.
+                    # Exact site mapping is optional for a preliminary report;
+                    # multiple possible pristine/defect pairs still need selection.
                     site_check = next((c for c in cs if c['check']=='vacancy_site'),None)
-                    if site_check and site_check['status']=='AVAILABLE' and any(c['check']=='cell' and c['status']=='AVAILABLE' for c in cs):
+                    minimum_relation=preliminary and pristine.get('structure') and defect.get('structure') and not any(c['check']=='single_oxygen_vacancy' for c in cs)
+                    if minimum_relation or (site_check and site_check['status']=='AVAILABLE' and any(c['check']=='cell' and c['status']=='AVAILABLE' for c in cs)):
                         relations.append({'pristine':selectors[(p['project_id'],a['task_id'])],
                                           'defect':selectors[(q['project_id'],b['task_id'])],
-                                          'removed_oxygen_index':site['removed_oxygen_index'],'site':site})
+                                          **({'removed_oxygen_index':site['removed_oxygen_index']} if site else {}),'site':site})
             choices.append({'label':query,'relations':relations,'tasks':[_candidate(p,t,selectors[(p['project_id'],t['task_id'])]) for p,t in pool]})
             if len(relations)==1:
-                relation=relations[0];targets.append({'label':query,**{k:relation[k] for k in ('pristine','defect','removed_oxygen_index')}})
+                relation=relations[0];targets.append({'label':query,**{k:relation[k] for k in ('pristine','defect','removed_oxygen_index') if k in relation}})
             else:
                 targets.append({'label':query,'pristine':{'query':query,'project_id':projects[0]['project_id']},'defect':{'query':query,'project_id':projects[0]['project_id']}})
                 gaps.append({'check':'vacancy_relation','status':'AMBIGUOUS' if relations else 'MISSING',
@@ -243,7 +251,7 @@ def prepare(user,project_ids,request):
             payload['common_oxygen_reference']=request.get('common_oxygen_reference') is True
             if payload['common_oxygen_reference']:
                 assumptions.append('共同氧化学势是差值成立的条件；没有明确用户参考时作为待确认假设，不代表已测得绝对形成能。')
-        science=properties.evaluate(db,user,payload)
+        science=properties.evaluate(db,user,payload,preliminary=preliminary)
         if pid=='oxygen_vacancy.neutral_single':
             refs=_references(db,user,projects,science)
             selected=None
@@ -254,7 +262,7 @@ def prepare(user,project_ids,request):
                 selected=refs[0]
             if selected:
                 ref=selected['reference'];payload['mu_O']={'value_ev':ref['value_ev_per_O'],'source':ref['source'],'conditions':ref['conditions']}
-                science=properties.evaluate(db,user,payload)
+                science=properties.evaluate(db,user,payload,preliminary=preliminary)
                 science['reference_state']['source_report_id']=selected['report_id']
                 assumptions=[]
             elif len(refs)>1:
@@ -309,7 +317,7 @@ def prepare(user,project_ids,request):
         facts.append({'fact_id':f'F{len(facts)+1:02}','label':label,'value':value,'units':units,'source':source,'validation_status':status})
         return facts[-1]['fact_id']
     for result in science.get('results',[]):
-        fact(result['label']+' · '+result['key'],result['value'],result['units'],{'kind':'PropertyRecipe','key':result['key'],'formula':result['formula'],'version':result['formula_version']},'CONDITIONAL' if assumptions else 'AVAILABLE')
+        fact(result['label']+' · '+result['key'],result['value'],result['units'],{'kind':'PropertyRecipe','key':result['key'],'formula':result['formula'],'version':result['formula_version']},'PRELIMINARY' if result.get('validation_status')=='PRELIMINARY' else 'CONDITIONAL' if assumptions else 'AVAILABLE')
     for item in science.get('inputs',[]):
         if item.get('task'):
             fact(item['task'].get('model_name') or item['task']['task_id'],item['data'].get('energy_ev'),'eV',item.get('source'),item['status'])

@@ -120,7 +120,14 @@ def create(user, conversation, question, request, *, project_ids=None, run_id=''
                 args.update(recent['arguments'])
                 args.update({name:src['selector'] for name,src in recent['result']['sources'].items()})
             args.update({k:request[k] for k in ('bond_elements','fragment_elements','contact_elements') if k in request})
-            reviews.append(review.analyze(project,user,args,illustrations=True))
+            try:
+                reviews.append(review.analyze(project,user,args,illustrations=True))
+            except review.MissingEndpointEvidence:
+                from topic_simple import create_generic
+                numeric_request={k:v for k,v in request.items() if k not in ('bond_elements','fragment_elements','contact_elements')}
+                numeric_request['targets']=[{'label':p.get('model_name') or p['task_id'],'path':{'task_id':p['task_id']}} for p in chosen]
+                return create_generic(user,conversation,question,numeric_request,run_id=run_id,project_ids=[project['project_id']],
+                    conversation_notes=['部分路径缺少可用端点结构，先展示已有离散映像的初步能垒；无法据此判断断键机制、过渡态或是否适合续算。'])
     statements = list(user_statements or (previous or {}).get('simple',{}).get('user_statements',[]))[-40:]
     values = {**(previous or {}).get('simple',{}).get('answers',{}), **(answers or {})}
     questions = _questions(reviews, values, statements)

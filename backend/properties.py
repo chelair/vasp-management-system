@@ -15,6 +15,7 @@ import re
 import uuid
 
 import adsorption_science
+from property_preliminary import calculable
 import permissions
 from ai_inspections import query_inspections, task_for, _age, participation
 from checks_store import collect_task_observations
@@ -60,8 +61,8 @@ RECIPES = {r.property_id:r for r in (
         ('stoichiometry','adsorption_relation','adsorption_cell','charge_state','convergence','theory_compatibility','adsorbate_reference_type'), 'adsorption', 'E_ads = E_complex - E_surface - E_adsorbate',version=adsorption_science.VERSION),
     PropertyRecipe('adsorption.estimate', '基于已有三份能量的初步吸附能', '按选定的基底、吸附质、完整构型直接计算；质量问题作为警告，不作为算术门槛',
         ('targets[].surface.energy','targets[].adsorbate.energy','targets[].complex.energy'), ('targets[].task_id','targets[].energy_ev','targets[].energy_value','targets[].energy_unit','targets[].source_quote'),
-        ('finite_energies','role_selection'), 'adsorption', 'E_ads = E_complex - E_surface - E_adsorbate',
-        missing_data_policy='缺能量或角色时说明缺口；收敛、参数和来源问题不阻止初步计算',version='adsorption.minimum.1.1.0'),
+        ('finite_energies','role_selection','known_correspondence','structure_safety'), 'adsorption', 'E_ads = E_complex - E_surface - E_adsorbate',
+        missing_data_policy='缺能量或角色时说明缺口；质量证据缺失不阻断；已确认组成/目录错误或严重几何异常只阻止相关结果',version='adsorption.minimum.1.2.0'),
     PropertyRecipe('neb.barrier', '读取已有NEB映像能量并比较正向能垒', '中性体系完整、收敛的既有NEB路径离散映像；不运行NEB或nebef，不等同热力学台阶',
         ('targets[].path',), (), ('image_completeness','neb_convergence','source_identity','reaction_correspondence'), 'barrier / subtract', 'E_a = max(E_images) - E_initial; delta = E_a(B) - E_a(A)'),
     PropertyRecipe('work_function.difference', '已有功函数之差', '相同真空方向、表面侧、可比理论条件与可靠真空平台的中性表面；不触发LOCPOT分析',
@@ -216,7 +217,7 @@ def _result(key,label,value,formula,inputs,checks,reference=None,conditions=None
             'unverified_conditions':unverified}
 
 
-def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
+def evaluate(db,user,payload,*,persist=False,allow_user_reference=True,preliminary=False):
     if not isinstance(payload,dict) or set(payload)-{'property_id','project_ids','targets','mu_O','common_oxygen_reference','reference_conditions','surface_side','reaction_correspondence','adsorbate_reference_type'}:
         raise ValueError('只接受注册性质及任务/参考态绑定，不接受自定义公式或替代数值')
     for key in ('reference_conditions','reaction_correspondence'):
@@ -252,19 +253,26 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
         if not isinstance(label,str) or len(label)>200: raise ValueError('体系标签无效')
         if 'removed_oxygen_index' in target and (type(target['removed_oxygen_index']) is not int or target['removed_oxygen_index'] <= 0): raise ValueError('氧原子序号必须是正整数')
         bound = {role:_input(db,user,projects,_selector(target.get(role,{}),projects[0]['project_id']),f'{index}.{role}') for role in roles}
+        if preliminary:
+            from property_preliminary import input_data
+            for role,item in bound.items():
+                if not item.get('task'):continue
+                project=next(p for p in projects if p['project_id']==item['task']['project_id'])
+                input_data(item,project,task_for(project,item['task']['task_id']),item['selector'],
+                           needs_energy=pid not in ('work_function.difference','neb.barrier'))
         inputs.extend(bound.values())
         group = {'label':label,'input_roles':list(bound),'checks':[],'status':'MISSING'}
         groups.append(group)
-        if not all(i['status'] == 'AVAILABLE' for i in bound.values()):
-            group['status'] = _state([check(i['role'],i['status'],'输入未通过') for i in bound.values()]); continue
+        if not all(i.get('preliminary_ready',False) if preliminary else i['status'] == 'AVAILABLE' for i in bound.values()):
+            group['status'] = _state([c for i in bound.values() for c in i['checks']] if preliminary else [check(i['role'],i['status'],'输入未通过') for i in bound.values()]); continue
         values = list(bound.values()); data = [i['data'] for i in values]
         if pid == 'oxygen_vacancy.neutral_single':
             group['checks'],group['site'] = vacancy(bound['pristine']['data'],bound['defect']['data'],target.get('removed_oxygen_index'))
-            if _state(group['checks']) == 'AVAILABLE':
+            if calculable(group['checks'],preliminary):
                 group['energy_cost_without_reference_ev'] = subtract(bound['defect']['data']['energy_ev'],bound['pristine']['data']['energy_ev'])
         elif pid == 'relative_energy':
             group['checks'] = compatibility(data,same_composition=True)
-            if _state(group['checks']) == 'AVAILABLE':
+            if calculable(group['checks'],preliminary):
                 results.append(_result(f'{index}.relative_energy',label,subtract(bound['model']['data']['energy_ev'],bound['reference']['data']['energy_ev']),recipe.formula,values,group['checks']))
         elif pid == 'adsorption.simple':
             reference_type=payload.get('adsorbate_reference_type','periodic')
@@ -278,10 +286,11 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
         # NEB and work function are handled by dedicated source adapters below.
         elif pid in ('neb.barrier','work_function.difference'):
             try:
-                _existing_analysis(pid,recipe,index,label,bound,group,results,payload,projects)
+                _existing_analysis(pid,recipe,index,label,bound,group,results,payload,projects,preliminary=preliminary)
             except (ValueError,TypeError,KeyError,OSError) as exc:
                 group['checks'].append(check('analysis_source','INVALID','已有分析证据无效：'+str(exc)))
         group['status'] = _state(group['checks'])
+        if preliminary and calculable(group['checks'],True):group['status']='PRELIMINARY'
     mu = payload.get('mu_O')
     reference = None
     if pid == 'oxygen_vacancy.neutral_single':
@@ -296,7 +305,7 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
             checks.append(check('mu_O','MISSING','绝对形成能需要每个O的化学势（例如明确条件下1/2 E(O2)，含所采用修正）；本轮不自动计算参考态'))
         valid = []
         for index,(group,target) in enumerate(zip(groups,targets)):
-            if group['status'] != 'AVAILABLE': continue
+            if group['status'] not in ('AVAILABLE','PRELIMINARY'): continue
             valid.append((index,group))
             if reference:
                 cost = group['energy_cost_without_reference_ev']
@@ -310,7 +319,7 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
                 shared = bool(reference or payload.get('common_oxygen_reference') is True)
                 pair_checks.append(check('common_oxygen_reference','AVAILABLE' if shared else 'UNKNOWN','差值要求中性单O缺陷采用相同mu_O及适用条件；消去+mu_O - mu_O'))
                 checks.extend(pair_checks)
-                if _state(pair_checks) == 'AVAILABLE':
+                if calculable(pair_checks,preliminary):
                     results.append(_result(f'{index}-{base_index}.formation_difference',other['label']+' − '+base['label'],
                         subtract(other['energy_cost_without_reference_ev'],base['energy_cost_without_reference_ev']),
                         'delta_E_f = (E_defect_B - E_pristine_B) - (E_defect_A - E_pristine_A)',pair_inputs,pair_checks,
@@ -339,7 +348,7 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
             involved = [i for i in inputs if i['role'].split('.')[0] in (r['key'].split('.')[0],original[0]['key'].split('.')[0])]
             comparison_checks = compatibility([i['data'] for i in involved])
             checks.extend(comparison_checks)
-            if payload.get('reaction_correspondence') and _state(comparison_checks) == 'AVAILABLE':
+            if payload.get('reaction_correspondence') and calculable(comparison_checks,preliminary):
                 results.append(_result(r['key']+'-0.difference',r['label']+' − '+original[0]['label'],subtract(r['value'],original[0]['value']),
                     'delta_E_a = E_a(B) - E_a(A)',involved,comparison_checks+[check('reaction_correspondence','AVAILABLE',str(payload['reaction_correspondence']))],conditions=['用户明确的反应路径对应关系']))
             else: checks.append(check('reaction_correspondence','UNKNOWN','能垒差值需要明确反应、方向与初末态对应关系'))
@@ -362,12 +371,31 @@ def evaluate(db,user,payload,*,persist=False,allow_user_reference=True):
               'status':'PARTIAL' if results and gaps else 'AVAILABLE' if results else 'BLOCKED',
               'inputs':inputs,'targets':groups,'reference_state':reference,'checks':checks,'gaps':gaps,'results':results,
               'currently_calculable':[r['key'] for r in results],
-              'not_calculable':(['absolute_formation_energy'] if pid == 'oxygen_vacancy.neutral_single' and reference is None else []) + (['adsorption_energy_difference'] if pid=='adsorption.simple' and any(c['check']=='common_adsorbate_reference' and c['status']!='AVAILABLE' for c in checks) else []) + [g['label'] for g in groups if g['status'] != 'AVAILABLE'],
+              'not_calculable':(['absolute_formation_energy'] if pid == 'oxygen_vacancy.neutral_single' and reference is None else []) + (['adsorption_energy_difference'] if pid=='adsorption.simple' and any(c['check']=='common_adsorbate_reference' and c['status']!='AVAILABLE' for c in checks) else []) + [g['label'] for g in groups if g['status'] not in ('AVAILABLE','PRELIMINARY')],
               'recommendations':list(dict.fromkeys(c['detail'] for c in gaps)), 'supplemental_suggestions':suggestions,
               'report_elements':_report_elements(inputs,results,projects),
               'execution_policy':'只读发现与确定性运算；补算仅建议，不创建或提交作业。'}
     # Freeze the exact evidence used in every numerical result for audit/reproduction.
-    report['evidence_sha256'] = digest({'inputs':inputs,'recipe':asdict(recipe),'reference':reference})
+    if preliminary:
+        report['evaluation_mode']='preliminary.1'
+        report['warnings']=['当前为所选数据的初步结果，收敛、计算条件和科学适用性仍需核实。']
+        if report['not_calculable']:
+            report['warnings'].insert(0,'部分结果缺少必要数据或对应关系尚待确认，报告已保留其余能计算的部分。')
+        if pid=='oxygen_vacancy.neutral_single' and reference is None:
+            report['warnings'].insert(0,'没有设置氧化学势，当前只在共同氧参考的条件下比较差值，不给绝对形成能。')
+        names={c['check'] for c in gaps}
+        if names & {'electronic_convergence','ionic_convergence','run_state'}:
+            report['warnings'].append('部分计算尚未收敛或结束，结果可能随计算更新。')
+        if any(name.startswith('compatibility.') for name in names):
+            report['warnings'].append('部分计算条件不同或尚未核实，建议定稿前核对。')
+        if names & {'evidence_schema','POSCAR','INCAR','KPOINTS','OUTCAR','OSZICAR','observation'}:
+            report['warnings'].append('部分结构、参数或来源记录不完整；缺结构时只省略对应图片。')
+        if names & {'vacuum_reference','direction','reference_side'}:
+            report['warnings'].append('功函数的真空平台、方向或表面侧仍需核实，当前差值仅作初步参考。')
+        for result in results:
+            result['validation_status']='PRELIMINARY'
+            result['conditions'].append('初步计算；质量问题保留在对话和来源记录中，不代表正式验证通过。')
+    report['evidence_sha256'] = digest({'inputs':inputs,'recipe':asdict(recipe),'reference':reference,**({'evaluation_mode':report['evaluation_mode']} if preliminary else {})})
     if persist: _save(report)
     return report
 
@@ -408,7 +436,7 @@ def read_report(db,user,report_id):
     return report
 
 
-def _existing_analysis(pid,recipe,index,label,bound,group,results,payload,projects):
+def _existing_analysis(pid,recipe,index,label,bound,group,results,payload,projects,*,preliminary=False):
     """Safe existing-analysis adapters: no scientific recomputation or remote calls."""
     if pid == 'neb.barrier':
         source = bound['path']
@@ -420,8 +448,8 @@ def _existing_analysis(pid,recipe,index,label,bound,group,results,payload,projec
             complete = len(energy) == expected and expected >= 3 and all(l.isdigit() for l in labels) and list(map(int,labels)) == list(range(expected))
         except (ValueError,TypeError,KeyError): energy,complete,expected = [],False,-1
         group['checks'] = [check('image_completeness','AVAILABLE' if complete else 'INCOMPLETE','需IMAGES+2个按00到末态连续排序的有限能量，包括初末态'),
-                           check('neb_image_validation','AVAILABLE' if len(source.get('neb_snapshots',[])) == expected and [str(i['label']).lstrip('0') or '0' for i in source.get('neb_snapshots',[])] == [str(i) for i in range(expected)] and all(abs(i['data'].get('energy_ev',float('inf'))-v)<1e-5 for i,v in zip(source.get('neb_snapshots',[]),energy)) else 'UNKNOWN','每个映像快照能量与已有nebef能量核对，收敛/参数检查逐映像完成')]
-        if _state(group['checks']) == 'AVAILABLE':
+                           check('neb_image_validation','AVAILABLE' if len(source.get('neb_snapshots',[])) == expected and [str(i['label']).lstrip('0') or '0' for i in source.get('neb_snapshots',[])] == [str(i) for i in range(expected)] and all(type(i['data'].get('energy_ev')) in (int,float) and abs(i['data']['energy_ev']-v)<1e-5 for i,v in zip(source.get('neb_snapshots',[]),energy)) else 'UNKNOWN','每个映像快照能量与已有nebef能量核对，收敛/参数检查逐映像完成')]
+        if calculable(group['checks'],preliminary):
             results.append(_result(f'{index}.barrier',label,barrier(energy),recipe.formula,[source],group['checks'],conditions=['已有离散映像能垒；未证明过渡态唯一性或完成鞍点频率验证']))
     else:
         import work_function
@@ -442,6 +470,13 @@ def _existing_analysis(pid,recipe,index,label,bound,group,results,payload,projec
             points = work_function.parse_planar_average(raw_path.read_text()) if raw_path.is_file() else []
             plateau = work_function._plateau(points)
             selected_side = payload.get('surface_side')
+            if preliminary:
+                actual_dir=(meta.get('remote') or {}).get('remote_dir')
+                selected_dir=(source.get('source',{}).get('directory') or {}).get('path')
+                group['checks'].append(check('source_identity','INVALID' if actual_dir and selected_dir and actual_dir!=selected_dir else 'AVAILABLE' if actual_dir and selected_dir else 'UNKNOWN','已有功函数与所选计算目录对应'))
+                actual_side=(plateau or {}).get('side')
+                group['checks'].append(check('reference_side','INVALID' if selected_side and actual_side and selected_side!=actual_side else 'AVAILABLE' if actual_side else 'UNKNOWN','所选表面侧与已有分析对应'))
+                selected_side=selected_side or actual_side
             try:
                 good_plateau = bool(plateau and plateau['spread'] <= 0.05 and plateau['points'] >= 5
                                     and abs(number(plateau['value'])-number(summary['vacuum_level'])) <= 0.05
@@ -458,6 +493,9 @@ def _existing_analysis(pid,recipe,index,label,bound,group,results,payload,projec
             except (ValueError,TypeError,KeyError): group['checks'].append(check('work_function','INVALID','功函数数值缺失/非有限'))
         group['checks'] += compatibility([i['data'] for i in bound.values()])
         if len(data) == 2:
-            group['checks'].append(check('direction','AVAILABLE' if data[0][1] and data[0][1:] == data[1][1:] else 'INVALID','真空方向和表面侧必须相同'))
-            if _state(group['checks']) == 'AVAILABLE':
+            direction='AVAILABLE' if data[0][1] and data[0][1:] == data[1][1:] else 'INVALID'
+            if preliminary:
+                direction='INVALID' if any(a and b and a!=b for a,b in zip(data[0][1:],data[1][1:])) else 'AVAILABLE' if all(data[0][1:]) and all(data[1][1:]) else 'UNKNOWN'
+            group['checks'].append(check('direction',direction,'真空方向和表面侧必须相同；缺失时仅作待核实初步差值'))
+            if calculable(group['checks'],preliminary):
                 results.append(_result(f'{index}.work_function_difference',label,subtract(data[1][0],data[0][0]),recipe.formula,list(bound.values()),group['checks']))

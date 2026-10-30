@@ -115,6 +115,17 @@ class ReactionReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'已变化'):
             review.analyze(self.project,self.user,{'path_task_id':'path','initial':first['sources']['initial']['selector']})
 
+    def test_missing_endpoint_is_distinct_from_wrong_mapping(self):
+        path=self.folders[0]/'CONTCAR';path.unlink()
+        with self.assertRaises(review.MissingEndpointEvidence):
+            review.analyze(self.project,self.user,{'path_task_id':'path'})
+        path.write_text(structure(self.a))
+        final=self.folders[1]/'CONTCAR'
+        final.write_text(final.read_text().replace('B C O F Li','C B O F Li'))
+        with self.assertRaises(ValueError) as error:
+            topic_simple.create(self.user,self.conversation,'生成路径报告',{'property_id':'neb.barrier','model_queries':['PATH']})
+        self.assertNotIsInstance(error.exception,review.MissingEndpointEvidence)
+
     def test_question_answer_continues_original_chat_once_and_keeps_evidence(self):
         from starlette.requests import Request
         from routers.topic_reports import questions

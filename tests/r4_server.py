@@ -18,7 +18,7 @@ def setup(root):
     from r2_science_fixtures import seed_science
     user,_=auth.create_user('tester');token,_=auth.create_session(user)
     projects=[];all_rows=[]
-    for pid in ('full','partial','multi','empty'):
+    for pid in ('full','partial','multi','empty','unconverged'):
         p,rows=r3_fixtures.seed(root/pid)
         p.update(project_id=pid,name='R4_'+pid)
         for task in p['tasks']:
@@ -33,6 +33,9 @@ def setup(root):
             rows.append(row)
             p['tasks'].append({**p['tasks'][1],'task_id':'multi_a_d2','job_id':'multi_a_d2','model_name':'LMR_vac_site2','remote_dir':str(run.parent)})
         if pid=='empty':p['tasks']=[];rows=[]
+        if pid=='unconverged':
+            row=rows[1];row.update(status='unconverged',force_converged=False)
+            row['property_evidence']=r3_fixtures.write_run(Path(row['current_output']['dir']),r3_fixtures.poscar(defect=True),row['last_energy'],scf=False,ionic=False,encut=600)
         projects.append(p);all_rows+=rows
     dos={'project_id':'dos','name':'R4_DOS','owner':'tester','tasks':[],'server':'fixture'}
     electronic=seed_science(root,dos)
@@ -95,6 +98,11 @@ class Provider(BaseHTTPRequestHandler):
                 args={'property_id':'adsorption.simple','model_queries':['LMR'],'adsorbate_query':'H2'}
                 event={'tool_calls':[{'index':0,'id':'simple_report','type':'function','function':{'name':'create_topic_report','arguments':json.dumps(args)}}]};reason='tool_calls'
             else:event={'content':'已整理好报告。需要确认时，在下方选择即可。'};reason='stop'
+        elif payload['model']=='preliminary-report-model':
+            if count==0:
+                args={'property_id':'oxygen_vacancy.neutral_single','model_queries':['LMR','LIC@LMR'],'common_oxygen_reference':True}
+                event={'tool_calls':[{'index':0,'id':'preliminary_report','type':'function','function':{'name':'create_topic_report','arguments':json.dumps(args)}}]};reason='tool_calls'
+            else:event={'content':'已按已有数据生成初步报告，未收敛情况请在使用时留意。'};reason='stop'
         elif payload['model']=='topic-reuse':
             if count==0:
                 topic_id=re.search(r'topic_[0-9a-f]{32}',payload['messages'][-1]['content']).group()

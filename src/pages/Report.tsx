@@ -56,6 +56,7 @@ import {
 } from '../components/reports/ReportScienceWidgets';
 import ReportStructure3D from '../components/reports/ReportStructure3D';
 import ReportFreeEnergy3D from '../components/reports/ReportFreeEnergy3D';
+import ReportNeb3D from '../components/reports/ReportNeb3D';
 import {
   FreeEnergyReportPanel,
   NebReportPanel,
@@ -559,6 +560,16 @@ export default function Report() {
       const neb = /([^/\\]+)_barrier\.svg/.exec(src);
       const matched = fe ?? neb;
       if (!matched) return;
+      if (neb) {
+        const item = (detail?.structured as { science?: { neb?: ReportNebItem[] } })?.science?.neb
+          ?.find(item => String(item.task_id ?? '') === neb[1]);
+        const has3DHost = Array.from(root.querySelectorAll<HTMLElement>('[data-report-widget="neb-3d"]'))
+          .some(el => el.dataset.taskId === neb[1]);
+        if (has3DHost && item?.images?.some(image => image.cif)) {
+          img.closest('figure')?.classList.add('report-static-fallback');
+          return;
+        }
+      }
       const host = document.createElement('div');
       host.className = 'report-panel-host';
       host.setAttribute('data-panel', fe ? 'free-energy' : 'neb');
@@ -1285,6 +1296,12 @@ export default function Report() {
                     {/* 电子结构挂点（v0.9.61）：Bader 折叠表 / PDOS 交互图 / 功函数曲线 */}
                     {widgetHosts.map((host) => {
                       if (!contentRef.current?.contains(host.el)) return null;
+                      if (host.kind === 'neb-3d') {
+                        const neb = nebItems.find(item => String(item.task_id ?? '') === host.taskId);
+                        return neb?.images?.some(image => image.cif) ? createPortal(
+                          <ReportNeb3D item={neb} />, host.el, `neb-3d:${host.taskId}`,
+                        ) : null;
+                      }
                       const item = eleTasks.find(
                         (x) => String(x?.task_id ?? '') === host.taskId,
                       );

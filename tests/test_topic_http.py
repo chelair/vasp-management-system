@@ -67,7 +67,8 @@ class TopicHTTPTests(unittest.TestCase):
         _,items=self.api('/api/reports/topic?conversation_id='+cid)
         self.assertTrue(items['items'],run)
         if expect=='completed':
-            self.assertEqual([t['name'] for t in run['tool_events']],['prepare_topic_report','plan_topic_report','write_topic_draft','save_topic_report'])
+            expected=['prepare_topic_report'] if 'report_ready' in run['tool_events'][0]['result'] else ['prepare_topic_report','plan_topic_report','write_topic_draft','save_topic_report']
+            self.assertEqual([t['name'] for t in run['tool_events']],expected)
             self.assertTrue(all(e['status']=='completed' for e in run['tool_events']),run)
             topic_id=run['tool_events'][-1]['result']['topic_id']
         else:topic_id=items['items'][0]['topic_id']
@@ -119,37 +120,59 @@ class TopicHTTPTests(unittest.TestCase):
         status,again=self.api('/api/reports/topic/'+doc['topic_id'])
         self.assertEqual(status,200);self.assertEqual(again['revision'],doc['revision'])
 
-    def test_model_cannot_choose_ambiguous_site_or_reference_on_its_own(self):
-        for connection in self.fixture['hostile_connections'].values():
+    def test_model_bindings_do_not_fabricate_or_bypass_reference_validation(self):
+        for kind,connection in self.fixture['hostile_connections'].items():
             cid=self.conversation('multi',connection)
             _,run=self.api(f'/api/ai/chat/conversations/{cid}/messages','POST',{'content':'比较 LMR 和 LIC@LMR 氧空位形成能并生成报告','request_id':uuid.uuid4().hex})
             self.api('/api/ai/chat/runs/'+run['id']+'/events',raw=True)
             _,run=self.api('/api/ai/chat/runs/'+run['id'])
             self.assertEqual(run['status'],'completed',run)
-            self.assertEqual(run['tool_events'][0]['status'],'failed')
-            self.assertIn('用户',run['tool_events'][0]['result']['error'])
             _,items=self.api('/api/reports/topic?conversation_id='+cid)
-            self.assertEqual(items['items'],[])
+            if kind=='reference':
+                self.assertEqual(run['tool_events'][0]['status'],'failed')
+                self.assertIn('参考',run['tool_events'][0]['result']['error'])
+                self.assertEqual(items['items'],[])
+            else:
+                self.assertEqual(run['tool_events'][0]['status'],'completed')
+                _,doc=self.api('/api/reports/topic/'+items['items'][0]['topic_id'])
+                self.assertTrue(any(g['check']=='mu_O' for g in doc['data']['gaps']))
+                self.assertFalse(any(r.get('formal_conclusion_allowed') for r in doc['data']['science']['results']))
 
     def test_adsorption_natural_language_pipeline(self):
         _,doc=self.report('ads','比较 LMR 与 LIC@LMR 对 H2 的吸附能，生成科研报告。')
-        self.assertEqual([r['value'] for r in doc['data']['science']['results']],[-2,-3,-1])
+        self.assertEqual([r['value'] for r in doc['data']['science']['results']],[-2,-3])
         self.assertEqual(doc['request']['adsorbate_query'],'H2')
         self.assertEqual(doc['stage'],'saved')
         status,output=self.api('/api/reports/topic/'+doc['topic_id']+'/export.html',raw=True)
-        self.assertEqual(status,200);self.assertIn('-2.0 eV',output)
-        self.assertIn('不等同于吸附自由能',output)
+        self.assertEqual(status,200);self.assertIn('-2.000000',output)
+        self.assertTrue(any('不等同于吸附自由能' in w for w in doc['simple']['warnings']))
 
     def test_adsorption_missing_reference_and_multi_site(self):
         _,missing=self.report('ads_missing','比较 LMR 与 LIC@LMR 对 H2 的吸附能并生成报告。')
         self.assertEqual(missing['data']['science']['results'],[])
-        self.assertTrue(any(g['check']=='adsorbate_reference' for g in missing['data']['gaps']))
+        self.assertTrue(any(q['id'].endswith('.adsorbate') for q in missing['simple']['questions']))
         _,multiple=self.report('ads_multi','比较 LMR 与 LIC@LMR 对 H2 的吸附能并生成报告。')
-        self.assertEqual(multiple['data']['preparation_status'],'NEEDS_SELECTION')
-        self.assertEqual(len(multiple['data']['choices'][0]['adsorption_relations']),2)
+        self.assertTrue(any(q['id'].endswith('.complex') and len(q['options'])==2 for q in multiple['simple']['questions']))
         _,gas=self.report('ads_gas','比较 LMR 与 LIC@LMR 对气相 H2 分子的吸附能并生成报告。')
-        self.assertEqual([r['value'] for r in gas['data']['science']['results']],[-2,-3,-1])
-        self.assertEqual(gas['request']['adsorbate_reference_type'],'isolated_molecule')
+        self.assertEqual([r['value'] for r in gas['data']['science']['results']],[-2,-3])
+        self.assertTrue(all(i['model_name']=='H2' for i in gas['data']['science']['inputs'] if i['role'].endswith('.adsorbate')))
+
+    def test_new_chat_updates_and_displays_original_project_report(self):
+        original,doc=self.report('ads','比较 LMR 对 H2 的吸附能，生成报告。')
+        cid=self.conversation('ads',self.fixture['reuse_connection'])
+        _,run=self.api(f'/api/ai/chat/conversations/{cid}/messages','POST',{
+            'content':'继续修改原报告 '+doc['topic_id']+'，补充背景。','request_id':uuid.uuid4().hex})
+        self.api('/api/ai/chat/runs/'+run['id']+'/events',raw=True)
+        _,run=self.api('/api/ai/chat/runs/'+run['id'])
+        self.assertEqual(run['status'],'completed',run['error'])
+        self.assertEqual([e['name'] for e in run['tool_events']],['get_topic_report','update_topic_report'])
+        self.assertTrue(all(e['status']=='completed' for e in run['tool_events']))
+        _,changed=self.api('/api/reports/topic/'+doc['topic_id'])
+        self.assertEqual(changed['revision'],doc['revision']+1)
+        self.assertEqual(changed['conversation_id'],original)
+        self.assertEqual(changed['data'],doc['data'])
+        _,items=self.api('/api/reports/topic?conversation_id='+cid)
+        self.assertEqual([r['topic_id'] for r in items['items']],[doc['topic_id']])
 
     def test_auth_revision_and_science_override_protection(self):
         self.assertEqual(self.api('/api/reports/topic',token=False)[0],401)

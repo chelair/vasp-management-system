@@ -117,18 +117,28 @@ def _commit(user,doc,expected=None):
     return doc
 
 
-def list_for(user,conversation_id=None):
+def list_for(user,conversation_id=None,*,project_id=None,include_referenced=False):
     _owner(user)
+    referenced = set()
+    if project_id:
+        properties.authorized_projects(load_db(),user,[project_id])
     if conversation_id:
         with ai_chat_store.database() as db:
             conversation=ai_chat_store.owned(db,'conversations',conversation_id,_owner(user))
+            if include_referenced:
+                for row in db.execute('SELECT tool_events FROM runs WHERE owner=? AND conversation_id=? ORDER BY rowid DESC LIMIT 20',(_owner(user),conversation_id)):
+                    for event in json.loads(row['tool_events']):
+                        if event['status']=='completed' and event['name'] in ('get_topic_report','update_topic_report') and event['result'].get('topic_id'):
+                            referenced.add(event['result']['topic_id'])
         from ai_chat_service import ensure_conversation
         ensure_conversation(user,conversation)
     result=[]
     for path in _directory(user).glob('topic_*.json'):
         try:
             doc=json.loads(path.read_text())
-            if conversation_id and doc.get('conversation_id')!=conversation_id:continue
+            if conversation_id and doc.get('conversation_id')!=conversation_id:
+                if doc['topic_id'] not in referenced or conversation.get('project_id') not in doc.get('project_ids',[]):continue
+            if project_id and project_id not in doc.get('project_ids',[]):continue
             _authorize(user,doc)
             meta={k:doc.get(k) for k in ('topic_id','report_type','title','revision','stage','created_at','updated_at','conversation_id','original_question','project_ids','run_id')}
             meta['questions']=(doc.get('simple') or {}).get('questions',[])

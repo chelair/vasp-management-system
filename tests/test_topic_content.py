@@ -14,6 +14,7 @@ os.environ['VASP_AI_KEY_FILE']=str(Path(ROOT.name)/'ai.key')
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]/'backend'),str(Path(__file__).resolve().parent)]
 import ai_chat_store as store
 import storage
+import permissions
 import topic_simple as simple
 import topic_reports as topics
 import topic_tools as tools
@@ -56,9 +57,40 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(first['content']['sha256'],original['content']['sha256'])
         self.assertNotIn('人工确认后的解释',original['content']['text'])
         other=self.conversation({'project_id':'p'})
-        with self.assertRaises(Exception):tools.dispatch(self.user,other,'','get_topic_report',{'topic_id':doc['topic_id']})
-        self.assertEqual(tools.dispatch(self.user,other,'','list_topic_reports',{})['items'],[])
+        self.assertEqual(tools.dispatch(self.user,other,'','get_topic_report',{'topic_id':doc['topic_id']})['revision'],changed['revision'])
+        self.assertEqual(tools.dispatch(self.user,other,'','list_topic_reports',{})['items'][0]['topic_id'],doc['topic_id'])
         self.assertEqual(tools.dispatch(self.user,conv,'','list_topic_reports',{})['items'][0]['topic_id'],doc['topic_id'])
+
+    def test_same_project_report_reused_without_exposing_other_users_or_projects(self):
+        import ai_chat_service as service
+        conv,doc=self.adsorption()
+        report_ids={r['topic_id'] for r in topics.list_for(self.user,project_id='p')}
+        other=self.conversation({'project_id':'p'})
+        statement='更正：PMS@model4对应5_opt，保留这个任务映射。'
+        with store.database() as db:
+            db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES (?,?,'user',?,'completed','now')",
+                       (store.uid(),conv['id'],statement))
+            for index in range(10):
+                db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES (?,?,'user',?,'completed','now')",
+                           (store.uid(),other['id'],'查看进度'+str(index)))
+        context=service.context_for(self.user,project_id='p',include_history=True)
+        self.assertEqual(context['user_statements'][0]['text'],statement)
+        self.assertIn(doc['topic_id'],[r['topic_id'] for r in context['project_reports']])
+        changed=tools.dispatch(self.user,other,'','update_topic_report',{'topic_id':doc['topic_id'],
+            'expected_revision':doc['revision'],'assessment':{'background':'在新对话补充原报告背景。'}})
+        self.assertEqual(changed['topic_id'],doc['topic_id'])
+        self.assertEqual(changed['conversation_id'],conv['id'])
+        self.assertEqual(topics.load(self.user,doc['topic_id'])['data'],json.loads(json.dumps(doc['data'])))
+        self.assertEqual({r['topic_id'] for r in topics.list_for(self.user,project_id='p')},report_ids)
+        project=storage.load_db()['projects'][0]
+        storage.save_db({'projects':[project,{'project_id':'other','name':'Other','owner':'tester','tasks':[]}]})
+        foreign=self.conversation({'project_id':'other'})
+        with self.assertRaises(permissions.PermissionDenied):tools.dispatch(self.user,foreign,'','get_topic_report',{'topic_id':doc['topic_id']})
+        self.assertEqual(tools.dispatch(self.user,foreign,'','list_topic_reports',{})['items'],[])
+        bob={'user_id':'bob','username':'bob','role':'user'}
+        with self.assertRaises(LookupError):tools.dispatch(bob,other,'','get_topic_report',{'topic_id':doc['topic_id']})
+        project['owner']='bob';storage.save_db({'projects':[project]})
+        with self.assertRaises(permissions.PermissionDenied):tools.dispatch(self.user,other,'','get_topic_report',{'topic_id':doc['topic_id']})
 
     def test_saved_response_returns_visible_content_and_pages_stay_on_selected_revision(self):
         conv,doc=self.adsorption()

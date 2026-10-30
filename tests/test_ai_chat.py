@@ -145,6 +145,7 @@ class AIChatTests(unittest.TestCase):
                        patch.object(checks_store, "CHECKS_DIR", Path(cls.temp.name)/"checks"),
                        patch.object(store, "KEY_PATH", Path(cls.temp.name)/"private/master.key"),
                        patch.object(service, "load_db", return_value=PROJECTS),
+                       patch("topic_reports.load_db", return_value=PROJECTS),
                        patch.object(ai_chat, "load_db", return_value=PROJECTS),
                        patch.object(service, "merged_results", return_value={
                            "task-alice": {"checked_at": "2026-10-18T20:00:00", "status": "completed", "last_energy": -1.0, "current_output": {"latest_dir": "con4"}},
@@ -783,6 +784,52 @@ class AIChatTests(unittest.TestCase):
         _,detail=self.api(f"/conversations/{conversation['id']}")
         self.assertNotIn('直接继续算',detail['messages'][-1]['content'])
         self.assertIn('已核对端点',detail['messages'][-1]['content'])
+
+    def test_progress_advice_requires_the_relevant_path_review(self):
+        conversation=self.conversation(self.connection(),'task-alice')
+        payloads=[]
+        def model(_connection,_key,_path,payload):
+            payloads.append(copy.deepcopy(payload))
+            if len(payloads)==1:return model_stream({'content':'NEB进度已梳理，建议直接续算。'})
+            if len(payloads)==2:
+                self.assertIn('task-alice',payload['messages'][-1]['content'])
+                return model_stream({'tool_calls':[{'index':0,'id':'review_progress','function':{
+                    'name':'analyze_reaction_path','arguments':'{"path_task_id":"task-alice"}'}}]})
+            return model_stream({'content':'端点核对发现额外结构变化，需要先处理。'})
+        with patch.object(service,'_open',side_effect=model),patch.object(workspace,'dispatch',return_value={'sources':{},'framework_shape':{}}):
+            _,run=self.api(f"/conversations/{conversation['id']}/messages",'POST',{'content':'梳理一下项目进度','request_id':store.uid()})
+            result=self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        self.assertEqual(len(payloads),3)
+        _,detail=self.api(f"/conversations/{conversation['id']}")
+        self.assertNotIn('直接续算',detail['messages'][-1]['content'])
+        paths={'tasks':[{'task_id':'p1','task_type':'neb','group':{'name':'PATH1'}},
+                        {'task_id':'p2','task_type':'neb','group':{'name':'PATH2'}}]}
+        self.assertEqual(service._required_path_reviews('梳理进度','PATH1建议直接续算。PATH2先重跑。',paths),{'p1','p2'})
+        self.assertEqual(service._required_path_reviews('梳理进度','PATH1建议直接续算。',paths),{'p1'})
+        self.assertEqual(service._required_path_reviews('梳理进度','NEB未收敛，目前进度较慢。',paths),set())
+        self.assertEqual(service._required_path_reviews('把NEB报告精简一下','已精简背景和结论。',paths),set())
+
+    def test_identical_reads_keep_one_full_result_without_replaying_or_skipping_reads(self):
+        conversation=self.conversation(self.connection(),'task-alice')
+        payloads=[]
+        def model(_connection,_key,_path,payload):
+            payloads.append(copy.deepcopy(payload))
+            if len(payloads)<=2:
+                return model_stream({'tool_calls':[{'index':0,'id':'repeat'+str(len(payloads)),'function':{
+                    'name':'read_workspace','arguments':'{"path":"evidence/directory-map.json"}'}}]})
+            results=[json.loads(m['content']) for m in payload['messages'] if m['role']=='tool']
+            self.assertEqual(results[0]['same_result_as'],'repeat2')
+            self.assertEqual(results[1]['data'],'x'*18000)
+            return model_stream({'content':'已读取并复用同一份证据。'})
+        with patch.object(service,'_open',side_effect=model),patch.object(service,'TOOL_RESULT_CHARS',25000),\
+             patch.object(workspace,'dispatch',return_value={'data':'x'*18000}) as dispatch:
+            _,run=self.send(conversation)
+            result=self.wait_run(run)
+        self.assertEqual(result['status'],'completed',result)
+        self.assertEqual(dispatch.call_count,2)
+        self.assertEqual(len(payloads),3)
+        self.assertTrue(all(e['result']['data']=='x'*18000 for e in result['tool_events']))
 
     def test_tool_result_budget_preserves_success_and_rejects_rest_of_batch(self):
         conversation = self.conversation(self.connection(), "task-alice")

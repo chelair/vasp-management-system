@@ -94,9 +94,48 @@ class RequirementsTests(unittest.TestCase):
 
     def user_message(self, text, conversation=None):
         conversation = conversation or self.conv
+        message_id = store.uid()
         with store.database() as db:
             db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES (?,?,'user',?,'completed','now')",
-                       (store.uid(), conversation['id'], text))
+                       (message_id, conversation['id'], text))
+        return message_id
+
+    def test_source_message_and_contextual_confirmation_create_exact_counts_once(self):
+        conv=store.create_conversation(ALICE['user_id'],'新对话',None,self.conn['id'])
+        raw='添加项目：模型1合金。\n计算内容：\n结构优化、DOS/PDOS、NO3RR台阶图、H迁移。\n预计交付：12月17日'
+        source_id=self.user_message(raw,conv)
+        options=setup.dispatch(None,conv,ALICE,'get_project_setup_options',{})
+        self.assertEqual(options['user_requests'][0]['source_message_id'],source_id)
+        args={'name':'ConfirmedSource','deadline':'2026-12-17','server':'server1','source_message_id':source_id,
+              'tasks':[{'model_name':'M1_Alloy','task_type':k} for k in ('opt','ele')],
+              'groups':[{'name':'M1_NO3RR','group_type':'free_energy','structures':2,'quantity_source':'每个模型2个中间体'},
+                        {'name':'M1_H','group_type':'neb','images':3,'quantity_source':'neb含初末态共5个点'}]}
+        pending=setup.dispatch(None,conv,ALICE,'create_project_from_request',args)
+        self.assertFalse(pending['project_created'])
+        self.assertEqual(storage.load_db()['projects'],[])
+        with store.database() as db:
+            db.execute("INSERT INTO messages(id,conversation_id,role,content,status,created_at) VALUES (?,?,'assistant',?,'completed','now')",
+                       (store.uid(),conv['id'],'服务器用server1，请确认是否使用；每个模型几个中间体？'))
+        self.user_message('是的；先用每个模型2个中间体；neb含初末态共5个点',conv)
+        result=setup.dispatch(None,conv,ALICE,'create_project_from_request',args)
+        project=storage.load_db()['projects'][0]
+        self.assertEqual(project['original_request'],raw)
+        self.assertEqual(project['calc_description'],'结构优化、DOS/PDOS、NO3RR台阶图、H迁移。')
+        self.assertNotIn('是的',project['description'])
+        summary=result['registration_summary']
+        self.assertEqual(summary['total_tasks'],9)
+        self.assertEqual(summary['groups'][0]['task_counts'],{'opt':2,'frac':2})
+        self.assertEqual(summary['groups'][1]['total_points'],5)
+        self.assertIn('共9个任务',summary['text'])
+        repeat=setup.dispatch(None,conv,ALICE,'create_project_from_request',args)
+        self.assertEqual(repeat['registration_summary'],summary)
+        self.assertEqual(len(storage.load_db()['projects'][0]['tasks']),9)
+        with self.assertRaises(ValueError):
+            setup.dispatch(None,self.conv,ALICE,'create_project_from_request',args)
+        self.assertFalse(setup._server_selected('server1',[],[
+            {'role':'assistant','content':'服务器用server1吗？'}, {'role':'user','content':'不是；先不要创建'}]))
+        self.assertFalse(setup._server_selected('server1',['用server1','不要用server1']))
+        self.ssh.assert_not_called()
 
     def test_ambiguous_counts_deferred_short_model_names_and_confirmed_resume(self):
         raw = ('模型1为合金，模型2为异质结，模型3为分离团簇。\n'
@@ -381,7 +420,7 @@ class RequirementsTests(unittest.TestCase):
             index=len(calls)
             if index==1:
                 names={t['function']['name'] for t in payload['tools']}
-                self.assertEqual(names,setup.GENERAL_NAMES)
+                self.assertEqual(names,setup.GENERAL_NAMES | {'set_conversation_title'})
                 delta={'tool_calls':[{'index':0,'id':'create1','type':'function','function':{'name':'create_project_from_request','arguments':json.dumps(args,ensure_ascii=False)}}]}
             elif index==2:
                 self.assertIn('get_task_inspections',{t['function']['name'] for t in payload['tools']})
@@ -401,6 +440,8 @@ class RequirementsTests(unittest.TestCase):
         self.assertEqual([e['status'] for e in detail['runs'][0]['tool_events']],['completed','completed'])
         self.assertEqual(detail['project_id'],storage.load_db()['projects'][0]['project_id'])
         self.assertEqual(len(calls),3)
+        self.assertIn('本次登记核对',detail['messages'][-1]['content'])
+        self.assertIn('共1个任务',detail['messages'][-1]['content'])
 
 
 if __name__=='__main__':

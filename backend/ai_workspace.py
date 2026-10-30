@@ -378,7 +378,12 @@ def dispatch(project: dict, conversation: dict, context: dict, name: str, argume
         if name == "get_task_inspections":
             if type(arguments.get("limit", 3)) is not int or not 1 <= arguments.get("limit", 3) <= 5:
                 raise ValueError("只支持查询最近1至5个目录的最新结果，默认3个")
-            return inspections.query_inspections(project, **arguments)
+            result = inspections.query_inspections(project, **arguments)
+            result['applied_parameter_records'] = [
+                {k:v for k,v in r.items() if k != 'changes'} | {'changed_keys':[c.get('key') for c in r['changes']]}
+                for r in result['applied_parameter_records']]
+            result['parameter_history_note'] = '这里只返回实际应用记录索引；完整改动值用get_task_parameter_history，不必重读整份巡检。'
+            return result
         if (not isinstance(arguments.get("observation_id"), str) or len(arguments["observation_id"]) != 24
                 or arguments.get("kind") not in ("curves", "neb", "parameters")
                 or type(arguments.get("offset", 0)) is not int or not 0 <= arguments.get("offset", 0) <= 1000000):

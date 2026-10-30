@@ -200,9 +200,11 @@ class StructureToolTests(unittest.TestCase):
         (folder/'ACF.dat').write_text('# X Y Z CHARGE MIN DIST ATOMIC VOL\n---\n'
             '1 0 0 0 2.4 0.4 6\n2 1 0 0 0.3 0.1 2\n---\nNUMBER OF ELECTRONS: 2.7\n')
         with patch('storage.load_db',return_value={'projects':[self.project]}):
-            result = self.call('get_bader_charges',{'targets':[
+            response = self.call('get_bader_charges',{'targets':[
                 {'task_id':'t','atom_indices':[1],'reference_charge':0},
-                {'task_id':'t','atom_indices':[1],'reference_charge':-1}]})['results']
+                {'task_id':'t','atom_indices':[1],'reference_charge':-1}]})
+        result=response['results']
+        self.assertEqual(response['interpretation_limits']['mechanism'],'NOT_ESTABLISHED')
         self.assertEqual(result[0]['composition'],{'S':1})
         self.assertEqual(result[0]['net_charge_e'],3.6)
         self.assertEqual(result[0]['electron_gain_from_reference_e'],-3.6)

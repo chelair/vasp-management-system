@@ -67,7 +67,9 @@ def dispatch(project,user,name,arguments):
                     and first['composition'] == result['composition']):
                 result['net_charge_difference_from_first_e'] = round(result['net_charge_e']-first['net_charge_e'],6)
                 result['bader_electrons_difference_from_first_e'] = round(result['bader_electrons']-first['bader_electrons'],6)
-        return {'results':results,'comparison_reference':'targets[0]；差值仅比较相同组成，物理对应由研究目标确认'}
+        return {'results':results,'comparison_reference':'targets[0]；差值仅比较相同组成，物理对应由研究目标确认',
+                'interpretation_limits':{'numerical_convergence':'NOT_TESTED', 'mechanism':'NOT_ESTABLISHED',
+                    'note':'差异小仅表示本次结果接近；未检验数值精度或控制变量，不能据此断言电荷转移饱和、机制成立或反证研究预期。'}}
     if name == 'discover_property_tasks':
         if set(arguments)-{'query','task_type','task_id'}: raise ValueError('不支持的任务发现参数')
         return properties.discover(db,user,[project['project_id']],**arguments)

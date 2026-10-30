@@ -1,10 +1,12 @@
 # 接口文档
 
-维护日期：2026-10-29；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
+维护日期：2026-10-30；应用 **v1.1.4**。本文维护HTTP/工具合同，不维护逐轮发布流水账。源码与已认证 `/docs`、`/openapi.json` 为准；[当前状态/运维](process.md)、[AI工作台](docs/ai-workspace.md)、[报告](docs/reports.md)、[执行](docs/execution.md)。
 
 ## 项目需求登记与预期对应
 
 通用会话提供 `get_project_setup_options/create_project_from_request`；创建成功只允许从通用会话绑定新项目，不改绑已有项目会话。项目会话增加 `create_calculation_contents/update_project_details/get_project_requirements/save_project_requirements`。均限登录的人类用户并逐项目鉴权；复用原项目/分组创建核心，仅本地登记，不接SSH或提交。文本引用真实用户消息，原文与AI解释分开；重复登记核对类型和数量，冲突不覆盖。
+
+创建选项增加user_requests（最近10条用户消息的source_message_id与160字符预览）。create优先使用source_message_id，由后端复制本会话用户原文、划分计算内容/交付段落并提取原文预期；旧original_request参数保留。对上一条明确服务器问题的口语肯定可确认该服务器。创建/补建返回registration_summary（实际任务总数、独立任务、每组类型数量、NEB映像与总点数、待确认组），最终回复附后端登记核对；不等于已提交或计算完成。
 
 AI任务/组名最多32字符，建议模型特征短名；同模型opt/ele同名自动补类型后缀。组新增quantity_source，引用用户明确的本组构型/中间映像数量；无依据或口径含糊返回pending_contents，明确部分可登记，contents_complete=false不得当作全部完成。服务器未经用户选择时返回questions和project_created=false，不创建项目。对应表增加binding_summary={total,bound,unbound:[{key,title}]}，ready仅表示原文已整理；同模型集合且唯一明确ele主任务可共享分析关联，不猜多个候选。save工具返回实际mapping/关联摘要/版本/比较，不重复返回完整原文和任务目录，get接口仍可读完整内容。AI写入由当前对话整理，不另起后台模型；人工保存继续原后台整理。
 
@@ -32,7 +34,7 @@ create请求支持 property_id/model_queries、adsorbate_query、targets、title
 
 create/update共用assessment文字合同：background/problem/impact分别用一句话说明背景、核心问题和影响，decision仅有真实待决策项时填写，explanation在后面的“为什么”解释依据。预览、读回和HTML/PDF共用顺序，空decision不占栏；编辑器支持单独修改各项。沿用每字段1800字符与定性文字校验，不新增句数或额外审批门槛。
 
-报告工具共用读写：`list_topic_reports(query?,offset?)` 返回当前对话已有报告；`get_topic_report(topic_id,revision?,offset?,limit?,block_id?)` 默认读取实际预览/导出的正文和有效编辑，传block_id时读取对应冻结图表数据（如DOS曲线）。分页默认8000、最多12000字符，返回next_offset，后续页可指定同一revision。创建/修改工具同时返回正文节选、正文指纹和修订；notes不显示在正文。原摘要字段保留，新增content、editable_content、science、evidence_index；图表模式返回evidence。所有读取沿用原用户/项目/对话权限。
+报告工具共用读写：`list_topic_reports(query?,offset?)`返回本人当前项目已有报告，含原conversation_id；`get_topic_report(topic_id,revision?,offset?,limit?,block_id?,include_evidence?)`读取实际正文和有效编辑。分页默认4000、最多12000字符，返回next_offset，后续页指定同一revision。默认仅返回path_evidence_index，完整端点诊断显式include_evidence=true；图表冻结数据仍用block_id。本人同项目可跨对话读取/修改原报告，owner与全部相关项目权限重新核对；分步流程和选择卡仍绑定原对话。GET `/api/reports/topic?conversation_id=...`也返回该对话最近20次运行实际读取/修改过的同项目报告，供原界面显示入口，不复制报告。创建/修改返回正文节选、指纹和修订；notes不进正文。
 
 吸附能默认 `adsorption.estimate`（adsorption.minimum.1.1.0），三个有限能量即给初步值，质量问题为提醒。简明报告不展示报错、缺项或警告，冻结风险和来源保留；show_warnings保留兼容。所有操作重新鉴权、no-store，修订冲突409；真正缺能量/角色时返回明确问题/操作建议。
 
@@ -877,6 +879,8 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 ## 4.8 AI 工作台
 
 前端 `/ai`，接口统一前缀 `/api/ai/chat`。支持对话、本地上下文及按项目约束的文件工作区；不开放任意代码/SSH或计算执行，报告和托管计划按专用工具写入。需人类账号登录；每条连接、会话和运行按 `user_id` 隔离，即使管理员也不能通过这些接口读取其他人的私有记录。项目会话额外检查当前项目可见权限，失去权限后不再返回历史内容。
+
+生成快照附本人同项目最多8条用户原话（优先映射/参考能量，按时间展示）和最近6份本人报告索引；只在生成开始读取，不为每个工具重复加载历史。只读结果完全相同时压缩模型上下文旧副本，工具仍重新读取、鉴权并完整审计，预算按实际保留内容计量。NEB建议按涉及路径逐一要求端点诊断；纯进度和文字排版不额外强制取结构。Bader工具返回interpretation_limits明确数值收敛未测试、机制未确立，差值不能自动解释为饱和或反证。
 
 | 方法 | 路径（省略前缀） | 用途 |
 | --- | --- | --- |

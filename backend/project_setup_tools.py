@@ -42,7 +42,8 @@ class Create(Contents):
     name: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_]*$')
     deadline: str
     server: str = Field(min_length=1)
-    original_request: str = Field(min_length=1, max_length=16000)
+    source_message_id: str = Field(default='', max_length=100, description='优先填写get_project_setup_options返回的用户原消息ID，后台自动保留原文，无需重抄。')
+    original_request: str = Field(default='', max_length=16000, description='旧调用兼容；使用source_message_id时省略。不能拼接后续确认或AI解释。')
     description: str = Field(default='', max_length=16000)
     calc_description: str = Field(default='', max_length=16000, description='逐行复制计算内容完整原文，保留行内预期，不删除括号中的预期文字。')
     expected_results: str = Field(default='', max_length=16000, description='复制含预期的完整原文行，保留所属计算内容，不能只留脱离主题的排序；交付日期仅填deadline。留空时从计算内容中提取含预期的原文行。')
@@ -70,7 +71,7 @@ def simple(properties, required=()):
 
 TOOLS = [
     tool('get_project_setup_options', '创建前查询可选服务器名称和本人可见项目，避免重复创建；不连SSH。通用会话也可使用。', simple({})),
-    tool('create_project_from_request', '按用户明确要求创建项目和计算任务登记。original_request引用本会话真实用户原文；计算内容整行复制，保留行内预期。名称简短且体现模型结构差别，如M1_Alloy_opt/M2_Hetero_opt/M3_Ru_Cu_opt，不堆共有基底和元素。服务器须用户选定，即使只有一个选项也不能擅自指定。组数量须quantity_source明确引文；含糊数量先留待确认，不能均分中间体或猜映像数。返回pending_contents不代表全部登记完成。一个模型一个ele主任务承载多种分析。只登记本地和默认模板，不建模型、不访问SSH、不提交。成功后绑定新项目，使用get/save_project_requirements继续整理并核对实际关联；勿重复建项目。', Create.model_json_schema()),
+    tool('create_project_from_request', '按用户明确要求创建项目和计算任务登记。优先传get_project_setup_options中的source_message_id，后台自动复制原消息的说明/计算内容/预期，省略original_request及这些文本字段，不拼接后续确认；旧调用的original_request必须引用单条真实原文。名称简短且体现模型结构差别，如M1_Alloy_opt/M2_Hetero_opt/M3_Ru_Cu_opt。服务器须用户选定，回复上一条明确服务器问题的“是的”有效。组数量须quantity_source明确引文，不均分或猜映像数。返回pending_contents不代表全部登记完成。成功后get/save_project_requirements整理关联；按registration_summary核对真实任务数量，不把已关联当成可计算。只登记本地，不上传或提交；勿重复建项目。', Create.model_json_schema()),
     tool('create_calculation_contents', '在当前项目补建优化/电子结构任务或自由能/NEB组；复用现有登记，完全相同则返回已有任务，不重复建。数量/位点不确定先问。只登记本地，不提交、不上传、不修改原计算文件。', Contents.model_json_schema()),
     tool('update_project_details', '按用户明确要求修改当前项目说明/计算内容/预期/交付日期，文本逐行保留用户原话。先get_project_requirements取得source_hash防覆盖新编辑。只改传入字段；不根据描述变更自动创建或删除任务。', simple({'source_hash':{'type':'string'}, 'patch':ProjectPatchIn.model_json_schema()}, ('source_hash','patch'))),
     tool('get_project_requirements', '查看当前项目最新原文、计算内容与预期对应表及Python结果比较。未生成/待更新时，使用当前原文与任务表，通过save_project_requirements整理；无需用户填写任务ID。只读本地，不调用模型或SSH。', simple({})),
@@ -92,11 +93,22 @@ def _request(user):
     return SimpleNamespace(state=SimpleNamespace(user=user))
 
 
-def _user_text(conversation, user):
+def _messages(conversation, user):
     import ai_chat_store as store
     with store.database() as db:
         store.owned(db, 'conversations', conversation['id'], str(user['user_id']))
-        return [r[0] for r in db.execute("SELECT content FROM messages WHERE conversation_id=? AND role='user'", (conversation['id'],))]
+        return [dict(r) for r in db.execute("SELECT id,role,content FROM messages WHERE conversation_id=? ORDER BY seq", (conversation['id'],))]
+
+
+def _user_text(conversation, user):
+    return [r['content'] for r in _messages(conversation, user) if r['role'] == 'user']
+
+
+def _source_fields(text):
+    parts = re.split(r'(?m)^\s*计算内容\s*[:：]', text, maxsplit=1)
+    description = parts[0].strip()
+    calculation = re.split(r'(?m)^\s*(?:预计交付|交付|截止|服务器)\s*[:：]', parts[-1], maxsplit=1)[0].strip()
+    return description, calculation if len(parts) == 2 else text
 
 
 def _verbatim(value, texts):
@@ -166,17 +178,55 @@ def _ready_contents(contents, texts):
     return Contents(tasks=contents.tasks, groups=groups), pending
 
 
-def _server_selected(server, texts):
+def _server_selected(server, texts, messages=()):
     servers = load_servers()
     if server not in servers:
         return False
     name = r'(?<![A-Za-z0-9_])' + re.escape(server) + r'(?![A-Za-z0-9_])'
-    if any(re.search(name, text) for text in texts):
-        return True
+    for text in reversed(texts):
+        if re.search(name, text):
+            return not bool(re.search(r'(?:不要|不用|不使用|不选|别用)[^。；;\n]{0,12}' + name, text))
     # A human can select the sole configured server in ordinary language.
-    return len(servers) == 1 and any(re.fullmatch(
+    if len(servers) == 1 and any(re.fullmatch(
         r'\s*(?:服务器)?(?:就)?(?:用|选|使用)(?:默认|唯一|这台|那台|这个|那个)(?:的)?(?:那台|这台|服务器)?[。！!\s]*', line)
-        for text in texts for line in text.splitlines())
+        for text in texts for line in text.splitlines()):
+        return True
+    for previous, reply in zip(messages, messages[1:]):
+        if previous['role'] != 'assistant' or reply['role'] != 'user':
+            continue
+        question = previous['content']
+        clause = re.split(r'[，,；;。！!\n]', reply['content'], maxsplit=1)[0].strip()
+        if (re.fullmatch(r'(?:是的?|对的?|没错|可以|好的?|确认|就用这台)[，,！!\s]*', clause)
+                and re.search(r'服务器[^\n。]*(?:确认|使用|选|用)',question) and re.search(name, question)
+                and not any(other != server and re.search(r'\b' + re.escape(other) + r'\b', question) for other in servers)):
+            return True
+    return False
+
+
+def _registration_summary(project_id, registered, pending):
+    project = next(p for p in load_db()['projects'] if p['project_id'] == project_id)
+    ids = {r['task_id'] for r in registered if 'task_id' in r}
+    ids.update(tid for r in registered for tid in r.get('tasks', []))
+    tasks = [t for t in project['tasks'] if t['task_id'] in ids]
+    groups = {}
+    for task in tasks:
+        group = task.get('group')
+        if group:
+            row = groups.setdefault(group['group_id'], {'name':group['name'], 'type':group['group_type'], 'task_counts':{}})
+            row['task_counts'][task['task_type']] = row['task_counts'].get(task['task_type'], 0) + 1
+            if 'images' in group:
+                row.update(intermediate_images=group['images'], total_points=group['images'] + 2)
+    independent = sum(not t.get('group') for t in tasks)
+    details = [f'独立任务{independent}个']
+    labels = {'opt':'优化', 'frac':'频率', 'neb':'NEB', 'ele':'电子结构'}
+    for row in groups.values():
+        counts = '、'.join(f'{labels.get(k,k)}{v}个' for k,v in row['task_counts'].items())
+        details.append(f'{row["name"]}：{counts}')
+    text = '本次登记核对：' + '；'.join(details) + f'；共{len(tasks)}个任务。'
+    if pending:
+        text += '待确认、尚未登记：' + '、'.join(p['name'] for p in pending) + '。'
+    return {'total_tasks':len(tasks), 'independent_tasks':independent, 'groups':list(groups.values()),
+            'pending_groups':[p['name'] for p in pending], 'text':text}
 
 
 def _expectation_text(data):
@@ -250,12 +300,24 @@ def _dispatch(project, conversation, user, name, arguments, run_id=''):
     if name == 'get_project_setup_options':
         if arguments:
             raise ValueError('查询选项不接受额外参数')
+        messages = _messages(conversation, user)
         return {'servers':list(load_servers()), 'projects':[
-            {'project_id':p['project_id'], 'name':p['name']} for p in permissions.visible_projects(load_db(), user)][:100]}
+            {'project_id':p['project_id'], 'name':p['name']} for p in permissions.visible_projects(load_db(), user)][:100],
+            'user_requests':[{'source_message_id':r['id'], 'preview':r['content'][:160]} for r in messages if r['role']=='user'][-10:],
+            'note':'用对应原消息的source_message_id创建，后台复制原文；后续确认沿原会话核对，无需拼接或重抄。'}
     if name == 'create_project_from_request':
         data = Create.model_validate(arguments)
-        texts = _user_text(conversation, user)
-        original = next((text for text in reversed(texts) if data.original_request in text), None)
+        messages = _messages(conversation, user)
+        texts = [r['content'] for r in messages if r['role'] == 'user']
+        if data.source_message_id:
+            original = next((r['content'] for r in messages if r['role']=='user' and r['id']==data.source_message_id), None)
+            if original is None:
+                raise ValueError('source_message_id不属于本会话用户原消息，请重新查询创建选项')
+            description, calculation = _source_fields(original)
+            data.description, data.calc_description = description, calculation
+            data.expected_results = ''
+        else:
+            original = next((text for text in reversed(texts) if data.original_request and data.original_request in text), None)
         if original is None:
             raise ValueError('original_request必须引用本会话用户的真实原文')
         data.original_request = original
@@ -263,10 +325,10 @@ def _dispatch(project, conversation, user, name, arguments, run_id=''):
             if not _verbatim(getattr(data, field), texts):
                 raise ValueError(f'{field}需要保留用户原文，AI解释请写入对应表')
         # Keep the original signature contract for retries of previously created projects.
-        signature = digest(data.model_dump(exclude={'groups':{'__all__':{'quantity_source'}}}))
+        signature = digest(data.model_dump(exclude={'source_message_id':True, 'groups':{'__all__':{'quantity_source'}}}))
         _validate_contents(data)
         ready, pending = _ready_contents(data, texts)
-        if not _server_selected(data.server, texts):
+        if not _server_selected(data.server, texts, messages):
             return {'project_created':False, 'contents_complete':False, 'pending_contents':pending,
                     'questions':[f'请选择服务器（可用：{", ".join(load_servers())}）。'],
                     'note':'尚未创建项目或任务；服务器须由用户选定，不能代填。'}
@@ -300,6 +362,7 @@ def _dispatch(project, conversation, user, name, arguments, run_id=''):
                 return {'project_id':pid, 'project_created':True, 'contents_complete':False,
                         'detail':str(exc), 'note':'已完成登记保留；相同请求可继续补齐，无需重新建项目。'}
             return {'project_id':pid, 'contents':registered, 'contents_complete':not pending, 'pending_contents':pending,
+                    'registration_summary':_registration_summary(pid, registered, pending),
                     'note':'已完成明确部分的本地登记；待确认分组尚未创建。请整理对应表并向用户询问待确认项，不要猜数量重调创建。未上传或提交计算。'}
     if not project or not conversation.get('project_id') or project['project_id'] != conversation['project_id']:
         raise permissions.PermissionDenied('请在对应项目会话中使用此工具')
@@ -338,4 +401,5 @@ def _dispatch(project, conversation, user, name, arguments, run_id=''):
     with _db_lock:
         result = _contents(pid, user, ready)
     return {'contents':result, 'contents_complete':not pending, 'pending_contents':pending,
+            'registration_summary':_registration_summary(pid, result, pending),
             'note':'明确部分已登记；待确认分组未创建。请继续整理对应表；未上传输入或提交计算。'}

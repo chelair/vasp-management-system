@@ -3,6 +3,7 @@ import copy
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import sys
@@ -94,6 +95,18 @@ class Provider(BaseHTTPRequestHandler):
                 args={'property_id':'adsorption.simple','model_queries':['LMR'],'adsorbate_query':'H2'}
                 event={'tool_calls':[{'index':0,'id':'simple_report','type':'function','function':{'name':'create_topic_report','arguments':json.dumps(args)}}]};reason='tool_calls'
             else:event={'content':'已整理好报告。需要确认时，在下方选择即可。'};reason='stop'
+        elif payload['model']=='topic-reuse':
+            if count==0:
+                topic_id=re.search(r'topic_[0-9a-f]{32}',payload['messages'][-1]['content']).group()
+                name,args='get_topic_report',{'topic_id':topic_id}
+            elif count==1:
+                name,args='update_topic_report',{'topic_id':history[-1]['topic_id'],'expected_revision':history[-1]['revision'],
+                    'assessment':{'background':'新对话补充原报告背景，保留冻结计算证据。'}}
+            if count<2:
+                event={'tool_calls':[{'index':0,'id':'reuse_'+str(count),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]};reason='tool_calls'
+            else:event={'content':'已更新原报告。'};reason='stop'
+        elif payload['model']=='topic-fixture' and history and 'report_ready' in history[-1]:
+            event={'content':'已保存简明报告；有缺项时请在选择卡中补充。'};reason='stop'
         elif payload['model'].startswith('topic-hostile'):
             if count==0:
                 args={'property_id':'oxygen_vacancy.neutral_single','model_queries':['LMR','LIC@LMR']}
@@ -151,6 +164,7 @@ def main():
         secret='r4-synthetic-private-key-never-return'
         connection=ai_chat_store.save_connection(str(user['user_id']),{'name':'隔离模拟模型','base_url':f'http://127.0.0.1:{provider.server_port}/v1','model':'topic-fixture','api_key':secret,'max_tokens':4096})
         fail_connection=ai_chat_store.save_connection(str(user['user_id']),{'name':'失败模拟模型','base_url':f'http://127.0.0.1:{provider.server_port}/v1','model':'topic-failure','api_key':secret,'max_tokens':4096})
+        reuse_connection=ai_chat_store.save_connection(str(user['user_id']),{'name':'原报告续写模拟','base_url':f'http://127.0.0.1:{provider.server_port}/v1','model':'topic-reuse','api_key':secret,'max_tokens':4096})
         hostile={}
         for kind in ('site','reference'):
             hostile[kind]=ai_chat_store.save_connection(str(user['user_id']),{'name':'越权选择模拟','base_url':f'http://127.0.0.1:{provider.server_port}/v1','model':'topic-hostile-'+kind,'api_key':secret,'max_tokens':4096})['id']
@@ -170,7 +184,7 @@ def main():
         def mutate():
             path=root/'checks/check_results_r4.json';rows=json.loads(path.read_text());rows[1]['last_energy']=-1;path.write_text(json.dumps(rows));return {'ok':True}
         sock=socket.socket();sock.bind(('127.0.0.1',0))
-        print(json.dumps({'port':sock.getsockname()[1],'token':token,'conversations':conversations,'connection':connection['id'],'failure_connection':fail_connection['id'],'hostile_connections':hostile}),flush=True)
+        print(json.dumps({'port':sock.getsockname()[1],'token':token,'conversations':conversations,'connection':connection['id'],'failure_connection':fail_connection['id'],'reuse_connection':reuse_connection['id'],'hostile_connections':hostile}),flush=True)
         try:uvicorn.Server(uvicorn.Config(app,log_level='error')).run(sockets=[sock])
         finally:provider.shutdown();provider.server_close()
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import json
 import re
 import sqlite3
@@ -23,6 +24,8 @@ from task_context import AUDIT_FILE
 from task_paths import is_auxiliary_task
 
 SYSTEM_PROMPT = """你是 VASP 科研计算助手，用中文与用户协作。
+先区分能力咨询、项目分析、创建登记和报告编辑，再围绕本轮交付取数。能力咨询先说明通用能力，不强行改成当前项目补算。先完成现有数据能回答的部分，再说缺什么；不支持的性质尽早说明，不大量取数后才承认未实现。
+项目快照的user_statements是用户原话，优先保留最新明确映射；project_reports是本人同项目的历史报告索引。旧回复只是解释，不代替工具证据；历史报告须读冻结证据及时间，不能冒充当前状态。Bader差异小只说明本次两组结果接近，没有数值精度、控制变量或响应曲线证据不能称饱和、证明机制或反证预期。
 报告共用流程：明确项目目标/预期→读取相应性质的现有数据与Python结果→写入结论与建议→核对工具返回的实际展示正文。用户说继续/修改/查看已有报告，先list_topic_reports定位，再get_topic_report读当前正文与证据，使用原topic_id及revision修改；手工编辑后的正文同样要读。各类简明报告均用assessment分别写一句话背景、问题、影响和可选待决策项，explanation解释依据；notes不进正文。objective写研究目标，具体数值引用同一冻结版本的表格；保存成功后核对content，不能把未显示的备注说成已进入正文。
 按性质使用已有分析：吸附能区分初步值与正式校验，DOS/PDOS看已有曲线及能量参考，缺陷/相对能/功函数沿注册配方，NEB核对目标反应、端点、能量顺序与力收敛。不要把某种性质的检查机械套到其他性质。已有数据能回答的部分直接完成，再准确说明还缺什么。
 Bader电荷优先get_bader_charges，一次查询相关任务；自行根据已有结构分层的composition/atom_indices与该次Bader表的元素坐标定位研究片段，再传atom_indices让Python求和，不把可以自行定位的原子编号交给用户。仅有真实归属歧义时询问。净电荷不自动等于相对带电游离分子的转移量；按明确参考净电荷传reference_charge。低Bader电子数本身不能证明划分异常，先区分元素价态和数据来源。O–O等键长用几何工具。不要为同一文件反复读取完整结构/目录地图；精确工具已返回来源时无需再读原始表。用户纠正任务对应关系时保留其明确映射，再核对证据；不能仅因POSCAR相近就否定不同外场/设置下的任务身份。
@@ -158,7 +161,7 @@ def _project_actions(task_names: dict) -> list:
     return actions
 
 
-def context_for(user: dict, task_id: str | None = None, *, project_id: str | None = None) -> dict:
+def context_for(user: dict, task_id: str | None = None, *, project_id: str | None = None, include_history: bool = False) -> dict:
     if project_id:
         project = project_for(user, project_id)
     elif task_id:
@@ -204,14 +207,27 @@ def context_for(user: dict, task_id: str | None = None, *, project_id: str | Non
     tasks.sort(key=lambda t: (priority.get(t["status"], 6), t["task_name"]))
     checks.sort(key=lambda r: str(r["checked_at"] or ""), reverse=True)
     from project_requirements import summary as requirements_summary
-    return clean({"scope": "project", "requirements": requirements_summary(project), "generated_at": now_iso(),
+    history = {}
+    if include_history:
+        import topic_reports
+        reports = topic_reports.list_for(user, project_id=project['project_id'])
+        with store.database() as db:
+            rows = db.execute("""SELECT m.id,m.conversation_id,m.content,m.created_at,m.seq FROM messages m
+                JOIN conversations c ON c.id=m.conversation_id
+                WHERE c.owner=? AND c.project_id=? AND m.role='user'
+                ORDER BY CASE WHEN m.content LIKE '%对应%' OR m.content LIKE '%更正%' OR m.content LIKE '%写错%'
+                    OR m.content LIKE '%参考%' OR m.content LIKE '%能量%' THEN 0 ELSE 1 END,m.seq DESC LIMIT 8""",
+                (str(user['user_id']),project['project_id'])).fetchall()
+        history = {'user_statements':[{**{k:r[k] for k in ('id','conversation_id','created_at')},'text':r['content'][:1600]} for r in sorted(rows,key=lambda r:r['seq'])],
+                   'project_reports':[{k:r[k] for k in ('topic_id','title','revision','stage','conversation_id','updated_at')} for r in reports[:6]]}
+    return clean({**history, "scope": "project", "requirements": requirements_summary(project), "generated_at": now_iso(),
                   "project": {k: project.get(k) for k in ("project_id", "name", "description", "calc_description", "expected_results", "deadline", "closed")},
                   "research_goal": {"calculation_goal": project.get("calc_description") or "", "expected_results": project.get("expected_results") or "", "rule": "先目标，再结构合理性/反应路径，再数值参数；外场、磁性、U、SOC和电荷态与物理模型身份一起核对。用事实检验目标，不迎合预期。"},
                   "summary": {"task_count": len(tasks), "status_counts": counts}, "tasks": tasks,
                   "workspace_rules": {
                       "scope": "仅当前项目；正式文件只读，只能在当前会话 work/ 新建草稿；无任意代码/SSH命令或作业操作权限。",
                       "map": "需要目录或任务文件路径时，调用 read_workspace 读取 evidence/directory-map.json，再按需列目录。",
-                      "properties": "科学性质比较先get_property_recipes及discover_property_tasks；名称只提供候选。按task_id/observation_id绑定后evaluate_property，由Python计算最终数值。不得自行编公式或最终数值；缺口/条件完整呈现，不能将UNKNOWN用于正式结论。",
+                      "properties": "数值由Python工具计算。吸附能优先简明报告，三份能量即可出初步值；Bader直接get_bader_charges。正式科学校验才get_property_recipes/discover_property_tasks/evaluate_property；不支持的性质先说明，不临时编公式。",
                       "inspections": "先get_task_inspections查来源/时间；差异用parameter_diff/parameters及get_task_parameter_history。参与巡检且超过4小时、来源不符或参数缺失，才按需get_remote_task_evidence，再核对当前状态。",
                       "source": "本地镜像不保证与远端实时一致，读取与操作权限由后端每次校验。"},
                   "checks": {"recent": checks[:20], "note": "各任务最近一次巡检，按时间排序"},
@@ -345,7 +361,7 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
     content = clean(content.strip(), (key,))
     if not content:
         raise ValueError("请输入问题")
-    context = clean(_context_budget(context_for(user, conversation.get("task_id"), project_id=conversation.get("project_id"))), (key,))
+    context = clean(_context_budget(context_for(user, conversation.get("task_id"), project_id=conversation.get("project_id"), include_history=True)), (key,))
     topic_continuation = None
     if topic_id:
         import topic_reports as topics
@@ -679,6 +695,21 @@ def _stream_final_text(connection: dict, key: str, payload: dict, run_id: str, a
     return "".join(parts)
 
 
+def _required_path_reviews(question, answer, project):
+    paths = [t for t in project.get('tasks',[]) if t.get('task_type') == 'neb']
+    if not paths or re.search(r'创建|新建|登记', question):
+        return set()
+    explicit = bool(re.search(r'能垒|断键|(?<![A-Za-z])NEB(?![A-Za-z])', question, re.I) and re.search(r'继续|当前|目前|现在|这条|这组|看法|怎么看|帮.*看|评估|合理|问题|报告', question))
+    recommendation = bool(re.search(r'(?:建议|可以|直接|应当|下一步|先).{0,40}(?:续算|继续优化|继续计算|重跑|重算|提交|增加映像)', answer))
+    if re.search(r'精简|缩短|排版|标题|文案|措辞|背景',question) and not re.search(r'能否|能不能|是否|评估|诊断',question) and not recommendation:
+        return set()
+    mentioned = [t for t in paths if any(label and label.casefold() in (question+'\n'+answer).casefold()
+                 for label in (t.get('model_name'),(t.get('group') or {}).get('name')))]
+    if not explicit and not (recommendation and (mentioned or re.search(r'能垒|断键|(?<![A-Za-z])NEB(?![A-Za-z])|PATH\d', answer, re.I))):
+        return set()
+    return {t['task_id'] for t in mentioned or paths}
+
+
 def _generate(run_id: str, connection: dict, key: str, messages: list, user: dict, workspace_enabled: bool = False):
     text, usage = "", {}
     hold = max(96, len(key))
@@ -686,9 +717,14 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
     tool_bytes = 0
     final_deadline = None
     question = str(messages[-1].get('content','')) if messages else ''
-    review_required = workspace_enabled and bool(re.search(r'能垒|断键|\bNEB\b', question, re.I)) and bool(re.search(r'继续|当前|目前|现在|这条|这组|看法|怎么看|帮.*看|评估|合理|问题|报告', question))
-    review_obtained = False
+    reviewed_paths = set()
     review_reminded = False
+    repeated_results = {}
+    registrations = []
+
+    def with_receipts(answer):
+        receipts = list(dict.fromkeys(r['text'] for r in registrations))
+        return answer.rstrip() + ('\n\n' + '\n'.join(receipts) if receipts else '')
 
     def authorize(*, check_time=True):
         if _cancelled(run_id):
@@ -714,13 +750,13 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
         error = str(exc) if isinstance(exc, (ValueError, permissions.PermissionDenied)) and not isinstance(exc, json.JSONDecodeError) else "模型请求失败或响应格式不兼容，请检查连接后重试"
         status = "cancelled" if _cancelled(run_id) else "failed"
         answer = text.strip() or ("回答已停止。" if status == "cancelled" else "本轮未能完成回答：" + error + "。未确认的操作不能视为已完成。")
-        store.update_answer(run_id, clean(answer, (key,)), status=status, error=clean(error, (key,)), usage=usage,
+        store.update_answer(run_id, clean(with_receipts(answer), (key,)), status=status, error=clean(error, (key,)), usage=usage,
                             reasoning=(reasoning_total + reasoning_text)[:200000])
 
     def finalize(reason):
         nonlocal final_deadline
         final_deadline = time.monotonic() + FINAL_SECONDS
-        authorize()  # 撤权或人工停止后不能再请求模型。
+        current = authorize()  # 撤权或人工停止后不能再请求模型。
         rejection = {"error": reason, "denied": True, "executed": False}
         # 总时限可能在一批工具中途触发：补齐未执行调用的拒绝结果，保持协议与审计完整。
         assistant = next((i for i in reversed(range(len(messages))) if messages[i].get("tool_calls")), None)
@@ -763,12 +799,15 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             final_text = "本轮未能取得模型的最终总结。" + reason + "。已完成的工具记录已保留；被拒绝或未确认的操作没有视为完成，现有证据不足的部分仍待核实。"
         answer = text.rstrip() + ("\n\n" if text.strip() else "") + final_text
         authorize(check_time=False)
-        store.update_answer(run_id, clean(answer, (key,)), status="completed", usage=usage,
+        if workspace_enabled and current.get('project_id'):
+            missing = _required_path_reviews(question, answer, project_for(user, current['project_id'])) - reviewed_paths
+            if missing:
+                answer = '本轮证据读取已结束，但相关路径端点核对尚未完成，暂不能给出NEB续算建议。已有工具证据和登记结果已保留。'
+        store.update_answer(run_id, clean(with_receipts(answer), (key,)), status="completed", usage=usage,
                             reasoning=(reasoning_total + reasoning_text)[:200000])
 
     try:
         conversation = authorize()
-        review_required = review_required and bool(conversation.get("project_id")) and not bool(re.search(r"创建|新建|登记", question))
         store.update_answer(run_id, "")
         while True:
             conversation = authorize()
@@ -871,15 +910,17 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
             text += round_text
             round_recorded = True
             if not calls:
-                if review_required and not review_obtained:
+                missing = (_required_path_reviews(question, text, project_for(user, conversation['project_id'])) - reviewed_paths
+                           if workspace_enabled and conversation.get('project_id') else set())
+                if missing:
                     # Do not turn an unsupported first answer into a recommendation to run.
                     text = text[:-len(round_text)] if round_text else text
                     if not review_reminded:
                         review_reminded = True
-                        messages.append({'role':'system','content':'在判断能垒能否继续前，必须先调用analyze_reaction_path检查相关路径端点与研究目标。不要仅凭收敛、组成和晶胞建议续算；如工具无法读取，直接在对话询问必要资料。'})
+                        messages.append({'role':'system','content':'在判断能垒能否继续前，必须先调用analyze_reaction_path检查相关路径端点与研究目标，或get_topic_report(include_evidence=true)读取已有冻结诊断并核对来源时间。尚缺路径：'+', '.join(sorted(missing))+'。不要仅凭收敛、组成和晶胞建议续算；如工具无法读取，直接在对话询问必要资料。'})
                         store.update_answer(run_id, clean(text, (key,)), usage=usage, reasoning=reasoning_total)
                         continue
-                    store.update_answer(run_id, clean(text+'尚未完成相关路径的端点结构核对，暂不能判断是否适合继续NEB。请先确认目标路径和研究的反应过程。',(key,)),status='completed',usage=usage,reasoning=reasoning_total)
+                    store.update_answer(run_id, clean(with_receipts(text+'尚未完成相关路径的端点结构核对，暂不能判断是否适合继续NEB。请先确认目标路径和研究的反应过程。'),(key,)),status='completed',usage=usage,reasoning=reasoning_total)
                     return
                 if not round_text.strip():
                     if saw_reasoning:
@@ -887,7 +928,7 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                     else:
                         finalize("模型未返回可显示的文字，需要直接给出回答")
                     return
-                store.update_answer(run_id, clean(text, (key,)), status="completed", usage=usage, reasoning=reasoning_total)
+                store.update_answer(run_id, clean(with_receipts(text), (key,)), status="completed", usage=usage, reasoning=reasoning_total)
                 return
             if len({c["id"] for c in calls.values()}) != len(calls) or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", c["id"]) for c in calls.values()):
                 raise GenerationLimit("工具调用标识不合法，该批请求未执行")
@@ -916,14 +957,30 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                     result = workspace.dispatch(project, conversation, context_for(user, project_id=project["project_id"] if project else None), name, arguments, user=user, run_id=run_id)
                     result = clean(result, (key,))
                     status = "completed"
-                    if name == 'analyze_reaction_path' or (name == 'create_topic_report' and arguments.get('property_id') == 'neb.barrier') or (name == 'get_topic_report' and result.get('path_evidence')):
-                        review_obtained = True
+                    if name == 'analyze_reaction_path':
+                        reviewed_paths.add(arguments['path_task_id'])
+                    paths = result.get('path_evidence',[])
+                    if name == 'create_topic_report' and arguments.get('property_id') == 'neb.barrier':
+                        paths = result.get('path_evidence_index',paths)
+                    for path in paths:
+                        reviewed_paths.add(path['path_task_id'])
+                    if result.get('registration_summary'):
+                        registrations.append(result['registration_summary'])
                 except Exception as exc:
                     error = str(exc) if isinstance(exc, (ValueError, permissions.PermissionDenied)) and not isinstance(exc, json.JSONDecodeError) else "证据或文件不可访问，请重新查询；草稿使用新文件名"
                     result, status = {"error": clean(error, (key,))}, "failed"
                     if denied:
                         result.update(denied=True, executed=False)
                 encoded = json.dumps(result, ensure_ascii=False)
+                duplicate_key = None
+                if status == 'completed' and name.startswith(('get_','list_','read_','find_','search_','discover_')):
+                    duplicate_key = (name, json.dumps(arguments,sort_keys=True), hashlib.sha256(encoded.encode()).hexdigest())
+                    if duplicate_key in repeated_results:
+                        previous = messages[repeated_results[duplicate_key]]
+                        reference = json.dumps({'same_result_as':call['id'],'note':'同一查询再次读取后返回相同证据，完整内容见后续该工具结果。'},ensure_ascii=False)
+                        if tool_bytes - len(previous['content']) + len(reference) + len(encoded) <= TOOL_RESULT_CHARS:
+                            tool_bytes -= len(previous['content']) - len(reference)
+                            previous['content'] = reference
                 if not denied and tool_bytes + len(encoded) > TOOL_RESULT_CHARS:
                     limit_reason = "本轮工具结果总量达到预算，拒绝继续读取或调用工具"
                     # 操作可能已成功（如保存报告），不能把省略返回值伪装成执行失败或重做。
@@ -937,6 +994,8 @@ def _generate(run_id: str, connection: dict, key: str, messages: list, user: dic
                     tool_bytes += len(encoded)
                 store.append_tool_event(run_id, clean({"id": call["id"], "name": name, "arguments": arguments,
                     "result": result, "status": status, "reasoning_offset": len(reasoning_total), "at": now_iso()}, (key,)))
+                if duplicate_key and not result.get('result_omitted'):
+                    repeated_results[duplicate_key] = len(messages)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": encoded})
             if limit_reason:
                 raise GenerationLimit(limit_reason)

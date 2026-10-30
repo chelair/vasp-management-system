@@ -32,7 +32,7 @@ def guard(fn):
 @router.get('')
 @guard
 def list_topics(request:Request,conversation_id:str|None=None):
-    return ok('查询成功',{'items':topics.list_for(actor(request),conversation_id)})
+    return ok('查询成功',{'items':topics.list_for(actor(request),conversation_id,include_referenced=True)})
 
 
 @router.post('/prepare')

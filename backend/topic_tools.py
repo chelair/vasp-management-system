@@ -25,7 +25,7 @@ INTERPRETED_TARGET={'type':'object','properties':{'label':{'type':'string'},'rea
 REPORT_TARGET={**TARGET,'properties':{**TARGET['properties'],**{role:INPUT for role in ('surface','adsorbate','complex')}}}
 
 TOOLS=[
-    tool('list_topic_reports','查找当前对话已有报告，返回编号、标题、保存时间和当前修订。用户说继续、修改或查看已有报告时先查询并读取原报告，不因同名重新创建。',
+    tool('list_topic_reports','查找本人在当前项目的已有报告（含其他对话），返回原对话、编号、标题、保存时间和当前修订。用户说继续、修改或查看已有报告时先查询并读取原报告，不因换对话或同名重新创建。',
          {'query':{'type':'string','maxLength':200},'offset':{'type':'integer','minimum':0}}),
     tool('create_topic_report','用户要求科研报告时直接用本工具。开头用assessment.background/problem/impact各一句话写背景、问题和影响；确需选择才写decision一句话。explanation在后面解释为什么，不复述摘要。NEB/断键诊断先analyze_reaction_path核对目标与端点，再以neb.barrier及路径名生成问题—影响—解决办法和带标注结构对照；assessment按上述摘要与解释分开写，不把报错/缺口/警告写成notes。必要选择返回对话卡，非必要警告在对话总结。无需逐个计划元素。服务端自己查授权项目数据、使用注册配方与Python计算、选择现有报告元素并保存可读报告。吸附能有三个角色的能量就给初步结果；k点/未收敛等仅警告。仅多候选或无法确定角色时返回简短问题，界面自动给用户选择/自定义回答。你是用户与报告间的翻译官：可以理解口语/别名，先search_report_data查实际任务，再自行传targets绑定角色；不需要用户给task_id。用户在本轮或历史对话给过的能量可直接作为对应角色的energy_ev，或energy_value+energy_unit，并用source_quote引用用户原话；不需要存在分子任务。推断/假设须在note说明，不能伪装为计算事实。用户的标题和分析重点可直接传入，警告只在对话总结。不先写文章再找数字。',
          {'property_id':{'type':'string'},'model_queries':{'type':'array','items':{'type':'string'},'minItems':1,'maxItems':4},'adsorbate_query':{'type':'string','maxLength':100},'project_ids':{'type':'array','items':{'type':'string'},'maxItems':4},'targets':{'type':'array','items':REPORT_TARGET,'maxItems':4},'title':{'type':'string','maxLength':200},'notes':{'type':'string','maxLength':8000},'show_warnings':{'type':'boolean'},'objective':{'type':'string','maxLength':1000},'assessment':ASSESSMENT_SCHEMA,'bond_elements':{'type':'array','items':{'type':'string'},'minItems':2,'maxItems':2},'fragment_elements':{'type':'array','items':{'type':'string'},'maxItems':12},'contact_elements':{'type':'array','items':{'type':'string'},'maxItems':12}},('property_id','model_queries')),
@@ -51,15 +51,24 @@ TOOLS=[
          ('topic_id','expected_revision','paragraphs')),
     tool('save_topic_report','保存已生成的独立topic报告。不会覆盖project_full或其他专题，返回可从对话打开的报告ID。用户已要求生成报告时，完成草案后直接保存，不重复要求确认。',
          {'topic_id':{'type':'string'},'expected_revision':{'type':'integer'}},('topic_id','expected_revision')),
-    tool('get_topic_report','读取报告实际正文、有效结论与建议和科学结果。需要DOS等图表的冻结曲线/数据时传evidence_index中的block_id。分页继续读时指定返回的revision和next_offset。notes不进正文。',
-         {'topic_id':{'type':'string'},'revision':{'type':'integer','minimum':1},'block_id':{'type':'string'},'offset':{'type':'integer','minimum':0},'limit':{'type':'integer','minimum':1000,'maximum':12000}},('topic_id',)),
+    tool('get_topic_report','读取本人当前项目报告的实际正文、有效结论与建议和科学结果，可跨本人对话。默认省略完整路径证据，明确需要端点诊断时include_evidence=true；图表冻结数据用evidence_index中的block_id。分页指定revision和next_offset。notes不进正文。',
+         {'topic_id':{'type':'string'},'revision':{'type':'integer','minimum':1},'block_id':{'type':'string'},'include_evidence':{'type':'boolean'},'offset':{'type':'integer','minimum':0},'limit':{'type':'integer','minimum':1000,'maximum':12000}},('topic_id',)),
 ]
 
 
-def _model_report(doc, **page):
+def _model_report(doc, *, include_evidence=False, **page):
     import topic_reports as topics
     from topic_content import readback
-    return topics.summary(doc) | readback(doc, **page)
+    result = topics.summary(doc) | readback(doc, **page)
+    if not include_evidence and 'path_evidence' in result:
+        paths = result.pop('path_evidence')
+        result['path_evidence_index'] = [{k:p[k] for k in ('path_name','path_task_id','sources')} for p in paths]
+        result['evidence_note'] = '端点诊断来自冻结证据，完整数据用get_topic_report(include_evidence=true)读取；不能冒充远端最新状态。'
+    return result
+
+
+def _same_project_report(doc, conversation):
+    return bool(conversation.get('project_id') and conversation['project_id'] in doc['project_ids'])
 
 
 def dispatch(user,conversation,run_id,name,arguments):
@@ -73,8 +82,8 @@ def dispatch(user,conversation,run_id,name,arguments):
     if name=='list_topic_reports':
         query=arguments.get('query','');offset=arguments.get('offset',0)
         if not isinstance(query,str) or len(query)>200 or type(offset) is not int or offset<0:raise ValueError('报告查询范围无效')
-        items=[r for r in topics.list_for(user,conversation['id']) if query.casefold() in r['title'].casefold()]
-        return {'items':[{k:r[k] for k in ('topic_id','title','revision','stage','updated_at')} for r in items[offset:offset+20]],
+        items=[r for r in topics.list_for(user,project_id=conversation['project_id']) if query.casefold() in r['title'].casefold()]
+        return {'items':[{k:r[k] for k in ('topic_id','title','revision','stage','updated_at','conversation_id')} for r in items[offset:offset+20]],
                 'total':len(items),'next_offset':offset+20 if len(items)>offset+20 else None}
     if name=='search_report_data':
         from properties import authorized_projects
@@ -125,8 +134,11 @@ def dispatch(user,conversation,run_id,name,arguments):
         doc=topics.prepare(user,conversation,messages[-1]['content'],request,run_id=run_id,project_ids=arguments.get('project_ids'))
         return topics.summary(doc)
     doc=topics.load(user,arguments['topic_id'],**({'revision':arguments['revision']} if name=='get_topic_report' and 'revision' in arguments else {}))
-    if doc['conversation_id']!=conversation['id']:raise permissions.PermissionDenied('专题不属于当前对话')
-    if name=='get_topic_report':return _model_report(doc,offset=arguments.get('offset',0),limit=arguments.get('limit',8000),block_id=arguments.get('block_id'))
+    if doc['conversation_id']!=conversation['id'] and not (name in ('get_topic_report','update_topic_report') and _same_project_report(doc,conversation)):
+        raise permissions.PermissionDenied('专题不属于当前用户的会话项目')
+    if name=='get_topic_report':
+        if type(arguments.get('include_evidence',False)) is not bool:raise ValueError('include_evidence须为布尔值')
+        return _model_report(doc,include_evidence=arguments.get('include_evidence',False),offset=arguments.get('offset',0),limit=arguments.get('limit',4000),block_id=arguments.get('block_id'))
     if name=='update_topic_report':
         from topic_simple import update_content
         return _model_report(update_content(user,doc['topic_id'],{k:v for k,v in arguments.items() if k!='topic_id'}),limit=4000)

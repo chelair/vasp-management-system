@@ -91,6 +91,18 @@ class ReactionReviewTests(unittest.TestCase):
         self.assertEqual(changed['revision'],2)
         self.assertEqual(topics.load(self.user,doc['topic_id'],revision=1)['stage'],'waiting')
 
+    def test_report_tools_default_to_text_and_load_frozen_path_evidence_on_demand(self):
+        import topic_tools
+        doc=topic_simple.create(self.user,self.conversation,'诊断断键路径',{'property_id':'neb.barrier','model_queries':['PATH']})
+        compact=topic_tools.dispatch(self.user,self.conversation,'','get_topic_report',{'topic_id':doc['topic_id']})
+        full=topic_tools.dispatch(self.user,self.conversation,'','get_topic_report',{'topic_id':doc['topic_id'],'include_evidence':True})
+        self.assertNotIn('path_evidence',compact)
+        self.assertEqual(compact['path_evidence_index'][0]['path_task_id'],'path')
+        self.assertEqual(full['path_evidence'][0]['path_task_id'],'path')
+        self.assertEqual(compact['content'],full['content'])
+        self.assertLess(len(json.dumps(compact)),len(json.dumps(full)))
+        self.assertEqual(topics.load(self.user,doc['topic_id'])['revision'],doc['revision'])
+
     def test_permissions_mapping_and_source_changes_are_not_silently_accepted(self):
         with patch.object(review,'load_many') as read:
             with self.assertRaises(permissions.PermissionDenied):
@@ -190,7 +202,7 @@ class ReactionReviewTests(unittest.TestCase):
         self.assertIn('3.207200',output)
         self.assertIn('0.324072',output)
         self.assertIn('A（已选）',output)
-        result=topic_tools.dispatch(self.user,self.conversation,'','get_topic_report',{'topic_id':doc['topic_id']})
+        result=topic_tools.dispatch(self.user,self.conversation,'','get_topic_report',{'topic_id':doc['topic_id'],'include_evidence':True})
         self.assertEqual(result['path_evidence'][0]['energy_profile']['interior_peak_observed'],False)
         self.assertIn('当前采样最高点：末态',result['content']['text'])
         self.assertIn('排除所有 F',result['content']['text'])

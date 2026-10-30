@@ -47,6 +47,7 @@ import ScientificPropertiesPanel from '../components/reports/ScientificPropertie
 import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
 import { ReportAIProvider, ReportAIControls } from '../components/reports/ReportAIContext';
+import { ReportReviewProvider, ReportReviewControls } from '../components/reports/ReportReview';
 import { applyHiddenBlocks, collectHiddenBlocks, hiddenKeyLabel } from '../utils/reportHidden';
 import {
   BaderChargePanel,
@@ -120,7 +121,7 @@ const NOTE_TYPE_KEYS: Record<string, string> = {
  */
 function headingLabel(el: HTMLElement): string {
   const clone = el.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('.report-hide-btn').forEach((btn) => btn.remove());
+  clone.querySelectorAll('.report-hide-btn,.report-review-anchor').forEach((btn) => btn.remove());
   return (clone.textContent ?? '').trim();
 }
 
@@ -922,12 +923,22 @@ export default function Report() {
     </div>
   );
 
+  const reloadReviewedReport = useCallback(async () => {
+    const reportId = detail?.meta.report_id;
+    if (!reportId) return;
+    const updated = await fetchProjectReport(reportId);
+    setDetail(old => old?.meta.report_id === reportId ? updated : old);
+  }, [detail?.meta.report_id]);
+
   return (
     <ReportAIProvider key={`${detail?.meta.report_id ?? ''}:${detailRevision}`}
       reportId={detail?.meta.report_id ?? ''} notes={notes} onSaved={setNotes}
       connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}
       autoGenerate={Boolean(detail && autoAIReports.includes(detail.meta.report_id))}
       onAutoStarted={() => setAutoAIReports(old => old.filter(id => id !== detail?.meta.report_id))}>
+    <ReportReviewProvider key={`${detail?.meta.report_id ?? ''}:${detailRevision}`}
+      reportId={detail?.meta.report_id ?? ''} contentRef={contentRef} version={renderedSections} onChanged={reloadReviewedReport}
+      connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}>
     <PageTransition>
       {propertiesOpen && selectedProject && <ScientificPropertiesPanel key={selectedProject} projectRef={selectedProject} projects={projects} onClose={() => setPropertiesOpen(false)}/>}
       {compositionOpen && selectedProject && <ReportCompositionEditor key={selectedProject} projectRef={selectedProject}
@@ -1203,6 +1214,7 @@ export default function Report() {
               </div>
 
               <ReportAIControls />
+              <ReportReviewControls />
               <div className="report-body">
                   <nav className="report-toc">
                     {renderedSections.map((s) => (
@@ -1490,6 +1502,7 @@ export default function Report() {
         </Card>
       </div>
     </PageTransition>
+    </ReportReviewProvider>
     </ReportAIProvider>
   );
 }

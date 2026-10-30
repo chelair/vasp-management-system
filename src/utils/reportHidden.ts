@@ -44,7 +44,7 @@ export function mapLegacyHiddenBlocks(blockIds: string[], candidates: {block_id:
 /** 标题纯文本：排除运行时追加的「隐藏」按钮 */
 function headingLabel(el: HTMLElement): string {
   const clone = el.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('.report-hide-btn').forEach((btn) => btn.remove());
+  clone.querySelectorAll('.report-hide-btn,.report-review-anchor').forEach((btn) => btn.remove());
   return (clone.textContent ?? '').trim();
 }
 

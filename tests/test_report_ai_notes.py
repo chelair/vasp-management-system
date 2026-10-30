@@ -36,6 +36,7 @@ from report_export import _notes_body
 
 KEY = "mock-report-private-key-not-for-context-123456"
 REQUESTS = []
+REVIEW_RESULT = {}
 SEEN = threading.Event()
 RELEASE = threading.Event()
 STREAM_READY = threading.Event()
@@ -76,11 +77,14 @@ class Provider(BaseHTTPRequestHandler):
         if mode == "error":
             self.send_response(401); self.end_headers(); self.wfile.write(KEY.encode()); return
         value = json.loads(body["messages"][1]["content"])
-        case = value["description_case"]
-        text = {"analysis_note": "实际能量 -10.0 eV；离子尚未收敛，精度未验证。" +
-                    {"A": "只陈述事实。", "B": "围绕计算内容组织结果，预期未提供。",
-                     "C": "预期仅为关注点，不能作为证据。", "D": "实际未收敛，与预期收敛矛盾。"}[case],
-                "paper_note": "**Results（事实）**：能量 -10.0 eV；未收敛。\n**Discussion（需证据）**：证据不足，不能确认机制。"}
+        if 'comment' in value:
+            text = REVIEW_RESULT(value) if callable(REVIEW_RESULT) else REVIEW_RESULT
+        else:
+            case = value["description_case"]
+            text = {"analysis_note": "实际能量 -10.0 eV；离子尚未收敛，精度未验证。" +
+                        {"A": "只陈述事实。", "B": "围绕计算内容组织结果，预期未提供。",
+                         "C": "预期仅为关注点，不能作为证据。", "D": "实际未收敛，与预期收敛矛盾。"}[case],
+                    "paper_note": "**Results（事实）**：能量 -10.0 eV；未收敛。\n**Discussion（需证据）**：证据不足，不能确认机制。"}
         if mode == "schema": text = {"analysis_note": "x"}
         if mode == "sections": text["paper_note"] = "假定可靠"
         if mode == "sections-inline": text["paper_note"] = "提及 Results 和 Discussion，但没有事实/解释分段。"
@@ -161,6 +165,7 @@ class ReportAINotesTests(unittest.TestCase):
         storage.save_db({"projects": [self.project, {"project_id": "q", "name": "Off", "owner": "alice", "tasks": []}]})
         self.doc = report(); store.save_report(self.doc, "ordinary report", {})
         store._notes_path("rpt_p").unlink(missing_ok=True)
+        store._edits_path("rpt_p").unlink(missing_ok=True)
         REQUESTS.clear(); SEEN.clear(); RELEASE.clear(); STREAM_READY.clear()
         self.connection = connections.save_connection("alice", {
             "name": "My model", "base_url": f"http://127.0.0.1:{self.provider.server_port}", "model": "mock",

@@ -68,6 +68,7 @@ const { execFileSync } = require('node:child_process');
     if (req.url.endsWith('/ai-status')) return send({ enabled: !off && !req.url.includes('fixtureOff'), empty_revision: 'empty', notes,
       targets: ['manual', 'missing', 'broken'].map(key => ({ key, title: key })) });
     if (req.url.endsWith('/connections')) return send({ items: noModels ? [] : [{ id: 'mine', name: '我的连接', model: 'mock', key_configured: true }] });
+    if (req.url.endsWith('/review')) return send({ revision: 'mock-review', source: 'fixture', modules: [], comments: [], stale: false });
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
     if (req.url.endsWith('/ai-preview')) {

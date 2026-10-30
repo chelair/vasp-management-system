@@ -1039,6 +1039,70 @@ def _one_line_summary(facts, stats, stage):
     )
 
 
+def free_energy_markdown(path):
+    structures = path["structures"]
+    with_energy = [s for s in structures if s.get("free_energy_ev") is not None]
+    ref = float(with_energy[0]["free_energy_ev"]) if with_energy else None
+    rels = [
+        float(s["free_energy_ev"]) - ref
+        for s in with_energy
+        if ref is not None
+    ]
+    corrected = sum(1 for s in structures if s.get("corrected"))
+    lines = [
+        f"#### {path['group_name']}",
+        f"{path['structure_count']} 个中间体 · {corrected} 个已矫正"
+        + (f" · 最高相对能 {max(rels):+.3f} eV" if rels else ""),
+    ]
+    if not with_energy:
+        # 频率矫正（G(T)）还没算 → 自由能列为空、台阶图不画；但结构三视图照样能点开
+        lines.append(
+            "_尚未做频率矫正（G(T)）：自由能与相对 ΔE 列为空。_"
+        )
+    if path.get("chart"):
+        lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
+    # 中间体结构：**3D 视图**（v0.9.73）—— 点表格里的「结构 N」切换显示哪个中间体；
+    # 原来那个"点结构 N 看 PNG 三视图"的弹窗不再用（PNG 仍生成，留给打印/PDF）
+    if any(s.get("cif") for s in structures):
+        lines.append(f"@[free-energy-3d:{path['group_id']}]")
+
+    def _structure_cell(index: int, structure: Dict[str, Any]) -> str:
+        """中间体那一格：有 CIF → 点它切换上面的 3D 视图（`#fe-3d:<组>:<下标>:<任务 id>`，
+        任务 id 供报告页在芯片旁挂「注」按钮用）；否则退回旧的 PNG 三视图弹窗链接。"""
+        label = structure["structure_label"]
+        if structure.get("cif"):
+            return (
+                f"[结构 {label}](#fe-3d:{path['group_id']}:{index}:"
+                f"{structure.get('opt_task_id') or ''})"
+            )
+        if structure.get("dialog"):
+            return f"[结构 {label}](#{structure['dialog']})"
+        return f"结构 {label}"
+
+    lines.append(
+        _md_table(
+            ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
+            [
+                [
+                    _structure_cell(index, s),
+                    _fmt(s["dft_energy_ev"]),
+                    ("—" if s["correction_ev"] is None else f"{float(s['correction_ev']):+.4f}"),
+                    _fmt(s["free_energy_ev"]),
+                    (
+                        "—"
+                        if ref is None or s["free_energy_ev"] is None
+                        else f"{float(s['free_energy_ev']) - ref:+.4f}"
+                    ),
+                    f"{'已收敛' if s['converged'] else '未收敛'} · "
+                    f"{'已矫正' if s['corrected'] else '未矫正'}",
+                ]
+                for index, s in enumerate(structures)
+            ],
+        )
+    )
+    return "\n\n".join(lines)
+
+
 def _sections_markdown(report, charts):
     """把结构化字段渲染为各章 Markdown（以总结为核心，不堆砌字段）。"""
     sections = {}
@@ -1175,67 +1239,7 @@ def _sections_markdown(report, charts):
         )
         entries = []
         for path in paths:
-            structures = path["structures"]
-            with_energy = [s for s in structures if s.get("free_energy_ev") is not None]
-            ref = float(with_energy[0]["free_energy_ev"]) if with_energy else None
-            rels = [
-                float(s["free_energy_ev"]) - ref
-                for s in with_energy
-                if ref is not None
-            ]
-            corrected = sum(1 for s in structures if s.get("corrected"))
-            lines = [
-                f"#### {path['group_name']}",
-                f"{path['structure_count']} 个中间体 · {corrected} 个已矫正"
-                + (f" · 最高相对能 {max(rels):+.3f} eV" if rels else ""),
-            ]
-            if not with_energy:
-                # 频率矫正（G(T)）还没算 → 自由能列为空、台阶图不画；但结构三视图照样能点开
-                lines.append(
-                    "_尚未做频率矫正（G(T)）：自由能与相对 ΔE 列为空。_"
-                )
-            if path.get("chart"):
-                lines.append(f"![{path['group_name']} 自由能路径看板]({path['chart']})")
-            # 中间体结构：**3D 视图**（v0.9.73）—— 点表格里的「结构 N」切换显示哪个中间体；
-            # 原来那个"点结构 N 看 PNG 三视图"的弹窗不再用（PNG 仍生成，留给打印/PDF）
-            if any(s.get("cif") for s in structures):
-                lines.append(f"@[free-energy-3d:{path['group_id']}]")
-
-            def _structure_cell(index: int, structure: Dict[str, Any]) -> str:
-                """中间体那一格：有 CIF → 点它切换上面的 3D 视图（`#fe-3d:<组>:<下标>:<任务 id>`，
-                任务 id 供报告页在芯片旁挂「注」按钮用）；否则退回旧的 PNG 三视图弹窗链接。"""
-                label = structure["structure_label"]
-                if structure.get("cif"):
-                    return (
-                        f"[结构 {label}](#fe-3d:{path['group_id']}:{index}:"
-                        f"{structure.get('opt_task_id') or ''})"
-                    )
-                if structure.get("dialog"):
-                    return f"[结构 {label}](#{structure['dialog']})"
-                return f"结构 {label}"
-
-            lines.append(
-                _md_table(
-                    ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
-                    [
-                        [
-                            _structure_cell(index, s),
-                            _fmt(s["dft_energy_ev"]),
-                            ("—" if s["correction_ev"] is None else f"{float(s['correction_ev']):+.4f}"),
-                            _fmt(s["free_energy_ev"]),
-                            (
-                                "—"
-                                if ref is None or s["free_energy_ev"] is None
-                                else f"{float(s['free_energy_ev']) - ref:+.4f}"
-                            ),
-                            f"{'已收敛' if s['converged'] else '未收敛'} · "
-                            f"{'已矫正' if s['corrected'] else '未矫正'}",
-                        ]
-                        for index, s in enumerate(structures)
-                    ],
-                )
-            )
-            entries.append("\n\n".join(lines))
+            entries.append(free_energy_markdown(path))
         blocks.append("\n\n---\n\n".join(entries) + "\n")
     nebs = science.get("neb") or []
     if nebs:

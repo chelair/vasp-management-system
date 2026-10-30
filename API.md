@@ -82,6 +82,10 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 完整报告AI注解：项目ai_report_notes_enabled默认false，开关位于智能报告页。`GET /api/reports/project/{id}/notes/ai-status`，`POST .../notes/ai-preview`接收key/connection_id仅返回草稿；原PUT notes可带draft_token/expected_revision及restore_previous。普通generate不等待模型，不接HPC工具。
 
+完整报告批注：`GET /api/reports/project/{id}/review` 返回当前 `revision/source`、章节/模块目录及批注；`POST .../review` 接收 `revision`、`operation=add/reply/status`，分别携带 `target+text`、`comment_id+text`、`comment_id+status(open/done/blocked)`。用户回复会重新打开批注。`POST .../review/process` 接收 `revision/comment_id/connection_id`，显式调用本人模型、验证对应模块修改并保存回复/状态；已完成项直接返回，不重复模型调用。项目AI开关及权限、私有连接、科学事实引用和修改范围均由后端检查，版本冲突409。成功响应no-store；失败/取消不覆盖原报告。
+
+批注与展示修改复用 `edits.review`（`report.review.1`），旧PUT edits保留该字段。原report.json与科学快照不改写；详情、Markdown、图表、HTML及打印视图按保存的展示修改生成。批注正文/回复/状态不进入导出或交互数据；报告重新生成后旧版展示修改失效，旧批注保留。支持的修改与计算范围见[报告批注说明](docs/reports.md#完整报告模块批注)。
+
 ## 高级分步专题接口（兼容）
 
 复用原 `/api/ai/chat` 会话、连接凭据与SSE。项目会话启用原工作区后保留6个分步工具：`list_topic_projects`、`prepare_topic_report`、`plan_topic_report`、`write_topic_draft`、`save_topic_report`、`get_topic_report`；已有 `get_property_recipes` 提供配方定义。工具只保存专题文档，不新增计算/SSH/输入操作。

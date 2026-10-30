@@ -30,7 +30,8 @@ from report_store import (
     save_report,
 )
 from storage import load_db
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Literal
 
 router = APIRouter(prefix="/reports/project", tags=["project-reports"])
 
@@ -186,6 +187,11 @@ def project_report_detail(report_id: str, request: Request):
             attach_report_notes(doc, report_id)
         except Exception:  # noqa: BLE001 - 注解失败不影响报告详情
             pass
+        from report_review import effective
+        displayed = effective(doc)
+        if displayed is not doc:
+            markdown = '\n\n'.join('## '+s['title']+'\n\n'+s.get('markdown','') for s in displayed.get('markdown_sections') or [])
+        doc = displayed
         entry = next(
             (i for i in list_reports() if i.get("report_id") == report_id), {}
         )
@@ -272,6 +278,11 @@ def project_report_markdown(report_id: str, request: Request):
         _ensure_report_access(report_id, request)
         doc, markdown, _ = load_report(report_id)
         # 与 HTML 下载同一口径：人类可读文件名 + ASCII 回退
+        from report_review import effective
+        displayed = effective(doc)
+        if displayed is not doc:
+            markdown = '\n\n'.join('## '+s['title']+'\n\n'+s.get('markdown','') for s in displayed.get('markdown_sections') or [])
+        doc = displayed
         project_name = str(((doc.get("metadata") or {}).get("project_name")) or report_id)
         generated = str((doc.get("metadata") or {}).get("generated_at") or "")[:10]
         pretty = f"{project_name}_项目报告{f'_{generated}' if generated else ''}.md"
@@ -331,6 +342,8 @@ def project_report_html(
             attach_report_notes(doc, report_id)
         except Exception:  # noqa: BLE001 - 注解失败不影响导出
             pass
+        from report_review import effective
+        doc = effective(doc)
         chosen = (
             [s.strip() for s in sections.split(",") if s.strip()] if sections else None
         )
@@ -338,7 +351,7 @@ def project_report_html(
             doc,
             doc.get("markdown_sections") or [],
             sections=chosen,
-            chart_loader=(lambda name: read_chart(report_id, name)) if inline else None,
+            chart_loader=(lambda name: (doc.get('presentation_charts') or {}).get(name.split('/')[-1]) or read_chart(report_id, name)) if inline else None,
             image_loader=(lambda rel: read_image_data_uri(report_id, rel)) if inline else None,
             auto_print=print,
             hidden=set(x.strip() for x in hide.split(",") if x.strip()) if hide else None,
@@ -369,7 +382,13 @@ def project_report_html(
 def project_report_chart(report_id: str, name: str, request: Request):
     """图表文件（SVG）。"""
     _ensure_report_access(report_id, request)
-    svg = read_chart(report_id, name)
+    svg = None
+    changes = ((read_edits(report_id).get('review') or {}).get('content') or {}).values()
+    if any((c.get('chart') or '').split('/')[-1] == name for c in changes):
+        from report_review import effective
+        doc, _, _ = load_report(report_id)
+        svg = (effective(doc).get('presentation_charts') or {}).get(name)
+    svg = svg or read_chart(report_id, name)
     if svg is None:
         return JSONResponse(status_code=404, content=fail("图表不存在"))
     return Response(content=svg, media_type="image/svg+xml")
@@ -550,3 +569,102 @@ def project_report_delete(report_id: str, request: Request):
         raise  # 越权 403：交给全局异常处理器，不要被本地 except 吞掉
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content=fail(f"删除报告失败：{e}"))
+
+
+class ReviewChangeBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: str = Field(min_length=64, max_length=64)
+    operation: Literal['add', 'reply', 'status']
+    target: str | None = Field(default=None, max_length=200)
+    comment_id: str | None = Field(default=None, max_length=64)
+    text: str | None = Field(default=None, max_length=8000)
+    status: Literal['open', 'done', 'blocked'] | None = None
+
+    @model_validator(mode='after')
+    def required_fields(self):
+        if self.operation == 'add' and not self.target:
+            raise ValueError('请选择批注所在模块')
+        if self.operation != 'add' and not self.comment_id:
+            raise ValueError('请选择批注')
+        if self.operation in ('add', 'reply') and (not self.text or not self.text.strip()):
+            raise ValueError('请填写批注或回复')
+        if self.operation == 'status' and self.status is None:
+            raise ValueError('请选择批注状态')
+        return self
+
+
+class ReviewProcessBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: str = Field(min_length=64, max_length=64)
+    comment_id: str = Field(min_length=1, max_length=64)
+    connection_id: str = Field(min_length=1, max_length=64)
+
+
+@router.get('/{report_id}/review')
+def project_report_review(report_id: str, request: Request):
+    from routers.ai_chat import actor, guard
+    import report_review
+    @guard
+    def read():
+        user, _ = actor(request)
+        _ensure_report_access(report_id, request)
+        doc, _, _ = report_review.snapshot(report_id, user)
+        return ok('查询成功', report_review.view(doc))
+    result = read()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'}) if isinstance(result, dict) else result
+
+
+@router.post('/{report_id}/review')
+def project_report_review_update(report_id: str, request: Request, body: ReviewChangeBody):
+    from routers.ai_chat import actor, guard
+    import report_review
+    @guard
+    def save():
+        user, _ = actor(request)
+        _ensure_report_access(report_id, request)
+        try:
+            return ok('已保存批注', report_review.update(report_id, user, body.model_dump()))
+        except report_review.ReviewConflict as exc:
+            return JSONResponse(status_code=409, content=fail(str(exc)), headers={'Cache-Control': 'no-store'})
+    result = save()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'}) if isinstance(result, dict) else result
+
+
+@router.post('/{report_id}/review/process')
+async def project_report_review_process(report_id: str, request: Request, body: ReviewProcessBody):
+    from routers.ai_chat import actor
+    from ai_chat_service import TextGenerationControl
+    import report_review
+    control = TextGenerationControl()
+    worker = disconnected = None
+    headers = {'Cache-Control': 'no-store'}
+    try:
+        user, _ = actor(request)
+        _ensure_report_access(report_id, request)
+        worker = asyncio.create_task(asyncio.to_thread(report_review.process, report_id, user, body.comment_id, body.revision, body.connection_id, control))
+        async def disconnect():
+            while (await request.receive())['type'] != 'http.disconnect':
+                pass
+        disconnected = asyncio.create_task(disconnect())
+        done, _ = await asyncio.wait({worker, disconnected}, return_when=asyncio.FIRST_COMPLETED)
+        if disconnected in done:
+            control.cancel()
+            worker.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+            return JSONResponse(status_code=499, content=fail('处理已取消，报告未修改'), headers=headers)
+        return JSONResponse(ok('批注已处理', await worker), headers=headers)
+    except report_review.ReviewConflict as exc:
+        return JSONResponse(status_code=409, content=fail(str(exc)), headers=headers)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content=fail(str(exc)), headers=headers)
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content=fail('报告不存在或已重新生成'), headers=headers)
+    except permissions.PermissionDenied:
+        raise
+    except asyncio.CancelledError:
+        control.cancel()
+        if worker: worker.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        raise
+    except Exception:
+        return JSONResponse(status_code=503, content=fail('AI处理失败，批注与报告原文已保留'), headers=headers)
+    finally:
+        if disconnected: disconnected.cancel()

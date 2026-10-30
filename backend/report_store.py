@@ -112,6 +112,7 @@ def read_edits(report_id: str) -> Dict[str, List[str]]:
     return {
         "hidden_sections": [str(x) for x in (data.get("hidden_sections") or [])][:200],
         "hidden_elements": [str(x) for x in (data.get("hidden_elements") or [])][:2000],
+        **{key: data[key] for key in ("review",) if key in data},
     }
 
 
@@ -128,12 +129,28 @@ def save_edits(
     path = _edits_path(report_id)
     tmp = path.with_name(path.name + ".tmp")
     with _notes_lock:
+        payload = {**read_edits(report_id), **payload}
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, path)
     return {
         "hidden_sections": payload["hidden_sections"],
         "hidden_elements": payload["hidden_elements"],
     }
+
+
+@serialized_notes
+def save_review(report_id, review, expected_revision, *, hidden_elements=None):
+    edits = read_edits(report_id)
+    if note_revision(edits) != expected_revision:
+        raise ValueError('报告已被修改，请刷新后重试')
+    edits['review'] = review
+    if hidden_elements is not None:edits['hidden_elements'] = hidden_elements
+    EDITS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _edits_path(report_id)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(edits, ensure_ascii=False, indent=1), encoding='utf-8')
+    os.replace(tmp, path)
+    return edits
 
 
 @serialized_notes
@@ -290,7 +307,11 @@ def save_report(
     if isinstance(old_doc, dict):
         with _notes_lock:
             edits = read_edits(report_id)
-            mapped = _remap_hidden_figures(old_doc, doc, edits["hidden_elements"])
+            old_display, new_display = old_doc, doc
+            if (edits.get('review') or {}).get('content'):
+                from report_review import effective
+                old_display, new_display = effective(old_doc, edits), effective(doc, edits)
+            mapped = _remap_hidden_figures(old_display, new_display, edits["hidden_elements"])
             if mapped != edits["hidden_elements"]:
                 save_edits(report_id, edits["hidden_sections"], mapped)
 

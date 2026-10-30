@@ -4,7 +4,7 @@
 
     .venv/bin/python -m unittest discover -s tests -p 'test_report_blocks.py' -v
 
-覆盖：10 个 OPT 任务（超出完整报告 6 条上限）、未收敛、有文件未解析、完全无数据、
+覆盖：10 个 OPT 任务（完整报告不再限制展示数量）、未收敛、有文件未解析、完全无数据、
 同名任务、辅助 conN 任务、ID 与数据版本分离、UNKNOWN 不冒充 PASS。
 """
 
@@ -53,12 +53,11 @@ class ReportBlocksTest(unittest.TestCase):
 
     # ---------------------------------------------------------------- 目录
 
-    def test_catalog_covers_every_task_beyond_report_limit(self):
+    def test_catalog_covers_every_task_without_report_limit(self):
         summaries = self.candidates("task.summary")
         self.assertEqual(len(summaries), fixtures.OPT_COUNT, "10 个 OPT 任务都应出现在候选目录")
-        # Only eligible tasks count against the cap (03 unconverged; 05/06 no history).
-        for task_id in ("task_opt_10",):
-            self.assertEqual(self.by_task("task.summary", task_id)["full_report_visibility"], "omitted_limit")
+        self.assertIsNone(self.catalog["evidence_task_limit"])
+        self.assertEqual(self.by_task("task.summary", "task_opt_10")["full_report_visibility"], "shown")
         self.assertEqual(self.by_task("task.summary", "task_opt_07")["full_report_visibility"], "shown")
         self.assertEqual(self.by_task("task.summary", fixtures.NO_CHECK_TASK)["full_report_visibility"], "omitted_no_history")
         self.assertEqual(self.by_task("task.summary", "task_opt_01")["full_report_visibility"], "shown")

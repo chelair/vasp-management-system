@@ -1047,7 +1047,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 - 所选参数对照 `task_ids` 为2至12个项目内任务；ID的variant按排序后的任务集合生成，引用多条task.params Evidence，不复制数据。没有task_ids的旧project.comparison仍是项目能量表。前端临时组合块可提交client_id=draft_…，后端将分组/隐藏/删除引用规范化为真实block_id。
 - 更新必须提供整数expected_revision，缺省400，冲突409 `data.code=revision_conflict`。新建/新增证据按真实数据解析，提交过期引用409 evidence_stale。已有元素普通展示编辑直接使用服务器冻结证据；省略或伪造evidence payload/source_refs不能悄悄更新计算数据。只有布尔 `refresh_evidence=true` 明确更新证据，仍检查revision。预览/导出不重新加载当前PDOS。
 - ID与版本分离；版本排除采集/解析时间以及基本信息中的运行时长。来源包含任务、目录/attempt、可匹配的巡检归档/observation_id、解析时间；本地分析文件保留SHA256，参数保留快照摘要与hash_scope。合并巡检可能跨观测补字段，来源说明明确此限制，不能等同单个OUTCAR原文全量验证。
-- availability为available/missing/unparsed/unknown；validation与freshness另列。正文可见性有shown/omitted_limit/omitted_unconverged/omitted_no_history，不把省略当无数据。4小时过期只用于参加自动巡检的任务，排除项/未来时间为unknown。完整报告旧隐藏key保留，候选legacy_hidden_keys供显式导入稳定block_id；图序号/同名歧义不猜测。
+- availability为available/missing/unparsed/unknown；validation与freshness另列。正文可见性有shown/omitted_unconverged/omitted_no_history，不把省略当无数据；旧omitted_limit兼容读取，新生成的完整报告不限制结构优化数量，generation_params.max_structure_tasks和候选evidence_task_limit为null。4小时过期只用于参加自动巡检的任务，排除项/未来时间为unknown。完整报告旧隐藏key保留，候选legacy_hidden_keys供显式导入稳定block_id；图序号/同名歧义不猜测。
 - 14类已接本地Adapter：基本信息/参数/能量力/收敛/结构、自由能/NEB、PDOS/Bader/功函数/差分图、对照/分析文字/方法来源。原始DOSCAR等没有本地分析产物时保持unparsed，不执行分析、作业或SSH。CIF转换仅写系统临时目录，不回写模型；Bader只用分析时已有冻结CIF，缺失不冒充当前结构。
 - 上限40块（含可恢复删除）、50份活动组合/项目、文字4000字；拒绝跨项目路径/符号链接，单读取文件超过24MiB返回说明。HTML使用既有安全Markdown/SVG、内联报告运行时/3Dmol，外部连接受CSP限制，iframe预览沙箱隔离。隐藏或删除块的独占证据不出现在导出来源附录。
 - 元素恢复由deleted_block_ids控制；整份组合DELETE仅供脚本软删除，本阶段UI不提供整份删除/恢复。3D需WebGL；缺少现成结构PNG时PDF只有已有表格/数值和说明，不生成假的结构图。缺少报告运行时降级静态图。

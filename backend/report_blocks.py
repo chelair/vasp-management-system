@@ -27,7 +27,6 @@ from report_block_science import checked_path, file_sources, structure, electron
 
 # 复用报告构建器的事实提取与分类口径（同一份数据，避免两套口径）
 from report_builder import (
-    MAX_STRUCTURE_TASKS,
     STATUS_DONE,
     SUBTYPE_LABELS,
     TASK_TYPE_LABELS,
@@ -233,15 +232,13 @@ def _validation(kind: str, fact: Optional[Dict[str, Any]], *, available: bool = 
     return {"status": "NOT_TESTED", "items": items}
 
 
-def _visibility(fact: Dict[str, Any], opt_index: Optional[int], converged: bool) -> str:
+def _visibility(fact: Dict[str, Any], converged: bool) -> str:
     """完整报告是否展示这个元素（与"有没有数据"是两件事）。"""
     if fact.get("task_type") == "opt" and _task_category(fact) == "结构优化":
         if not fact.get("force_history"):
             return "omitted_no_history"
         if not converged and fact.get("status") != "archived":
             return "omitted_unconverged"
-        if opt_index is not None and opt_index >= MAX_STRUCTURE_TASKS:
-            return "omitted_limit"
     return "shown"
 
 
@@ -289,21 +286,6 @@ def _availability(
 
 def _task_by_id(project: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {str(task.get("task_id") or ""): task for task in project.get("tasks", [])}
-
-
-def _opt_indices(facts: List[Dict[str, Any]]) -> Dict[str, int]:
-    """独立结构优化任务在完整报告里的展示序号（只有前 MAX_STRUCTURE_TASKS 个进正文）。"""
-    indices: Dict[str, int] = {}
-    counter = 0
-    for fact in facts:
-        if fact.get("task_type") != "opt" or _task_category(fact) != "结构优化":
-            continue
-        converged = fact.get("converged") if fact.get("converged") is not None else fact.get("status") in STATUS_DONE
-        if not fact.get("force_history") or not (converged or fact.get("status") == "archived"):
-            continue
-        indices[str(fact.get("task_id"))] = counter
-        counter += 1
-    return indices
 
 
 def _task_title(fact: Dict[str, Any]) -> str:
@@ -397,7 +379,7 @@ def list_candidates(
     now: Optional[datetime] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
-    """**全部授权任务**的候选目录（不受完整报告 6 条上限影响），轻量、不解析图像/DOS。"""
+    """**全部授权任务**的候选目录，轻量、不解析图像/DOS。"""
     project_id = str(project.get("project_id") or project.get("name") or "")
     moment = now or datetime.now().astimezone()
     tasks = [t for t in project.get("tasks", []) if not is_auxiliary_task(t)]
@@ -409,7 +391,6 @@ def list_candidates(
         {},
     )
     by_id = _task_by_id(project)
-    opt_index = _opt_indices(facts)
 
     energy_rows = [f for f in facts if f.get("last_energy") is not None]
 
@@ -417,7 +398,7 @@ def list_candidates(
     for fact in facts:
         task = by_id.get(str(fact.get("task_id"))) or {}
         converged = bool(fact["converged"]) if fact.get("converged") is not None else fact["status"] in STATUS_DONE
-        visibility = _visibility(fact, opt_index.get(str(fact.get("task_id"))), converged)
+        visibility = _visibility(fact, converged)
         task_type = str(fact.get("task_type") or "")
         types = ["task.summary"]
         if task_type in ("opt", "frac", "neb", "ele"):
@@ -462,9 +443,9 @@ def list_candidates(
                 else member["status"] in STATUS_DONE
             )
             member_visible.append(
-                _visibility(member, opt_index.get(str(member.get("task_id"))), member_converged)
+                _visibility(member, member_converged)
             )
-        visibility = "shown" if any(v == "shown" for v in member_visible) else "omitted_limit"
+        visibility = "shown" if any(v == "shown" for v in member_visible) else member_visible[0]
         candidates.append(
             _candidate(
                 project,
@@ -514,7 +495,7 @@ def list_candidates(
         "project_name": str(project.get("name") or ""),
         "generated_at": now_iso(),
         "task_count": len(tasks),
-        "evidence_task_limit": MAX_STRUCTURE_TASKS,
+        "evidence_task_limit": None,
         "filters": {
             "include_archived": True,
             "note": "候选来自全部授权任务；辅助任务（conN / 差分分块）跟随主任务，不单独成为元素",

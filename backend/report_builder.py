@@ -79,8 +79,6 @@ SUBTYPE_LABELS = {
 }
 ANOMALY_CATEGORIES = ("convergence", "resource", "file", "ssh", "queue")
 
-MAX_STRUCTURE_TASKS = 6  # 单项目正文最多展示多少个结构优化任务（其余只进结构化数据），控制篇幅
-
 
 def _views_dialog(
     project_name: str,
@@ -1181,8 +1179,7 @@ def _sections_markdown(report, charts):
     if opt_items:
         blocks.append("### 结构优化\n")
         blocks.append(
-            f"共 {science.get('opt_total') or len(opt_items)} 个结构优化任务有收敛数据，"
-            f"下列展示其中 {len(opt_items)} 个，其余仅保留在报告数据中。每条包含结构三视图与能量/力曲线。"
+            f"本节展示 {len(opt_items)} 个结构优化任务。每条包含结构三视图与能量/力曲线。"
             "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n\n"
         )
         skipped_unconverged = int(science.get("opt_skipped_unconverged") or 0)
@@ -1496,6 +1493,10 @@ def _sections_markdown(report, charts):
     ) + "\n"
 
     appendix = report["appendix"]
+    structure_limit = appendix['generation_params'].get('max_structure_tasks')
+    structure_limit_text = (
+        f"结构展示上限 {structure_limit} 个任务" if structure_limit is not None else "结构展示数量不限"
+    )
     sections["appendix"] = "\n".join(
         [
             _md_table(
@@ -1506,7 +1507,7 @@ def _sections_markdown(report, charts):
                 ],
             ),
             f"生成参数：时间窗口 {appendix['generation_params']['window_days']} 天 · "
-            f"结构展示上限 {appendix['generation_params']['max_structure_tasks']} 个任务 · "
+            f"{structure_limit_text} · "
             f"schema {appendix['generation_params']['schema_version']}",
             "",
             "数据时间戳：" + "；".join(
@@ -1756,7 +1757,7 @@ def build_report(
     opt_skipped_unconverged = 0
     for fact in opt_facts:
         history = fact.get("force_history") or []
-        if not history or len(opt_science) >= MAX_STRUCTURE_TASKS:
+        if not history:
             continue
         # 用户口径（2026-10-07）：**未收敛的 opt 任务不输出详细内容**，不生成空壳
         converged = (
@@ -2408,7 +2409,7 @@ def build_report(
             "all_tasks": [_task_detail_row(f) for f in facts],
             "generation_params": {
                 "window_days": window_days,
-                "max_structure_tasks": MAX_STRUCTURE_TASKS,
+                "max_structure_tasks": None,
                 "schema_version": SCHEMA_VERSION,
                 "generated_at": now,
             },

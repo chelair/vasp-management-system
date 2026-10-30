@@ -40,6 +40,8 @@ NEB/断键问题先读取项目计算内容与预期，优先核对端点反应�
 
 专题/组合不能进入完整报告单份清理逻辑，同一项目多份专题互不覆盖。旧报告保留原配方与证据版本，不批量重新计算。普通编辑不重读当前上游数据；重新生成简明报告产生新 ID，问答补齐产生同一报告新修订。
 
+完整项目报告的独立结构优化任务不设正文数量上限，按原有数据与收敛规则纳入，并生成对应结构、曲线和导出内容。旧快照需重新生成后补齐原先超出6项而被省略的任务；已有注解、隐藏与批注按原规则保留。
+
 ## ReportBlock / Evidence 合同
 
 R2 schema `r2.1.0`，实现于 `backend/report_blocks.py`、`report_block_science.py`、`report_compositions.py` 及 `routers/report_compositions.py`。以实际模块和 `/api/reports/blocks/schema` 为准。
@@ -47,9 +49,9 @@ R2 schema `r2.1.0`，实现于 `backend/report_blocks.py`、`report_block_scienc
 - **Evidence** 保存一次科学 payload，包含稳定 `evidence_id`、内容 version、任务/组/项目、来源目录/attempt、观测/文件与 hash_scope、availability、validation 和 freshness。
 - **ReportBlock** 保存稳定 `block_id`、type/title、source_refs、白名单 renderer/options；不复制科学数据。标题、排序、隐藏不改 ID；数据变化改 version，不用采集时刻冒充数据版本。
 - **Composition/topic** 保存块顺序、分组、隐藏/删除与证据映射。正文、AI 原文、用户编辑和计算结果分离。
-- 候选从全部授权任务发现，不能从完整报告 Markdown 或其前六个结构模型反推“没有数据”。名称匹配不证明科学关系。
+- 候选从全部授权任务发现，不能从完整报告 Markdown 反推“没有数据”。名称匹配不证明科学关系。
 - 首批 14 类适配覆盖基本信息、参数、能量力、曲线、结构、自由能、NEB、PDOS、Bader、功函数、差分图、比较、分析文字与方法来源；仅解析本地已有结果，不触发 SSH 或分析作业。
-- 缺失、未解析、未收敛、正文限额省略、隐藏、过期分开表达；不能用 `bool(None)` 把未知变成验证通过。
+- 缺失、未解析、未收敛、隐藏、过期分开表达；不能用 `bool(None)` 把未知变成验证通过。旧快照的正文限额省略状态仍兼容读取。
 - 参数对照可选 2–12 个任务；ID variant 由规范任务集合生成。同一 Evidence 可被多个块引用。
 
 ## 编辑、修订和新鲜度

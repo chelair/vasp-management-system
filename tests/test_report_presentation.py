@@ -20,17 +20,17 @@ from report_export import render_html
 RULES = json.loads((Path(__file__).resolve().parents[1] / "backend/defaults/report_rules.json").read_text())
 
 
-def make_report():
+def make_report(*, statuses=None, merged=None):
     project = {
         "project_id": "proj_test", "name": "ReportTest", "deadline": "2020-01-01", "server": "",
         "tasks": [
             {"task_id": str(i), "model_name": f"model{i}", "task_type": "opt", "status": status,
              "dir_path": f"ReportTest/opt/model{i}", "remote_dir": f"ReportTest/opt/model{i}"}
-            for i, status in enumerate(["archived", "completed", "running"])
+            for i, status in enumerate(statuses if statuses is not None else ["archived", "completed", "running"])
         ],
     }
     with patch.object(builder, "load_db", return_value={"projects": [project]}), \
-         patch.object(builder, "collect_results", return_value={}), \
+         patch.object(builder, "collect_results", return_value=merged or {}), \
          patch.object(builder, "list_runs", return_value=[]), \
          patch.object(builder, "to_frontend_rows", return_value=[]), \
          patch.object(builder, "load_rules", return_value=RULES), \
@@ -52,6 +52,23 @@ def electronic_item(name, task_id):
 
 
 class ReportPresentationTests(unittest.TestCase):
+    def test_all_eligible_structures_and_curves_reach_markdown_and_export(self):
+        import config
+        config.ensure_data_dirs()
+        merged = {str(i): {"force_converged": True, "force_history": [
+            {"step": 1, "energy": -100.0-i, "max_force": 0.01}]} for i in range(10)}
+        doc = make_report(statuses=["completed"]*10, merged=merged)
+        self.assertEqual([item["task_id"] for item in doc["science"]["opt"]], [str(i) for i in range(10)])
+        self.assertIsNone(doc["appendix"]["generation_params"]["max_structure_tasks"])
+        science = next(s["markdown"] for s in doc["markdown_sections"] if s["key"] == "science")
+        html = render_html(doc, doc["markdown_sections"])
+        for i in range(10):
+            self.assertIn(f"#### model{i}\n", science)
+            self.assertIn(f"#dlg_conv_{i}", science)
+            self.assertIn(f"model{i}", html)
+            self.assertIn(f'dlg_conv_{i}', html)
+        self.assertNotIn("其余仅保留", science)
+
     def test_project_progress_and_overdue_use_same_weighted_basis(self):
         doc = make_report()
         self.assertEqual(doc["basic_info"]["weighted_progress_percent"], 66.7)

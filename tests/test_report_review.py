@@ -9,6 +9,7 @@ import report_store as store
 from report_builder import free_energy_markdown
 from report_review_elements import export_markdown
 import report_vacancy_fixture as vacancy_fixture
+import report_analysis_fixture as analysis_fixture
 
 
 class ReportReviewTests(fixture.ReportAINotesTests):
@@ -42,6 +43,111 @@ class ReportReviewTests(fixture.ReportAINotesTests):
 
     def plan(self,actions,status='done',reply='私有AI回复：已经按批注处理'):
         fixture.REVIEW_RESULT={'reply':reply,'status':status,'actions':actions}
+
+    def analysis_report(self):
+        analysis_fixture.install(self.doc)
+        store.save_report(self.doc,'frozen analysis report',{'analysis_pdos.svg':analysis_fixture.CHART})
+        self.original=copy.deepcopy(self.doc)
+        fixture.REVIEW_RESULT=analysis_fixture.result
+
+    def test_review_pdos_analysis_receives_frozen_summary_and_citable_metrics(self):
+        import json
+        self.analysis_report()
+        state,module=self.comment('PDOS · 态密度（PDOS）','分析已有态密度和带中心，保留曲线和交互。')
+        with patch('report_interactive.pdos_view',return_value=None):
+            response=self.process_comment(state)
+            self.assertEqual(response.status_code,200,response.text)
+            context=json.loads(fixture.REQUESTS[-1]['messages'][1]['content'])
+            self.assertEqual(context['analysis_evidence']['ele']['tasks'][0]['pdos_summary']['range'],[-10.,10.])
+            center=next(f for f in context['facts'].values() if f['field']=='band_center_ev' and f['value']==-1.25)
+            self.assertEqual(center['source']['task_id'],'e')
+            self.assertEqual(center['source']['record_path'],['ele','tasks',0,'pdos_summary','band_centers',0,'value'])
+            for endpoint in ('markdown','export.html','export.html?print=1'):
+                text=self.client.get('/api/reports/project/rpt_p/'+endpoint).text
+                self.assertIn('-1.25 eV',text);self.assertIn('-0.6 eV',text)
+                self.assertIn('-10.0 eV',text);self.assertIn('10.0 eV',text)
+                self.assertIn('态密度分析',text)
+            self.assertIn('@[pdos-chart:e]',review.effective(self.doc)['markdown_sections'][0]['markdown'])
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+        self.assertEqual(set(store.read_edits('rpt_p')['review']['content']),{module['key']})
+
+    def test_review_pdos_new_integration_or_using_band_center_as_total_energy_is_rejected(self):
+        self.analysis_report()
+        state,module=self.comment('PDOS · 态密度（PDOS）','计算新的能窗和轨道积分')
+        self.plan([{'kind':'calculate','target':module['key'],'property_id':'dos.band_center','inputs':{}}])
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['data']['comments'][-1]['status'],'blocked')
+        self.assertIn('UNSUPPORTED',response.json()['data']['comments'][-1]['replies'][-1]['text'])
+        self.assertEqual(review.effective(self.doc),self.original)
+        values=review.facts(self.doc);energy=next(k for k,f in values.items() if f['field']=='efermi')
+        self.plan([{'kind':'calculate','target':module['key'],'property_id':'adsorption.estimate',
+                    'inputs':{'complex':energy,'surface':energy,'adsorbate':energy}}])
+        response=self.process_comment(self.state())
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertEqual(review.effective(self.doc),self.original)
+
+    def test_review_adsorption_uses_three_energies_despite_missing_structures_or_unconverged(self):
+        self.analysis_report();state,module=self.comment('Adsorbed','计算吸附能，基底为Surface，吸附质为Gas。')
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        card=next(iter(review.effective(self.doc)['review_elements'].values()))
+        self.assertEqual(card['value_ev'],-1.5)
+        self.assertEqual(card['inputs']['complex']['source']['task_id'],'ads_complex')
+        self.assertEqual(card['inputs']['surface']['source']['task_id'],'ads_surface')
+        self.assertEqual(card['inputs']['adsorbate']['source']['task_id'],'ads_gas')
+        self.assertEqual(response.json()['data']['comments'][-1]['status'],'done')
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+
+    def test_review_adsorption_user_units_and_short_reply_keep_role_and_provenance(self):
+        self.analysis_report()
+        state,module=self.comment('Adsorbed','计算吸附能，吸附质参考能量采用 -1 Ha。')
+        reply=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'reply','revision':state['revision'],'comment_id':state['comments'][-1]['id'],'text':'改用-0.5'})
+        self.assertEqual(reply.status_code,200,reply.text)
+        response=self.process_comment(reply.json()['data'])
+        self.assertEqual(response.status_code,200,response.text)
+        card=next(iter(review.effective(self.doc)['review_elements'].values()))
+        self.assertAlmostEqual(card['value_ev'],10.105693122994)
+        source=card['inputs']['adsorbate']['source']
+        self.assertEqual(source['original_unit'],'Ha');self.assertEqual(source['statement'],'改用-0.5')
+        self.assertTrue(source['reference_context'])
+
+    def test_review_adsorption_missing_gas_is_precise_and_reply_continues_same_comment(self):
+        self.analysis_report()
+        self.doc['science']['opt']=[r for r in self.doc['science']['opt'] if r['task_id']!='ads_gas']
+        store.save_report(self.doc,'missing gas',{})
+        state,module=self.comment('Adsorbed','计算吸附能')
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        state=response.json()['data'];cid=state['comments'][-1]['id']
+        self.assertEqual(state['comments'][-1]['status'],'blocked')
+        self.assertIn('吸附质参考',state['comments'][-1]['replies'][-1]['text'])
+        self.assertFalse(review.effective(self.doc).get('review_elements'))
+        response=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'reply','revision':state['revision'],'comment_id':cid,'text':'吸附质参考能量采用 -2 eV'})
+        response=self.process_comment(response.json()['data'])
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['data']['comments'][-1]['id'],cid)
+        self.assertEqual(response.json()['data']['comments'][-1]['status'],'done')
+        self.assertEqual(next(iter(review.effective(self.doc)['review_elements'].values()))['value_ev'],-1.5)
+
+    def test_review_adsorption_can_reuse_prior_gas_reference_with_short_update(self):
+        self.analysis_report()
+        self.comment('Adsorbed','吸附质参考能量采用 -2 eV。')
+        state,module=self.comment('Adsorbed','计算吸附能，沿用吸附质参考')
+        response=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'reply','revision':state['revision'],'comment_id':state['comments'][-1]['id'],'text':'沿用-1.5'})
+        response=self.process_comment(response.json()['data'])
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(next(iter(review.effective(self.doc)['review_elements'].values()))['value_ev'],-2.0)
+
+    def test_review_neb_work_function_bader_read_frozen_facts_with_correct_units(self):
+        self.analysis_report()
+        for title,text,expected in [('NEB','解释已有NEB能垒','0.5 eV'),('PDOS · 功函数','解释已有功函数','5.2 eV'),('PDOS · Bader','解释Bader电荷','-0.2 e')]:
+            state,module=self.comment(title,text)
+            response=self.process_comment(state)
+            self.assertEqual(response.status_code,200,response.text)
+            markdown=self.client.get('/api/reports/project/rpt_p/markdown').text
+            self.assertIn(expected,markdown);self.assertNotIn('-0.2 eV',markdown)
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
 
     def test_review_persists_replies_status_and_existing_hide_edits(self):
         state,module=self.comment();comment=state['comments'][0]

@@ -89,7 +89,9 @@ def structure_catalog(doc, values):
 def bound_facts(values, bindings, roles):
     if (not isinstance(bindings, dict) or set(bindings) != set(roles)
             or any(not isinstance(ref, str) or ref not in values for ref in bindings.values())):
-        raise MissingCalculation('缺少计算所需的报告能量或用户参考能量，请补充缺失的那一项。')
+        names={'complex':'完整吸附构型','surface':'洁净基底','adsorbate':'吸附质参考','reference':'参考结构','model':'对比结构','oxygen':'氧参考','pristine':'完整结构','defect':'氧空位结构'}
+        missing=[names[role] for role in roles if not isinstance(bindings,dict) or not isinstance(bindings.get(role),str) or bindings[role] not in values]
+        raise MissingCalculation('缺少'+('、'.join(missing) or '明确绑定')+'的能量，请补充对应能量或选择报告中的计算记录。')
     facts = {role: copy.deepcopy(values[ref]) for role, ref in bindings.items()}
     if any(f['field'] not in ('final_energy_ev', 'dft_energy_ev', 'last_energy_ev', 'energy_ev', 'provided_energy_ev') for f in facts.values()):
         raise ValueError('该配方要求电子总能量，不能混用自由能、能垒或矫正项')
@@ -236,7 +238,7 @@ def source_text(fact):
         if source['original_unit'].lower() != 'ev':
             text += f'（采用 {fact["value"]} eV）'
     else:
-        text = f'{fact["label"].split(" · ")[0]} = {fact["value"]} eV（报告中的计算记录）'
+        text = f'{fact["label"].split(" · ")[0]} = {fact["value"]} {fact.get("units","eV")}（报告中的计算记录）'
     return text.replace('\n', ' ').replace('|', '／')
 
 

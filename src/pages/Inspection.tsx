@@ -280,7 +280,7 @@ export default function Inspection() {
   const [statusFilter, setStatusFilter] = useState<string[] | null>(() =>
     parseFilter(searchParams, 'statuses') ?? savedFilters.statuses,
   );
-  // 只记录手动选择；未操作时，进行中项目展开、已关闭项目收起。
+  // 只记录手动选择；全部归档和已关闭项目默认收起。
   const [projectExpansion, setProjectExpansion] = useState<Map<string, boolean>>(() => new Map());
   const [autoSaving, setAutoSaving] = useState(false);
   const [outcarTail, setOutcarTail] = useState<{ taskId: string; title: string } | null>(null);
@@ -390,7 +390,7 @@ export default function Inspection() {
     return () => { cancelled = true; };
   }, []);
 
-  // 筛选变化时重置折叠状态（关闭项目仍保持默认折叠）
+  // 筛选变化时重置折叠状态，沿用各项目的默认值。
   useEffect(() => {
     setProjectExpansion(new Map());
   }, [keyword, projectFilter, taskCategoryFilter, statusFilter]);
@@ -518,8 +518,10 @@ export default function Inspection() {
       });
   }, [results, keyword, projectFilter, taskCategoryFilter, statusFilter]);
 
-  /** 按项目分块：项目内保持既有排序（类别 → 组 → 组内顺序），关闭项目排最后 */
+  /** 项目优先级：仍有未归档任务 → 全部归档 → 已关闭。 */
   const projectBlocks = useMemo(() => {
+    // 使用完整列表判断，避免筛选只剩归档任务时误折叠仍在进行的项目。
+    const activeProjects = new Set(results.filter(row => (row.task_status ?? row.status) !== 'archived').map(row => row.project_name));
     const byProject = new Map<string, InspectionResult[]>();
     filtered.forEach((row) => {
       const list = byProject.get(row.project_name) ?? [];
@@ -529,6 +531,7 @@ export default function Inspection() {
     const blocks = [...byProject.entries()].map(([projectName, rows]) => ({
       projectName,
       closed: Boolean(rows[0]?.project_closed),
+      allArchived: !activeProjects.has(projectName),
       rows,
       errors: rows.filter((r) => r.status === 'error').length,
       warnings: rows.filter((r) => r.status === 'warning').length,
@@ -538,11 +541,13 @@ export default function Inspection() {
       changed: rows.filter((r) => r.status_changed).length,
     }));
     blocks.sort((a, b) => {
-      if (a.closed !== b.closed) return a.closed ? 1 : -1;
+      const rankA = a.closed ? 2 : a.allArchived ? 1 : 0;
+      const rankB = b.closed ? 2 : b.allArchived ? 1 : 0;
+      if (rankA !== rankB) return rankA - rankB;
       return a.projectName.localeCompare(b.projectName, 'zh-CN');
     });
     return blocks;
-  }, [filtered]);
+  }, [filtered, results]);
 
   /** 开关自动巡检（写入 settings.json，调度线程下一轮生效） */
   const handleToggleAuto = async (enabled: boolean) => {
@@ -952,7 +957,8 @@ export default function Inspection() {
 
         <div className={`inspection-projects${loading ? '' : ' content-enter'}`}>
           {projectBlocks.map((block) => {
-            const expanded = projectExpansion.get(block.projectName) ?? !block.closed;
+            const defaultExpanded = !block.closed && !block.allArchived;
+            const expanded = projectExpansion.get(block.projectName) ?? defaultExpanded;
             return (
               <div
                 key={block.projectName}
@@ -966,15 +972,15 @@ export default function Inspection() {
                   onClick={() =>
                     setProjectExpansion((prev) => {
                       const next = new Map(prev);
-                      next.set(block.projectName, !(prev.get(block.projectName) ?? !block.closed));
+                      next.set(block.projectName, !(prev.get(block.projectName) ?? defaultExpanded));
                       return next;
                     })
                   }
                 >
                   <RightOutlined className={`collapse-chevron${expanded ? ' collapse-chevron--open' : ''}`} />
                   <span className="inspection-project__name">{block.projectName}</span>
-                  {block.closed && (
-                    <span className="inspection-project__closed">已关闭</span>
+                  {(block.closed || block.allArchived) && (
+                    <span className="inspection-project__closed">{block.closed ? '已关闭' : '全部已归档'}</span>
                   )}
                   <span className="inspection-project__meta">
                     共 {block.rows.length} 项

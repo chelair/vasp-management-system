@@ -522,7 +522,8 @@ def _to_row(project: Dict[str, Any], task: Dict[str, Any], entry: Dict[str, Any]
         if entry.get("force_converged") is False:
             message += " · 力未收敛"
     elif status == "unconverged":
-        message = f"计算完成但力未收敛 · 能量 {energy_text}"
+        kind = '电子步' if task.get('task_type') == 'ele' else '力'
+        message = f"计算完成但{kind}未收敛 · 能量 {energy_text}"
         if entry.get("force_max") is not None:
             message += f" · 最大力 {entry['force_max']} eV/A"
     elif status == "running":

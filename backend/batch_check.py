@@ -16,6 +16,7 @@ force_rms / force_converged / force_history / error_messages。
 - 能量：取最后一个已输出的离子步总能（含色散修正），不取电子迭代中的 TOTEN；
 - 结构优化：解析 POSCAR Selective dynamics，统计每个 TOTAL-FORCE 块（离子步）的
   最大力，生成力收敛历史；最后一步计算 force_max / force_rms / force_converged；
+- 电子结构：正常结束后检查最后电子周期，未满足运行时 EDIFF 则为 unconverged；
 - 单任务异常只写入该任务 error_messages，不影响其他任务。
 
 环境变量：
@@ -1001,6 +1002,27 @@ def _local_remote_dir(remote_dir: str) -> str:
     return remote_dir
 
 
+def electronic_converged(outcar: str, oszicar: str) -> Optional[bool]:
+    """Check only the final electronic cycle against the runtime EDIFF."""
+    number = r'[-+]?\d*\.?\d+(?:[EeDd][-+]?\d+)?'
+    ediff = re.search(r'\bEDIFF\s*=\s*(' + number + r')', outcar)
+    ediff = _to_float(ediff[1]) if ediff else None
+    ionic = list(re.finditer(r'^\s*\d+\s+F=\s*\S+[^\n]*', oszicar, re.M))
+    iterations = list(re.finditer(r'\bIteration\s+\d+\s*\(\s*\d+\s*\)', outcar))
+    final_out = outcar[iterations[-1].start():] if iterations else ''
+    if ionic:
+        final = ionic[-1]
+        if oszicar[final.end():].strip():return None
+        segment = oszicar[ionic[-2].end():final.start()] if len(ionic) > 1 else oszicar[:final.start()]
+        scf = re.findall(r'^\s*(?:DAV|RMM|CG|DMP):\s*\d+\s+\S+\s+(\S+)\s+(\S+)', segment, re.M)
+        if scf and ediff is not None and math.isfinite(ediff) and ediff > 0:
+            de, deps = (_to_float(v) for v in scf[-1])
+            if all(v is not None and math.isfinite(v) for v in (de, deps)):
+                return abs(de) < ediff and abs(deps) < ediff
+    if 'aborting loop because EDIFF is reached' in final_out:return True
+    return None
+
+
 def _analyze_outcar(
     result: Dict[str, Any],
     remote_dir: str,
@@ -1055,6 +1077,14 @@ def _analyze_outcar(
 
     if task_type == "opt":
         _parse_forces(result, poscar_dir or remote_dir, text, thresholds)
+    elif task_type == 'ele' and result['status'] == 'completed':
+        try:
+            oszicar = (Path(remote_dir) / 'OSZICAR').read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            oszicar = ''
+        if electronic_converged(text, oszicar) is False:
+            result['status'] = 'unconverged'
+            result['error_messages'].append('计算完成但电子步未收敛')
     # 已完成但力未收敛 -> 未收敛
     if (
         task_type == "opt"

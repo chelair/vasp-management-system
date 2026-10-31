@@ -279,6 +279,8 @@ NEB巡检结果补充：`force_thresholds`来自实际输出目录INCAR负EDIFFG
 
 ### 3.2 巡检结果
 
+电子结构（`task_type=ele`）正常结束后，按最后完整电子周期的 `|dE|`、`|dε|` 与 OUTCAR 运行时 EDIFF 判断；未满足则沿用 `unconverged` 状态，页面提示“电子步未收敛”。该判断不依赖 NSW，不改运行/排队/异常状态；缺少有效迭代记录时不臆造未收敛结论。
+
 | 接口 | 参数 | 关键返回 | 用途 |
 | --- | --- | --- | --- |
 | `GET /inspections` | — | 前端行：`id/project_name/task_name/group_name/task_category/status/message/detail/task_status/has_inspection/last_check_time/...`（状态优先级：错误 > 警告 > 未检 > 正常 > 关闭） | **智能体判断的主输入**（一条任务一行结论） |

@@ -40,7 +40,8 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await page.locator('.report-3d canvas').first().waitFor();
   const module=page.locator('.report-content h6').filter({hasText:'Model'});
   await module.getByRole('button',{name:'批注',exact:true}).click();
-  await page.getByLabel('新的报告批注').fill('浏览器私有批注：请补充说明，保留3D和图表');
+  const firstCommentText='浏览器私有批注：请补充说明，保留3D和图表；氧气分子能量采用 −8.3 eV。';
+  await page.getByLabel('新的报告批注').fill(firstCommentText);
   await page.getByRole('button',{name:'保存批注',exact:true}).click();
   const comment=page.locator('.report-review-comment').last();await comment.getByText('待处理',{exact:true}).waitFor();
   await page.getByRole('combobox',{name:'批注处理模型'}).click();await page.getByText('隔离模型 · mock',{exact:true}).click();
@@ -66,9 +67,12 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   assert.ok((await page.locator('.report-fe3d__btn.is-on').textContent()).includes('结构 1'));
   assert.equal(await page.locator('[data-panel="free-energy"]').count(),1);
   await page.locator('.report-content h5').filter({hasText:'结构优化'}).getByRole('button',{name:'批注',exact:true}).click();
-  await page.getByLabel('新的报告批注').fill('计算氧空位形成能，氧气分子能量采用 −8.3 eV。');
+  await page.getByLabel('新的报告批注').fill('对比一下三个Ovcc的氧空位形成能');
   await page.getByRole('button',{name:'保存批注',exact:true}).click();
   await page.locator('.report-review-comment').last().getByText('待处理',{exact:true}).waitFor();
+  await page.locator('.report-review-comment').last().locator('textarea').fill('沿用-8.3');
+  await page.locator('.report-review-comment').last().getByRole('button',{name:'发送回复',exact:true}).click();
+  await page.getByText('沿用-8.3',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Close',exact:true}).last().click();
   await page.getByRole('button',{name:/生成报告$/}).click();
   await page.locator('.report-work-drawer').getByText(/ReportFixture：完整报告已生成。.*已在指定模块添加计算卡片，包含 3 组结果、公式及能量来源。/).waitFor();
@@ -94,7 +98,7 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   assert.ok((await card.getAttribute('class')).includes('rr-accent-teal'));
   await card.scrollIntoViewIfNeeded();await page.screenshot({path:path.join(dir,'oxygen-card-layout.png')});
   await page.reload();await page.getByRole('button',{name:'报告批注',exact:true}).click();
-  await page.getByText('浏览器私有批注：请补充说明，保留3D和图表',{exact:true}).waitFor();
+  await page.getByText(firstCommentText,{exact:true}).waitFor();
   await page.getByText('已完成',{exact:true}).last().waitFor();
   assert.equal(await page.locator('.report-review-comment').first().getByRole('button',{name:'让AI处理'}).isDisabled(),true);
   await page.locator('.report-review-comment').first().getByRole('button',{name:'重新打开'}).click();

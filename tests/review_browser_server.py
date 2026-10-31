@@ -42,7 +42,9 @@ def result(value):
             {'kind':'card','target':value['comment']['target'],'title':'计算说明','text':'使用已选定的参考能量，结果及输入能量保持一致。','presentation':{'accent':'teal'}},
             {'kind':'layout','target':value['comment']['target'],'columns':2}]}
     if '氧空位形成能' in value['comment']['text']:
-        return {'reply':'已计算','status':'done','actions':[vacancy_fixture.action(value['facts'],value['comment']['target'])]}
+        action=vacancy_fixture.action(value['facts'],value['comment']['target'])
+        if '对比一下三个' in value['comment']['text']:action['inputs']['oxygen']='user:-8.3'
+        return {'reply':'已计算','status':'done','actions':[action]}
     if '只对比四个结构' in value['comment']['text']:
         return {'reply':'已经复用原台阶图、结构窗口和表格，按要求显示所选四项。','status':'done',
                 'actions':[{'kind':'structures','target':value['comment']['target'],'tasks':['f4','f2','f1','f0']}]}

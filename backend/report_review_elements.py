@@ -114,7 +114,6 @@ def calculate(doc, values, action):
                 'validation_status': 'PRELIMINARY', 'value_ev': value, 'inputs': inputs,
                 'results': [{'label': '计算结果', 'value_ev': value, 'inputs': inputs}],
                 'warnings': ['初步结果；组成、电荷态、收敛及计算条件尚需核实。'],'presentation':settings}
-    reference = bound_facts(values, action.get('inputs'), ('oxygen',))['oxygen']
     given = [f for f in values.values() if f['field'] == 'provided_energy_ev' and f.get('reference_kind') in ('O2', 'mu_O')]
     if given:
         # New user replies override an older model binding. Multiple different
@@ -124,11 +123,15 @@ def calculate(doc, values, action):
         if len(chemical_potentials) > 1:
             raise MissingCalculation('这条回复包含不同的氧参考值，请明确本次采用哪一个。')
         reference = copy.deepcopy(latest[-1])
-    elif reference['field'] != 'provided_energy_ev':
-        parsed, _ = frozen_structure(doc, reference)
-        if parsed['composition'] != {'O': 2}:
-            raise MissingCalculation('所选氧气参考的实际组成不是 O₂，请核对参考记录。')
-        reference['reference_kind'] = 'O2'
+    else:
+        try:reference = bound_facts(values, action.get('inputs'), ('oxygen',))['oxygen']
+        except MissingCalculation:
+            raise MissingCalculation('请补充氧气分子能量 E(O₂) 或氧原子化学势 μ_O，并注明单位。') from None
+        if reference['field'] != 'provided_energy_ev':
+            parsed, _ = frozen_structure(doc, reference)
+            if parsed['composition'] != {'O': 2}:
+                raise MissingCalculation('所选氧气参考的实际组成不是 O₂，请核对参考记录。')
+            reference['reference_kind'] = 'O2'
     if reference.get('reference_kind') not in ('O2', 'mu_O'):
         raise MissingCalculation('请明确氧气分子能量 E(O₂) 或每个氧原子的化学势 μ_O。')
     mu = float(Decimal(str(reference['value'])) / (2 if reference['reference_kind'] == 'O2' else 1))

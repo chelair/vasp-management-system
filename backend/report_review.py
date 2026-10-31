@@ -36,6 +36,7 @@ calculate只选事实和角色，Python按注册配方计算并新增结构化�
 氧空位使用structure_catalog中实际组成配对；用户指定O2能量除2得到mu_O，明确每O化学势则直接使用。已给参考不重复问，不重算气体或优化结构。
 批注位于具体体系时，只计算该体系；其他模块事实可作为必要输入，不顺带计算其他体系。用户明确要求多体系对比时才扩展结果。
 用户回复中的新参数优先；若存在多个未明确对应候选，或缺必要能量/结构/氧参考，只问最关键的一个问题。
+facts及oxygen_references包含本报告先前用户给定且可沿用的氧参考，以及“沿用”“沿用-8.3”等回复的上下文解析。已有明确参考直接计算，不重复确认；inputs.oxygen使用列出的fact_id，不编造user:-8.3等引用。AI旧回复中的数值不作为用户给定事实。
 edit操作针对目录中元素，原数据只改展示。计算/公式/来源卡片replace只改标题，append补充解释，不能改Python数值/来源/公式。
 未知配方返回blocked和UNSUPPORTED；可独立完成部分保留。done必须有实际修改。只返回一句短确认，不输出长篇分析。
 '''
@@ -61,7 +62,7 @@ def tree(doc):
     return nodes,roots
 
 
-def facts(doc,comment=None):
+def facts(doc,comment=None,previous_comments=()):
     result={}
     fields={'final_energy_ev','dft_energy_ev','last_energy_ev','free_energy_ev','energy_ev','barrier_ev','correction_ev'}
     def visit(value,path=(),label=''):
@@ -86,18 +87,55 @@ def facts(doc,comment=None):
         fact['source'].update({key:copy.deepcopy(task[key]) for key in
             ('job_id','latest_output_dir','last_check_time','incar_snapshot','kpoints_snapshot','parameter_sources') if key in task})
     if comment:
-        from adsorption_minimum import provided_energy
-        statements=[comment['text']]+[r['text'] for r in comment['replies'] if r['author']!='AI']
-        for statement in statements:
-            normalized=statement.replace('−','-').replace('－','-').replace('–','-')
-            if not re.search(r'能量|energy|化学势|mu[_ ]?o|μ',normalized,re.I):continue
-            for match in re.finditer(r'([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eEdD][-+]?\d+)?)\s*(eV|电子伏|Hartree|Ha|Ry|kJ/mol)',normalized,re.I):
-                selector={'energy_value':match[1],'energy_unit':'eV' if match[2]=='电子伏' else match[2],
-                          'source_quote':statement,'_source_kind':'user_provided','_quote_verified':True}
-                item=provided_energy(selector,{'username':comment['author']},{'project_id':doc['metadata']['project_id']})
-                result[f'F{len(result)+1:02}']={'label':'用户给定参考能量','value':item['energy_ev'],'units':'eV',
-                    'field':'provided_energy_ev','source':item['source'],
-                    'reference_kind':reference_kind(normalized,match.start())}
+        for fact in user_energy_facts(doc,comment,previous_comments):result[f'F{len(result)+1:02}']=fact
+    return result
+
+
+def user_energy_facts(doc,comment,previous_comments):
+    from adsorption_minimum import provided_energy
+    numeric=r'[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eEdD][-+]?\d+)?'
+    units=r'eV|电子伏|Hartree|Ha|Ry|kJ/mol'
+    def read(statement,author,inherited=()):
+        normalized=statement.replace('−','-').replace('－','-').replace('–','-')
+        matches=[(m[1],m[2],m.start()) for m in re.finditer('('+numeric+r')\s*('+units+')',normalized,re.I)]
+        contexts={(f['reference_kind'],f['source']['original_unit']) for f in inherited}
+        fallback=next(iter(contexts)) if len(contexts)==1 else (None,None)
+        short=re.fullmatch(r'\s*(?:(?:氧气(?:分子)?|O[₂2]|氧原子化学势|氧化学势|μ[_ ]?O|mu[_ ]?O)(?:总?能量)?\s*)?(?:沿用|继续用|仍用|采用|改用|改为|改成|就用|用|取|[=:：])?\s*('+numeric+r')\s*('+units+r')?\s*[吧。.!！]?\s*',normalized,re.I)
+        # A short numeric reply inherits units only from a real user reference.
+        if not matches and fallback[0] and short:matches=[(short[1],fallback[1],short.start(1))]
+        found=[]
+        for raw,unit,position in matches:
+            explicit=reference_kind(normalized,position)
+            kind=explicit or (fallback[0] if short else None)
+            if not kind and not re.search(r'能量|energy|化学势|mu[_ ]?o|μ',normalized,re.I):continue
+            selector={'energy_value':raw,'energy_unit':'eV' if unit=='电子伏' else unit,
+                      'source_quote':statement,'_source_kind':'user_provided','_quote_verified':True}
+            item=provided_energy(selector,{'username':author},{'project_id':doc['metadata']['project_id']})
+            if kind and not explicit:
+                item['source']['reference_context']=[{k:f['source'][k] for k in ('statement','original_value','original_unit','provided_by')} for f in inherited]
+            found.append({'label':'用户给定参考能量','value':item['energy_ev'],'units':'eV',
+                          'field':'provided_energy_ev','source':item['source'],'reference_kind':kind})
+        return found
+    history=[]
+    for previous in previous_comments:
+        if previous['id']==comment['id']:break
+        statements=[(previous.get('created_at',''),previous['text'],previous['author'])]
+        statements += [(r.get('created_at',''),r['text'],r['author']) for r in previous['replies'] if r['author']!='AI']
+        history+=statements
+    inherited=[]
+    for _,text,author in sorted(history,key=lambda row:row[0]):
+        refs=[f for f in read(text,author,inherited) if f.get('reference_kind')]
+        if refs:inherited=refs
+    result=[]
+    statements=[(comment['text'],comment['author'])]+[(r['text'],r['author']) for r in comment['replies'] if r['author']!='AI']
+    for text,author in statements:
+        found=read(text,author,inherited);result+=found
+        refs=[f for f in found if f.get('reference_kind')]
+        if refs:inherited=refs
+    if not any(f.get('reference_kind') for f in result):
+        for fact in copy.deepcopy(inherited):
+            fact['source']['confirmed_by']=[text for text,_ in statements if re.fullmatch(r'\s*(?:沿用|是的?|好的?|确认|继续用|就用这个|可以)[。!！\s]*',text)]
+            result.append(fact)
     return result
 
 
@@ -264,7 +302,7 @@ def apply_actions(doc,review,comment,actions):
     from topic_reports import validate_text
     from report_review_elements import calculate, SUPPORTED, FORMULAS, MissingCalculation, presentation
     from properties import RECIPES
-    nodes,_=tree(doc);values=facts(doc,comment);scope=set()
+    nodes,_=tree(doc);values=facts(doc,comment,review.get('comments',[]));scope=set()
     def descend(key):
         scope.add(key)
         for child in nodes[key]['children']:descend(child)
@@ -385,10 +423,13 @@ def process(report_id,user,comment_id,revision,connection_id,control):
             if module['parent'] in allowed:allowed.add(module['key'])
         context={'comment':comment,'modules':[m for m in state['modules'] if m['key'] in allowed],
                  'current_report':render_module(comment['target'],nodes,(edits.get('review') or {}).get('content',{})),
-                 'facts':facts(doc,comment),
+                 'facts':facts(doc,comment,state['comments']),
                  'elements':[e for e in element_catalog(nodes,(edits.get('review') or {}).get('content',{})).values() if e['target'] in allowed]}
         from report_review_elements import structure_catalog
         context['structure_catalog']=structure_catalog(doc,context['facts'])
+        refs=[(fid,f) for fid,f in context['facts'].items() if f.get('reference_kind') in ('O2','mu_O')]
+        context['oxygen_references']=[{'fact_id':fid,'value_ev':f['value'],'reference_kind':f['reference_kind']}
+                                      for fid,f in refs if f['source']['statement']==refs[-1][1]['source']['statement']]
         if len(json.dumps(context,ensure_ascii=False))>100000:raise ValueError('本报告内容过多，请缩小到具体模块处理')
         result,model=ai.service.readonly_json_completion(owner,connection_id,[{'role':'system','content':PROMPT},{'role':'user','content':json.dumps(context,ensure_ascii=False)}],control)
         if not isinstance(result,dict) or set(result)!={'reply','status','actions'} or result['status'] not in ('done','blocked') or not isinstance(result['reply'],str) or not result['reply'].strip() or len(result['reply'])>400:raise ValueError('AI批注处理结果格式无效')

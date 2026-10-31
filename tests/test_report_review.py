@@ -367,6 +367,66 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         self.assertEqual(len(card['results']),2)
         self.assertIn('带电模型',card['gaps'][0])
 
+    def test_review_reuses_prior_user_oxygen_for_short_replies_and_repairs_model_binding(self):
+        self.vacancy_comment()
+        for reply in (None,'沿用\n','沿用-8.3','−8.3 eV'):
+            with self.subTest(reply=reply):
+                state,module=self.comment('结构优化','对比一下三个Ovcc的氧空位形成能')
+                comment=state['comments'][-1]
+                if reply is not None:
+                    response=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'reply','revision':state['revision'],'comment_id':comment['id'],'text':reply})
+                    self.assertEqual(response.status_code,200,response.text);state=response.json()['data']
+                values=review.facts(self.doc,state['comments'][-1],state['comments'])
+                action=vacancy_fixture.action(values,module['key'])
+                action['inputs']['oxygen']='user:-8.3'
+                self.plan([action])
+                response=self.process_comment(state)
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertEqual(response.json()['data']['comments'][-1]['status'],'done')
+                card=next(e for e in review.effective(self.doc)['review_elements'].values() if e['comment_id']==comment['id'])
+                self.assertEqual(card['mu_O_ev'],-4.15)
+                self.assertEqual([r['value_ev'] for r in card['results']],[r[3] for r in vacancy_fixture.PAIRS])
+                import json
+                context=json.loads(fixture.REQUESTS[-1]['messages'][1]['content'])
+                self.assertEqual(context['oxygen_references'][0]['value_ev'],-8.3)
+                self.assertIn(context['oxygen_references'][0]['fact_id'],context['facts'])
+                if reply=='沿用-8.3':
+                    self.assertEqual(card['reference']['source']['statement'],reply)
+                    self.assertTrue(card['reference']['source']['reference_context'])
+
+    def test_review_short_new_value_inherits_user_units_and_overrides_prior_reference(self):
+        from report_review_elements import calculate
+        state,module,action=self.vacancy_comment('计算氧空位形成能，氧气分子能量采用 -0.3 Ha。')
+        for reply in ('改用-0.4','氧气分子能量改用-0.4'):
+            comment=copy.deepcopy(state['comments'][-1]);comment['replies'].append({'author':'alice','text':reply})
+            values=review.facts(self.doc,comment)
+            action['inputs']['oxygen']='user:-0.4'
+            card=calculate(self.doc,values,action)
+            self.assertAlmostEqual(card['mu_O_ev'],-.4*27.211386245988/2)
+            self.assertEqual(card['reference']['source']['original_unit'],'Ha')
+            self.assertEqual(card['reference']['source']['statement'],reply)
+
+    def test_review_ai_only_energy_is_not_promoted_by_confirmation(self):
+        vacancy_fixture.install(self.doc)
+        store.save_report(self.doc,'no user oxygen reference',{})
+        state,module=self.comment('结构优化','计算氧空位形成能')
+        comment=copy.deepcopy(state['comments'][-1])
+        comment['replies']=[{'author':'AI','text':'是否沿用O₂能量 -8.3 eV？'},{'author':'alice','text':'沿用-8.3'}]
+        values=review.facts(self.doc,comment)
+        self.assertFalse(any(f.get('reference_kind') for f in values.values()))
+        from report_review_elements import calculate,MissingCalculation
+        with self.assertRaisesRegex(MissingCalculation,'请补充氧气分子能量'):
+            calculate(self.doc,values,{'kind':'calculate','target':module['key'],'property_id':'oxygen_vacancy.neutral_single','inputs':{'oxygen':'user:-8.3'},'targets':[]})
+
+    def test_review_ambiguous_prior_user_references_require_one_clear_choice(self):
+        state,module,_=self.vacancy_comment('计算氧空位形成能，氧气分子能量候选 -8.3 eV，氧气分子能量候选 -8.5 eV。')
+        state,module=self.comment('结构优化','对比三个氧空位形成能')
+        values=review.facts(self.doc,state['comments'][-1],state['comments'])
+        action=vacancy_fixture.action(values,module['key'])
+        from report_review_elements import calculate,MissingCalculation
+        with self.assertRaisesRegex(MissingCalculation,'包含不同的氧参考值'):
+            calculate(self.doc,values,action)
+
     def test_review_element_replace_append_delete_and_atomic_rollback(self):
         state,module=self.comment('Model','将已有分析替换为简短解释，并添加来源与公式')
         element=next(e for e in state['elements'] if e['target']==module['key'] and '原有模型分析' in e.get('text',''))

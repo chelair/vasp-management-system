@@ -12,6 +12,9 @@
   --color-primary-soft: rgba(82, 123, 197, 0.08);
   --color-primary-border: rgba(82, 123, 197, 0.32);
   --color-primary-on: #ffffff;
+  --color-primary-solid: #4e76bd;
+  --color-primary-hover: #486dae;
+  --color-primary-active: #4365a3;
   --color-secondary: #67c6b0;
   --color-bg: #f5f7fa;
   --color-card: #ffffff;
@@ -6172,7 +6175,7 @@ h6:hover > .report-hide-btn,
 .settings-custom-color { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--color-text-secondary); margin-top: 20px; }
 .settings-custom-swatch { width: 15px; height: 15px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.08); }
 .settings-preview { margin-top: 22px; padding: 18px; background: #f8fafc; border: 1px solid var(--color-border-soft); border-radius: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 12px; }
-.settings-preview-primary { background: var(--color-primary); color: var(--color-primary-on); border-radius: 7px; padding: 8px 16px; }
+.settings-preview-primary { background: var(--color-primary-solid); color: var(--color-primary-on); border-radius: 7px; padding: 8px 16px; }
 .settings-preview-selected { background: var(--color-primary-soft); color: var(--color-primary-strong); border: 1px solid var(--color-primary-border); border-radius: 7px; padding: 7px 15px; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px 0; border-bottom: 1px solid var(--color-border-soft); }
 .settings-row:first-child { padding-top: 0; }

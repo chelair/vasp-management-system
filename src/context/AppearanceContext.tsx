@@ -30,10 +30,20 @@ function readAppearance(): Appearance {
 }
 function accentPalette(hex: string) {
   const rgb = [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16));
-  const blend = (factor: number) => `#${rgb.map(value => Math.round(factor < 0 ? value * (1 + factor) : value + (255 - value) * factor).toString(16).padStart(2, '0')).join('')}`;
-  const linear = rgb.map(value => value / 255).map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
-  const luminance = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
-  return { rgb: rgb.join(', '), strong: blend(luminance > 0.179 ? -0.6 : -0.22), secondary: blend(0.24), on: luminance > 0.179 ? '#000000' : '#FFFFFF' };
+  const toHex = (values: number[]) => `#${values.map(value => value.toString(16).padStart(2, '0')).join('')}`;
+  const blend = (factor: number, base = rgb) => toHex(base.map(value => Math.round(factor < 0 ? value * (1 + factor) : value + (255 - value) * factor)));
+  const luminance = (values: number[]) => values.map(value => value / 255)
+    .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+  const light = luminance(rgb) > 0.35;
+  const solid = [...rgb];
+  // Prefer white on blue/dark accents; adjust only the solid fill to keep 4.5:1 contrast.
+  while (!light && luminance(solid) > 1.05 / 4.5 - 0.05) {
+    solid.forEach((value, index) => { solid[index] = Math.floor(value * 0.96); });
+  }
+  return { rgb: rgb.join(', '), strong: blend(luminance(rgb) > 0.179 ? -0.6 : -0.22),
+    secondary: blend(0.24), on: light ? '#000000' : '#FFFFFF',
+    solid: toHex(solid), hover: blend(-0.08, solid), active: blend(-0.14, solid) };
 }
 const AppearanceContext = createContext<{
   appearance: Appearance;
@@ -79,6 +89,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       '--color-primary': appearance.accent, '--color-primary-strong': palette.strong,
       '--color-primary-rgb': palette.rgb, '--color-primary-soft': `rgba(${palette.rgb}, 0.08)`,
       '--color-primary-border': `rgba(${palette.rgb}, 0.32)`, '--color-primary-on': palette.on,
+      '--color-primary-solid': palette.solid, '--color-primary-hover': palette.hover, '--color-primary-active': palette.active,
       '--color-secondary': appearance.accent === DEFAULT_APPEARANCE.accent ? '#67c6b0' : palette.secondary,
     };
     Object.entries(colors).forEach(([key, value]) => root.style.setProperty(key, value));
@@ -89,11 +100,15 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const theme = useMemo(() => ({
     ...themeConfig,
     token: { ...themeConfig.token, colorPrimary: appearance.accent,
-      colorTextLightSolid: palette.on, controlHeight: appearance.density === 'compact' ? 32 : 36,
+      controlHeight: appearance.density === 'compact' ? 32 : 36,
       // 动态切换 motion 布尔值会让 Ant Design 插入 Provider 并重挂业务页面；只切换动画时长。
       motionUnit: reduced ? 0 : 0.1 },
     components: {
       ...themeConfig.components,
+      Button: { ...themeConfig.components?.Button, primaryColor: palette.on,
+        colorPrimary: palette.solid, colorPrimaryHover: palette.hover, colorPrimaryActive: palette.active },
+      Radio: { ...themeConfig.components?.Radio, buttonSolidCheckedColor: palette.on },
+      Switch: { ...themeConfig.components?.Switch, colorTextLightSolid: palette.on },
       Card: { ...themeConfig.components?.Card, paddingLG: appearance.density === 'compact' ? 16 : 20 },
       Table: { ...themeConfig.components?.Table, cellPaddingBlock: appearance.density === 'compact' ? 8 : 12 },
       Tabs: { ...themeConfig.components?.Tabs, inkBarColor: appearance.accent, itemSelectedColor: palette.strong },

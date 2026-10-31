@@ -374,7 +374,8 @@ def start_run(user: dict, owner: str, conversation_id: str, content: str, retry:
             'property_id': doc['request']['property_id'],
             'answers': doc.get('simple', {}).get('answers', {}),
         }, (key,))
-    prompt = clean(conversation["prompt"], (key,))
+    from report_background import model_prompt
+    prompt = clean(model_prompt(conversation["prompt"]), (key,))
     # 连续的重新生成答案仅取最后一版；失败且为空的回答不进入后续上下文。
     compact = []
     for row in history:

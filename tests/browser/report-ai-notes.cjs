@@ -37,10 +37,10 @@ const {execFileSync}=require('node:child_process');
   discarded=false;await page.reload();await page.getByRole('button',{name:/草稿与状态（1）/}).waitFor();await page.getByRole('button',{name:/编\s*辑/}).click();
   await dialog.getByRole('button',{name:'放弃草稿',exact:true}).click();await dialog.getByText('AI 草稿预览 · 尚未保存',{exact:true}).waitFor({state:'hidden'});
   assert.equal(await dialog.locator('textarea').first().inputValue(),'人工原文');await dialog.getByRole('button',{name:/^取\s*消$/}).click();
-  off=true;await page.reload();await page.getByText('AI撰写未开启',{exact:false}).waitFor();await page.getByRole('button',{name:/编\s*辑/}).click();
-  assert.equal(await dialog.getByRole('button',{name:'AI 重新生成',exact:true}).isDisabled(),true);await dialog.locator('textarea').first().fill('关闭AI后人工编辑');
+  off=true;await page.reload();await page.getByText('AI批注处理未开启',{exact:false}).waitFor();await page.getByRole('button',{name:/编\s*辑/}).click();
+  assert.equal(await dialog.getByRole('button',{name:'AI 重新生成',exact:true}).count(),0);await dialog.locator('textarea').first().fill('关闭AI后人工编辑');
   await dialog.getByRole('button',{name:/^保\s*存$/}).click();assert.equal(saves.at(-1).analysis_note,'关闭AI后人工编辑');
-  off=false;noModels=true;await page.reload();await page.getByRole('button',{name:/编\s*辑/}).click();assert.equal(await dialog.getByRole('button',{name:'AI 重新生成',exact:true}).isDisabled(),true);
+  off=false;noModels=true;await page.reload();await page.getByRole('button',{name:/编\s*辑/}).click();assert.equal(await dialog.getByRole('button',{name:'AI 重新生成',exact:true}).count(),0);
   const html=execFileSync('.venv/bin/python',['-c',`import os,sys,tempfile
 from pathlib import Path
 with tempfile.TemporaryDirectory(prefix='vasp-note-print-') as data:

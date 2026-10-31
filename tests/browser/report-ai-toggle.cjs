@@ -1,4 +1,4 @@
-// 智能报告页「AI 报告撰写」开关验收：真实 React 渲染 + 假的 fetch 记录请求，不连后端。
+// 智能报告页「AI 批注处理」开关验收：真实 React 渲染 + 假的 fetch 记录请求，不连后端。
 const { build } = require('esbuild');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '/tmp/vasp-report-debug/node_modules/playwright-core');
 const path = require('node:path'), fs = require('node:fs'), http = require('node:http'), assert = require('node:assert/strict');
@@ -59,20 +59,20 @@ window.fetch = async (url, init) => {
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
 
-    const toggle = page.getByRole('switch', { name: 'AI 报告撰写' });
+    const toggle = page.getByRole('switch', { name: 'AI 批注处理' });
     await toggle.waitFor();
     assert.equal(await toggle.getAttribute('aria-checked'), 'false', '初始应为关闭');
-    assert.ok(await page.getByText('AI 报告撰写').isVisible(), '应显示在智能报告页');
+    assert.ok(await page.getByText('AI 批注处理').isVisible(), '应显示在智能报告页');
 
     await toggle.click();
-    await page.getByText('已开启 AI 报告撰写').waitFor();
+    await page.getByText('已开启 AI 批注处理').waitFor();
     assert.equal(await toggle.getAttribute('aria-checked'), 'true');
     const puts = (await page.evaluate(() => window.__calls)).filter((c) => c.method === 'PUT');
     assert.equal(puts.length, 1, JSON.stringify(puts));
     assert.equal(JSON.parse(puts[0].body).ai_report_notes_enabled, true);
 
     await toggle.click();
-    await page.getByText('已关闭 AI 报告撰写（已有注解保留）').waitFor();
+    await page.getByText('已关闭 AI 批注处理（已有内容保留）').waitFor();
     assert.equal(await toggle.getAttribute('aria-checked'), 'false');
     const puts2 = (await page.evaluate(() => window.__calls)).filter((c) => c.method === 'PUT');
     assert.equal(puts2.length, 2);

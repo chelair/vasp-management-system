@@ -158,6 +158,35 @@ class ReportBackgroundTests(unittest.TestCase):
             snapshot=json.loads(db.execute('SELECT snapshot FROM runs WHERE id=?',(result.json()['data']['id'],)).fetchone()[0])
         self.assertNotIn('report_drafts',snapshot)
 
+    def test_generation_with_ai_enabled_never_generates_notes_and_preserves_manual_text(self):
+        report_store.save_note('rpt_p','t','保留已有人工分析','保留已有论文参考')
+        before=report_store.read_notes('rpt_p')
+        def build(pid, *, progress):
+            return {'report':copy.deepcopy(self.case.doc),'markdown':'已有数据报告','charts':{}}
+        with patch('report_builder.build_report',side_effect=build), patch.object(work,'notes',side_effect=AssertionError('生成报告不能调用AI注解')):
+            result=self.start('generate')
+            self.assertEqual(result.status_code,200,result.text)
+            run=self.wait(result.json()['data']['id'])
+            self.assertEqual(run['status'],'completed',run)
+        self.assertEqual(fixture.REQUESTS,[])
+        self.assertEqual(self.state()['drafts'],[])
+        self.assertEqual(report_store.read_notes('rpt_p'),before)
+
+    def test_report_conversation_policy_keeps_identity_and_blocks_unscoped_ai_writing(self):
+        import report_tools
+        convo=work.conversation(self.case.user,'p',self.case.connection['id'],create=True)
+        self.assertEqual(convo['prompt'],work.prompt('p'))
+        self.assertIn('AI只处理用户已经保存的批注',work.model_prompt(convo['prompt']))
+        self.assertEqual(work.model_prompt('普通科研分析'),'普通科研分析')
+        run_id=chat.uid()
+        with patch.object(chat,'owned',return_value={'conversation_id':convo['id']}), patch.object(work,'notes') as notes:
+            with self.assertRaisesRegex(ValueError,'只处理你提交的批注'):
+                report_tools.dispatch(self.case.project,convo,self.case.user,'generate_project_report_notes',{},run_id)
+            notes.assert_not_called()
+        restored=work.conversation(self.case.user,'p')
+        self.assertEqual(restored['id'],convo['id'])
+        self.assertEqual(restored['prompt'],convo['prompt'])
+
     def test_batch_generates_only_visible_open_projects_and_rechecks_scope(self):
         built = []
         def build(pid, *, progress):

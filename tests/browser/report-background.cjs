@@ -9,7 +9,7 @@ const {spawn}=require('node:child_process'),http=require('node:http'),path=requi
   const config=await new Promise((resolve,reject)=>{let pending='';const timer=setTimeout(()=>reject(Error('Fixture startup: '+logs)),15000);python.stdout.on('data',d=>{pending+=d;const line=pending.split('\n').find(l=>l.startsWith('{"base"'));if(line){clearTimeout(timer);resolve(JSON.parse(line));}});python.on('exit',code=>reject(Error('Fixture exited '+code+' '+logs)));});
   const built=await build({stdin:{contents:`import React from'react';import{createRoot}from'react-dom/client';import{App}from'antd';import{MemoryRouter}from'react-router-dom';import Report from'./src/pages/Report';import'./src/styles/global.css';createRoot(document.getElementById('root')).render(<MemoryRouter><App><Report/></App></MemoryRouter>);`,loader:'tsx',resolveDir:process.cwd()},bundle:true,write:false,outfile:path.join(dir,'app.js'),format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"development"'}});
   const js=built.outputFiles.find(f=>f.path.endsWith('.js')).text,css=built.outputFiles.find(f=>f.path.endsWith('.css')).text;
-  const posts=[];
+  const posts=[],jobs=[];
   server=http.createServer(async(req,res)=>{
    if(req.url==='/app.js'){res.setHeader('Content-Type','text/javascript');return res.end(js);}
    if(req.url==='/app.css'){res.setHeader('Content-Type','text/css');return res.end(css);}
@@ -18,6 +18,7 @@ const {spawn}=require('node:child_process'),http=require('node:http'),path=requi
    if(req.url==='/api/ai/chat/connections'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({success:true,data:{items:[{id:config.connection,name:'隔离模型',model:'mock'}]}}));}
    if(req.url.startsWith('/api/')){
     if(req.method==='POST')posts.push(req.url);
+    if(req.method==='POST'&&req.url==='/api/reports/assistant/p'){let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>jobs.push(JSON.parse(body)));}
     const proxy=http.request(config.base+req.url,{method:req.method,headers:{...req.headers,host:new URL(config.base).host}},result=>{res.writeHead(result.statusCode,result.headers);result.pipe(res);});
     proxy.on('error',e=>{if(!res.headersSent)res.writeHead(502);res.end(e.message);});req.pipe(proxy);res.on('close',()=>proxy.destroy());return;
    }
@@ -34,10 +35,13 @@ const {spawn}=require('node:child_process'),http=require('node:http'),path=requi
   const panel=page.locator('.report-work-drawer');await panel.getByText('AI正在处理批注',{exact:true}).waitFor();
   await panel.getByRole('button',{name:'Close',exact:true}).click();
   await page.reload();await page.getByRole('button',{name:/后台处理中 · 查看进度|报告进度与对话/}).click();
-  await panel.getByText('后台已完成。<script>window.REVIEW_XSS=1</script>',{exact:true}).waitFor();
+  await panel.getByText('已在指定模块完成 1 项修改。',{exact:true}).waitFor();
   assert.equal(posts.filter(p=>p==='/api/reports/assistant/p').length,1);assert.equal(await page.evaluate(()=>window.REVIEW_XSS),undefined);
   await panel.getByRole('button',{name:'Close',exact:true}).click();await page.locator('.report-content').getByText('后台完成的报告解释。',{exact:true}).waitFor();
-  await page.getByRole('button',{name:'生成缺失注解',exact:true}).click();await panel.getByText('已保存的待审阅草稿',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'生成缺失注解',exact:true}).count(),0);
+  // Seed an explicitly requested legacy draft to verify old work remains recoverable.
+  const seeded=await page.request.post(url+'/api/reports/assistant/p',{data:{action:'notes',connection_id:config.connection,report_id:'rpt_p',request_id:'legacy-draft-fixture'}});assert.equal(seeded.ok(),true);
+  await page.getByRole('button',{name:/报告进度与对话|后台处理中 · 查看进度/}).click();await panel.getByText('已保存的待审阅草稿',{exact:true}).waitFor();
   const summary=panel.locator('.report-work-message--assistant').filter({hasText:/生成\d+份草稿/}).last();await summary.waitFor();
   const expected=Number((await summary.textContent()).match(/生成(\d+)份草稿/)[1]);
   await page.waitForFunction(expected=>[...document.querySelectorAll('.report-work-drafts button')].filter(b=>b.textContent==='预览与编辑').length===expected,expected);
@@ -66,6 +70,8 @@ const {spawn}=require('node:child_process'),http=require('node:http'),path=requi
   await panel.getByRole('button',{name:'Close',exact:true}).click();await page.reload();
   await page.getByRole('button',{name:/后台处理中 · 查看进度|报告进度与对话/}).click();
   await panel.getByText('ReportFixture：完整报告已生成。',{exact:false}).waitFor();
+  assert.equal(jobs.filter(j=>j.action==='notes').length,1,'only the explicit historical-draft fixture requests notes');
+  assert.equal(jobs.filter(j=>j.action==='generate').length,1);
   await page.setViewportSize({width:390,height:844});await page.waitForTimeout(300);
   const bounds=await panel.locator('.ant-drawer-content').boundingBox();assert.ok(bounds.width<=390&&bounds.x>=-1);
   await page.screenshot({path:path.join(dir,'background-mobile.png')});

@@ -24,7 +24,7 @@ CID = {'type': 'string', 'minLength': 1, 'maxLength': 64}
 TOOLS = [
     tool('get_full_project_report', '读取当前项目完整报告的正文、批注和注解位置；offset分页正文，不是独立专题。',
          {'report_id': RID, 'offset': {'type': 'integer', 'minimum': 0}}),
-    tool('generate_full_project_report', '重新生成当前项目完整报告，使用已有数据、图表和结构；已有批注保留，但旧版展示修改停止套用。不生成独立专题。', {}),
+    tool('generate_full_project_report', '仅用已有数据、图表和结构生成完整报告，不调用AI撰写其他模块；已有批注保留，旧版展示修改停止套用。不生成独立专题。', {}),
     tool('generate_project_report_notes', '后台生成完整报告注解草稿，草稿保存于当前私有运行，用户预览保存后才进入报告；省略keys时仅生成缺失注解，跳过人工内容。问题在对话说明。',
          {'report_id': RID, 'keys': {'type': 'array', 'items': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'minItems': 1}}),
     tool('process_project_report_comment', '用当前模型按批注和用户回复修改当前项目完整报告，返回实际回复、完成或需要补充状态。已完成项不重复调用。',
@@ -48,6 +48,8 @@ def dispatch(project, conversation, user, name, arguments, run_id):
         run = chat.owned(db, 'runs', run_id, str(user['user_id']))
     if run['conversation_id'] != conversation['id']:
         raise ValueError('运行不属于当前对话')
+    if name == 'generate_project_report_notes' and work.is_report_conversation(conversation.get('prompt') or ''):
+        raise ValueError('完整报告的AI只处理你提交的批注，请在对应模块添加批注后处理。')
     control = work.WorkControl(run_id, user)
     work._CONTROLS[run_id] = control
     try:

@@ -33,9 +33,9 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await page.goto(url);await page.locator('.report-content h6').filter({hasText:'Model'}).waitFor();
   await page.locator('.report-3d canvas').first().waitFor();
   await page.evaluate(()=>window.__original3D=document.querySelector('.report-3d'));
-  const toggle=page.getByRole('switch',{name:'AI 报告撰写'});
-  await toggle.click();await page.getByText('已关闭 AI 报告撰写（已有注解保留）',{exact:true}).waitFor();
-  await toggle.click();await page.getByText('已开启 AI 报告撰写',{exact:true}).waitFor();
+  const toggle=page.getByRole('switch',{name:'AI 批注处理'});
+  await toggle.click();await page.getByText('已关闭 AI 批注处理（已有内容保留）',{exact:true}).waitFor();
+  await toggle.click();await page.getByText('已开启 AI 批注处理',{exact:true}).waitFor();
   assert.ok(await page.evaluate(()=>window.__original3D===document.querySelector('.report-3d')&&window.__original3D.isConnected),'AI toggle preserves the mounted 3D viewer');
   await page.locator('.report-3d canvas').first().waitFor();
   const module=page.locator('.report-content h6').filter({hasText:'Model'});

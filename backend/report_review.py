@@ -305,7 +305,7 @@ def process(report_id,user,comment_id,revision,connection_id,control):
     try:
         doc,project,edits=snapshot(report_id,user);state=view(doc,edits)
         if state['revision']!=revision or state['stale']:raise ReviewConflict('报告已被修改或重新生成，请刷新后重试')
-        if project.get('ai_report_notes_enabled') is not True:raise ValueError('请先开启本项目的AI报告撰写')
+        if project.get('ai_report_notes_enabled') is not True:raise ValueError('请先开启本项目的AI批注处理')
         comment=next((c for c in state['comments'] if c['id']==comment_id),None)
         if not comment:raise ValueError('批注不存在')
         if comment.get('source')!=source(doc):raise ValueError('这条批注属于旧版报告，请在当前模块重新添加')
@@ -330,7 +330,7 @@ def process(report_id,user,comment_id,revision,connection_id,control):
         with store._notes_lock:
             current,project,current_edits=snapshot(report_id,user)
             if source(current)!=source(doc) or store.note_revision(current_edits)!=revision:raise ReviewConflict('生成期间报告已变化，修改未写入，请刷新后重试')
-            if project.get('ai_report_notes_enabled') is not True:raise ValueError('AI报告撰写已关闭，修改未写入')
+            if project.get('ai_report_notes_enabled') is not True:raise ValueError('AI批注处理已关闭，修改未写入')
             review=copy.deepcopy(edits['review'])
             outcome=apply_actions(current,review,comment,result['actions'])
             if outcome['gaps']:

@@ -21,6 +21,17 @@ def prompt(scope):
     return PROMPT + '\n报告范围：' + scope
 
 
+def is_report_conversation(value):
+    return value.startswith(PROMPT + '\n报告范围：')
+
+
+def model_prompt(value):
+    # Stored prompt identifies existing report conversations; keep it unchanged.
+    if is_report_conversation(value):
+        return value + '\n最新报告规则优先：生成完整报告仅整理已有数据，不生成AI注解。AI只处理用户已经保存的批注及回复，调用process_project_report_comment修改该批注范围。不得调用generate_project_report_notes或补写其他模块；没有批注时请用户先添加批注。'
+    return value
+
+
 def project_ids(user, scope):
     from ai_chat_service import project_for
     from storage import load_db
@@ -308,14 +319,6 @@ def execute(run_id, user, job):
                 if job['action'] == 'generate':
                     value = generate(work, pid)
                     answers.append(value['project_name'] + '：完整报告已生成。')
-                    from ai_chat_service import project_for
-                    project = project_for(user, pid)
-                    if project.get('ai_report_notes_enabled') and job.get('connection_id'):
-                        value = notes(work, pid, job['connection_id'])
-                        answers.append(value['message'])
-                        answers.extend(f"- {f['title']}：{f['error']}" for f in value['failures'])
-                    elif project.get('ai_report_notes_enabled'):
-                        answers.append('尚未选择模型连接；选择后可继续生成AI注解草稿。')
                 elif job['action'] == 'notes':
                     value = notes(work, pid, job['connection_id'], job.get('keys'), job.get('report_id'))
                     answers.append(value['message'])

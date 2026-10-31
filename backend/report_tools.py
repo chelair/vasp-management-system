@@ -61,7 +61,8 @@ def dispatch(project, conversation, user, name, arguments, run_id):
         if name == 'get_full_project_report':
             import report_ai_notes
             shown = report_review.effective(doc, report_store.read_edits(rid))
-            text = '\n\n'.join(s['markdown'] for s in shown['markdown_sections'])
+            from report_review_elements import export_markdown
+            text = export_markdown(shown)
             offset = arguments.get('offset', 0)
             return {'report_id': rid, 'generated_at': doc['metadata']['generated_at'],
                     'content': text[offset:offset+12000], 'next_offset': offset+12000 if len(text) > offset+12000 else None,

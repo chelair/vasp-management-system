@@ -395,6 +395,7 @@ export interface ProjectReportSection {
 }
 
 export interface ProjectReportDetail {
+  review_elements_html?: Record<string, string>;
   meta: ProjectReportMeta;
   schema_version: string;
   markdown: string;

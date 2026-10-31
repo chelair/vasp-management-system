@@ -20,8 +20,9 @@ interface ReportAIValue {
 const Context = createContext<ReportAIValue | null>(null);
 export const useReportAI = () => useContext(Context);
 
-export function ReportAIProvider({ reportId, notes, onSaved, connectionId, onConnectionChange, children }: {
+export function ReportAIProvider({ reportId, enabled, notes, onSaved, connectionId, onConnectionChange, children }: {
   reportId: string; notes: Record<string, ReportNote>; onSaved: (notes: Record<string, ReportNote>) => void;
+  enabled?: boolean;
   connectionId: string; onConnectionChange: (id: string) => void; children: ReactNode;
 }) {
   const work = useReportWork();
@@ -31,6 +32,7 @@ export function ReportAIProvider({ reportId, notes, onSaved, connectionId, onCon
   const currentNotes = useRef(notes); currentNotes.current = notes;
   useEffect(() => {
     let active = true;
+    setStatus(null); setError('');
     if (reportId) {
       const initialNotes = currentNotes.current;
       Promise.all([fetchReportAIStatus(reportId), listAIConnections()]).then(([value, models]) => {
@@ -40,7 +42,7 @@ export function ReportAIProvider({ reportId, notes, onSaved, connectionId, onCon
       }).catch(e => { if (active) setError(e instanceof Error ? e.message : '无法加载AI设置'); });
     }
     return () => { active = false; };
-  }, [reportId, onSaved]);
+  }, [reportId, enabled, onSaved]);
   const available = Boolean(status?.enabled && connections.some(c => c.id === connectionId));
   const drafts = Object.fromEntries((work?.drafts ?? []).filter(d => d.report_id === reportId).map(d => [d.draft.key, d.draft]));
   const generate = async (key: string) => {

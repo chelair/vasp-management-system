@@ -432,6 +432,7 @@ export default function Report() {
       visibleSections.map((section) => ({
         ...section,
         html: renderMarkdown(section.markdown, {
+          widgetRenderer: (kind, id) => kind === 'review-element' ? detail?.review_elements_html?.[id] : undefined,
           // charts/xxx.svg 与 images/xxx.png 都按报告目录解析（后端两个接口）
           chartResolver: (path) =>
             detail
@@ -921,10 +922,11 @@ export default function Report() {
 
   return (
     <ReportWorkProvider projectId={selectedProject ?? ''} connectionId={reportAIConnection} onConnectionChange={setReportAIConnection} onChanged={reloadBackgroundReport}>
-    <ReportAIProvider key={`${detail?.meta.report_id ?? ''}:${aiNotesEnabled}`}
+    <ReportAIProvider
       reportId={detail?.meta.report_id ?? ''} notes={notes} onSaved={setNotes}
+      enabled={aiNotesEnabled}
       connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}>
-    <ReportReviewProvider key={detail?.meta.report_id ?? ''}
+    <ReportReviewProvider
       reportId={detail?.meta.report_id ?? ''} contentRef={contentRef} version={renderedSections}
       connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}>
     <PageTransition>

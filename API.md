@@ -88,9 +88,13 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 原AI项目工具轮新增get_full_project_report、generate_full_project_report、generate_project_report_notes、reply_project_report_comment、process_project_report_comment。工具只操作当前已授权项目，用户补充由服务器取本轮用户原话保存；正文分页每次12000字符。回复/缺项留在原对话，修改仍复用原报告、注解及批注核心。详见[报告后台流程](docs/reports.md#完整项目报告-ai-注解)。
 
-完整报告批注：`GET /api/reports/project/{id}/review` 返回当前 `revision/source`、章节/模块目录及批注；`POST .../review` 接收 `revision`、`operation=add/reply/status`，分别携带 `target+text`、`comment_id+text`、`comment_id+status(open/done/blocked)`。用户回复会重新打开批注。`POST .../review/process` 接收 `revision/comment_id/connection_id`，显式调用本人模型、验证对应模块修改并保存回复/状态；已完成项直接返回，不重复模型调用。项目AI开关及权限、私有连接、科学事实引用和修改范围均由后端检查，版本冲突409。成功响应no-store；失败/取消不覆盖原报告。
+完整报告批注：`GET /api/reports/project/{id}/review` 返回当前 `revision/source`、章节/模块目录、元素目录 `elements[{id,type,target,...}]` 及批注；`POST .../review` 接收 `revision`、`operation=add/reply/status`，分别携带 `target+text`、`comment_id+text`、`comment_id+status(open/done/blocked)`。用户回复会重新打开批注。`POST .../review/process` 接收 `revision/comment_id/connection_id`，显式调用本人模型、验证对应模块修改并保存回复/状态；已完成项直接返回，不重复模型调用。项目AI开关及权限、私有连接、科学事实引用和修改范围均由后端检查，版本冲突409。成功响应no-store；失败/取消不覆盖原报告。
 
 批注与展示修改复用 `edits.review`（`report.review.1`），旧PUT edits保留该字段。原report.json与科学快照不改写；详情、Markdown、图表、HTML及打印视图按保存的展示修改生成。批注正文/回复/状态不进入导出或交互数据；报告重新生成后旧版展示修改失效，旧批注保留。支持的修改与计算范围见[报告批注说明](docs/reports.md#完整报告模块批注)。
+
+新增结构化卡片：`review.content[target].elements[id]` 保存type=text/calculation/formula/sources、target/comment_id、公式版本、Python结果及输入来源；`body_edits`保存原正文元素局部替换/删除，history记录修改前content和动作。报告详情的structured.review_elements为有效卡片映射，顶层review_elements_html为同一服务端渲染器生成的页面卡片HTML；markdown_sections中使用`@[review-element:id]`挂点，顶层markdown和Markdown下载已展开卡片。`GET /structured`仍返回原始冻结报告，不把展示修改冒充原科学数据。HTML和打印共用同一卡片渲染。
+
+批注内部action支持text/order/structures/calculate/formula/sources/edit。calculate仅接受注册支持的`relative_energy`（reference/model事实）、`adsorption.estimate`（complex/surface/adsorbate事实）或`oxygen_vacancy.neutral_single`（inputs.oxygen事实，targets[{label,pristine,defect}]）。后者核对冻结CIF实际单O组成差，用户明确O₂能量除2、每O化学势直接采用，最新明确参考优先；缺必要结构/能量、已知带电或组成不符只阻止对应组。模型不提供公式或结果数值。edit携带element_id/operation=replace|append|delete，局限于目标模块；卡片replace改标题、append补说明、delete删展示。结果PRELIMINARY，原话在来源审计保留，导出只展示给定值与单位；成功回复由后端生成一句确认，模型回复最多400字符。
 
 ## 高级分步专题接口（兼容）
 

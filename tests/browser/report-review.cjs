@@ -1,7 +1,7 @@
 // Real Report page -> isolated report API -> local mock model -> same report/export.
 const {build}=require('esbuild');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE || '/tmp/vasp-todo-browser/node_modules/playwright-core');
-const {spawn}=require('node:child_process');
+const {spawn,execFileSync}=require('node:child_process');
 const http=require('node:http'),path=require('node:path'),fs=require('node:fs/promises'),os=require('node:os'),assert=require('node:assert/strict');
 
 (async()=>{
@@ -31,6 +31,13 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   const page=await browser.newPage({viewport:{width:1440,height:1050}});const errors=[],external=[];
   page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.url().startsWith('https://example.invalid'))external.push(r.url());});
   await page.goto(url);await page.locator('.report-content h6').filter({hasText:'Model'}).waitFor();
+  await page.locator('.report-3d canvas').first().waitFor();
+  await page.evaluate(()=>window.__original3D=document.querySelector('.report-3d'));
+  const toggle=page.getByRole('switch',{name:'AI 报告撰写'});
+  await toggle.click();await page.getByText('已关闭 AI 报告撰写（已有注解保留）',{exact:true}).waitFor();
+  await toggle.click();await page.getByText('已开启 AI 报告撰写',{exact:true}).waitFor();
+  assert.ok(await page.evaluate(()=>window.__original3D===document.querySelector('.report-3d')&&window.__original3D.isConnected),'AI toggle preserves the mounted 3D viewer');
+  await page.locator('.report-3d canvas').first().waitFor();
   const module=page.locator('.report-content h6').filter({hasText:'Model'});
   await module.getByRole('button',{name:'批注',exact:true}).click();
   await page.getByLabel('新的报告批注').fill('浏览器私有批注：请补充说明，保留3D和图表');
@@ -50,7 +57,7 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   const pathComment=page.locator('.report-review-comment').last();
   await pathComment.getByText('待处理',{exact:true}).waitFor();
   await pathComment.getByRole('button',{name:'让AI处理',exact:true}).click();
-  await page.locator('.report-work-drawer').getByText('已经复用原台阶图、结构窗口和表格，按要求显示所选四项。',{exact:true}).waitFor();
+  await page.locator('.report-work-drawer').getByText('已在指定模块完成 1 项修改。',{exact:true}).waitFor();
   await page.locator('.report-work-drawer').getByRole('button',{name:'Close',exact:true}).click();
   await page.waitForFunction(()=>document.querySelectorAll('.report-fe3d__btn').length===4);
   assert.equal(await page.locator('.report-fe3d__btn').count(),4);
@@ -58,6 +65,18 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await page.locator('.report-fe3d__btn').filter({hasText:'结构 1'}).click();
   assert.ok((await page.locator('.report-fe3d__btn.is-on').textContent()).includes('结构 1'));
   assert.equal(await page.locator('[data-panel="free-energy"]').count(),1);
+  await page.locator('.report-content h5').filter({hasText:'结构优化'}).getByRole('button',{name:'批注',exact:true}).click();
+  await page.getByLabel('新的报告批注').fill('计算氧空位形成能，氧气分子能量采用 −8.3 eV。');
+  await page.getByRole('button',{name:'保存批注',exact:true}).click();
+  await page.locator('.report-review-comment').last().getByRole('button',{name:'让AI处理',exact:true}).click();
+  await page.locator('.report-work-drawer').getByText('已在指定模块添加计算卡片，包含 3 组结果、公式及能量来源。',{exact:true}).waitFor();
+  await page.locator('.report-work-drawer').getByRole('button',{name:'Close',exact:true}).click();
+  const card=page.locator('.report-review-element').filter({hasText:'氧空位形成能'});
+  await card.waitFor();
+  for(const value of ['4.73032026','-1.74729697','3.09671606'])assert.ok((await card.innerText()).includes(value));
+  assert.equal(await card.locator('tbody tr').count(),3);
+  assert.ok(await card.evaluate(el=>el.previousElementSibling.textContent.includes('结构优化')),'card belongs to the selected report module');
+  await card.scrollIntoViewIfNeeded();await page.screenshot({path:path.join(dir,'oxygen-card.png')});
   await page.reload();await page.getByRole('button',{name:'报告批注',exact:true}).click();
   await page.getByText('浏览器私有批注：请补充说明，保留3D和图表',{exact:true}).waitFor();
   await page.getByText('已完成',{exact:true}).last().waitFor();
@@ -71,10 +90,17 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await page.getByRole('button',{name:/导\s*出$/}).click();
   const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:/下载 HTML/}).click()]);
   const html=await fs.readFile(await download.path(),'utf8');assert.ok(html.includes('浏览器核对后的报告解释'));assert.ok(html.includes('data-report-widget="structure-3d"'));assert.ok(!html.includes('浏览器私有批注'));assert.ok(!html.includes('批注回复专用内容'));
+  assert.ok(html.includes('4.73032026')&&html.includes('数据来源'));
+  const offline=await browser.newPage();await offline.setContent(html);await offline.emulateMedia({media:'print'});
+  assert.ok(await offline.locator('.report-review-element').filter({hasText:'氧空位形成能'}).isVisible());
+  const pdf=path.join(dir,'report.pdf');await offline.pdf({path:pdf,format:'A4'});await offline.close();
+  const pdfText=execFileSync('pdftotext',[pdf,'-'],{encoding:'utf8'});
+  for(const value of ['4.73032026','-1.74729697','3.09671606'])assert.ok(pdfText.includes(value),'PDF preserves '+value);
+  assert.ok(pdfText.includes('数据来源'));
   await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:/报告批注/}).click();
   await page.waitForTimeout(500);
   const bounds=await page.locator('.ant-drawer-content').last().boundingBox();assert.ok(bounds.width<=390 && bounds.x>=-1 && bounds.x+bounds.width<=391);
   await page.screenshot({path:path.join(dir,'review-mobile.png')});
-  assert.deepEqual(errors,[]);console.log('PASS report review: module comment, saved reply/status, AI scoped edit, reload/reopen, original 3D controls, export exclusion and mobile. '+dir);
+  assert.deepEqual(errors,[]);console.log('PASS report review: AI toggle preserves 3D, scoped edit, oxygen card with 3 results, sources, reload/reopen, HTML/PDF values and mobile. '+dir);
  }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));python?.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

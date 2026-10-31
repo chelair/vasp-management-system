@@ -192,6 +192,9 @@ def project_report_detail(report_id: str, request: Request):
         if displayed is not doc:
             markdown = '\n\n'.join('## '+s['title']+'\n\n'+s.get('markdown','') for s in displayed.get('markdown_sections') or [])
         doc = displayed
+        from report_review_elements import export_markdown, render_html as render_element
+        if doc.get('review_elements'):
+            markdown = export_markdown(doc)
         entry = next(
             (i for i in list_reports() if i.get("report_id") == report_id), {}
         )
@@ -220,6 +223,7 @@ def project_report_detail(report_id: str, request: Request):
                 if isinstance((doc.get("appendix") or {}).get("charts"), list)
                 else (doc.get("markdown_meta") or {}).get("chart_paths", []),
                 "structured": doc,
+                "review_elements_html": {key: render_element(element) for key, element in doc.get('review_elements', {}).items()},
             },
         )
     except FileNotFoundError as e:
@@ -283,6 +287,9 @@ def project_report_markdown(report_id: str, request: Request):
         if displayed is not doc:
             markdown = '\n\n'.join('## '+s['title']+'\n\n'+s.get('markdown','') for s in displayed.get('markdown_sections') or [])
         doc = displayed
+        if doc.get('review_elements'):
+            from report_review_elements import export_markdown
+            markdown = export_markdown(doc)
         project_name = str(((doc.get("metadata") or {}).get("project_name")) or report_id)
         generated = str((doc.get("metadata") or {}).get("generated_at") or "")[:10]
         pretty = f"{project_name}_项目报告{f'_{generated}' if generated else ''}.md"

@@ -208,7 +208,7 @@ class ReportBackgroundTests(unittest.TestCase):
         comment=report_review.view(report_store.load_report('rpt_p')[0])['comments'][0]
         self.assertEqual(comment['replies'][-2]['text'],'氧气分子能量采用-8.3 eV')
         self.assertEqual(comment['status'],'done')
-        self.assertIn('参考条件',self.client.get('/api/reports/project/rpt_p').json()['data']['markdown_sections'][0]['markdown'])
+        self.assertIn('参考条件',self.client.get('/api/reports/project/rpt_p').json()['data']['markdown'])
         self.assertEqual(self.state()['conversation']['id'],state['conversation']['id'])
 
 

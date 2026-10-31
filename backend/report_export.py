@@ -466,6 +466,10 @@ def widget_renderer_for(doc: Dict[str, Any]) -> Callable[[str, str], Optional[st
     by_id = _ele_tasks_by_id(doc)
 
     def render(kind: str, task_id: str) -> Optional[str]:
+        if kind == 'review-element':
+            from report_review_elements import render_html
+            element = (doc.get('review_elements') or {}).get(task_id)
+            return render_html(element) if element else None
         if kind == "neb-3d":
             from report_neb import widget_html
             return widget_html(task_id)

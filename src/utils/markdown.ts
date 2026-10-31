@@ -53,6 +53,8 @@ function inline(text: string, chartResolver?: (path: string) => string): string 
 }
 
 interface Options {
+  /** Trusted server renderer for structured report cards. */
+  widgetRenderer?: (kind: string, id: string) => string | undefined;
   /** 注解/模型草稿只展示文本，防止自动加载模型生成的外部图片。 */
   allowImages?: boolean;
   /** 把 Markdown 里的相对图表路径（charts/xxx.svg）解析为可访问 URL */
@@ -82,7 +84,7 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
     const hook = /^@\[([a-z0-9-]+):([^\]\s]+)\]$/.exec(line);
     if (hook) {
       html.push(
-        `<div class="report-widget" data-report-widget="${hook[1]}" data-task-id="${escapeHtml(
+        options.widgetRenderer?.(hook[1], hook[2]) ?? `<div class="report-widget" data-report-widget="${hook[1]}" data-task-id="${escapeHtml(
           hook[2],
         )}"></div>`,
       );

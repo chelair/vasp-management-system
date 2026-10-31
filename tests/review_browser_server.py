@@ -5,6 +5,7 @@ from test_report_review import ReportReviewTests
 import test_report_ai_notes as fixture
 import report_review
 import report_store
+import report_vacancy_fixture as vacancy_fixture
 
 ReportReviewTests.setUpClass()
 case=ReportReviewTests('test_review_real_model_text_scope_completion_and_export_exclusion')
@@ -27,9 +28,12 @@ O1 O .5 .5 .5
 '''
 case.doc['science']['opt'][0]['structure']={'poscar_cif':cif,'contcar_cif':cif}
 for structure in case.doc['science']['free_energy'][0]['structures']:structure['cif']=cif
+vacancy_fixture.install(case.doc)
 report_store.save_report(case.doc,'browser fixture',{'g_step.svg':'<svg>fallback</svg>'})
 target=next(m for m in report_review.view(case.doc)['modules'] if m['title']=='Model')
 def result(value):
+    if '氧空位形成能' in value['comment']['text']:
+        return {'reply':'已计算','status':'done','actions':[vacancy_fixture.action(value['facts'],value['comment']['target'])]}
     if '只对比四个结构' in value['comment']['text']:
         return {'reply':'已经复用原台阶图、结构窗口和表格，按要求显示所选四项。','status':'done',
                 'actions':[{'kind':'structures','target':value['comment']['target'],'tasks':['f4','f2','f1','f0']}]}

@@ -7,6 +7,8 @@ import test_report_ai_notes as fixture
 import report_review as review
 import report_store as store
 from report_builder import free_energy_markdown
+from report_review_elements import export_markdown
+import report_vacancy_fixture as vacancy_fixture
 
 
 class ReportReviewTests(fixture.ReportAINotesTests):
@@ -66,8 +68,8 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         self.assertEqual(self.process_comment(changed).status_code,200)
         self.assertEqual(len(fixture.REQUESTS),count)
         detail=self.client.get('/api/reports/project/rpt_p').json()['data']
-        self.assertIn('补充的解释',detail['markdown_sections'][0]['markdown'])
-        self.assertIn('-10.0 eV',detail['markdown_sections'][0]['markdown'])
+        self.assertIn('补充的解释',detail['markdown'])
+        self.assertIn('-10.0 eV',detail['markdown'])
         self.assertIn('@[structure-3d:t]',detail['markdown_sections'][0]['markdown'])
         self.assertEqual(store.load_report('rpt_p')[0],self.original)
         for endpoint in ('export.html','export.html?print=1','markdown'):
@@ -81,7 +83,7 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         state,module=self.comment('结构优化','把两个模型的展示顺序换一下')
         self.plan([{'kind':'order','target':module['key'],'children':list(reversed(module['children']))}])
         result=self.process_comment(state);self.assertEqual(result.status_code,200,result.text)
-        markdown=self.client.get('/api/reports/project/rpt_p').json()['data']['markdown_sections'][0]['markdown']
+        markdown=self.client.get('/api/reports/project/rpt_p').json()['data']['markdown']
         self.assertLess(markdown.index('#### Second'),markdown.index('#### Model'))
         self.assertIn('@[structure-3d:t]',markdown)
 
@@ -126,7 +128,7 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         self.plan([{'kind':'calculate','target':module['key'],'property_id':'relative_energy','inputs':{'reference':refs[-10],'model':refs[-8]}}])
         result=self.process_comment(state);self.assertEqual(result.status_code,200,result.text)
         markdown=self.client.get('/api/reports/project/rpt_p').json()['data']['markdown_sections'][0]['markdown']
-        self.assertIn('+2.00000000 eV',markdown)
+        self.assertIn('+2.00000000 eV',self.client.get('/api/reports/project/rpt_p/markdown').text)
         state,module=self.comment('Model','这里计算界面能')
         self.plan([],status='blocked',reply='界面能配方尚未注册，需要明确界面面积、参考体系和能量定义；未编造结果。')
         result=self.process_comment(state);self.assertEqual(result.status_code,200,result.text)
@@ -136,7 +138,7 @@ class ReportReviewTests(fixture.ReportAINotesTests):
                    {'kind':'calculate','target':module['key'],'property_id':'interface_energy','inputs':{}}])
         result=self.process_comment(state);self.assertEqual(result.status_code,200,result.text)
         self.assertEqual(result.json()['data']['comments'][-1]['status'],'blocked')
-        self.assertIn('已有计算记录仍需结合界面参考态解释。',review.effective(self.doc)['markdown_sections'][0]['markdown'])
+        self.assertIn('已有计算记录仍需结合界面参考态解释。',export_markdown(review.effective(self.doc)))
 
     def test_review_invalid_scope_and_fabricated_numbers_leave_report_unchanged(self):
         state,module=self.comment()
@@ -157,7 +159,7 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         self.plan([{'kind':'calculate','target':module['key'],'property_id':'adsorption.estimate',
                     'inputs':{'complex':total[-10],'surface':total[-8],'adsorbate':given}}])
         response=self.process_comment(state);self.assertEqual(response.status_code,200,response.text)
-        self.assertIn('+25.21138625 eV',review.effective(self.doc)['markdown_sections'][0]['markdown'])
+        self.assertIn('+25.21138625 eV',export_markdown(review.effective(self.doc)))
         calculation=store.read_edits('rpt_p')['review']['content'][module['key']]['calculations'][state['comments'][-1]['id']]
         self.assertEqual(calculation['inputs']['adsorbate']['source']['statement'],quote)
         self.assertEqual(calculation['validation_status'],'PRELIMINARY')
@@ -187,10 +189,160 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         changed=copy.deepcopy(self.doc);changed['science']['opt'][0]['final_energy_ev']=-20
         store.save_report(changed,'new data',{})
         self.assertTrue(self.state()['stale'])
-        self.assertNotIn('旧版本补充分析',review.effective(changed)['markdown_sections'][0]['markdown'])
+        self.assertNotIn('旧版本补充分析',export_markdown(review.effective(changed)))
         state,module=self.comment(text='针对新版数据的批注')
         self.assertFalse(state['stale']);self.assertEqual(len(state['comments']),2)
         self.assertNotEqual(state['comments'][0]['source'],state['source'])
+
+    def vacancy_comment(self, text='计算氧空位形成能，氧气分子能量采用 −8.3 eV。'):
+        vacancy_fixture.install(self.doc)
+        store.save_report(self.doc,'original frozen report',{})
+        self.original=copy.deepcopy(self.doc)
+        state,module=self.comment('结构优化',text)
+        action=vacancy_fixture.action(review.facts(self.doc,state['comments'][-1]),module['key'])
+        return state,module,action
+
+    def test_review_oxygen_card_calls_only_edit_prompt_and_exports_same_frozen_results(self):
+        state,module,action=self.vacancy_comment()
+        self.plan([action],reply='模型不提供计算数值')
+        with patch.object(fixture.ai,'generate_text',side_effect=AssertionError('不应调用科研审查')):
+            result=self.process_comment(state)
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(len(fixture.REQUESTS),1)
+        request=fixture.REQUESTS[-1]
+        self.assertEqual(request['messages'][0]['content'],review.PROMPT)
+        self.assertNotEqual(request['messages'][0]['content'],fixture.ai.PROMPT)
+        import json
+        context=json.loads(request['messages'][1]['content'])
+        self.assertEqual(len(context['structure_catalog']['single_oxygen_pairs']),3)
+        self.assertNotIn('expected_results',context)
+        data=self.client.get('/api/reports/project/rpt_p').json()['data']
+        elements=data['structured']['review_elements'];self.assertEqual(len(elements),1)
+        card=next(iter(elements.values()))
+        self.assertEqual(card['type'],'calculation');self.assertEqual(card['target'],module['key'])
+        self.assertEqual(card['reference']['value'],-8.3);self.assertEqual(card['mu_O_ev'],-4.15)
+        self.assertEqual(card['validation_status'],'PRELIMINARY')
+        self.assertEqual([r['value_ev'] for r in card['results']],[r[3] for r in vacancy_fixture.PAIRS])
+        self.assertIn('存在负形成能',' '.join(card['warnings']))
+        self.assertEqual(card['reference']['source']['statement'],state['comments'][-1]['text'])
+        for row in card['results']:
+            self.assertEqual(row['compositions']['pristine']['O']-row['compositions']['defect']['O'],1)
+            self.assertEqual(row['inputs']['defect']['source']['report_id'],'rpt_p')
+        for endpoint in ('markdown','export.html','export.html?print=1'):
+            text=self.client.get('/api/reports/project/rpt_p/'+endpoint).text
+            for _,_,_,expected in vacancy_fixture.PAIRS:self.assertIn(f'{expected:.8f}',text)
+            self.assertIn('E_defect',text);self.assertIn('-8.3 eV',text);self.assertIn('数据来源',text)
+            self.assertNotIn(state['comments'][-1]['text'],text)
+            self.assertNotIn('模型不提供计算数值',text)
+        self.assertIn('data-review-element',next(iter(data['review_elements_html'].values())))
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+        again=self.process_comment(result.json()['data']);self.assertEqual(again.status_code,200)
+        self.assertEqual(len(fixture.REQUESTS),1)
+        # Explicit reopen reuses the same element identity, with a revision record.
+        state=self.state()
+        reopened=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'status','revision':state['revision'],
+            'comment_id':state['comments'][-1]['id'],'status':'open'}).json()['data']
+        self.assertEqual(self.process_comment(reopened).status_code,200)
+        saved=store.read_edits('rpt_p')['review']
+        self.assertEqual(len(saved['content'][module['key']]['elements']),1)
+        self.assertEqual(len(saved['history']),2)
+        self.assertLess(len(self.state()['comments'][-1]['replies'][-1]['text']),100)
+
+    def test_review_oxygen_rejects_wrong_composition_and_keeps_valid_partial_results(self):
+        state,module,action=self.vacancy_comment()
+        action['targets'][0]['defect']=action['targets'][0]['pristine']
+        self.plan([action]);response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['data']['comments'][-1]['status'],'blocked')
+        self.assertIn('组成差不是恰好移除一个 O',response.json()['data']['comments'][-1]['replies'][-1]['text'])
+        shown=review.effective(self.doc)
+        self.assertEqual(len(next(iter(shown['review_elements'].values()))['results']),2)
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+
+    def test_review_missing_structure_and_oxygen_reference_asks_precisely(self):
+        state,module,action=self.vacancy_comment()
+        # Re-save the source before creating its comment, so this is missing evidence,
+        # not a revision conflict.
+        self.doc['science']['opt'][-1]['structure']={}
+        store.save_report(self.doc,'missing structure',{})
+        state,module=self.comment('结构优化','计算氧空位形成能，O₂ 能量采用 -8.3 eV。')
+        action=vacancy_fixture.action(review.facts(self.doc,state['comments'][-1]),module['key'])
+        action['targets']=action['targets'][-1:]
+        self.plan([action]);response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertIn('缺少报告冻结结构',response.json()['data']['comments'][-1]['replies'][-1]['text'])
+        self.assertFalse(review.effective(self.doc).get('review_elements'))
+        state,module=self.comment('结构优化','计算氧空位形成能')
+        action['inputs']={'oxygen':'absent'};self.plan([action])
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['data']['comments'][-1]['status'],'blocked')
+
+    def test_review_missing_one_energy_keeps_other_oxygen_results(self):
+        state,module,action=self.vacancy_comment()
+        action['targets'][1]['pristine']='missing-energy'
+        self.plan([action]);response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['data']['comments'][-1]['status'],'blocked')
+        card=next(iter(review.effective(self.doc)['review_elements'].values()))
+        self.assertEqual([r['value_ev'] for r in card['results']],[4.73032026,3.09671606])
+
+    def test_review_reference_units_mu_and_fabricated_computation_rejected(self):
+        from report_review_elements import calculate
+        state,module,action=self.vacancy_comment('计算氧空位形成能，每个氧原子的化学势采用 −4.15 eV。')
+        values=review.facts(self.doc,state['comments'][-1]);card=calculate(self.doc,values,action)
+        self.assertEqual(card['mu_O_ev'],-4.15)
+        self.assertEqual([r['value_ev'] for r in card['results']],[r[3] for r in vacancy_fixture.PAIRS])
+        self.plan([{**action,'value_ev':999}]);response=self.process_comment(state)
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertFalse(review.effective(self.doc).get('review_elements'))
+        self.doc['science']['opt'].append({'task_id':'o2','task_name':'O₂','final_energy_ev':-8.3,
+            'structure':{'contcar_cif':vacancy_fixture.cif(0,2)}})
+        values=review.facts(self.doc)
+        action['inputs']={'oxygen':next(k for k,f in values.items() if f['value']==-8.3)}
+        card=calculate(self.doc,values,action)
+        self.assertEqual(card['mu_O_ev'],-4.15)
+        self.assertEqual(card['reference']['source']['task_id'],'o2')
+
+    def test_review_latest_oxygen_reply_overrides_old_binding_and_known_charge_is_blocked(self):
+        from report_review_elements import calculate
+        state,module,action=self.vacancy_comment()
+        comment=copy.deepcopy(state['comments'][-1])
+        comment['replies'].append({'author':'alice','text':'氧气分子能量改用 −8.5 eV。'})
+        values=review.facts(self.doc,comment)
+        card=calculate(self.doc,values,action)
+        self.assertEqual(card['mu_O_ev'],-4.25)
+        self.assertEqual(card['reference']['source']['statement'],'氧气分子能量改用 −8.5 eV。')
+        self.assertAlmostEqual(card['results'][0]['value_ev'],4.63032026,places=8)
+        self.doc['science']['opt'][-1]['charge_state']=1
+        card=calculate(self.doc,values,action)
+        self.assertEqual(len(card['results']),2)
+        self.assertIn('带电模型',card['gaps'][0])
+
+    def test_review_element_replace_append_delete_and_atomic_rollback(self):
+        state,module=self.comment('Model','将已有分析替换为简短解释，并添加来源与公式')
+        element=next(e for e in state['elements'] if e['target']==module['key'] and '原有模型分析' in e.get('text',''))
+        fid=next(iter(review.facts(self.doc)))
+        self.plan([{'kind':'edit','target':module['key'],'element_id':element['id'],'operation':'replace','text':'替换后的简短说明。'},
+                   {'kind':'formula','target':module['key'],'property_id':'relative_energy'},
+                   {'kind':'sources','target':module['key'],'facts':[fid]}])
+        response=self.process_comment(state);self.assertEqual(response.status_code,200,response.text)
+        shown=review.effective(self.doc);text=export_markdown(shown)
+        self.assertNotIn('原有模型分析',text);self.assertIn('替换后的简短说明。',text)
+        self.assertIn('ΔE',text);self.assertIn('数据来源',text)
+        state,module=self.comment('Model','删除公式卡片并补充说明')
+        formula=next(e for e in state['elements'] if e['type']=='formula')
+        self.plan([{'kind':'edit','target':module['key'],'element_id':formula['id'],'operation':'delete'},
+                   {'kind':'edit','target':module['key'],'element_id':element['id'],'operation':'append','text':'只补充这一处。'}])
+        self.assertEqual(self.process_comment(state).status_code,200)
+        text=export_markdown(review.effective(self.doc));self.assertNotIn('ΔE = E_model',text);self.assertIn('只补充这一处。',text)
+        state,module=self.comment('Model','失败不能覆盖之前修改')
+        before=store.read_edits('rpt_p')
+        self.plan([{'kind':'edit','target':module['key'],'element_id':element['id'],'operation':'delete'},
+                   {'kind':'text','target':'section:science','text':'越界'}])
+        self.assertEqual(self.process_comment(state).status_code,400)
+        self.assertEqual(store.read_edits('rpt_p'),before)
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
 
 
 if __name__=='__main__':unittest.main()

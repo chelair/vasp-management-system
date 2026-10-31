@@ -231,7 +231,10 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         for endpoint in ('markdown','export.html','export.html?print=1'):
             text=self.client.get('/api/reports/project/rpt_p/'+endpoint).text
             for _,_,_,expected in vacancy_fixture.PAIRS:self.assertIn(f'{expected:.8f}',text)
-            self.assertIn('E_defect',text);self.assertIn('-8.3 eV',text);self.assertIn('数据来源',text)
+            self.assertIn('E_defect' if endpoint=='markdown' else 'E<sub>defect</sub>',text)
+            self.assertIn('-8.3 eV',text);self.assertIn('数据来源',text)
+            self.assertNotIn('电荷态、位点对应、晶胞与计算条件仍需核实',text)
+            self.assertNotIn('存在负形成能，请核对',text)
             self.assertNotIn(state['comments'][-1]['text'],text)
             self.assertNotIn('模型不提供计算数值',text)
         self.assertIn('data-review-element',next(iter(data['review_elements_html'].values())))
@@ -247,6 +250,51 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         self.assertEqual(len(saved['content'][module['key']]['elements']),1)
         self.assertEqual(len(saved['history']),2)
         self.assertLess(len(self.state()['comments'][-1]['replies'][-1]['text']),100)
+
+    def test_review_ai_can_style_existing_calculation_add_cards_and_reorder_columns_without_recalculation(self):
+        state,module,action=self.vacancy_comment()
+        self.plan([action]);self.assertEqual(self.process_comment(state).status_code,200)
+        before=copy.deepcopy(review.effective(self.doc)['review_elements'])
+        eid=next(iter(before))
+        state,module=self.comment('结构优化','改成紫色紧凑结果卡，添加摘要卡并排展示；不要核实提示。')
+        self.plan([{'kind':'presentation','target':module['key'],'element_id':eid,'presentation':{'layout':'compact','accent':'violet'}},
+                   {'kind':'card','target':module['key'],'title':'参考条件','text':'采用用户指定的氧气参考能量进行比较。','presentation':{'accent':'teal'}},
+                   {'kind':'layout','target':module['key'],'columns':2}])
+        with patch('report_review_elements.calculate',side_effect=AssertionError('排版不能重新计算')):
+            response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        shown=review.effective(self.doc);card=shown['review_elements'][eid]
+        self.assertEqual(card['results'],before[eid]['results'])
+        self.assertEqual(card['warnings'],before[eid]['warnings'])
+        group=next(e for e in shown['review_elements'].values() if e['type']=='layout')
+        self.assertEqual(group['columns'],2);self.assertEqual(len(group['items']),2)
+        exported=self.client.get('/api/reports/project/rpt_p/export.html').text
+        self.assertIn('rr-accent-violet',exported);self.assertIn('rr-results-compact',exported)
+        self.assertIn('report-review-layout',exported);self.assertIn('参考条件',exported)
+        self.assertNotIn('仍需核实',exported)
+        state,module=self.comment('结构优化','把摘要放到计算前面，改成一栏')
+        order=[e['id'] for e in reversed(group['items'])]
+        self.plan([{'kind':'layout','target':module['key'],'columns':1,'elements':order}])
+        self.assertEqual(self.process_comment(state).status_code,200)
+        markdown=self.client.get('/api/reports/project/rpt_p/markdown').text
+        self.assertLess(markdown.index('参考条件'),markdown.index('**氧空位形成能**'))
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+
+    def test_review_card_layout_rejects_other_module_elements_and_unsafe_styles(self):
+        state,module,action=self.vacancy_comment()
+        self.plan([action]);self.assertEqual(self.process_comment(state).status_code,200)
+        eid=next(iter(review.effective(self.doc)['review_elements']))
+        state,other=self.comment('Model','将另一模块的结果改成卡片')
+        self.plan([{'kind':'presentation','target':other['key'],'element_id':eid,'presentation':{'accent':'teal'}}])
+        self.assertEqual(self.process_comment(state).status_code,400)
+        for presentation in ({'accent':'url(https://example.invalid)'},{'layout':'<script>'},{'value_ev':999}):
+            state,module=self.comment('结构优化','只改外观')
+            self.plan([{'kind':'presentation','target':module['key'],'element_id':eid,'presentation':presentation}])
+            response=self.process_comment(state)
+            self.assertEqual(response.status_code,400,response.text)
+        state,module=self.comment('结构优化','排成两栏')
+        self.plan([{'kind':'layout','target':module['key'],'columns':2,'elements':[eid,'foreign-element']}])
+        self.assertEqual(self.process_comment(state).status_code,400)
 
     def test_review_oxygen_rejects_wrong_composition_and_keeps_valid_partial_results(self):
         state,module,action=self.vacancy_comment()

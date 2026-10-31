@@ -26,8 +26,13 @@ PROMPT = '''你是报告局部编辑助手，只执行本次批注和用户回�
 {"kind":"calculate","target":"模块key","property_id":"oxygen_vacancy.neutral_single","inputs":{"oxygen":"用户明确氧参考Fxx"},"targets":[{"label":"体系名","pristine":"Fxx","defect":"Fxx"}]}；
 {"kind":"formula","target":"模块key","property_id":"已支持配方"}；
 {"kind":"sources","target":"模块key","facts":["Fxx"]}；
+{"kind":"card","target":"模块key","title":"摘要标题","text":"正文或列表；数值使用[[Fxx]]","presentation":{"accent":"blue或teal或violet"}}；
+{"kind":"presentation","target":"模块key","element_id":"已有卡片id","presentation":{"layout":"cards或table或compact","accent":"blue或teal或violet","show_sources":true}}；
+{"kind":"layout","target":"模块key","columns":2,"elements":["本模块全部未删除卡片id，按展示顺序；可省略保持顺序"]}；
 {"kind":"edit","target":"模块key","element_id":"当前elements中id","operation":"replace或append或delete","text":"替换/补充文字；删除时省略"}。
 calculate只选事实和角色，Python按注册配方计算并新增结构化卡片（公式/输入/结果/来源）；不要用text替代计算，不填派生数值或自定义公式。
+用户要求卡片、重点突出、对比或排版时，用card添加可视化摘要，用presentation修改已有卡片样式，用layout对本模块新增元素分1至3栏/排序，order仍调整原子模块。calculate可带同样的presentation设置；默认已是突出数值、输入与公式的结果卡，不必重新计算来改外观。不要用text冒充卡片或排版。
+不要主动写“电荷态、位点对应、晶胞与计算条件仍需核实”等审查提示；核验信息保存在底层，仅用户明确要求显示时才用show_warnings:true。
 氧空位使用structure_catalog中实际组成配对；用户指定O2能量除2得到mu_O，明确每O化学势则直接使用。已给参考不重复问，不重算气体或优化结构。
 批注位于具体体系时，只计算该体系；其他模块事实可作为必要输入，不顺带计算其他体系。用户明确要求多体系对比时才扩展结果。
 用户回复中的新参数优先；若存在多个未明确对应候选，或缺必要能量/结构/氧参考，只问最关键的一个问题。
@@ -126,6 +131,11 @@ def effective(doc, edits=None):
     changes=review.get('content') or {}
     apply_structure_selection(doc,nodes,changes)
     doc['review_elements']={eid:e for c in changes.values() for eid,e in c.get('elements',{}).items() if not e.get('deleted')}
+    for key,change in changes.items():
+        items=ordered_elements(change)
+        if change.get('layout',{}).get('columns',1)>1 and items:
+            eid=layout_id(key)
+            doc['review_elements'][eid]={'id':eid,'type':'layout','columns':change['layout']['columns'],'items':items}
     for section,root in zip(doc.get('markdown_sections') or [],roots):section['markdown']=render_module(root,nodes,changes)
     return doc
 
@@ -144,13 +154,25 @@ def apply_structure_selection(doc,nodes,changes):
                 doc.setdefault('presentation_charts',{})[path['chart'].split('/')[-1]]=free_energy_panel(path,title=path['group_name']+' 自由能路径看板')
 
 
+def layout_id(key):
+    return 'layout_'+ai.digest(key)[:20]
+
+
+def ordered_elements(change):
+    elements=change.get('elements',{})
+    order=list(dict.fromkeys([*change.get('layout',{}).get('elements',[]),*elements]))
+    return [elements[eid] for eid in order if eid in elements and not elements[eid].get('deleted')]
+
+
 def render_module(key,nodes,changes):
     from report_review_elements import blocks
     node=nodes[key];change=changes.get(key) or {}
     text='\n\n'.join((change.get('texts') or {}).values())
     body='\n\n'.join(change.get('body_edits',{}).get(b['id'],{}).get('text',b['text'])
                        for b in blocks(node) if not change.get('body_edits',{}).get(b['id'],{}).get('deleted'))+'\n\n'
-    elements=''.join('@[review-element:'+eid+']\n\n' for eid,e in change.get('elements',{}).items() if not e.get('deleted'))
+    items=ordered_elements(change)
+    elements=('@[review-element:'+layout_id(key)+']\n\n' if change.get('layout',{}).get('columns',1)>1 and items
+              else ''.join('@[review-element:'+e['id']+']\n\n' for e in items))
     return node.get('heading','')+body+('\n\n'+text+'\n\n' if text else '')+elements+''.join(render_module(child,nodes,changes) for child in change.get('children',node['children']))
 
 
@@ -177,7 +199,8 @@ def view(doc, edits=None):
     return {'revision':store.note_revision(edits),'source':source(doc),'stale':bool(saved and saved.get('source')!=source(doc)),
             'comments':saved.get('comments',[]),
             'elements':list(element_catalog(nodes,changes).values()),
-            'modules':[{k:v for k,v in n.items() if k not in ('body','heading')} | {'path_tasks':[(s.get('opt_task_id')) for s in (path_for(doc,n) or {}).get('structures',[])]} for n in ordered]}
+            'modules':[{k:v for k,v in n.items() if k not in ('body','heading')} | {'path_tasks':[(s.get('opt_task_id')) for s in (path_for(doc,n) or {}).get('structures',[])],
+                'layout':changes.get(n['key'],{}).get('layout',{})} for n in ordered]}
 
 
 def snapshot(report_id,user):
@@ -239,7 +262,7 @@ def update(report_id,user,payload):
 
 def apply_actions(doc,review,comment,actions):
     from topic_reports import validate_text
-    from report_review_elements import calculate, SUPPORTED, FORMULAS, MissingCalculation
+    from report_review_elements import calculate, SUPPORTED, FORMULAS, MissingCalculation, presentation
     from properties import RECIPES
     nodes,_=tree(doc);values=facts(doc,comment);scope=set()
     def descend(key):
@@ -267,6 +290,23 @@ def apply_actions(doc,review,comment,actions):
             if set(action)!={'kind','target','text'}:raise ValueError('文字修改字段无效')
             element={'type':'text','text':validated(action['text'])}
             change.get('texts',{}).pop(comment['id'],None)
+        elif kind=='card':
+            if set(action)-{'kind','target','title','text','presentation'}:raise ValueError('摘要卡片字段无效')
+            element={'type':'callout','title':validated(action.get('title')),'text':validated(action.get('text')),
+                     'presentation':presentation(action.get('presentation',{}))}
+        elif kind=='presentation':
+            if set(action)!={'kind','target','element_id','presentation'}:raise ValueError('卡片展示字段无效')
+            old=catalog.get(action['element_id'])
+            if not old or old['target']!=target or old['type']=='original' or old.get('deleted'):raise ValueError('只能调整本模块现有卡片的展示')
+            change['elements'][old['id']]['presentation']={**old.get('presentation',{}),**presentation(action['presentation'])}
+            catalog[old['id']]=copy.deepcopy(change['elements'][old['id']])
+        elif kind=='layout':
+            if set(action)-{'kind','target','columns','elements'} or type(action.get('columns')) is not int or action['columns'] not in (1,2,3):raise ValueError('卡片只能排成1至3栏')
+            ids=[e['id'] for e in ordered_elements(change)]
+            if not ids:raise ValueError('请先在本模块添加卡片再调整排版')
+            order=action.get('elements',ids)
+            if not isinstance(order,list) or len(order)!=len(ids) or any(not isinstance(e,str) for e in order) or set(order)!=set(ids):raise ValueError('排版需要包含本模块全部未删除卡片，不得引入其他模块元素')
+            change['layout']={'columns':action['columns'],'elements':order}
         elif kind=='order':
             children=action.get('children')
             if set(action)!={'kind','target','children'} or not isinstance(children,list) or len(children)!=len(node['children']) or set(children)!=set(node['children']):raise ValueError('排版只能重排该模块的全部直接子项')

@@ -7,6 +7,7 @@ from collections import Counter
 from decimal import Decimal
 import html
 import re
+from pathlib import Path
 
 from property_science import check, structure, vacancy, canonical, digest
 from properties import RECIPES, formation, subtract, adsorption
@@ -17,6 +18,19 @@ FORMULAS = {
     'adsorption.estimate': 'E_ads = E_complex − E_surface − E_adsorbate',
     'oxygen_vacancy.neutral_single': 'E_f(V_O) = E_defect − E_pristine + ½ E_O₂',
 }
+CSS = Path(__file__).with_suffix('.css').read_text(encoding='utf-8')
+
+
+def presentation(value):
+    if not isinstance(value,dict) or set(value)-{'layout','accent','show_sources','show_warnings'}:
+        raise ValueError('卡片展示设置无效')
+    if 'layout' in value and value['layout'] not in ('cards','table','compact'):
+        raise ValueError('卡片布局无效')
+    if 'accent' in value and value['accent'] not in ('blue','teal','violet'):
+        raise ValueError('卡片配色无效')
+    if any(type(value[key]) is not bool for key in ('show_sources','show_warnings') if key in value):
+        raise ValueError('卡片显示设置无效')
+    return copy.deepcopy(value)
 
 
 class MissingCalculation(ValueError):
@@ -86,8 +100,9 @@ def calculate(doc, values, action):
     pid = action.get('property_id')
     if pid not in SUPPORTED:
         raise MissingCalculation('UNSUPPORTED：该计算配方尚未接入报告批注。')
-    if set(action) - {'kind', 'target', 'property_id', 'inputs', 'targets'}:
+    if set(action) - {'kind', 'target', 'property_id', 'inputs', 'targets', 'presentation'}:
         raise ValueError('计算动作字段无效，不接受模型提供的公式或结果')
+    settings=presentation(action.get('presentation',{}))
     if pid != 'oxygen_vacancy.neutral_single':
         if 'targets' in action:
             raise ValueError('该配方使用 inputs 绑定能量')
@@ -98,7 +113,7 @@ def calculate(doc, values, action):
                 'title': '相对能量' if pid == 'relative_energy' else '初步吸附能', 'formula': FORMULAS[pid],
                 'validation_status': 'PRELIMINARY', 'value_ev': value, 'inputs': inputs,
                 'results': [{'label': '计算结果', 'value_ev': value, 'inputs': inputs}],
-                'warnings': ['初步结果；组成、电荷态、收敛及计算条件尚需核实。']}
+                'warnings': ['初步结果；组成、电荷态、收敛及计算条件尚需核实。'],'presentation':settings}
     reference = bound_facts(values, action.get('inputs'), ('oxygen',))['oxygen']
     given = [f for f in values.values() if f['field'] == 'provided_energy_ev' and f.get('reference_kind') in ('O2', 'mu_O')]
     if given:
@@ -168,12 +183,14 @@ def calculate(doc, values, action):
     return {'type': 'calculation', 'title': '氧空位形成能', 'property_id': pid, 'version': RECIPES[pid].version,
             'formula': FORMULAS[pid] if reference['reference_kind'] == 'O2' else 'E_f(V_O) = E_defect − E_pristine + μ_O',
             'validation_status': 'PRELIMINARY', 'reference': reference, 'mu_O_ev': mu,
-            'results': results, 'warnings': warnings, 'gaps': gaps}
+            'results': results, 'warnings': warnings, 'gaps': gaps,'presentation':settings}
 
 
 def markdown(element):
     def clean(value):
         return str(value).replace('|', '／').replace('\n', ' ')
+    if element['type']=='layout':
+        return '\n\n'.join(markdown(e) for e in element['items'])
     title = element.get('title', '')
     parts = [f'**{title}**'] if title else []
     if element['type'] in ('calculation', 'formula'):
@@ -199,8 +216,9 @@ def markdown(element):
                 sources += ['- '+clean(row['label'])+' · '+role_names[role]+'：'+source_text(fact)]
         if reference:
             sources += ['- '+source_text(reference)]
-        parts += ['数据来源：', '\n'.join(sources)]
-        parts += ['\n'.join('- '+text for text in element.get('warnings', []))]
+        settings=element.get('presentation') or {}
+        if settings.get('show_sources',True):parts += ['数据来源：', '\n'.join(sources)]
+        if settings.get('show_warnings',False):parts += ['\n'.join('- '+text for text in element.get('warnings', []))]
     if element['type'] == 'sources':
         parts += ['\n'.join('- '+source_text(fact) for fact in element['sources'])]
     if element.get('text'):
@@ -221,9 +239,63 @@ def source_text(fact):
 
 def render_html(element):
     from report_export import markdown_to_html
-    return ('<article class="report-review-element" data-review-element="'+html.escape(element['id'], quote=True)+'" '
-            'style="border:1px solid #dce3ec;border-radius:8px;padding:16px;margin:14px 0;break-inside:avoid;overflow-wrap:anywhere">'
-            +markdown_to_html(markdown(element))+'</article>')
+    esc=lambda value:html.escape(str(value),quote=True)
+    settings=element.get('presentation') or {}
+    accent=settings.get('accent','blue')
+    if element['type']=='layout':
+        return ('<div class="report-review-layout" style="--rr-columns:'+str(element['columns'])+'">'
+                +''.join(render_html(e) for e in element['items'])+'</div>')
+    shell=('<article class="report-review-element rr-'+esc(element['type'])+' rr-accent-'+esc(accent)
+           +'" data-review-element="'+esc(element['id'])+'"><style>'+CSS+'</style>')
+    if element['type'] not in ('calculation','callout'):
+        return shell+markdown_to_html(markdown(element))+'</article>'
+    icon='<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.5"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9" stroke="currentColor" stroke-width="1.5"/></svg>'
+    header=('<header class="rr-header"><span class="rr-icon">'+icon+'</span><div><span class="rr-eyebrow">'
+            +('计算结果' if element['type']=='calculation' else '报告摘要')+'</span><h4 class="rr-title">'
+            +esc(element.get('title',''))+'</h4></div></header>')
+    if element['type']=='callout':
+        return shell+header+'<div class="rr-copy">'+markdown_to_html(element['text'])+'</div></article>'
+    rows=element['results'];layout=settings.get('layout','cards')
+    def energy(value):return f'{value:.8f}'
+    def formula():
+        return {'relative_energy':'ΔE = E<sub>model</sub> − E<sub>reference</sub>',
+                'adsorption.estimate':'E<sub>ads</sub> = E<sub>complex</sub> − E<sub>surface</sub> − E<sub>adsorbate</sub>',
+                'oxygen_vacancy.neutral_single':'E<sub>f</sub>(V<sub>O</sub>) = E<sub>defect</sub> − E<sub>pristine</sub> + '
+                    +('½ E<sub>O₂</sub>' if (element.get('reference') or {}).get('reference_kind')=='O2' else 'μ<sub>O</sub>')}.get(element['property_id'],esc(element['formula']))
+    names={'pristine':'完整结构','defect':'氧空位结构','reference':'参考结构','model':'对比结构',
+           'complex':'完整构型','surface':'基底','adsorbate':'吸附质'}
+    tiles=[]
+    maximum=max(abs(row['value_ev']) for row in rows) or 1
+    for row in rows:
+        inputs=''.join('<div class="rr-input"><dt>'+names[role]+'</dt><dd>'+energy(fact['value'])+'<small> eV</small></dd></div>' for role,fact in row['inputs'].items())
+        bar=('<div class="rr-bar-track" aria-hidden="true"><span style="width:'+str(round(abs(row['value_ev'])/maximum*100,3))+'%"></span></div>') if len(rows)>1 else ''
+        tiles.append('<section class="rr-result"><div class="rr-result-label">'+esc(row['label'])+'</div>'
+                     +'<div class="rr-value">'+energy(row['value_ev'])+'<span>eV</span></div>'+bar
+                     +'<dl class="rr-inputs">'+inputs+'</dl></section>')
+    if layout=='table':
+        table=['<div class="rr-table-wrap"><table class="rr-table"><thead><tr><th>体系</th><th>输入能量 / eV</th><th>计算结果 / eV</th></tr></thead><tbody>']
+        for row in rows:
+            inputs='<br>'.join(esc(names[role])+': '+energy(fact['value']) for role,fact in row['inputs'].items())
+            table.append('<tr><td>'+esc(row['label'])+'</td><td>'+inputs+'</td><td class="rr-table-value">'+energy(row['value_ev'])+'</td></tr>')
+        content=''.join(table)+'</tbody></table></div>'
+    else:
+        content='<div class="rr-results rr-results-'+layout+'">'+''.join(tiles)+'</div>'
+    reference=element.get('reference');reference_html=''
+    if reference:
+        label='O₂ 分子能量' if reference['reference_kind']=='O2' else '氧原子化学势'
+        reference_html=('<div class="rr-reference"><span>'+label+' <b>'+esc(reference['value'])+' eV</b></span>'
+                        +'<span>μ<sub>O</sub> <b>'+esc(element['mu_O_ev'])+' eV</b></span></div>')
+    sources=[]
+    for row in rows:
+        for fact in row['inputs'].values():
+            text=source_text(fact)
+            if text not in sources:sources.append(text)
+    if reference:sources.append(source_text(reference))
+    source_html=('<details class="rr-sources"><summary>数据来源<span>查看计算记录与参考能量</span></summary><ul>'
+                 +''.join('<li>'+esc(text)+'</li>' for text in sources)+'</ul></details>') if settings.get('show_sources',True) else ''
+    warnings=('<div class="rr-warnings">'+''.join('<p>'+esc(text)+'</p>' for text in element.get('warnings',[]))+'</div>') if settings.get('show_warnings',False) else ''
+    note='<div class="rr-copy">'+markdown_to_html(element['text'])+'</div>' if element.get('text') else ''
+    return shell+header+content+'<div class="rr-formula"><span>计算公式</span><div>'+formula()+'</div></div>'+reference_html+note+source_html+warnings+'</article>'
 
 
 def export_markdown(doc):

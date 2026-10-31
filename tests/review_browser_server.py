@@ -34,6 +34,13 @@ vacancy_fixture.install(case.doc)
 report_store.save_report(case.doc,'browser fixture',{'g_step.svg':'<svg>fallback</svg>'})
 target=next(m for m in report_review.view(case.doc)['modules'] if m['title']=='Model')
 def result(value):
+    if '只调整外观' in value['comment']['text']:
+        card=next(e for e in value['elements'] if e['type']=='calculation')
+        return {'reply':'已调整卡片排版。','status':'done','actions':[
+            {'kind':'presentation','target':value['comment']['target'],'element_id':card['id'],
+             'presentation':{'accent':'teal','layout':'compact'}},
+            {'kind':'card','target':value['comment']['target'],'title':'计算说明','text':'使用已选定的参考能量，结果及输入能量保持一致。','presentation':{'accent':'teal'}},
+            {'kind':'layout','target':value['comment']['target'],'columns':2}]}
     if '氧空位形成能' in value['comment']['text']:
         return {'reply':'已计算','status':'done','actions':[vacancy_fixture.action(value['facts'],value['comment']['target'])]}
     if '只对比四个结构' in value['comment']['text']:

@@ -80,7 +80,7 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 单OPT：`POST /api/agent-execution/opt-runs`创建；`GET /{id}`查询；`POST /{id}/step`推进；`POST /{id}/control`接收pause/resume/close，不停止远端作业。创建要求task_id/grant_id，可选max_steps（默认30）、max_repairs（默认1）、nsw_increment/nsw_max（默认0）、min_force_improvement（默认0.05）、connection_id。模型当前只审阅有限候选，不是完整项目规划执行。[执行边界](docs/execution.md)
 
-完整报告AI开关：项目ai_report_notes_enabled默认false，页面名为“AI 批注处理”；生成报告不论开关/模型选择均不自动调用AI。报告页仅从用户批注触发AI，旧独立注解预览/人工保存接口保留兼容。`GET /api/reports/project/{id}/notes/ai-status`，`POST .../notes/ai-preview`接收key/connection_id仅返回草稿；原PUT notes可带draft_token/expected_revision及restore_previous。普通generate不等待模型，不接HPC工具。
+完整报告AI开关：项目ai_report_notes_enabled默认false，页面名为“AI 批注处理”；后台generate先保存数据报告，开启AI并提供本人connection_id时继续执行待处理批注；没有批注不调用模型、已完成项不重复执行。重新生成按模块完整路径唯一绑定批注，使用新报告事实计算；无法对应/缺模型/开关未开或处理失败明确返回消息。报告页仅从用户批注触发AI，旧独立注解预览/人工保存接口保留兼容。`GET /api/reports/project/{id}/notes/ai-status`，`POST .../notes/ai-preview`接收key/connection_id仅返回草稿；原PUT notes可带draft_token/expected_revision及restore_previous。旧同步generate不处理批注；页面后台入口立即返回run，进度沿原SSE，不接HPC工具。
 
 完整报告后台入口：`GET /api/reports/assistant/{scope}`恢复本人报告对话和待审草稿；scope为项目ID或all（仅当前可见未关闭项目批量生成）。`POST`同路径接收`action=generate/notes/comment/chat`、幂等request_id、可选本人connection_id/report_id/keys/comment_id/content，立即返回原AIRun，不等待生成结束；notes/comment/chat须本人连接，comment须comment_id，chat须content。前端生成及批注入口使用该接口；notes仅保留显式兼容调用，报告页不提供批量/单条AI注解生成入口。旧同步generate/ai-preview/review/process供兼容调用，不作为页面后台任务入口。
 

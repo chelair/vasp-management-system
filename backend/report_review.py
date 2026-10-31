@@ -29,6 +29,7 @@ PROMPT = '''你是报告局部编辑助手，只执行本次批注和用户回�
 {"kind":"edit","target":"模块key","element_id":"当前elements中id","operation":"replace或append或delete","text":"替换/补充文字；删除时省略"}。
 calculate只选事实和角色，Python按注册配方计算并新增结构化卡片（公式/输入/结果/来源）；不要用text替代计算，不填派生数值或自定义公式。
 氧空位使用structure_catalog中实际组成配对；用户指定O2能量除2得到mu_O，明确每O化学势则直接使用。已给参考不重复问，不重算气体或优化结构。
+批注位于具体体系时，只计算该体系；其他模块事实可作为必要输入，不顺带计算其他体系。用户明确要求多体系对比时才扩展结果。
 用户回复中的新参数优先；若存在多个未明确对应候选，或缺必要能量/结构/氧参考，只问最关键的一个问题。
 edit操作针对目录中元素，原数据只改展示。计算/公式/来源卡片replace只改标题，append补充解释，不能改Python数值/来源/公式。
 未知配方返回blocked和UNSUPPORTED；可独立完成部分保留。done必须有实际修改。只返回一句短确认，不输出长篇分析。
@@ -183,6 +184,33 @@ def snapshot(report_id,user):
     doc,_,_=store.load_report(report_id)
     project=ai.project_for(doc,user)
     return doc,project,store.read_edits(report_id)
+
+
+@store.serialized_notes
+def rebind_pending(doc, previous):
+    """Carry pending requests to the same module, never old computed content."""
+    rid=doc['metadata']['report_id'];edits=store.read_edits(rid)
+    review=copy.deepcopy(edits.get('review') or {})
+    nodes,_=tree(doc);old_nodes=tree(previous)[0] if previous else {}
+    def path(key, catalog):
+        node=catalog[key]
+        return (*path(node['parent'],catalog),node['title']) if node['parent'] else (node['section'],)
+    paths={}
+    for key in nodes:paths.setdefault(path(key,nodes),[]).append(key)
+    pending=[];missing=0
+    for item in review.get('comments',[]):
+        if item['status']=='done':continue
+        key=item['target']
+        matches=paths.get(path(key,old_nodes),[]) if key in old_nodes else ([key] if key in nodes else [])
+        if len(matches)!=1:
+            missing+=1;continue
+        item.update(target=matches[0],source=source(doc))
+        pending.append(item['id'])
+    if pending:
+        if review.get('source')!=source(doc):review['content']={}
+        review['source']=source(doc)
+        store.save_review(rid,review,store.note_revision(edits))
+    return pending,missing
 
 
 @store.serialized_notes

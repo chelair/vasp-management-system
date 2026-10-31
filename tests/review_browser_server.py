@@ -1,6 +1,8 @@
 """One temporary report writer and local mock model for the review browser test."""
 import json
 import time
+import copy
+from unittest.mock import patch
 from test_report_review import ReportReviewTests
 import test_report_ai_notes as fixture
 import report_review
@@ -40,10 +42,14 @@ def result(value):
     return {'reply':'批注回复专用内容。<script>window.REVIEW_XSS=1</script> ![leak](https://example.invalid/leak)',
             'status':'done','actions':[{'kind':'text','target':target['key'],'text':'浏览器核对后的报告解释，原有结构交互继续保留。'}]}
 fixture.REVIEW_RESULT=result
-print(json.dumps({'base':case.client.base,'connection':case.connection['id']}),flush=True)
-try:
-    while True:time.sleep(1)
-except KeyboardInterrupt:
-    pass
-finally:
-    case.doCleanups();ReportReviewTests.tearDownClass()
+def build(pid, *, progress):
+    progress(1,1,'整理已有项目数据')
+    return {'report':copy.deepcopy(case.doc),'markdown':'browser generated report','charts':{'g_step.svg':'<svg>fallback</svg>'}}
+with patch('report_builder.build_report',side_effect=build):
+    print(json.dumps({'base':case.client.base,'connection':case.connection['id']}),flush=True)
+    try:
+        while True:time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        case.doCleanups();ReportReviewTests.tearDownClass()

@@ -28,7 +28,7 @@ def is_report_conversation(value):
 def model_prompt(value):
     # Stored prompt identifies existing report conversations; keep it unchanged.
     if is_report_conversation(value):
-        return value + '\n最新报告规则优先：生成完整报告仅整理已有数据，不生成AI注解。AI只处理用户已经保存的批注及回复，调用process_project_report_comment修改该批注范围。不得调用generate_project_report_notes或补写其他模块；没有批注时请用户先添加批注。'
+        return value + '\n最新报告规则优先：生成完整报告整理已有数据，并在开启AI且选好模型时执行待处理批注，不生成通用AI注解。AI只处理用户已经保存的批注及回复，调用process_project_report_comment修改该批注范围。不得调用generate_project_report_notes或补写其他模块；已完成批注不重复执行，没有批注时不补写。'
     return value
 
 
@@ -279,10 +279,13 @@ def notes(work, pid, connection_id, keys=None, report_id=None):
             'message': f'生成{count}份草稿，跳过{skipped}项已有注解或待审草稿。请在草稿中预览、编辑并保存。'}
 
 
-def generate(work, pid):
+def generate(work, pid, connection_id=None):
     from ai_chat_service import project_for
     from report_builder import build_report
+    import report_review
     project = project_for(work.user, pid)
+    try:previous=report_for(work.user,pid)
+    except FileNotFoundError:previous=None
     result = build_report(pid, progress=lambda done, total, label: work.progress(done, total, project['name']+'：'+label))
     work.check()
     project_for(work.user, pid)
@@ -290,7 +293,28 @@ def generate(work, pid):
         work.check()
         entry = reports.save_report(result['report'], result['markdown'], result['charts'])
     work.progress(1, 1, '完整报告已保存')
-    return {'report_id': entry['report_id'], 'project_name': project['name'], 'message': '完整报告已生成'}
+    rid=entry['report_id'];messages=['完整报告已生成。']
+    count=sum(c['status']!='done' for c in reports.read_edits(rid).get('review',{}).get('comments',[]))
+    if count:
+        project=project_for(work.user,pid)
+        if project.get('ai_report_notes_enabled') is not True:
+            messages.append(f'{count}条批注尚未处理，请开启AI批注处理。')
+        elif not connection_id:
+            messages.append(f'{count}条批注尚未处理，请选择自己的模型后再次生成或处理批注。')
+        else:
+            with reports._notes_lock:
+                current=report_for(work.user,pid,rid)
+                pending,missing=report_review.rebind_pending(current,previous)
+            for cid in pending:
+                work.check()
+                try:
+                    value=comment(work,pid,connection_id,cid,rid)
+                    messages.append(value['message'])
+                except (ValueError,FileNotFoundError) as exc:
+                    work.check()
+                    messages.append('批注未完成：'+str(exc))
+            if missing:messages.append(f'{missing}条旧批注无法对应当前模块，原文已保留，请在当前模块重新添加。')
+    return {'report_id': rid, 'project_name': project['name'], 'message': '\n'.join(messages)}
 
 
 def comment(work, pid, connection_id, comment_id, report_id=None):
@@ -317,8 +341,8 @@ def execute(run_id, user, job):
             work.check()
             try:
                 if job['action'] == 'generate':
-                    value = generate(work, pid)
-                    answers.append(value['project_name'] + '：完整报告已生成。')
+                    value = generate(work, pid, job.get('connection_id'))
+                    answers.append(value['project_name'] + '：'+value['message'])
                 elif job['action'] == 'notes':
                     value = notes(work, pid, job['connection_id'], job.get('keys'), job.get('report_id'))
                     answers.append(value['message'])

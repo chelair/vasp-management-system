@@ -187,6 +187,70 @@ class ReportBackgroundTests(unittest.TestCase):
         self.assertEqual(restored['id'],convo['id'])
         self.assertEqual(restored['prompt'],convo['prompt'])
 
+    def test_generation_executes_only_pending_comments_with_fresh_oxygen_results(self):
+        import report_vacancy_fixture as vacancy
+        state,module,_=self.case.vacancy_comment()
+        new_doc=copy.deepcopy(self.case.doc)
+        new_doc['science']['opt'][-6]['final_energy_ev']+=1
+        new_doc['markdown_sections'][0]['markdown']='生成时新增的说明。\n\n'+new_doc['markdown_sections'][0]['markdown']
+        target=next(n for n in report_review.tree(new_doc)[0].values() if n['title']==module['title'])['key']
+        self.assertNotEqual(target,module['key'])
+        action=vacancy.action(report_review.facts(self.case.doc,state['comments'][0]),target)
+        self.case.plan([action])
+        with patch('report_builder.build_report',return_value={'report':new_doc,'markdown':'new report','charts':{}}), patch.object(work,'notes',side_effect=AssertionError('不能补写无批注模块')):
+            result=self.start('generate')
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertEqual(self.wait(result.json()['data']['id'])['status'],'completed')
+            self.assertEqual(len(fixture.REQUESTS),1)
+            saved=self.case.state();comment=saved['comments'][0]
+            self.assertFalse(saved['stale']);self.assertEqual(comment['status'],'done')
+            self.assertEqual(comment['target'],target)
+            self.assertEqual(comment['source'],report_review.source(new_doc))
+            detail=self.client.get('/api/reports/project/rpt_p').json()['data']
+            card=next(iter(detail['structured']['review_elements'].values()))
+            self.assertEqual(card['results'][0]['value_ev'],vacancy.PAIRS[0][3]-1)
+            self.assertEqual(card['mu_O_ev'],-4.15)
+            self.assertEqual(card['target'],target)
+            self.assertIn('3 组结果',self.state()['conversation']['messages'][-1]['content'])
+            self.assertEqual(report_store.load_report('rpt_p')[0],new_doc)
+            again=self.start('generate');self.wait(again.json()['data']['id'])
+            self.assertEqual(len(fixture.REQUESTS),1,'已完成批注不重复调用模型')
+
+    def test_generation_rebinds_existing_stale_comment_and_reports_missing_module(self):
+        state,module=self.case.comment()
+        edits=report_store.read_edits('rpt_p');review=edits['review']
+        review['source']='old source';review['comments'][0]['source']='old source'
+        missing={**copy.deepcopy(review['comments'][0]),'id':'missing','target':'removed_module','text':'另一个已经删除的模块'}
+        review['comments'].append(missing)
+        report_store.save_review('rpt_p',review,state['revision'])
+        self.case.plan([{'kind':'text','target':module['key'],'text':'已执行仍对应本模块的旧批注。'}])
+        with patch('report_builder.build_report',return_value={'report':self.case.doc,'markdown':'new report','charts':{}}):
+            result=self.start('generate');self.wait(result.json()['data']['id'])
+        self.assertEqual(len(fixture.REQUESTS),1)
+        saved=self.case.state()
+        self.assertEqual(saved['comments'][0]['status'],'done')
+        self.assertEqual(saved['comments'][1],missing)
+        self.assertIn('1条旧批注无法对应当前模块',self.state()['conversation']['messages'][-1]['content'])
+
+    def test_generation_reports_pending_comments_when_model_missing_or_ai_disabled(self):
+        self.case.comment()
+        with patch('report_builder.build_report',return_value={'report':self.case.doc,'markdown':'new report','charts':{}}):
+            result=self.start('generate',connection_id=None);self.wait(result.json()['data']['id'])
+            self.assertIn('1条批注尚未处理，请选择自己的模型',self.state()['conversation']['messages'][-1]['content'])
+            self.case.change_project(ai_report_notes_enabled=False)
+            result=self.start('generate');self.wait(result.json()['data']['id'])
+            self.assertIn('1条批注尚未处理，请开启AI批注处理',self.state()['conversation']['messages'][-1]['content'])
+        self.assertEqual(fixture.REQUESTS,[])
+        self.assertEqual(self.case.state()['comments'][0]['status'],'open')
+
+    def test_generation_keeps_other_pending_comments_after_one_failure(self):
+        self.case.comment();self.case.comment(text='第二条批注')
+        with patch('report_builder.build_report',return_value={'report':self.case.doc,'markdown':'new report','charts':{}}), patch.object(work,'comment',side_effect=[ValueError('缺少参考'),{'message':'下一条批注已处理'}]) as process:
+            result=self.start('generate');self.wait(result.json()['data']['id'])
+        self.assertEqual(process.call_count,2)
+        answer=self.state()['conversation']['messages'][-1]['content']
+        self.assertIn('批注未完成：缺少参考',answer);self.assertIn('下一条批注已处理',answer)
+
     def test_batch_generates_only_visible_open_projects_and_rechecks_scope(self):
         built = []
         def build(pid, *, progress):

@@ -109,7 +109,7 @@ export function ReportReviewProvider({ reportId, contentRef, version, connection
       批注{review?.comments.some(c => c.target === anchor.key && c.status !== 'done') ? ' · 待处理' : ''}
     </Button>, anchor.el, anchor.key) : null)}
     <Drawer rootClassName="report-review-drawer" title="报告批注" open={opened} width={540} onClose={() => setOpened(false)}>
-      <p>批注只在系统内保留，不进入 HTML、Markdown 或 PDF。AI修改后的正文和原有交互会进入报告。</p>
+      <p>开启 AI 并选择模型后，生成报告会处理待办批注；也可单独点击“让AI处理”。批注本身不进入导出，修改结果和原有交互会进入报告。</p>
       {error && <Alert type="warning" showIcon message={error} action={<Button size="small" onClick={() => void load().catch(() => {})}>刷新</Button>} />}
       {review?.stale && <Alert type="info" message="报告已重新生成，旧批注保留供追溯；在当前模块添加新批注即可继续。" />}
       <Space direction="vertical" style={{ width: '100%' }}>

@@ -940,7 +940,7 @@ export default function Report() {
           <div className="report-actions">
             <label
               className="report-ai-toggle"
-              title="AI仅处理你提交的批注；生成报告不会自动撰写其他模块。关闭保留已有内容。"
+              title="开启并选择模型后，生成报告会处理待办批注，只修改批注对应部分。没有批注时不补写。关闭保留已有内容。"
             >
               <span>AI 批注处理</span>
               <Switch

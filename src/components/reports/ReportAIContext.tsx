@@ -51,7 +51,7 @@ export function ReportAIProvider({ reportId, enabled, notes, onSaved, connection
           <Select aria-label="报告模型连接" placeholder="选择自己的模型连接" style={{ minWidth: 220 }} value={connectionId || undefined}
             disabled={value.busy} onChange={onConnectionChange} options={connections.map(c => ({ value: c.id, label: `${c.name} · ${c.model}` }))} />
           <Button onClick={() => work?.open()}>草稿与状态（{Object.keys(drafts).length}）</Button>
-          <small>仅处理你提交的批注，不自动撰写其他部分。</small>
+          <small>生成报告会处理待办批注，只修改对应部分。</small>
         </Space>}
     </div> : null}>{children}</ControlsContext.Provider>
   </Context.Provider>;

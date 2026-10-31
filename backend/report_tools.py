@@ -24,7 +24,7 @@ CID = {'type': 'string', 'minLength': 1, 'maxLength': 64}
 TOOLS = [
     tool('get_full_project_report', '读取当前项目完整报告的正文、批注和注解位置；offset分页正文，不是独立专题。',
          {'report_id': RID, 'offset': {'type': 'integer', 'minimum': 0}}),
-    tool('generate_full_project_report', '仅用已有数据、图表和结构生成完整报告，不调用AI撰写其他模块；已有批注保留，旧版展示修改停止套用。不生成独立专题。', {}),
+    tool('generate_full_project_report', '用已有数据、图表和结构生成完整报告；开启AI且选好模型时执行待处理批注，只修改批注范围。已完成批注不重复执行，不补写其他模块。不生成独立专题。', {}),
     tool('generate_project_report_notes', '后台生成完整报告注解草稿，草稿保存于当前私有运行，用户预览保存后才进入报告；省略keys时仅生成缺失注解，跳过人工内容。问题在对话说明。',
          {'report_id': RID, 'keys': {'type': 'array', 'items': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'minItems': 1}}),
     tool('process_project_report_comment', '用当前模型按批注和用户回复修改当前项目完整报告，返回实际回复、完成或需要补充状态。已完成项不重复调用。',
@@ -56,7 +56,7 @@ def dispatch(project, conversation, user, name, arguments, run_id):
         control.check()
         pid = project['project_id']
         if name == 'generate_full_project_report':
-            return work.generate(control, pid)
+            return work.generate(control, pid, conversation.get('connection_id'))
         doc = work.report_for(user, pid, arguments.get('report_id'))
         rid = doc['metadata']['report_id']
         state = report_review.view(doc)

@@ -68,8 +68,10 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await page.locator('.report-content h5').filter({hasText:'结构优化'}).getByRole('button',{name:'批注',exact:true}).click();
   await page.getByLabel('新的报告批注').fill('计算氧空位形成能，氧气分子能量采用 −8.3 eV。');
   await page.getByRole('button',{name:'保存批注',exact:true}).click();
-  await page.locator('.report-review-comment').last().getByRole('button',{name:'让AI处理',exact:true}).click();
-  await page.locator('.report-work-drawer').getByText('已在指定模块添加计算卡片，包含 3 组结果、公式及能量来源。',{exact:true}).waitFor();
+  await page.locator('.report-review-comment').last().getByText('待处理',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Close',exact:true}).last().click();
+  await page.getByRole('button',{name:/生成报告$/}).click();
+  await page.locator('.report-work-drawer').getByText(/ReportFixture：完整报告已生成。.*已在指定模块添加计算卡片，包含 3 组结果、公式及能量来源。/).waitFor();
   await page.locator('.report-work-drawer').getByRole('button',{name:'Close',exact:true}).click();
   const card=page.locator('.report-review-element').filter({hasText:'氧空位形成能'});
   await card.waitFor();

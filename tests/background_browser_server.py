@@ -21,8 +21,8 @@ def result(value):
     if '等待取消' in text:
         time.sleep(2)
     elif '后台验证' in text:
-        time.sleep(1.5)
-    if '补充参考' in text:
+        time.sleep(3)
+    if '补充参考' in text and not any(r['author']!='AI' for r in value['comment']['replies']):
         return {'reply': '请在对话中补充氧气参考能量。', 'status': 'blocked', 'actions': []}
     return {'reply': '后台已完成。<script>window.REVIEW_XSS=1</script>', 'status': 'done',
             'actions': [{'kind': 'text', 'target': target['key'], 'text': '后台完成的报告解释。'}]}

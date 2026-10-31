@@ -173,6 +173,7 @@ class WorkControl:
         self.run_id, self.user = run_id, user
         self.started = time.monotonic()
         self.current = None
+        self.report_id = self.comment_id = None
         with chat.database() as db:
             run = chat.owned(db, 'runs', run_id, str(user['user_id']))
         self.project_ids = json.loads(run['snapshot']).get('report_job', {}).get('project_ids', [])
@@ -188,15 +189,22 @@ class WorkControl:
         for pid in self.project_ids:
             project_for(self.user, pid)
 
-    def progress(self, done, total, label):
+    def activity(self, label, state='running', *, progress=None):
         self.check()
         self.authorize()
         with chat.database() as db:
             db.execute('BEGIN IMMEDIATE')
             run = chat.owned(db, 'runs', self.run_id, str(self.user['user_id']))
             snapshot = json.loads(run['snapshot'])
-            snapshot['report_progress'] = {'done': done, 'total': total, 'label': label}
+            if progress is not None:snapshot['report_progress'] = progress
+            entry={'label':label,'at':now_iso(),'state':state,'report_id':self.report_id,'comment_id':self.comment_id}
+            entries=snapshot.setdefault('report_activity',[])
+            if not entries or any(entries[-1].get(k)!=entry[k] for k in ('label','state','report_id','comment_id')):entries.append(entry)
+            snapshot['report_activity']=entries[-100:]
             db.execute('UPDATE runs SET snapshot=? WHERE id=?', (json.dumps(snapshot, ensure_ascii=False), self.run_id))
+
+    def progress(self, done, total, label, state='running'):
+        self.activity(label,state,progress={'done':done,'total':total,'label':label})
 
     def model(self):
         from ai_chat_service import TextGenerationControl
@@ -205,6 +213,8 @@ class WorkControl:
             def check(self):
                 super().check()
                 parent.check()
+            def activity(self,label):
+                parent.activity(label)
         self.current = Control()
         return self.current
 
@@ -283,6 +293,7 @@ def generate(work, pid, connection_id=None):
     from ai_chat_service import project_for
     from report_builder import build_report
     import report_review
+    work.report_id,work.comment_id='rpt_'+pid,None
     project = project_for(work.user, pid)
     try:previous=report_for(work.user,pid)
     except FileNotFoundError:previous=None
@@ -321,10 +332,11 @@ def comment(work, pid, connection_id, comment_id, report_id=None):
     import report_review
     doc = report_for(work.user, pid, report_id)
     rid = doc['metadata']['report_id']
+    work.report_id,work.comment_id=rid,comment_id
     work.progress(0, 1, 'AI正在处理批注')
     result = report_review.process(rid, work.user, comment_id, report_review.view(doc)['revision'], connection_id, work.model())
     item = next(c for c in result['comments'] if c['id'] == comment_id)
-    work.progress(1, 1, '需要你补充' if item['status'] == 'blocked' else '批注处理结束')
+    work.progress(1, 1, '需要你补充' if item['status'] == 'blocked' else '已将修改写入报告',state='blocked' if item['status']=='blocked' else 'completed')
     return {'report_id': rid, 'comment_id': comment_id, 'status': item['status'],
             'message': item['replies'][-1]['text'] if item['replies'] else '这条批注已完成，无需重复处理。'}
 
@@ -352,9 +364,11 @@ def execute(run_id, user, job):
                     answers.append(value['message'])
             except (ValueError, FileNotFoundError) as exc:
                 work.check()
+                work.activity('本次处理未完成：'+str(exc),'failed')
                 answers.append('需要处理的问题：' + str(exc))
             chat.update_answer(run_id, '\n\n'.join(answers))
-        work.progress(len(job['project_ids']), len(job['project_ids']), '本轮处理结束，可在下方继续对话')
+        work.report_id=work.comment_id=None
+        work.progress(len(job['project_ids']), len(job['project_ids']), '本轮处理结束，可继续补充要求',state='completed')
         chat.update_answer(run_id, '\n\n'.join(answers), status='completed')
     except Exception as exc:
         error = str(exc) if isinstance(exc, (ValueError, permissions.PermissionDenied, FileNotFoundError)) else '后台处理失败，请核对模型连接或稍后重试'

@@ -1,8 +1,60 @@
 .report-review-anchor{display:inline-flex;margin-inline-start:10px;vertical-align:middle;font-weight:normal;font-size:13px}
-.report-review-comment{border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-top:18px}
-.report-review-user{white-space:pre-wrap;overflow-wrap:anywhere}
-.report-review-reply{padding:10px 12px;background:#f4f7fb;border-radius:8px;margin:10px 0;overflow-wrap:anywhere}
-.report-review-reply small{color:#667085}
-.report-review-comment textarea{margin-top:12px}
-@media(max-width:600px){.report-review-drawer .ant-drawer-content-wrapper{width:100%!important}}
-@media print{.report-review-anchor,.report-review-comment{display:none!important}}
+.report-review-drawer .ant-drawer-body{background:var(--bg-secondary,#f6f8fb);padding:24px;line-height:1.65}
+.report-review-intro{margin-bottom:20px;color:var(--text-primary,#25344b)}
+.report-review-intro>strong{font-size:15px;font-weight:600}
+.report-review-intro p{font-size:12px;color:var(--text-secondary,#64748b);margin:5px 0 0}
+.report-review-settings{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin:16px 0}
+.report-review-settings label{min-width:0}
+.report-review-settings label>span:first-child{display:block;font-size:12px;font-weight:500;color:var(--text-secondary,#64748b);margin-bottom:6px}
+.report-review-compose{background:var(--bg-primary,#fff);border:1px solid var(--border-color,#e1e7ef);border-radius:14px;padding:16px}
+.report-review-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;margin-bottom:10px}
+.report-review-section-head>span{font-size:12px;color:var(--text-secondary,#64748b);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.report-review-compose textarea.ant-input{border:0;box-shadow:none;padding:0;resize:none;background:transparent;font-size:14px;line-height:1.8}
+.report-review-compose:focus-within{border-color:#91add7;box-shadow:0 0 0 2px #5b80bf0a}
+.report-review-compose-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border-color,#eef1f5)}
+.report-review-compose-footer small{font-size:11px;color:var(--text-secondary,#64748b)}
+.report-review-list-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:22px 0 12px}
+.report-review-filters{display:flex;gap:4px;flex-wrap:wrap}
+.report-review-filters button{border:0;border-radius:7px;padding:6px 9px;background:transparent;color:var(--text-secondary,#64748b);font:inherit;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px}
+.report-review-filters button[aria-pressed=true]{background:var(--bg-primary,#fff);color:var(--text-primary,#25344b);box-shadow:0 1px 4px #1b34530b}
+.report-review-filters button>span{font-size:10px;opacity:.8}
+.report-review-comment{background:var(--bg-primary,#fff);border:1px solid var(--border-color,#e1e7ef);border-radius:14px;padding:18px;margin-bottom:14px;overflow-wrap:anywhere}
+.report-review-comment.is-processing{border-color:#a7bcdf;box-shadow:0 0 0 2px #5b80bf08}
+.report-review-comment-head{display:flex;align-items:center;gap:8px;margin-bottom:11px}
+.report-review-comment-head>strong{font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.report-review-comment-head .ant-tag{font-size:10px;line-height:18px;margin:0;border-radius:5px;flex-shrink:0}
+.report-review-comment-head>time{font-size:10px;color:var(--text-secondary,#64748b);margin-left:auto;white-space:nowrap}
+.report-review-user{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.8;margin:0 0 13px;color:var(--text-primary,#25344b)}
+.report-review-reply{padding:12px 0 0;margin-top:12px;border-top:1px solid var(--border-color,#eef1f5);font-size:13px;overflow-wrap:anywhere;line-height:1.75}
+.report-review-reply.is-ai{border-left:2px solid #ccd9ec;padding:3px 0 3px 12px;border-top:0}
+.report-review-reply p{margin:5px 0 0}
+.report-review-reply-meta{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text-secondary,#64748b)}
+.report-review-reply-meta strong{font-weight:600}
+.report-review-reply-meta time{margin-left:auto}
+.report-review-history{margin:12px 0;color:var(--text-secondary,#64748b)}
+.report-review-history summary{font-size:11px;cursor:pointer}
+.report-review-history .report-review-reply{margin:9px 0}
+.report-review-comment-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:15px}
+.report-review-comment-actions>.ant-btn:last-child{margin-left:auto}
+.report-review-comment-actions .ant-btn-dangerous:not(:disabled){color:#b42318;border-color:#f3c7c2;background:#fff7f6}
+.report-review-reply-composer{display:flex;align-items:flex-end;gap:8px;border-top:1px solid var(--border-color,#eef1f5);padding-top:12px;margin-top:13px}
+.report-review-reply-composer textarea.ant-input{border:0;box-shadow:none;padding:5px 0;background:transparent;resize:none;font-size:12px;line-height:1.7;flex:1}
+.report-review-reply-composer>.ant-btn{flex-shrink:0}
+.report-review-empty{text-align:center;padding:30px 10px;color:var(--text-secondary,#64748b);font-size:13px}
+.report-review-highlight{outline:2px solid #9bb4dc;outline-offset:8px;border-radius:4px}
+.report-assistant-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;background:var(--bg-secondary,#f7f9fc);border:1px solid var(--border-color,#e7ecf3);border-radius:12px;padding:14px 16px;margin:16px 0 20px;flex-wrap:wrap}
+.report-assistant-toolbar-title strong{display:block;font-size:13px;color:var(--text-primary,#25344b)}
+.report-assistant-toolbar-title small{font-size:11px;color:var(--text-secondary,#64748b)}
+.report-assistant-toolbar-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.report-assistant-toolbar .report-ai-toggle{margin-right:4px;font-size:12px}
+@media(max-width:600px){
+ .report-review-drawer .ant-drawer-content-wrapper{width:100%!important}
+ .report-review-drawer .ant-drawer-body{padding:18px 14px}
+ .report-review-settings{grid-template-columns:1fr;gap:10px}
+ .report-review-comment{padding:15px}
+ .report-review-compose-footer small{max-width:58%;line-height:1.6}
+ .report-review-comment-head>time{font-size:9px}
+ .report-assistant-toolbar{padding:13px;gap:12px}
+ .report-assistant-toolbar-actions{width:100%;gap:8px}
+}
+@media print{.report-review-anchor,.report-review-comment,.report-assistant-toolbar{display:none!important}}

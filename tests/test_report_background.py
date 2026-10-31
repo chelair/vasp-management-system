@@ -141,6 +141,33 @@ class ReportBackgroundTests(unittest.TestCase):
         self.assertEqual(fixture.REQUESTS,[])
         self.assertIn('完整报告已生成',self.state()['conversation']['messages'][-1]['content'])
 
+    def test_comment_activity_is_live_scoped_and_persistent_without_raw_reasoning(self):
+        state,module=self.case.comment()
+        cid=state['comments'][-1]['id']
+        self.case.plan([{'kind':'text','target':module['key'],'text':'处理记录验证完成。'}])
+        self.case.mode('slow')
+        response=self.start('comment',comment_id=cid)
+        self.assertEqual(response.status_code,200,response.text)
+        run=response.json()['data'];self.assertTrue(fixture.SEEN.wait(2))
+        live=self.client.get('/api/ai/chat/runs/'+run['id']).json()['data']
+        self.assertEqual(live['report_job'],{'action':'comment','report_id':'rpt_p','comment_id':cid})
+        self.assertIn('已读取批注与补充说明',[e['label'] for e in live['report_activity']])
+        self.assertTrue(all(e['comment_id']==cid for e in live['report_activity']))
+        self.assertNotIn('正在保存报告修改与处理结果',[e['label'] for e in live['report_activity']])
+        fixture.RELEASE.set();finished=self.wait(run['id'])
+        entries=[e for e in finished['report_activity'] if e['comment_id']==cid]
+        self.assertEqual(entries[-1]['state'],'completed')
+        self.assertIn('正在接收修改方案',[e['label'] for e in entries])
+        self.assertEqual(self.state()['conversation']['runs'][0]['report_activity'],finished['report_activity'])
+        self.assertNotIn('PRIVATE_REASONING',json.dumps(finished))
+
+    def test_comment_failure_retains_a_scoped_activity_and_original_request(self):
+        state,_=self.case.comment();cid=state['comments'][-1]['id'];self.case.mode('error')
+        response=self.start('comment',comment_id=cid);run=self.wait(response.json()['data']['id'])
+        self.assertTrue(any(e['comment_id']==cid and e['state']=='failed' for e in run['report_activity']))
+        self.assertEqual(self.case.state()['comments'][-1]['status'],'open')
+        self.assertNotIn(fixture.KEY,json.dumps(run))
+
     def test_project_connection_owner_and_revocation_enforced(self):
         denied=self.client.get('/api/reports/assistant/p',headers={'x-test-user':'bob'})
         self.assertEqual(denied.status_code,403)

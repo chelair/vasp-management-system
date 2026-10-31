@@ -43,7 +43,7 @@ import ReportCompositionEditor from '../components/reports/ReportCompositionEdit
 import ScientificPropertiesPanel from '../components/reports/ScientificPropertiesPanel';
 import ImageLightbox from '../components/reports/ImageLightbox';
 import ReportNotePanel from '../components/reports/ReportNotePanel';
-import { ReportAIProvider, ReportAIControls } from '../components/reports/ReportAIContext';
+import { ReportAIProvider } from '../components/reports/ReportAIContext';
 import { ReportReviewProvider, ReportReviewControls } from '../components/reports/ReportReview';
 import { ReportGenerateButton, ReportWorkControls, ReportWorkProvider } from '../components/reports/ReportWorkContext';
 import { applyHiddenBlocks, collectHiddenBlocks, hiddenKeyLabel } from '../utils/reportHidden';
@@ -928,6 +928,7 @@ export default function Report() {
       connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}>
     <ReportReviewProvider
       reportId={detail?.meta.report_id ?? ''} contentRef={contentRef} version={renderedSections}
+      enabled={aiNotesEnabled}
       connectionId={reportAIConnection} onConnectionChange={setReportAIConnection}>
     <PageTransition>
       {propertiesOpen && selectedProject && <ScientificPropertiesPanel key={selectedProject} projectRef={selectedProject} projects={projects} onClose={() => setPropertiesOpen(false)}/>}
@@ -935,23 +936,9 @@ export default function Report() {
         projectName={projects.find(p => p.id === selectedProject)?.name || selectedProject} legacyHidden={detail?.meta.project_id === selectedProject ? hidden : []} onClose={() => setCompositionOpen(false)}/>}
       <PageHeader
         title="智能报告"
-        subtitle="以项目为单位生成结构化报告：结构化数据（可喂大模型）+ Markdown + 图表，支持按章节导出 HTML / PDF"
+        subtitle="按项目整理计算结果，在报告中批注并由 AI 局部修改。"
         extra={
           <div className="report-actions">
-            <label
-              className="report-ai-toggle"
-              title="开启并选择模型后，生成报告会处理待办批注，只修改批注对应部分。没有批注时不补写。关闭保留已有内容。"
-            >
-              <span>AI 批注处理</span>
-              <Switch
-                size="small"
-                checked={aiNotesEnabled}
-                loading={aiNotesSaving}
-                disabled={!selectedProject}
-                onChange={(checked) => void toggleAINotes(checked)}
-                aria-label="AI 批注处理"
-              />
-            </label>
             <Button disabled={!selectedProject} onClick={() => setPropertiesOpen(true)}>科学性质</Button>
             <Button disabled={!selectedProject} onClick={() => setCompositionOpen(true)}>专题报告</Button>
             <Select
@@ -1006,7 +993,7 @@ export default function Report() {
             />
             <ReportGenerateButton projectId={selectedProject} />
             <ReportGenerateButton all />
-            <ReportWorkControls />
+            {!detail && <ReportWorkControls />}
           </div>
         }
       />
@@ -1190,8 +1177,15 @@ export default function Report() {
                 </div>
               </div>
 
-              <ReportAIControls />
-              <ReportReviewControls />
+              <div className="report-assistant-toolbar">
+                <div className="report-assistant-toolbar-title"><strong>批注与 AI 协作</strong><small>提出要求、查看进展、继续修改</small></div>
+                <div className="report-assistant-toolbar-actions">
+                  <label className="report-ai-toggle" title="开启并选择模型后，AI 只处理你的批注。关闭保留已有结果。">
+                    <span>AI 批注处理</span><Switch size="small" checked={aiNotesEnabled} loading={aiNotesSaving} disabled={!selectedProject} onChange={checked => void toggleAINotes(checked)} aria-label="AI 批注处理" />
+                  </label>
+                  <ReportReviewControls /><ReportWorkControls />
+                </div>
+              </div>
               <div className="report-body">
                   <nav className="report-toc">
                     {renderedSections.map((s) => (

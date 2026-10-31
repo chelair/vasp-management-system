@@ -311,7 +311,7 @@ def update(report_id,user,payload):
     return view(doc)
 
 
-def apply_actions(doc,review,comment,actions):
+def apply_actions(doc,review,comment,actions,notify=None):
     from topic_reports import validate_text
     from report_review_elements import calculate, SUPPORTED, FORMULAS, MissingCalculation, presentation
     from properties import RECIPES
@@ -334,6 +334,10 @@ def apply_actions(doc,review,comment,actions):
     for index,action in enumerate(actions):
         if not isinstance(action,dict) or action.get('target') not in scope:raise ValueError('AI修改超出批注所在模块')
         kind=action.get('kind');target=action['target'];node=nodes[target]
+        if notify:
+            label={'calculate':'正在按已有能量计算结果','sources':'正在整理数据来源','formula':'正在添加计算公式',
+                   'structures':'正在调整结构展示顺序','order':'正在调整模块顺序','layout':'正在调整卡片排版'}.get(kind,'正在整理本模块的修改')
+            notify(label)
         change=content.setdefault(target,{})
         eid='card_'+ai.digest([comment['id'],target,kind,index])[:20]
         element=None
@@ -430,6 +434,7 @@ def process(report_id,user,comment_id,revision,connection_id,control):
         if not comment:raise ValueError('批注不存在')
         if comment.get('source')!=source(doc):raise ValueError('这条批注属于旧版报告，请在当前模块重新添加')
         if comment['status']=='done':return state
+        control.activity('已读取批注与补充说明')
         display=copy.deepcopy(doc);nodes,_=tree(display)
         apply_structure_selection(display,nodes,(edits.get('review') or {}).get('content',{}))
         allowed={comment['target']}
@@ -449,7 +454,10 @@ def process(report_id,user,comment_id,revision,connection_id,control):
         context['oxygen_references']=[{'fact_id':fid,'value_ev':f['value'],'reference_kind':f['reference_kind']}
                                       for fid,f in refs if f['source']['statement']==refs[-1][1]['source']['statement']]
         if len(json.dumps(context,ensure_ascii=False))>100000:raise ValueError('本报告内容过多，请缩小到具体模块处理')
+        control.activity(f'已整理 {len(context["facts"])} 项报告数据，保留原图表与结构')
+        control.activity('正在根据批注拟定局部修改')
         result,model=ai.service.readonly_json_completion(owner,connection_id,[{'role':'system','content':PROMPT},{'role':'user','content':json.dumps(context,ensure_ascii=False)}],control)
+        control.activity('已收到修改方案，正在核对范围与数据引用')
         if not isinstance(result,dict) or set(result)!={'reply','status','actions'} or result['status'] not in ('done','blocked') or not isinstance(result['reply'],str) or not result['reply'].strip() or len(result['reply'])>400:raise ValueError('AI批注处理结果格式无效')
         if not isinstance(result['actions'],list) or len(result['actions'])>20:raise ValueError('一次最多处理20项报告修改')
         if result['status']=='done' and not result['actions']:raise ValueError('AI没有返回实际修改，批注仍待处理')
@@ -459,7 +467,7 @@ def process(report_id,user,comment_id,revision,connection_id,control):
             if source(current)!=source(doc) or store.note_revision(current_edits)!=revision:raise ReviewConflict('生成期间报告已变化，修改未写入，请刷新后重试')
             if project.get('ai_report_notes_enabled') is not True:raise ValueError('AI批注处理已关闭，修改未写入')
             review=copy.deepcopy(edits['review'])
-            outcome=apply_actions(current,review,comment,result['actions'])
+            outcome=apply_actions(current,review,comment,result['actions'],control.activity)
             if outcome['gaps']:
                 result['status']='blocked';result['reply']=outcome['gaps'][0]
                 if outcome['applied']:result['reply']='已保留能完成的修改。'+result['reply']
@@ -474,6 +482,7 @@ def process(report_id,user,comment_id,revision,connection_id,control):
             before=effective(current,current_edits)
             after=effective(current,{**current_edits,'review':review})
             hidden=store._remap_hidden_figures(before,after,current_edits['hidden_elements'])
+            control.activity('正在保存报告修改与处理结果')
             control.check();store.save_review(report_id,review,revision,hidden_elements=hidden)
             return view(current)
     finally:

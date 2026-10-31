@@ -516,6 +516,10 @@ class TextGenerationControl:
         if self.stopped.is_set():
             raise ValueError("生成已取消或超过 120 秒；原注解未改动")
 
+    def activity(self, label):
+        """Optional report execution summary; never forwards model reasoning."""
+        pass
+
 
 def readonly_json_completion(owner: str, connection_id: str, messages: list,
                              control: TextGenerationControl | None = None, *, max_output_tokens: int | None = None) -> tuple[dict, str]:
@@ -535,8 +539,10 @@ def readonly_json_completion(owner: str, connection_id: str, messages: list,
     timer.daemon = True
     timer.start()
     parts, size, complete = [], 0, False
+    saw_analysis = saw_content = False
     try:
         with _open(connection, key, "/chat/completions", payload) as response:
+            control.activity('已连接模型，正在处理本条要求')
             with control.lock:
                 control.response = response
             while True:
@@ -559,9 +565,15 @@ def readonly_json_completion(owner: str, connection_id: str, messages: list,
                     raise ValueError("模型生成失败；请检查连接或额度后重试")
                 for choice in obj.get("choices", []):
                     delta = choice.get("delta") or {}
+                    if delta.get('reasoning_content') and not saw_analysis:
+                        control.activity('正在分析批注要求与报告数据')
+                        saw_analysis = True
                     if delta.get("tool_calls") or delta.get("function_call"):
                         raise ValueError("报告写作不允许模型调用工具")
                     text = delta.get("content") or ""
+                    if text and not saw_content:
+                        control.activity('正在接收修改方案')
+                        saw_content = True
                     if not isinstance(text, str):
                         raise ValueError("模型返回的文本格式不正确")
                     size += len(text)

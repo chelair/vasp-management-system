@@ -33,6 +33,8 @@ export interface AIRun {
   /** 可选展示：模型思考链路（服务商返回时才有，后端截断到 6 万字符） */
   reasoning?: string;
   report_progress?: { done: number; total: number; label: string };
+  report_job?: { action: string; report_id?: string; comment_id?: string };
+  report_activity?: { label: string; at: string; state: string; report_id?: string; comment_id?: string }[];
 }
 export interface AIConversation {
   id: string; task_id: string | null; title: string; connection_id: string | null;

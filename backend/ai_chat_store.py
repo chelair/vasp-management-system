@@ -236,6 +236,10 @@ def public_run(row, *, snapshot: bool = False) -> dict:
     saved = json.loads(row['snapshot'])
     if 'report_progress' in saved:
         out['report_progress'] = saved['report_progress']
+    if 'report_activity' in saved:
+        out['report_activity'] = saved['report_activity']
+    if 'report_job' in saved:
+        out['report_job'] = {k:v for k,v in saved['report_job'].items() if k in ('action','report_id','comment_id')}
     if snapshot:
         out["snapshot"] = json.loads(row["snapshot"])
     return out

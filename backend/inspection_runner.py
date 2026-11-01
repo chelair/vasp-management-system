@@ -494,7 +494,7 @@ def _apply_result(
     if not (task.get("job_id") or result.get("job_id")) and db_status != "completed":
         notes_markers.append("未见有效完成日志")
 
-    # 运行期按 25 步节流，目录变化立即同步；完成后必须补同步最终结构。
+    # 运行期按 25 步节流；同目录重新计算可能使步数回退，不能沿用旧的高步数挡住同步。
     task_type = str(task.get("task_type") or "")
     steps = _ionic_steps(result, task_type)
     bucket = _analysis_bucket(steps)
@@ -503,28 +503,29 @@ def _apply_result(
     prev_dir = str(task.get("last_analysis_dir") or "")
     dir_changed = (latest_dir or "") != prev_dir
     effective_prev_bucket = -1 if dir_changed else prev_bucket
-    # 成功标记与输出目录 / 作业 / 步数绑定：历史已完成任务补同步一次；
-    # 失败不写标记，下轮即使状态已经是 completed 也会重试。
+    # 成功标记与输出目录 / 作业 / 步数绑定；结束态补同步，失败下轮重试。
     completion = {
         "dir": latest_dir or "",
         "job_id": str(result.get("job_id") or task.get("job_id") or ""),
         "steps": steps,
     }
-    final_sync_needed = db_status == "completed" and (
-        old_status != "completed" or task.get("last_structure_completion") != completion
+    ended = db_status in ("completed", "unconverged", "zombied")
+    final_sync_needed = ended and (db_status == "completed" or steps > 0) and (
+        old_status != db_status or task.get("last_structure_completion") != completion
     )
     should_analyze = task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and (
-        final_sync_needed or dir_changed or (bucket >= 1 and bucket > effective_prev_bucket)
+        final_sync_needed or dir_changed or (steps > 0 and bucket < effective_prev_bucket)
+        or (bucket >= 1 and bucket > effective_prev_bucket)
     )
 
     markers: List[str] = []
     structure_synced = False
     extra_fields: Dict[str, Any] = {}
-    if task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and db_status != "completed":
+    if task_type in (STRUCTURE_OPT_TYPE, NEB_TYPE) and not ended:
         if task.get("last_structure_completion") is not None:
             extra_fields["last_structure_completion"] = None
     if should_analyze:
-        if db_status == "completed":
+        if ended:
             # 任务可能被重新打开后再次结束，旧成功标记不能掩盖这次同步失败。
             extra_fields["last_structure_completion"] = None
         used_dirs: Dict[str, str] = {}
@@ -542,7 +543,7 @@ def _apply_result(
         if structure_synced:
             extra_fields["last_analysis_bucket"] = bucket
             extra_fields["last_analysis_dir"] = latest_dir or ""
-            if db_status == "completed":
+            if ended:
                 extra_fields["last_structure_completion"] = completion
         if used_dirs and structure_synced:
             # 结构文件实际来源目录（"" = 任务主目录）；供「查看原子受力」对齐

@@ -107,6 +107,44 @@ class FinalStructureSyncTests(unittest.TestCase):
             self.result["job_id"] = "124"
             self.assertTrue(self.apply()["structure_synced"])
 
+    def test_ended_unconverged_or_interrupted_output_syncs_once_below_old_bucket(self):
+        for kind in ('opt', 'neb'):
+            for state in ('unconverged', 'zombied'):
+                with self.subTest(kind=kind, state=state):
+                    self.setUp()
+                    self.task.update(task_type=kind, status=state, last_analysis_bucket=5)
+                    self.result.update(status=state, neb_band_steps=100, force_history=[{}]*100)
+                    helper = '_sync_neb_image_structures' if kind == 'neb' else '_sync_and_convert_structure'
+                    with patch.object(runner, helper, return_value=([], True)) as sync:
+                        self.assertTrue(self.apply()['structure_synced'])
+                        self.assertEqual(self.task['status'], state)
+                        self.assertEqual(self.task['last_structure_completion']['steps'], 100)
+                        self.assertFalse(self.apply()['structure_synced'])
+                        sync.assert_called_once()
+
+    def test_unconverged_final_sync_retries_without_changing_status(self):
+        self.task.update(status='unconverged', last_analysis_bucket=4)
+        self.result.update(status='unconverged', neb_band_steps=100)
+        with patch.object(runner, '_sync_neb_image_structures', side_effect=[([], False), ([], True)]) as sync:
+            self.assertFalse(self.apply()['structure_synced'])
+            self.assertIsNone(self.task.get('last_structure_completion'))
+            self.assertTrue(self.apply()['structure_synced'])
+            self.assertFalse(self.apply()['structure_synced'])
+            self.assertEqual(self.task['status'], 'unconverged')
+            self.assertEqual(sync.call_count, 2)
+
+    def test_running_in_same_directory_after_step_reset_resumes_sync_and_throttle(self):
+        self.task['last_analysis_bucket'] = 5
+        self.result.update(status='running', neb_band_steps=15)
+        with patch.object(runner, '_sync_neb_image_structures', return_value=([], True)) as sync:
+            self.assertTrue(self.apply()['structure_synced'])
+            self.assertEqual(self.task['last_analysis_bucket'], 0)
+            self.result['neb_band_steps'] = 24
+            self.assertFalse(self.apply()['structure_synced'])
+            self.result['neb_band_steps'] = 25
+            self.assertTrue(self.apply()['structure_synced'])
+            self.assertEqual(sync.call_count, 2)
+
     def test_other_task_types_do_not_sync_structures(self):
         for kind in ("frac", "ele"):
             self.task["task_type"] = kind

@@ -133,6 +133,7 @@ export default function Jobs() {
   /** 同上，供异步回调读取最新值（避免闭包里拿到旧状态） */
   const inputStatesRef = useRef(inputStates);
   inputStatesRef.current = inputStates;
+  const inputLoads = useRef(new Set<string>());
   const [inputSyncing, setInputSyncing] = useState<string | null>(null);
   const [clusterSnapshot, setClusterSnapshot] = useState<ClusterSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
@@ -254,13 +255,15 @@ export default function Jobs() {
   const refreshProjects = useCallback(async () => {
     const ps = await fetchProjects();
     setProjects(ps);
-    const ws: Record<string, JobWorkspace> = {};
-    for (const p of ps) {
-      for (const t of p.tasks) {
-        ws[t.task_id] = makeWorkspace(t);
+    setWorkspaces((prev) => {
+      const ws: Record<string, JobWorkspace> = {};
+      for (const p of ps) {
+        for (const t of p.tasks) {
+          ws[t.task_id] = prev[t.task_id] ?? makeWorkspace(t);
+        }
       }
-    }
-    setWorkspaces(ws);
+      return ws;
+    });
     await scanAllLocalDirs(ps);
     return ps;
   }, [scanAllLocalDirs]);
@@ -442,14 +445,6 @@ export default function Jobs() {
             ? await readLocalFile(taskId, 'CONTCAR')
             : null;
         const kpointsText = names.has('KPOINTS') ? await readLocalFile(taskId, 'KPOINTS') : null;
-        // INCAR：只在**没有远端快照**时才用本地镜像兜底。有快照时编辑器以
-        // 「本次计算值 + 待生效草稿」为准（applyInputState 已回填），本地
-        // files/INCAR 是同步时的旧值，覆盖回来会让人以为"刚改的草稿没了"。
-        const incarText =
-          names.has('INCAR') && !inputStatesRef.current[taskId]?.files?.INCAR?.params
-            ? await readLocalFile(taskId, 'INCAR')
-            : null;
-        const parsedIncar = incarText ? parseIncarContent(incarText) : null;
         setWorkspaces((prev) => {
           // 用函数式更新取最新 workspace：异步返回时可能已被 applyInputState 回填过
           const base = prev[taskId] ?? makeWorkspace(task);
@@ -459,10 +454,6 @@ export default function Jobs() {
             next.poscarPath = `${task.local_dir}/files/POSCAR`;
           }
           if (kpointsText != null) next.kpointsContent = kpointsText;
-          if (parsedIncar) {
-            next.incarParams = { ...base.incarParams, ...parsedIncar };
-            next.precision = 'custom';
-          }
           return { ...prev, [taskId]: next };
         });
       })();
@@ -478,10 +469,12 @@ export default function Jobs() {
   };
 
   /** 更新本地文件清单 + 文件就绪标志 */
-  /** 用输入文件状态（远端快照）回填编辑器：参数 = 默认值 + 本次计算实际参数 */
+  /** INCAR统一从输入状态读取：计算快照优先，本地文本兜底，再覆盖已保存草稿。 */
   const applyInputState = useCallback((task: Task, state: TaskInputState) => {
+    inputStatesRef.current = { ...inputStatesRef.current, [task.task_id]: state };
     setInputStates((prev) => ({ ...prev, [task.task_id]: state }));
-    const snapshotParams = state.files?.INCAR?.params ?? null;
+    const incar = state.files?.INCAR;
+    const snapshotParams = incar?.params ?? (incar?.text != null ? parseIncarContent(incar.text) : null);
     const draftParams = state.draft?.INCAR ?? null;
     const kpointsText = state.files?.KPOINTS?.text ?? null;
     const poscarText = state.files?.POSCAR?.text ?? null;
@@ -512,16 +505,22 @@ export default function Jobs() {
   /** 拉取输入文件状态（首次选中任务时；不主动 SSH，只读本地已同步的快照） */
   const loadInputState = useCallback(
     async (task: Task, force = false) => {
-      if (!force && inputStates[task.task_id]) return inputStates[task.task_id];
+      if (!force && inputStatesRef.current[task.task_id]) return inputStatesRef.current[task.task_id];
+      if (!force && inputLoads.current.has(task.task_id)) return null;
+      inputLoads.current.add(task.task_id);
       try {
         const state = await fetchTaskInput(task.task_id);
+        // 首次读取尚未返回时，用户可能已同步或保存草稿；不能再用旧响应覆盖。
+        if (!force && inputStatesRef.current[task.task_id]) return inputStatesRef.current[task.task_id];
         applyInputState(task, state);
         return state;
       } catch {
         return null;
+      } finally {
+        inputLoads.current.delete(task.task_id);
       }
     },
-    [applyInputState, inputStates],
+    [applyInputState],
   );
 
   /** Creation changes remote inputs and the local snapshot; bypass the editor cache. */
@@ -580,7 +579,7 @@ export default function Jobs() {
     patchWorkspace(task.task_id, {
       incarParams: incarFormParams(
         task.task_type as TaskType,
-        state?.files?.INCAR?.params ?? null,
+        state?.files?.INCAR?.params ?? (state?.files?.INCAR?.text != null ? parseIncarContent(state.files.INCAR.text) : null),
         state?.draft?.INCAR ?? null,
       ),
     });
@@ -1622,7 +1621,7 @@ export default function Jobs() {
         open={!!continuationTask}
         task={continuationTask}
         onCancel={() => setContinuationTask(null)}
-        onSameTypeCreated={(r) => void handleSameTypeCreated(r)}
+        onSameTypeCreated={(r, parentTaskId) => void handleSameTypeCreated(r, parentTaskId)}
       />
 
       <EleInputModal

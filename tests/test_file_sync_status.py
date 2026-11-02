@@ -78,6 +78,33 @@ class FileStatusTests(unittest.TestCase):
         self.assertFalse(failed['remote_checked'])
         self.assertTrue(failed['error'])
         self.assertEqual(failed['files'][5]['status'], 'unknown')
+        self.assertTrue(all(f['remote_status'] == 'unknown' for f in failed['files']))
+
+    def test_remote_presence_is_independent_of_local_files(self):
+        (self.local / 'INCAR').write_text('')
+        (self.remote / 'INCAR').write_text('EDIFF=1E-6')
+        (self.local / 'CONTCAR').write_text('old local result')
+        (self.remote / 'OUTCAR').write_text('current remote result')
+        (self.remote / 'OSZICAR').write_text('')
+        data = self.query()
+        files = {f['name']: f for f in data['files']}
+        self.assertEqual(files['INCAR']['status'], 'empty')
+        self.assertEqual(files['INCAR']['remote_status'], 'present')
+        self.assertEqual(files['CONTCAR']['remote_status'], 'missing')
+        self.assertEqual(files['OUTCAR']['local_count'], 0)
+        self.assertEqual(files['OUTCAR']['remote_status'], 'present')
+        self.assertEqual(files['OSZICAR']['remote_status'], 'empty')
+
+    def test_neb_partial_empty_image_is_not_present_even_when_total_size_is_positive(self):
+        self.task['task_type'] = 'neb'
+        for label, text in [('01', 'structure'), ('02', '')]:
+            image = self.remote / label
+            image.mkdir()
+            (image / 'CONTCAR').write_text(text)
+        contcar = next(f for f in self.query()['files'] if f['name'] == 'CONTCAR')
+        self.assertEqual(contcar['remote_count'], 2)
+        self.assertGreater(contcar['remote_size'], 0)
+        self.assertEqual(contcar['remote_status'], 'empty')
 
     def test_unsafe_paths_and_changing_files_do_not_pass(self):
         (self.local / 'POSCAR').symlink_to(self.remote / 'POSCAR')

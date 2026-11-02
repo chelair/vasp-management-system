@@ -22,23 +22,21 @@ const path = require('node:path');
     }
     createRoot(document.getElementById('root')).render(<React.StrictMode><Fixture/></React.StrictMode>);
   `,resolveDir:path.resolve('.'),loader:'tsx'},bundle:true,write:false,format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"development"'}});
-  let entries=[{name:'INCAR',size:20},{name:'KPOINTS',size:0},{name:'POSCAR',size:100},{name:'OUTCAR',size:50}];
+  const remote={INCAR:'present',KPOINTS:'present',POSCAR:'present',POTCAR:'present',CONTCAR:'missing',OUTCAR:'present',OSZICAR:'empty'};
   let fail=false,delay=false,release;
   const requests=[];
   const server=http.createServer((req,res)=>{
     if(req.url.startsWith('/api/')){
       requests.push({url:req.url,method:req.method});
       res.setHeader('Content-Type','application/json');
-      const files=req.url.includes('/b/')?[{name:'POTCAR',size:5}]:entries;
-      const verified=req.url.includes('remote=1');
-      const states={INCAR:'synced',POSCAR:'different',OUTCAR:'sampled',POTCAR:'download'};
+      const nameOfTask=req.url.split('/')[4];
       const items=['INCAR','KPOINTS','POSCAR','POTCAR','CONTCAR','OUTCAR','OSZICAR'].map(name=>{
-        const file=files.find(f=>f.name===name);
-        return {name,status:file?.size===0?'empty':verified?(states[name]||'missing'):file?'local':'local_missing',
-          local_size:file?.size||0,local_count:file?1:0,remote_size:verified?100:null,remote_count:verified?1:null};
+        const state=nameOfTask==='b'?(name==='POTCAR'?'present':'missing'):nameOfTask==='c'?'missing':remote[name];
+        return {name,status:'different',remote_status:state,
+          local_size:100,local_count:1,remote_size:state==='missing'||state==='empty'?0:200,remote_count:state==='missing'?0:1};
       });
-      const send=()=>{res.statusCode=fail?500:200;res.end(JSON.stringify({success:!fail,data:{files:items,remote_checked:verified,remote_dir:'/remote/con2',checked_at:Date.now()/1000,error:null}}));};
-      if(delay&&req.url.includes('/a/'))release=send;else send();
+      const send=()=>{res.statusCode=fail?500:200;res.end(JSON.stringify({success:!fail,data:{files:items,remote_checked:true,remote_dir:'/remote/con2',checked_at:Date.now()/1000,error:null}}));};
+      if(delay&&nameOfTask==='a')release=send;else send();
       return;
     }
     res.setHeader('Content-Type',req.url==='/app.js'?'text/javascript':'text/html');
@@ -52,40 +50,40 @@ const path = require('node:path');
     await page.clock.install();await page.goto('http://127.0.0.1:'+server.address().port);
     const row=name=>page.locator('.job-file').filter({has:page.locator('.job-file__name',{hasText:new RegExp('^'+name.replace('.','\\.')+'$')})});
     const wait=async(name,label)=>{await page.waitForFunction(({name,label})=>[...document.querySelectorAll('.job-file')].some(e=>e.querySelector('.job-file__name').textContent===name&&e.querySelector('.job-file__state').textContent.includes(label)),{name,label});};
-    await wait('OUTCAR','本地已有');
-    assert.match(await row('INCAR').innerText(),/有修改待同步/);
-    assert.match(await row('POSCAR').innerText(),/本地已有/);
-    assert.match(await row('KPOINTS').innerText(),/空文件/);
-    assert.match(await row('CONTCAR').innerText(),/本地缺失/);
-    assert.match(await row('POTCAR').innerText(),/本地缺失/);
-    assert.doesNotMatch(await page.locator('.job-files').innerText(),/最新|过时|未生成/);
-    await page.evaluate(()=>window.setInput(null));await wait('INCAR','本地已有');
+    await wait('OUTCAR','远端已有');
+    assert.match(await row('INCAR').innerText(),/远端已有/,'draft must not mask remote file presence');
+    assert.match(await page.locator('.preview-note').last().innerText(),/待生效修改：INCAR/);
+    assert.match(await row('KPOINTS').innerText(),/远端已有/);
+    assert.match(await row('OSZICAR').innerText(),/远端空文件/);
+    assert.match(await row('CONTCAR').innerText(),/远端缺失/,'local cache must not imply remote existence');
+    assert.match(await row('POTCAR').innerText(),/远端已有/);
+    assert.doesNotMatch(await page.locator('.job-files').innerText(),/本地|待上传|待下载|核对一致/);
     assert.deepEqual(await page.locator('.job-file__name').allTextContents(),['INCAR','KPOINTS','POSCAR','POTCAR','CONTCAR','OUTCAR','OSZICAR']);
-    assert(requests.every(r=>!r.url.includes('remote=1')),'opening the overview must not contact remote');
-    await page.getByRole('button',{name:'刷新状态'}).click();
-    await wait('INCAR','已核对一致');await wait('POSCAR','内容不同');await wait('OUTCAR','抽样一致');
-    assert(requests.some(r=>r.url.endsWith('remote=1')),'manual refresh must request a remote comparison');
-    // Drafts remain visible even if the legacy change list is missing.
+    assert(requests.every(r=>r.url.includes('remote=1')),'opening the overview must read remote state');
+    const beforeDraft=requests.length;
     await page.evaluate(()=>window.setInput({draft:{KPOINTS:{mesh:[2,2,1]}},changes:[],files:{}}));
-    await wait('KPOINTS','有修改待同步');await wait('POSCAR','本地已有');
+    await page.waitForTimeout(100);
+    assert.equal(requests.length,beforeDraft,'editing local drafts must not query remote again');
+    assert.match(await page.locator('.preview-note').last().innerText(),/待生效修改：KPOINTS/);
+    remote.OSZICAR='changing';await page.getByRole('button',{name:'刷新状态'}).click();await wait('OSZICAR','远端更新中');
+    remote.POTCAR='unknown';await page.getByRole('button',{name:'刷新状态'}).click();await wait('POTCAR','状态未知');
     fail=true;await page.getByRole('button',{name:'刷新状态'}).click();await wait('POSCAR','状态未知');
-    assert.match(await row('KPOINTS').innerText(),/有修改待同步/);
     assert.equal(await page.locator('.ant-empty').count(),0,'read failure must not pretend the directory is empty');
-    fail=false;entries=[...entries,{name:'CONTCAR',size:80}];
-    await page.evaluate(()=>window.dispatchEvent(new Event('vasp:inspection-completed')));
-    await wait('CONTCAR','本地已有');
+    fail=false;remote.CONTCAR='present';
+    await page.evaluate(()=>window.dispatchEvent(new Event('vasp:inspection-completed')));await wait('CONTCAR','远端已有');
     const count=requests.length;
     await page.clock.fastForward(120000);await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
     assert.equal(requests.length,count,'no polling or focus-triggered reads');
-    // A delayed response for the previous task must never replace the selected task.
     delay=true;await page.getByRole('button',{name:'刷新状态'}).click();
     await page.waitForFunction(()=>document.querySelector('.job-files').textContent.includes('读取中'));
     while(!release)await new Promise(r=>setTimeout(r,10));
-    await page.evaluate(()=>{window.setInput(null);window.select('b');});await wait('POTCAR','本地已有');
-    release();await page.waitForTimeout(100);await wait('OUTCAR','本地缺失');
-    assert.match(await row('POTCAR').innerText(),/本地已有/);
-    assert(requests.every(r=>r.method==='GET'&&/^\/api\/jobs\/tasks\/[ab]\/file-status(?:\?remote=1)?$/.test(r.url)), 'only read-only file-status requests may be called');
+    await page.evaluate(()=>{window.setInput(null);window.select('b');});await wait('POTCAR','远端已有');
+    release();await page.waitForTimeout(100);await wait('OUTCAR','远端缺失');
+    assert.match(await row('POTCAR').innerText(),/远端已有/);
+    await page.evaluate(()=>window.select('c'));await wait('POTCAR','远端缺失');
+    await page.getByText('当前远端计算目录中尚无这些文件',{exact:true}).waitFor();
+    assert(requests.every(r=>r.method==='GET'&&/^\/api\/jobs\/tasks\/[abc]\/file-status\?remote=1$/.test(r.url)), 'only read-only remote file-status requests may be called');
     assert.deepEqual(errors,[]);
-    console.log('PASS seven-file order, local and verified remote states, sampled outputs, pending drafts, failures, explicit refresh only, no polling, stale response protection');
+    console.log('PASS seven remote file states on open/refresh, independent local drafts, empty/changing/unknown, remote-only empty directory, no polling and stale response protection');
   }finally{await browser.close();await new Promise(r=>server.close(r));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

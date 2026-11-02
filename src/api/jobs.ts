@@ -92,7 +92,7 @@ export interface TaskFileEntry {
 
 export interface TaskFileStatus {
   task_id: string;
-  files: { name: string; status: string; local_size: number; local_count: number;
+  files: { name: string; status: string; remote_status?: 'present' | 'missing' | 'empty' | 'changing' | 'unknown'; local_size: number; local_count: number;
     remote_size: number | null; remote_count: number | null }[];
   remote_checked: boolean;
   remote_dir: string | null;
@@ -100,7 +100,7 @@ export interface TaskFileStatus {
   error: string | null;
 }
 
-/** 默认只读本地；用户明确刷新时一次核对远端，不传输文件。 */
+/** remote=true只读查询远端；概览打开和刷新时使用，不传输文件。 */
 export function fetchTaskFileStatus(taskId: string, remote = false): Promise<TaskFileStatus> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/file-status${remote ? '?remote=1' : ''}`);
 }

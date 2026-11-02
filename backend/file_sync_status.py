@@ -76,6 +76,16 @@ def compare_file(local, remote, output=False):
     return 'sampled' if any(p['basis'] != 'full' for p in left.values()) else 'synced'
 
 
+def remote_file_state(item, truncated=False):
+    if item is None or truncated or item.get('error'):
+        return 'unknown'
+    paths = list(item['paths'].values())
+    if not paths:return 'missing'
+    if any(p['size'] == 0 for p in paths):return 'empty'
+    if any(not p['stable'] for p in paths):return 'changing'
+    return 'present'
+
+
 def file_status(project, task, verify_remote=False):
     local = scan_files(task_files_dir(project['name'], task), task.get('task_type') == 'neb')
     remote, error = None, None
@@ -118,7 +128,9 @@ def file_status(project, task, verify_remote=False):
             status = 'empty'
         else:
             status = 'local'
-        files.append({'name': name, 'status': status, 'local_size': left['size'],
+        files.append({'name': name, 'status': status,
+                      'remote_status': remote_file_state(right, bool(remote and remote['truncated'])),
+                      'local_size': left['size'],
                       'local_count': len(left['paths']), 'remote_size': right['size'] if right else None,
                       'remote_count': len(right['paths']) if right else None})
     return {'task_id': task['task_id'], 'files': files, 'checked_at': time.time(),

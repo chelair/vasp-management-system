@@ -254,7 +254,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 
 ## 3. 只读接口（观测面）
 
-`GET /api/jobs/tasks/{task_id}/file-status?remote=false`：固定返回INCAR、KPOINTS、POSCAR、POTCAR、CONTCAR、OUTCAR、OSZICAR七项，接口默认只读本地；作业概览打开、刷新状态及巡检返回时传remote=true，以一次只读SSH读取当前最大conN目录。逐项新增remote_status（present/missing/empty/changing/unknown），仅按远端文件判断，独立于本地缓存、空文件和待生效草稿；概览以此显示远端状态并附读取时间/目录，草稿另行提示。原status比较字段保留（local/local_missing、synced/sampled/different/upload/download/local_only/missing/empty/changing/unknown），附本地/远端大小与数量。≤1MiB完整哈希，大文件只读头尾各64KiB；不传输文件、不提交作业。NEB兼容本地neb_images与远端映像目录；超过64映像或读取失败标unknown，部分映像空文件标empty。无定时轮询或窗口聚焦查询，本地草稿变化不重复查远端。沿用task归属校验。
+`GET /api/jobs/tasks/{task_id}/file-status?remote=false&presence_only=false`：固定返回INCAR、KPOINTS、POSCAR、POTCAR、CONTCAR、OUTCAR、OSZICAR七项，接口默认只读本地。作业概览打开、刷新状态及巡检返回时传`remote=true&presence_only=true`，以一次只读SSH查询当前最大conN目录的文件信息，不读取文件内容、不计算摘要、不扫描本地；此模式仅使用remote_status，本地size/count为null，未核对的比较status为unknown。remote_status（present/missing/empty/changing/unknown）独立于本地缓存和草稿，changing只表示本次查询前后文件标识、大小或修改时间发生变化，不代表任务运行状态，也不持续监测；概览附目录/读取时间，草稿另行提示。省略presence_only保留原status内容比较（local/local_missing、synced/sampled/different/upload/download/local_only/missing/empty/changing/unknown）：≤1MiB完整哈希，大文件头尾各64KiB，附本地/远端大小与数量。NEB兼容本地neb_images与远端映像目录；超过64映像或读取失败标unknown，部分映像空文件标empty。不传输文件、不提交作业，无定时轮询或窗口聚焦查询，本地草稿变化不重复查远端。沿用task归属校验。
 
 `GET /api/inspections/{task_id}/atomic-forces?image=&refresh=`：逐原子受力取结构来源目录OUTCAR，固定标记和元素从同目录CONTCAR读取（包括NEB各映像）。响应`fixed_source=CONTCAR`、`schema=6`；固定原子灰色显示，排除最大力/RMS统计。缺CONTCAR明确报错，不借用POSCAR标记；旧schema缓存自动失效。部分方向含F仍按现有整原子固定口径处理。
 

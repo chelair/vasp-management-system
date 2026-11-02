@@ -16,7 +16,7 @@ SAMPLE_BYTES = 65536
 MAX_IMAGES = 64
 
 
-def scan_files(root, neb=False):
+def scan_files(root, neb=False, metadata_only=False):
     root = Path(root)
     images_root = root / 'neb_images' if (root / 'neb_images').is_dir() else root
     if root.is_symlink() or images_root.is_symlink():
@@ -33,19 +33,21 @@ def scan_files(root, neb=False):
                 if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
                     raise ValueError('文件路径不可读取')
                 before = path.stat()
-                digest = hashlib.sha256()
-                with path.open('rb') as stream:
-                    if before.st_size <= FULL_LIMIT:
-                        digest.update(stream.read(FULL_LIMIT + 1))
-                        basis = 'full'
-                    else:
-                        digest.update(stream.read(SAMPLE_BYTES))
-                        stream.seek(max(0, before.st_size - SAMPLE_BYTES))
-                        digest.update(stream.read(SAMPLE_BYTES))
-                        basis = 'head_tail'
+                digest, basis = None, 'metadata'
+                if not metadata_only:
+                    digest = hashlib.sha256()
+                    with path.open('rb') as stream:
+                        if before.st_size <= FULL_LIMIT:
+                            digest.update(stream.read(FULL_LIMIT + 1))
+                            basis = 'full'
+                        else:
+                            digest.update(stream.read(SAMPLE_BYTES))
+                            stream.seek(max(0, before.st_size - SAMPLE_BYTES))
+                            digest.update(stream.read(SAMPLE_BYTES))
+                            basis = 'head_tail'
                 after = path.stat()
                 item['paths'][relative] = {
-                    'size': before.st_size, 'hash': digest.hexdigest(), 'basis': basis,
+                    'size': before.st_size, 'hash': digest.hexdigest() if digest else None, 'basis': basis,
                     'stable': (before.st_ino, before.st_size, before.st_mtime_ns) ==
                               (after.st_ino, after.st_size, after.st_mtime_ns)}
                 item['size'] += before.st_size
@@ -86,8 +88,9 @@ def remote_file_state(item, truncated=False):
     return 'present'
 
 
-def file_status(project, task, verify_remote=False):
-    local = scan_files(task_files_dir(project['name'], task), task.get('task_type') == 'neb')
+def file_status(project, task, verify_remote=False, presence_only=False):
+    local = None if presence_only else scan_files(
+        task_files_dir(project['name'], task), task.get('task_type') == 'neb')
     remote, error = None, None
     if verify_remote:
         try:
@@ -101,9 +104,10 @@ def file_status(project, task, verify_remote=False):
                       + "cons=sorted((p for p in root.glob('con*') if p.is_dir() and p.name[3:].isdigit()),key=lambda p:int(p.name[3:]))\n"
                       + "root=cons[-1] if cons else root\n"
                       + "if not root.is_dir() or root.is_symlink(): raise ValueError('远端计算目录不存在或不可读取')\n"
-                      + "print(json.dumps(scan_files(root,sys.argv[2]=='1')))\n")
+                      + "print(json.dumps(scan_files(root,sys.argv[2]=='1',sys.argv[3]=='1')))\n")
             command = ('python3 - ' + shlex.quote(directory) +
                        (' 1' if task.get('task_type') == 'neb' else ' 0') +
+                       (' 1' if presence_only else ' 0') +
                        " <<'VASP_FILE_CHECK'\n" + source + 'VASP_FILE_CHECK')
             response = ssh.run_remote(project['server'], command, timeout=45)
             if response.get('exit_code') != 0:
@@ -115,9 +119,11 @@ def file_status(project, task, verify_remote=False):
             error = '远端核对失败，请稍后重试'
     files = []
     for name in NAMES:
-        left = local['files'][name]
+        left = local['files'][name] if local else None
         right = remote['files'][name] if remote else None
-        if right is not None:
+        if presence_only:
+            status = 'unknown'
+        elif right is not None:
             status = 'unknown' if local['truncated'] or remote['truncated'] else compare_file(
                 left, right, name in ('CONTCAR', 'OUTCAR', 'OSZICAR'))
         elif left['error'] or error:
@@ -130,8 +136,8 @@ def file_status(project, task, verify_remote=False):
             status = 'local'
         files.append({'name': name, 'status': status,
                       'remote_status': remote_file_state(right, bool(remote and remote['truncated'])),
-                      'local_size': left['size'],
-                      'local_count': len(left['paths']), 'remote_size': right['size'] if right else None,
+                      'local_size': left['size'] if left else None,
+                      'local_count': len(left['paths']) if left else None, 'remote_size': right['size'] if right else None,
                       'remote_count': len(right['paths']) if right else None})
     return {'task_id': task['task_id'], 'files': files, 'checked_at': time.time(),
             'remote_checked': remote is not None, 'remote_dir': remote['directory'] if remote else None,

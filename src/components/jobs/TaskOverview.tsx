@@ -88,7 +88,7 @@ export default function TaskOverview({
       const version = ++generation;
       setRemoteFiles({ taskId: task.task_id, status: 'loading', files: [] });
       try {
-        const data = await fetchTaskFileStatus(task.task_id, true);
+        const data = await fetchTaskFileStatus(task.task_id, true, true);
         if (!disposed && version === generation) {
           setRemoteFiles({ taskId: task.task_id, status: 'ready', files: data.files,
             remoteChecked: data.remote_checked, remoteDir: data.remote_dir,
@@ -136,7 +136,7 @@ export default function TaskOverview({
       present: { key: 'fresh', label: '远端已有', tip: '当前远端计算目录中已有非空文件。' },
       missing: { key: 'none', label: '远端缺失', tip: '当前远端计算目录中没有该文件。' },
       empty: { key: 'stale', label: '远端空文件', tip: '远端存在大小为0的文件；NEB可能有部分映像文件为空。' },
-      changing: { key: 'stale', label: '远端更新中', tip: '远端文件在读取期间发生变化，请稍后刷新。' },
+      changing: { key: 'stale', label: '远端更新中', tip: '远端文件在本次查询期间发生变化，请稍后刷新；此状态不代表任务正在运行。' },
       unknown: { key: 'none', label: '状态未知', tip: '远端未能读取或映像数量超限，点击「刷新状态」重试。' },
     };
     const state = states[remoteFiles?.remoteChecked ? file?.remote_status ?? 'unknown' : 'unknown'];

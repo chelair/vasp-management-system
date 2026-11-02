@@ -92,7 +92,7 @@ export interface TaskFileEntry {
 
 export interface TaskFileStatus {
   task_id: string;
-  files: { name: string; status: string; remote_status?: 'present' | 'missing' | 'empty' | 'changing' | 'unknown'; local_size: number; local_count: number;
+  files: { name: string; status: string; remote_status?: 'present' | 'missing' | 'empty' | 'changing' | 'unknown'; local_size: number | null; local_count: number | null;
     remote_size: number | null; remote_count: number | null }[];
   remote_checked: boolean;
   remote_dir: string | null;
@@ -100,9 +100,12 @@ export interface TaskFileStatus {
   error: string | null;
 }
 
-/** remote=true只读查询远端；概览打开和刷新时使用，不传输文件。 */
-export function fetchTaskFileStatus(taskId: string, remote = false): Promise<TaskFileStatus> {
-  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/file-status${remote ? '?remote=1' : ''}`);
+/** 概览使用presenceOnly只查远端文件信息，不读取内容或比较本地。 */
+export function fetchTaskFileStatus(taskId: string, remote = false, presenceOnly = false): Promise<TaskFileStatus> {
+  const params = new URLSearchParams();
+  if (remote) params.set('remote', '1');
+  if (presenceOnly) params.set('presence_only', '1');
+  return request(`/jobs/tasks/${encodeURIComponent(taskId)}/file-status${params.size ? `?${params}` : ''}`);
 }
 
 /** 读取任务本地目录文件清单（第一次打开/刷新时扫描） */

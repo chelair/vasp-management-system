@@ -21,16 +21,40 @@ class FileStatusTests(unittest.TestCase):
         self.task = {'task_id': 'test', 'task_type': 'opt', 'remote_dir': '/task'}
         self.calls = 0
 
-    def query(self, verify=True, fail=False):
+    def query(self, verify=True, fail=False, presence_only=False):
         def run(server, command, timeout):
             self.calls += 1
             if fail: return {'exit_code': 1, 'stderr': 'network unavailable'}
             result = subprocess.run(['bash'], input=command, capture_output=True, text=True)
             return {'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
-        with patch.object(status, 'task_files_dir', return_value=self.local), \
+        with patch.object(status, 'task_files_dir', return_value=self.local) as local_dir, \
              patch.object(status, 'resolve_remote_path', return_value=str(self.remote)), \
              patch.object(status.ssh, 'run_remote', side_effect=run):
-            return status.file_status(self.project, self.task, verify)
+            result = status.file_status(self.project, self.task, verify, presence_only)
+            if presence_only:
+                local_dir.assert_not_called()
+            return result
+
+    def test_presence_query_skips_local_scan_and_remote_contents(self):
+        (self.remote / 'INCAR').write_text('EDIFF=1E-6')
+        (self.remote / 'OUTCAR').write_bytes(b'x' * (status.FULL_LIMIT + 1))
+        (self.remote / 'OSZICAR').write_text('')
+        data = self.query(presence_only=True)
+        self.assertTrue(data['remote_checked'])
+        self.assertEqual(self.calls, 1)
+        files = {f['name']: f for f in data['files']}
+        self.assertEqual(files['INCAR']['remote_status'], 'present')
+        self.assertEqual(files['OUTCAR']['remote_status'], 'present')
+        self.assertEqual(files['OSZICAR']['remote_status'], 'empty')
+        self.assertEqual(files['CONTCAR']['remote_status'], 'missing')
+        self.assertTrue(all(f['status'] == 'unknown' and f['local_size'] is None
+                            and f['local_count'] is None for f in data['files']))
+        with patch.object(Path, 'open', side_effect=AssertionError('content read forbidden')):
+            scanned = status.scan_files(self.remote, metadata_only=True)
+        self.assertIsNone(scanned['files']['OUTCAR']['paths']['OUTCAR']['hash'])
+        failed = self.query(fail=True, presence_only=True)
+        self.assertFalse(failed['remote_checked'])
+        self.assertTrue(all(f['remote_status'] == 'unknown' for f in failed['files']))
 
     def test_local_only_never_connects_and_seven_fixed_files(self):
         (self.local / 'INCAR').write_text('NSW=100')

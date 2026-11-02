@@ -857,11 +857,11 @@ def core_create_neb(
 
 
 @router.get("/tasks/{task_id}/file-status")
-def task_file_status(task_id: str, remote: bool = False):
+def task_file_status(task_id: str, remote: bool = False, presence_only: bool = False):
     try:
         from file_sync_status import file_status
         project, task = _resolve_task(task_id)
-        return ok("文件状态已读取", file_status(project, task, remote))
+        return ok("文件状态已读取", file_status(project, task, remote, presence_only))
     except LookupError as exc:
         return JSONResponse(status_code=404, content=fail(str(exc)))
     except permissions.PermissionDenied:

@@ -59,7 +59,7 @@ const path = require('node:path');
     assert.match(await row('POTCAR').innerText(),/远端已有/);
     assert.doesNotMatch(await page.locator('.job-files').innerText(),/本地|待上传|待下载|核对一致/);
     assert.deepEqual(await page.locator('.job-file__name').allTextContents(),['INCAR','KPOINTS','POSCAR','POTCAR','CONTCAR','OUTCAR','OSZICAR']);
-    assert(requests.every(r=>r.url.includes('remote=1')),'opening the overview must read remote state');
+    assert(requests.every(r=>r.url.includes('remote=1&presence_only=1')),'opening the overview must query metadata without content comparison');
     const beforeDraft=requests.length;
     await page.evaluate(()=>window.setInput({draft:{KPOINTS:{mesh:[2,2,1]}},changes:[],files:{}}));
     await page.waitForTimeout(100);
@@ -82,7 +82,7 @@ const path = require('node:path');
     assert.match(await row('POTCAR').innerText(),/远端已有/);
     await page.evaluate(()=>window.select('c'));await wait('POTCAR','远端缺失');
     await page.getByText('当前远端计算目录中尚无这些文件',{exact:true}).waitFor();
-    assert(requests.every(r=>r.method==='GET'&&/^\/api\/jobs\/tasks\/[abc]\/file-status\?remote=1$/.test(r.url)), 'only read-only remote file-status requests may be called');
+    assert(requests.every(r=>r.method==='GET'&&/^\/api\/jobs\/tasks\/[abc]\/file-status\?remote=1&presence_only=1$/.test(r.url)), 'only read-only remote metadata requests may be called');
     assert.deepEqual(errors,[]);
     console.log('PASS seven remote file states on open/refresh, independent local drafts, empty/changing/unknown, remote-only empty directory, no polling and stale response protection');
   }finally{await browser.close();await new Promise(r=>server.close(r));}

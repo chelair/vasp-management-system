@@ -1,11 +1,14 @@
 """Read-only seven-file checks against isolated local/remote trees."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 import file_sync_status as status
@@ -20,8 +23,9 @@ class FileStatusTests(unittest.TestCase):
         self.project = {'name': 'test', 'server': 'mock'}
         self.task = {'task_id': 'test', 'task_type': 'opt', 'remote_dir': '/task'}
         self.calls = 0
+        status._presence_entries.clear()
 
-    def query(self, verify=True, fail=False, presence_only=False):
+    def query(self, verify=True, fail=False, presence_only=False, force=False):
         def run(server, command, timeout):
             self.calls += 1
             if fail: return {'exit_code': 1, 'stderr': 'network unavailable'}
@@ -30,7 +34,7 @@ class FileStatusTests(unittest.TestCase):
         with patch.object(status, 'task_files_dir', return_value=self.local) as local_dir, \
              patch.object(status, 'resolve_remote_path', return_value=str(self.remote)), \
              patch.object(status.ssh, 'run_remote', side_effect=run):
-            result = status.file_status(self.project, self.task, verify, presence_only)
+            result = status.file_status(self.project, self.task, verify, presence_only, force)
             if presence_only:
                 local_dir.assert_not_called()
             return result
@@ -52,9 +56,62 @@ class FileStatusTests(unittest.TestCase):
         with patch.object(Path, 'open', side_effect=AssertionError('content read forbidden')):
             scanned = status.scan_files(self.remote, metadata_only=True)
         self.assertIsNone(scanned['files']['OUTCAR']['paths']['OUTCAR']['hash'])
-        failed = self.query(fail=True, presence_only=True)
+        failed = self.query(fail=True, presence_only=True, force=True)
         self.assertFalse(failed['remote_checked'])
         self.assertTrue(all(f['remote_status'] == 'unknown' for f in failed['files']))
+
+    def test_presence_cache_expires_without_extending_read_time_and_manual_refresh_bypasses(self):
+        (self.remote / 'INCAR').write_text('NSW=100')
+        with patch.object(status.time, 'monotonic', return_value=100):
+            first = self.query(presence_only=True)
+        self.assertFalse(first['cached'])
+        (self.remote / 'INCAR').unlink()
+        with patch.object(status.time, 'monotonic', return_value=159):
+            cached = self.query(presence_only=True)
+        self.assertEqual(self.calls, 1)
+        self.assertTrue(cached['cached'])
+        self.assertEqual(cached['checked_at'], first['checked_at'])
+        self.assertEqual(cached['files'][0]['remote_status'], 'present')
+        with patch.object(status.time, 'monotonic', return_value=160):
+            expired = self.query(presence_only=True)
+        self.assertEqual(self.calls, 2)
+        self.assertFalse(expired['cached'])
+        self.assertEqual(expired['files'][0]['remote_status'], 'missing')
+        forced = self.query(presence_only=True, force=True)
+        self.assertFalse(forced['cached'])
+        self.assertEqual(self.calls, 3)
+
+    def test_presence_cache_invalidated_by_task_changes_and_failures_not_reused(self):
+        self.query(presence_only=True)
+        for key, value in [('job_id', 'new'), ('status', 'running'),
+                           ('remote_dir', '/next'), ('current_output', {'latest_dir': 'con2'})]:
+            self.task[key] = value
+            self.assertFalse(self.query(presence_only=True)['cached'])
+        self.assertEqual(self.calls, 5)
+        failed = self.query(presence_only=True, fail=True, force=True)
+        self.assertFalse(failed['remote_checked'])
+        self.assertFalse(self.query(presence_only=True)['cached'])
+        self.assertEqual(self.calls, 7)
+
+    def test_concurrent_presence_requests_share_one_scan(self):
+        entered, release = threading.Event(), threading.Event()
+        original = status._read_file_status
+        def blocked(*args):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return original(*args)
+        with patch.object(status, '_read_file_status', side_effect=blocked), \
+             patch.object(status, 'resolve_remote_path', return_value=str(self.remote)), \
+             patch.object(status.ssh, 'run_remote') as remote, \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            remote.return_value = {'exit_code': 0, 'stdout': json.dumps(status.scan_files(self.remote))}
+            first = pool.submit(status.file_status, self.project, self.task, True, True)
+            self.assertTrue(entered.wait(3))
+            second = pool.submit(status.file_status, self.project, self.task, True, True)
+            release.set()
+            self.assertFalse(first.result()['cached'])
+            self.assertTrue(second.result()['cached'])
+            self.assertEqual(remote.call_count, 1)
 
     def test_local_only_never_connects_and_seven_fixed_files(self):
         (self.local / 'INCAR').write_text('NSW=100')

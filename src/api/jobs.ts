@@ -98,13 +98,15 @@ export interface TaskFileStatus {
   remote_dir: string | null;
   checked_at: number;
   error: string | null;
+  cached?: boolean;
 }
 
 /** 概览使用presenceOnly只查远端文件信息，不读取内容或比较本地。 */
-export function fetchTaskFileStatus(taskId: string, remote = false, presenceOnly = false): Promise<TaskFileStatus> {
+export function fetchTaskFileStatus(taskId: string, remote = false, presenceOnly = false, force = false): Promise<TaskFileStatus> {
   const params = new URLSearchParams();
   if (remote) params.set('remote', '1');
   if (presenceOnly) params.set('presence_only', '1');
+  if (force) params.set('force', '1');
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/file-status${params.size ? `?${params}` : ''}`);
 }
 

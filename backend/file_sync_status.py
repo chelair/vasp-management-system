@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import json
 import shlex
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +15,9 @@ NAMES = ('INCAR', 'KPOINTS', 'POSCAR', 'POTCAR', 'CONTCAR', 'OUTCAR', 'OSZICAR')
 FULL_LIMIT = 1024 * 1024
 SAMPLE_BYTES = 65536
 MAX_IMAGES = 64
+PRESENCE_TTL = 60
+_presence_guard = threading.Lock()
+_presence_entries = {}
 
 
 def scan_files(root, neb=False, metadata_only=False):
@@ -88,7 +92,28 @@ def remote_file_state(item, truncated=False):
     return 'present'
 
 
-def file_status(project, task, verify_remote=False, presence_only=False):
+def file_status(project, task, verify_remote=False, presence_only=False, force=False):
+    if not (verify_remote and presence_only):
+        return _read_file_status(project, task, verify_remote, presence_only)
+    key = (project['server'], task['task_id'])
+    signature = (task.get('remote_dir'), task.get('task_type'), task.get('job_id'),
+                 task.get('status'), (task.get('current_output') or {}).get('latest_dir'))
+    with _presence_guard:
+        entry = _presence_entries.setdefault(key, {'lock': threading.Lock(), 'data': None})
+    # 同任务的重复自动请求共用一次远端查询；不同任务不互相阻塞。
+    with entry['lock']:
+        if (not force and entry['data'] is not None and entry['signature'] == signature
+                and time.monotonic() < entry['expires']):
+            return dict(entry['data'], cached=True)
+        entry['data'] = None
+        data = _read_file_status(project, task, verify_remote, presence_only)
+        if (data['remote_checked'] and not data['error'] and
+                all(f['remote_status'] not in ('unknown', 'changing') for f in data['files'])):
+            entry.update(data=data, signature=signature, expires=time.monotonic() + PRESENCE_TTL)
+        return dict(data, cached=False)
+
+
+def _read_file_status(project, task, verify_remote=False, presence_only=False):
     local = None if presence_only else scan_files(
         task_files_dir(project['name'], task), task.get('task_type') == 'neb')
     remote, error = None, None

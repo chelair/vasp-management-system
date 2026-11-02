@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { App, Button, Card, Descriptions, Empty, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import {
   CheckCircleFilled,
@@ -70,6 +70,7 @@ export default function TaskOverview({
 }: Props) {
   const { message } = App.useApp();
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const lastManualRefresh = useRef(0);
   const [remoteFiles, setRemoteFiles] = useState<{
     taskId: string;
     status: 'loading' | 'ready' | 'error';
@@ -84,11 +85,11 @@ export default function TaskOverview({
   useEffect(() => {
     let disposed = false;
     let generation = 0;
-    const refresh = async () => {
+    const refresh = async (force = false) => {
       const version = ++generation;
       setRemoteFiles({ taskId: task.task_id, status: 'loading', files: [] });
       try {
-        const data = await fetchTaskFileStatus(task.task_id, true, true);
+        const data = await fetchTaskFileStatus(task.task_id, true, true, force);
         if (!disposed && version === generation) {
           setRemoteFiles({ taskId: task.task_id, status: 'ready', files: data.files,
             remoteChecked: data.remote_checked, remoteDir: data.remote_dir,
@@ -100,7 +101,9 @@ export default function TaskOverview({
         }
       }
     };
-    void refresh();
+    const force = refreshVersion !== lastManualRefresh.current;
+    lastManualRefresh.current = refreshVersion;
+    void refresh(force);
     const onInspection = () => void refresh();
     window.addEventListener(INSPECTION_COMPLETED, onInspection);
     return () => {
@@ -377,7 +380,7 @@ export default function TaskOverview({
           })}
         </div>
         <div className="preview-note" style={{ marginTop: 10 }}>
-          显示远端当前计算目录的文件状态，续算时优先查看最新 conN 目录。文件存在不代表计算已收敛。
+          显示远端当前计算目录的文件状态，续算时优先查看最新 conN 目录。结果保留1分钟，点击「刷新状态」立即更新。文件存在不代表计算已收敛。
           {remoteFiles?.taskId === task.task_id && remoteFiles.remoteChecked && remoteFiles.checkedAt && (
             <span> 读取时间：{new Date(remoteFiles.checkedAt * 1000).toLocaleString()}；目录：{remoteFiles.remoteDir}。</span>
           )}

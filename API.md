@@ -98,6 +98,14 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 批注内部action支持text/order/structures/calculate/formula/sources/edit，以及card/presentation/layout。card接收title/text和可选presentation，添加摘要/说明卡；presentation接收element_id及展示设置（layout=cards/table/compact、accent=blue/teal/violet、show_sources布尔、show_warnings布尔），calculate也可带同样设置；layout接收columns=1/2/3、可选elements（本模块全部未删除卡片ID的顺序），不能跨模块挪用。展示设置不能携带公式/结果，默认隐藏核实提示并保留底层警告和检查，来源默认显示；现有卡片即读即升级，HTML/PDF同款、手机单栏。calculate仅接受注册支持的`relative_energy`（reference/model事实）、`adsorption.estimate`（complex/surface/adsorbate事实）或`oxygen_vacancy.neutral_single`（inputs.oxygen事实，targets[{label,pristine,defect}]）。后者核对冻结CIF实际单O组成差，用户明确O₂能量除2、每O化学势直接采用，最新明确参考优先，同报告先前批注的用户氧参考可沿用，短回复从明确用户来源继承单位/角色并留原话和上下文；模型上下文含oxygen_references[{fact_id,value_ev,reference_kind}]。已知用户参考先于模型氧引用解析，禁止凭AI旧回复生成能量事实；缺必要结构/能量、已知带电或组成不符只阻止对应组。模型不提供公式或结果数值。edit携带element_id/operation=replace|append|delete，局限于目标模块；卡片replace改标题、append补说明、delete删展示。结果PRELIMINARY，原话在来源审计保留，导出只展示给定值与单位；成功回复由后端生成一句确认，模型回复最多400字符。
 
+## 完整项目报告自由排版
+
+`GET /api/reports/project/{id}/layout` 返回 `version:1, revision, objects`，旧报告返回空列表和 revision=0；详情 `edits.layout` 为同一保存源。`PUT` 同路径接收完整对象列表及当前整数 revision，成功替换列表并递增 revision，不追加；项目归属沿用原完整报告鉴权。冲突409，归属/无效章节400，字段/边界/重复ID/版本错误422，磁盘保存失败500。写入原 `reports/edits/<id>.json` 的独立 layout，共用保存锁并保留 hidden/review。每份最多500对象，每个文本最多4000字符；created_at/updated_at由服务端维护。
+
+对象字段 `id,report_id,region,kind,x,y,width,height,rotation,dx,dy,text,style,z,created_at,updated_at`。region为稳定章节key，坐标基于每章960×480的局部区域；线条dx/dy为有符号端点偏移。kind为text/rectangle/rounded/square/circle/ellipse/triangle/diamond/line/arrow/double-arrow。style含fill/fill_opacity、stroke/stroke_width/stroke_opacity、dash(solid/dashed/dotted)、arrow_start/arrow_end、color/font_size/font_weight/italic/align/vertical/padding。颜色仅接受六位十六进制，数值有限且受边界约束。
+
+正文重新生成保留layout；已移除章节的旧对象可保留原归属或改到有效章节，不能新建到未知章节。显式删除报告清除layout。layout修订与AI批注修订独立。HTML/PDF导出使用当前layout并过滤隐藏/未选择章节，不附带编辑器；未传hide时使用已保存隐藏状态。保存同步更新当前目录HTML副本，失败通过成功响应中的可选 `snapshot_warning` 明确提示，用户仍可下载动态导出。细节及已验证浏览器见[自由排版说明](docs/report-layout.md)。
+
 ## 高级分步专题接口（兼容）
 
 复用原 `/api/ai/chat` 会话、连接凭据与SSE。项目会话启用原工作区后保留6个分步工具：`list_topic_projects`、`prepare_topic_report`、`plan_topic_report`、`write_topic_draft`、`save_topic_report`、`get_topic_report`；已有 `get_property_recipes` 提供配方定义。工具只保存专题文档，不新增计算/SSH/输入操作。

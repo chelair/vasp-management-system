@@ -15,6 +15,7 @@ from envelope import fail, ok
 import permissions
 from report_builder import build_report
 from report_export import render_html
+from report_layout import Layout
 from report_interactive import interactive_kwargs
 from report_schema import schema_manifest
 from report_store import (
@@ -361,7 +362,10 @@ def project_report_html(
             chart_loader=(lambda name: (doc.get('presentation_charts') or {}).get(name.split('/')[-1]) or read_chart(report_id, name)) if inline else None,
             image_loader=(lambda rel: read_image_data_uri(report_id, rel)) if inline else None,
             auto_print=print,
-            hidden=set(x.strip() for x in hide.split(",") if x.strip()) if hide else None,
+            layout=read_edits(report_id).get("layout"),
+            hidden=(set(x.strip() for x in hide.split(",") if x.strip()) if hide is not None
+                    else set(read_edits(report_id)["hidden_elements"]) |
+                    {"section:" + key for key in read_edits(report_id)["hidden_sections"]}),
             **interactive_kwargs(doc, interactive=interactive),
         )
         # 文件名：优先给人类可读的「项目名_项目报告_日期.html」，同时保留 ASCII 回退
@@ -675,3 +679,50 @@ async def project_report_review_process(report_id: str, request: Request, body: 
         return JSONResponse(status_code=503, content=fail('AI处理失败，批注与报告原文已保留'), headers=headers)
     finally:
         if disconnected: disconnected.cancel()
+
+
+@router.get("/{report_id}/layout")
+def project_report_layout(report_id: str, request: Request):
+    _ensure_report_access(report_id, request)
+    try:
+        load_report(report_id)
+        from report_layout import state
+        return ok("查询成功", state(report_id))
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+
+
+@router.put("/{report_id}/layout")
+def project_report_save_layout(report_id: str, request: Request, payload: Layout):
+    _ensure_report_access(report_id, request)
+    try:
+        from report_layout import save
+        saved = save(report_id, payload)
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content=fail(str(e)))
+    except ValueError as e:
+        return JSONResponse(status_code=409, content=fail(str(e)))
+    except TypeError as e:
+        return JSONResponse(status_code=400, content=fail(str(e)))
+    except OSError:
+        return JSONResponse(status_code=500, content=fail("排版保存失败，请重试；当前修改仍保留在页面"))
+    warning = None
+    try:
+        import os
+        from report_store import REPORTS_DIR
+        entry = next(i for i in list_reports() if i['report_id'] == report_id)
+        if entry.get('html_path'):
+            edits = read_edits(report_id)
+            response = project_report_html(report_id, request, sections=None, inline=True,
+                print=False, hide=','.join(edits['hidden_elements'] +
+                    ['section:' + x for x in edits['hidden_sections']]),
+                interactive=True, download=False)
+            if response.status_code != 200:
+                raise OSError('HTML refresh failed')
+            path = REPORTS_DIR / entry['html_path']
+            tmp = path.with_name(path.name + '.layout.tmp')
+            tmp.write_bytes(response.body)
+            os.replace(tmp, path)
+    except (OSError, StopIteration):
+        warning = '排版已保存，但目录中的 HTML 副本更新失败；请通过导出按钮重新下载'
+    return ok("排版已保存", {**saved, 'snapshot_warning': warning})

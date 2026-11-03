@@ -1,3 +1,4 @@
+import ReportLayoutEditor, { type LayoutHandle } from '../components/reports/ReportLayoutEditor';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AnimatedCollapse from '../components/common/AnimatedCollapse';
 import {
@@ -176,6 +177,7 @@ export default function Report() {
   /** 「选择项目」下拉里的"已关闭项目"是否展开（默认折叠，2026-10-13） */
   const [closedInSelectOpen, setClosedInSelectOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const layoutRef = useRef<LayoutHandle>(null);
   const [showClosedReports, setShowClosedReports] = useState(false);
   const [reportAIConnection, setReportAIConnection] = useState('');
   /** 项目级 AI 批注处理开关。 */
@@ -256,11 +258,14 @@ export default function Report() {
   };
 
   /** 导出 HTML / PDF（PDF 走浏览器打印，按勾选章节导出） */
-  const exportHtml = (print: boolean) => {
+  const exportHtml = async (print: boolean) => {
     if (!detail) return;
+    const view = window.open('', '_blank');
+    if (!(await layoutRef.current?.save() ?? true)) { view?.close(); return; }
     // 导出范围 = 当前**未隐藏**的章节（隐藏的章节在导出/打印里直接不出现，v0.9.71）
     const url = reportHtmlUrl(detail.meta.report_id, undefined, print, hidden, true);
-    window.open(url, '_blank', 'noopener');
+    if (view) { view.opener = null; view.location.replace(url); }
+    else message.info('请允许打开新标签页后重试导出');
     if (print) message.info('已打开打印视图，选择「另存为 PDF」即可导出');
   };
 
@@ -270,8 +275,8 @@ export default function Report() {
    * `项目名_项目报告_日期.html`）。用隐藏 `<a>` 点击而不是 `window.open`，避免留下空白标签页；
    * **不用 blob 下载**：几十 MB 的报告全读进内存不划算，让浏览器自己流式落盘。
    */
-  const downloadHtml = () => {
-    if (!detail) return;
+  const downloadHtml = async () => {
+    if (!detail || !(await layoutRef.current?.save() ?? true)) return;
     const url = reportHtmlUrl(detail.meta.report_id, undefined, false, hidden, true, true);
     const link = document.createElement('a');
     link.href = url;
@@ -864,7 +869,7 @@ export default function Report() {
             type="button"
             key={item.report_id}
             className={`report-item${selectedReportId === item.report_id ? ' is-active' : ''}`}
-            onClick={() => { setSelectedReportId(item.report_id); setSelectedProject(item.project_id); }}
+            onClick={async () => { if (!(await layoutRef.current?.save() ?? true)) return; setSelectedReportId(item.report_id); setSelectedProject(item.project_id); }}
           >
             <span className="report-item__top">
               <Tag color={meta.color} bordered={false}>
@@ -943,7 +948,7 @@ export default function Report() {
             <Button disabled={!selectedProject} onClick={() => setCompositionOpen(true)}>专题报告</Button>
             <Select
               value={selectedProject}
-              onChange={setSelectedProject}
+              onChange={async (id) => { if (await layoutRef.current?.save() ?? true) setSelectedProject(id); }}
               style={{ width: 190 }}
               options={selectOptions}
               placeholder="选择项目"
@@ -976,7 +981,8 @@ export default function Report() {
                               className={`report-select-closed__item${
                                 p.id === selectedProject ? ' is-selected' : ''
                               }`}
-                              onClick={() => {
+                              onClick={async () => {
+                                if (!(await layoutRef.current?.save() ?? true)) return;
                                 setSelectedProject(p.id);
                                 setClosedInSelectOpen(false);
                               }}
@@ -1186,6 +1192,7 @@ export default function Report() {
                   <ReportReviewControls /><ReportWorkControls />
                 </div>
               </div>
+              <ReportLayoutEditor key={detail.meta.report_id} ref={layoutRef} detail={detail} root={contentRef} version={renderedSections} />
               <div className="report-body">
                   <nav className="report-toc">
                     {renderedSections.map((s) => (
@@ -1204,6 +1211,7 @@ export default function Report() {
                           onErrorCapture={handleReportAssetError}
                           dangerouslySetInnerHTML={{ __html: s.html }}
                         />
+                        <div data-manual-host={s.key} />
                       </section>
                     ))}
                     {/* 能量/力收敛曲线：ECharts 组件（替代报告里那张 SVG 图，v0.9.60） */}

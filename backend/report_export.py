@@ -639,6 +639,7 @@ VIEWER_SCRIPT = """
       return true;
     }
     // 报告里内联的看板图（原始 <svg>）：现场序列化成 data URI，一样能缩放看清
+    if (target.closest('.report-manual-region')) return false;
     var svg = target.closest('svg');
     if (svg && svg.closest('.report-body, body')) {
       try {
@@ -927,6 +928,7 @@ def render_html(
     interactive_js: str = "",
     interactive_data: Optional[Dict[str, Any]] = None,
     mol_js: str = "",
+    layout: Optional[Dict[str, Any]] = None,
 ) -> str:
     """生成自包含 HTML（单文件：CSS/JS 内联、SVG 内联、PNG 走 base64）。
 
@@ -960,7 +962,8 @@ def render_html(
         # 类型级注解（只在本章节 = 重点科学结果分析）：插在每个类型标题正下方
         if section["key"] == "science":
             section_html = _inject_type_notes(section_html, doc.get("notes") or {})
-        body_parts.append(section_html)
+        from report_layout import render_region
+        body_parts.append(section_html + render_region(layout or {}, section["key"]))
     dialogs_html = render_dialogs(
         doc.get("dialogs") or [], image_loader=image_loader, chart_loader=chart_loader
     )

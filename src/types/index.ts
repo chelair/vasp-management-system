@@ -407,7 +407,7 @@ export interface ProjectReportDetail {
   /** 按任务块聚合的注解：label（= markdown 里 #### 标题）→ 若干条目 */
   note_blocks: Record<string, ReportNoteEntry[]>;
   /** 前端隐藏状态（章节/元素），持久化在 data/reports/edits/<report_id>.json */
-  edits?: { hidden_sections: string[]; hidden_elements: string[] };
+  edits?: { hidden_sections: string[]; hidden_elements: string[]; layout?: import("../components/reports/reportLayoutModel").Layout };
   sections: { key: string; title: string }[];
   charts: { name?: string; path: string }[] | string[];
   /** 结构化数据（字段随 schema 版本演进，前端按需读取） */

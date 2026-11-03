@@ -53,7 +53,7 @@ def serialized_notes(func):
 
 
 def note_revision(note: dict | None) -> str:
-    value = {k: v for k, v in (note or {}).items() if k not in ("stale", "stale_reason", "revision")}
+    value = {k: v for k, v in (note or {}).items() if k not in ("stale", "stale_reason", "revision", "layout")}
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -98,7 +98,7 @@ def _edits_path(report_id: str) -> Path:
     return EDITS_DIR / f"{_safe_name(report_id)}.json"
 
 
-def read_edits(report_id: str) -> Dict[str, List[str]]:
+def read_edits(report_id: str) -> Dict[str, Any]:
     """读报告的隐藏状态：`{"hidden_sections": [...], "hidden_elements": [...]}`。"""
     path = _edits_path(report_id)
     if not path.is_file():
@@ -112,7 +112,7 @@ def read_edits(report_id: str) -> Dict[str, List[str]]:
     return {
         "hidden_sections": [str(x) for x in (data.get("hidden_sections") or [])][:200],
         "hidden_elements": [str(x) for x in (data.get("hidden_elements") or [])][:2000],
-        **{key: data[key] for key in ("review",) if key in data},
+        **{key: data[key] for key in ("review", "layout") if key in data},
     }
 
 
@@ -151,6 +151,20 @@ def save_review(report_id, review, expected_revision, *, hidden_elements=None):
     tmp.write_text(json.dumps(edits, ensure_ascii=False, indent=1), encoding='utf-8')
     os.replace(tmp, path)
     return edits
+
+
+@serialized_notes
+def save_layout(report_id, layout):
+    edits = read_edits(report_id)
+    if layout is None:
+        edits.pop('layout', None)
+    else:
+        edits['layout'] = layout
+    EDITS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _edits_path(report_id)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(edits, ensure_ascii=False, indent=1), encoding='utf-8')
+    os.replace(tmp, path)
 
 
 @serialized_notes
@@ -348,6 +362,7 @@ def save_report(
             if (target / "charts" / name).is_file()
             else None,
             image_loader=lambda rel: image_data_uri(target / rel),
+            layout=read_edits(report_id).get("layout"),
             **interactive_kwargs(doc, interactive=True),
         )
         html_path = target.parent / f"report_{date.today().isoformat()}.html"
@@ -453,6 +468,9 @@ def delete_report(report_id: str) -> bool:
         return False
     if directory.exists():
         shutil.rmtree(directory)
+    with _notes_lock:
+        if read_edits(report_id).get('layout'):
+            save_layout(report_id, None)
     with _lock:
         items = [i for i in _read_index() if i.get("report_id") != report_id]
         _write_index(items)

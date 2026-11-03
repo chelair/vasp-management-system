@@ -13,10 +13,33 @@ os.environ.setdefault("VASP_WEB_DATA_DIR", _DATA.name)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import atomic_forces
+import batch_check as check
 from batch_check import compute_force_stats
 
 
 class ForceMagnitudeTests(unittest.TestCase):
+    def test_opt_completion_uses_ediffg_max_force_without_extra_rms_gate(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "POSCAR").write_text(
+                "H\n1\n5 0 0\n0 5 0\n0 0 5\nH\n2\nSelective dynamics\nDirect\n"
+                "0 0 0 T T T\n0 0 0 F F F\n")
+            (directory / "INCAR").write_text("EDIFFG=-0.02\nEDIFF=1E-6\n")
+            (directory / "KPOINTS").write_text("test\n0\nGamma\n5 5 5\n0 0 0\n")
+            task = {"task_id": "opt", "task_type": "opt", "remote_dir": root}
+            for force, expected in ((.019, "completed"), (.02, "unconverged"), (.021, "unconverged")):
+                with self.subTest(force=force):
+                    (directory / "OUTCAR").write_text(
+                        "TOTAL-FORCE (eV/Angst)\n--------\n"
+                        f"0 0 0 {force} 0 0\n0 0 0 9 0 0\n--------\n"
+                        "General timing and accounting informations for this job\n")
+                    with patch.object(check, "match_job_id_by_cwd", return_value=("", True)):
+                        result = check.check_task(task, check.DEFAULT_THRESHOLDS)
+                    self.assertEqual(result["status"], expected)
+                    self.assertEqual(result["force_converged"], expected == "completed")
+                    self.assertGreater(result["force_rms"], .01)
+                    self.assertEqual(result["force_thresholds"]["max_force_threshold"], .02)
+
     def test_diagonal_force_and_fixed_atom_statistics(self):
         forces = [(0.03, -0.04, 0.0), (9.0, 0.0, 0.0)]
         self.assertEqual(compute_force_stats(forces, [False, True]), (0.05, 0.028868))

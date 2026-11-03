@@ -760,16 +760,15 @@ def force_thresholds_from_incar(
 ) -> Tuple[Dict[str, float], str]:
     """结构优化的力收敛阈值来自 INCAR 的 EDIFFG（负值＝力判据，eV/Å）。
 
-    「最大力」统一按逐原子合力模长 sqrt(Fx²+Fy²+Fz²) 统计；RMS 仍按 VASP 的
-    三分量 RMS 口径，避免改变收敛判据的整体尺度。RMS 阈值取 |EDIFFG|/2，
-    与原来 registry(0.02 / 0.01) 的比例一致。EDIFFG 缺失或为正值（能量判据）
-    时退回 registry。
+    「最大力」按逐原子合力模长 sqrt(Fx²+Fy²+Fz²) 统计，并作为力收敛判据。
+    RMS 只作统计参考，不额外否决收敛；兼容字段 rms_force_threshold 保留同一
+    |EDIFFG| 参考值。EDIFFG 缺失或为正值（能量判据）时退回 registry。
     """
     ediifg = _to_float(incar.get("EDIFFG"))
     if ediifg is not None and ediifg < 0:
         value = abs(ediifg)
         return (
-            {"max_force_threshold": value, "rms_force_threshold": value / 2},
+            {"max_force_threshold": value, "rms_force_threshold": value},
             "incar:EDIFFG",
         )
     return (
@@ -1141,10 +1140,7 @@ def _parse_forces(
     max_force, rms_force = final_stats
     result["force_max"] = max_force
     result["force_rms"] = rms_force
-    result["force_converged"] = (
-        max_force < thresholds["max_force_threshold"]
-        and rms_force < thresholds["rms_force_threshold"]
-    )
+    result["force_converged"] = max_force < thresholds["max_force_threshold"]
 
 
 def _count_marker(path: Path, marker: bytes = b"TOTAL-FORCE", cap: Optional[int] = None) -> int:
@@ -1344,8 +1340,7 @@ def _analyze_neb_status(result: Dict[str, Any], remote_dir: str) -> None:
                     if all(math.isfinite(v) and v >= 0 for v in (fmax, frms)):
                         force_source = "OUTCAR:FORCES max atom,RMS"
                         image_result.update(force_max=fmax, force_rms=frms,
-                            force_converged=bool(thresholds and fmax < thresholds["max_force_threshold"]
-                                                 and frms < thresholds["rms_force_threshold"]))
+                            force_converged=bool(thresholds and fmax < thresholds["max_force_threshold"]))
                 except ValueError:
                     pass
             force_checks.append({

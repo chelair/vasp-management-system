@@ -38,14 +38,28 @@ class NebConvergenceTests(unittest.TestCase):
         check._analyze_neb_status(result, str(self.root))
         return result
 
-    def test_all_middle_images_and_same_opt_rms_rule(self):
+    def test_all_middle_images_use_max_force_without_extra_rms_gate(self):
         self.output(self.root, "00", 8)  # endpoints never gate NEB convergence
         self.assertEqual(self.analyze()["status"], "completed")
         self.output(self.root, "02", .038)  # max < .04, RMS > .02
+        self.assertEqual(self.analyze()["status"], "completed")
+        self.output(self.root, "02", .04)
         result = self.analyze()
         self.assertEqual(result["status"], "unconverged")
         self.assertFalse(result["force_converged"])
         self.assertIn("02", " ".join(result["error_messages"]))
+
+    def test_path2_con3_rms_does_not_override_converged_max_force(self):
+        (self.root / "INCAR").write_text("IMAGES=2\nEDIFFG=-0.02\n")
+        self.output(self.root, "01", .5, summary=(
+            "FORCES: max atom, RMS 0.019334 0.010259\n"
+            "reached required accuracy - stopping structural energy minimisation"))
+        result = self.analyze()
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["force_converged"])
+        self.assertEqual(result["force_max"], .019334)
+        self.assertEqual(result["force_rms"], .010259)
+        self.assertEqual(result["force_thresholds"]["rms_force_threshold"], .02)
 
     def test_actual_con_directory_threshold_not_parent_or_registry(self):
         self.band(self.root / "con1", "-0.01")

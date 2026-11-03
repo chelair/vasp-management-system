@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, App, Button, Card, Form, Input, Skeleton } from 'antd';
+import { App, Button, Form, Input, Skeleton } from 'antd';
 import { fetchServers } from '../../api/projects';
 import { fetchRootPaths, saveRootPaths } from '../../api/settings';
 import type { ServerOption } from '../../types';
@@ -47,20 +47,14 @@ export default function RootPathsCard({ onSaved }: { onSaved?: () => void }) {
   };
 
   return (
-    <Card size="small" title="项目根目录（路径重定位）">
+    <div className="ssh-path-settings">
       {loading ? (
         <Skeleton active paragraph={{ rows: 3 }} />
       ) : (
         <Form form={form} layout="vertical">
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message="任务路径以相对项目根目录存储"
-            description="修改根目录即可整体重定位，无需逐个修改任务路径；请确保文件已位于新根目录（可用迁移按钮手动复制）。"
-          />
+          <p>统一设置项目文件的存放位置。修改根目录会更新任务路径，请先确保文件已位于新目录。</p>
           <Form.Item
-            label="本地根目录（local_root）"
+            label="本地项目根目录"
             name="local_root"
             rules={[{ required: true, message: '请输入本地根目录' }]}
           >
@@ -80,6 +74,6 @@ export default function RootPathsCard({ onSaved }: { onSaved?: () => void }) {
           </Button>
         </Form>
       )}
-    </Card>
+    </div>
   );
 }

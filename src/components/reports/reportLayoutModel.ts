@@ -1,5 +1,4 @@
-export const W = 960,
-  H = 480;
+export const W = 960;
 export const kinds = {
   text: '文本框',
   rectangle: '矩形',
@@ -35,6 +34,7 @@ export interface LayoutObject {
   id: string;
   report_id: string;
   region: string;
+  anchor?: string;
   kind: Kind;
   x: number;
   y: number;
@@ -112,34 +112,12 @@ export function makeObject(
   };
 }
 export function fit(o: LayoutObject): LayoutObject {
-  if (isLine(o)) {
-    const x = clamp(o.x, Math.max(0, -o.dx), Math.min(W, W - o.dx)),
-      y = clamp(o.y, Math.max(0, -o.dy), Math.min(H, H - o.dy));
-    return { ...o, x, y, rotation: 0 };
-  }
-  let width = clamp(o.width, 24, W),
-    height = clamp(o.height, 24, H);
+  if (isLine(o)) return { ...o, rotation: 0 };
+  let width = clamp(o.width, 24, 9600),
+    height = clamp(o.height, 24, 9600);
   if (o.kind === 'circle' || o.kind === 'square')
     width = height = Math.min(width, height);
-  const r = (o.rotation * Math.PI) / 180,
-    c = Math.abs(Math.cos(r)),
-    s = Math.abs(Math.sin(r));
-  const ratio = Math.min(
-    1,
-    W / (width * c + height * s),
-    H / (width * s + height * c),
-  );
-  width *= ratio;
-  height *= ratio;
-  const halfW = (width * c + height * s) / 2,
-    halfH = (width * s + height * c) / 2;
-  return {
-    ...o,
-    width,
-    height,
-    x: clamp(o.x + width / 2, halfW, W - halfW) - width / 2,
-    y: clamp(o.y + height / 2, halfH, H - halfH) - height / 2,
-  };
+  return { ...o, width, height };
 }
 export function textHeight(o: LayoutObject): number {
   const canvas = document.createElement('canvas'),
@@ -161,4 +139,22 @@ export function textHeight(o: LayoutObject): number {
     }
   }
   return lines * o.style.font_size * 1.35 + o.style.padding * 2;
+}
+
+export function objectBounds(o: LayoutObject) {
+  let x: number, y: number, w: number, h: number;
+  if (isLine(o)) {
+    x = Math.min(o.x, o.x + o.dx);
+    y = Math.min(o.y, o.y + o.dy);
+    w = Math.abs(o.dx);
+    h = Math.abs(o.dy);
+  } else {
+    const r = (o.rotation * Math.PI) / 180;
+    w = Math.abs(o.width * Math.cos(r)) + Math.abs(o.height * Math.sin(r));
+    h = Math.abs(o.width * Math.sin(r)) + Math.abs(o.height * Math.cos(r));
+    x = o.x + (o.width - w) / 2;
+    y = o.y + (o.height - h) / 2;
+  }
+  const pad = Math.max(14, o.style.stroke_width * 3);
+  return { x: x - pad, y: y - pad, width: w + 2 * pad, height: h + 2 * pad };
 }

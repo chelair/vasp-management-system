@@ -261,6 +261,7 @@ def markdown_to_html(
     chart_loader: Optional[Callable[[str], Optional[str]]] = None,
     image_loader: Optional[Callable[[str], Optional[str]]] = None,
     inline_charts: bool = True,
+    anchor_section: Optional[str] = None,
     widget_renderer: Optional[Callable[[str, str], Optional[str]]] = None,
 ) -> str:
     """把报告 Markdown 子集转为 HTML（表格 / 列表 / 图片 / 加粗 / 代码）。
@@ -274,9 +275,16 @@ def markdown_to_html(
     `<div>`，由注入的 ECharts 运行时接管（拿不到运行时就看前面的静态 SVG 兜底）。
     """
     lines = (markdown or "").split("\n")
+    from report_layout import anchor_ids
+    anchors = anchor_ids(markdown or '', anchor_section) if anchor_section else []
+    def attr(index):
+        return f' data-layout-anchor="{anchors[index]}" data-layout-section="{html_lib.escape(anchor_section, quote=True)}"' if anchors else ''
+    def mark(value, index):
+        return re.sub(r'<(?!style\b|script\b)([a-z][a-z0-9-]*)(?=[\s>])', lambda m: m[0]+attr(index), value, count=1, flags=re.I)
     out: List[str] = []
     i = 0
     while i < len(lines):
+        start = i
         line = lines[i]
         stripped = line.strip()
 
@@ -289,7 +297,7 @@ def markdown_to_html(
         if hook and widget_renderer is not None:
             rendered = widget_renderer(hook.group(1), hook.group(2))
             if rendered:
-                out.append(rendered)
+                out.append(mark(rendered, start))
             i += 1
             continue
 
@@ -306,7 +314,7 @@ def markdown_to_html(
             ]
             if cells:
                 head, *body = cells
-                out.append("<table><thead><tr>")
+                out.append(f"<table{attr(start)}><thead><tr>")
                 out.extend(f"<th>{_inline(c)}</th>" for c in head)
                 out.append("</tr></thead><tbody>")
                 for row in body:
@@ -323,7 +331,7 @@ def markdown_to_html(
 
         # 列表
         if re.match(r"^[-*]\s+", stripped):
-            out.append("<ul>")
+            out.append(f"<ul{attr(start)}>")
             while i < len(lines) and re.match(r"^[-*]\s+", lines[i].strip()):
                 item = re.sub(r"^[-*]\s+", "", lines[i].strip())
                 # 列表项后续的缩进行合并进来
@@ -350,17 +358,17 @@ def markdown_to_html(
                 elif image_loader is not None and src.startswith("images/"):
                     data_uri = image_loader(src)
                 if svg:
-                    figures.append(f"<figure>{svg}<figcaption>{_inline(alt)}</figcaption></figure>")
+                    figures.append(f"<figure{attr(i)}>{svg}<figcaption>{_inline(alt)}</figcaption></figure>")
                 elif data_uri:
                     figures.append(
-                        f'<figure><img src="{data_uri}" alt="{html_lib.escape(alt)}"/>'
+                        f'<figure{attr(i)}><img src="{data_uri}" alt="{html_lib.escape(alt)}"/>'
                         f"<figcaption>{_inline(alt)}</figcaption></figure>"
                     )
                 elif src.startswith("images/"):
                     pass  # 结构图缺失：跳过（用户口径：没有就跳过）
                 else:
                     figures.append(
-                        f'<figure><img src="{html_lib.escape(src)}" alt="{html_lib.escape(alt)}"/>'
+                        f'<figure{attr(i)}><img src="{html_lib.escape(src)}" alt="{html_lib.escape(alt)}"/>'
                         f"<figcaption>{_inline(alt)}</figcaption></figure>"
                     )
                 i += 1
@@ -374,7 +382,7 @@ def markdown_to_html(
         m = re.match(r"^(#{1,6})\s+(.*)$", stripped)
         if m:
             level = min(len(m.group(1)) + 1, 6)  # 文档内章节从 h2 起
-            out.append(f"<h{level}>{_inline(m.group(2))}</h{level}>")
+            out.append(f"<h{level}{attr(start)}>{_inline(m.group(2))}</h{level}>")
             i += 1
             continue
 
@@ -391,7 +399,7 @@ def markdown_to_html(
         ):
             paragraph.append(lines[i].strip())
             i += 1
-        out.append(f"<p>{_inline(' '.join(paragraph))}</p>")
+        out.append(f"<p{attr(start)}>{_inline(' '.join(paragraph))}</p>")
     return "\n".join(out)
 
 
@@ -639,7 +647,7 @@ VIEWER_SCRIPT = """
       return true;
     }
     // 报告里内联的看板图（原始 <svg>）：现场序列化成 data URI，一样能缩放看清
-    if (target.closest('.report-manual-region')) return false;
+    if (target.closest('.report-manual-region,.report-manual-object')) return false;
     var svg = target.closest('svg');
     if (svg && svg.closest('.report-body, body')) {
       try {
@@ -802,12 +810,12 @@ def _inject_task_notes(body_html: str, note_blocks: Dict[str, Any]) -> str:
 
     Markdown 里任务标题统一是 `#### 名称` → 导出后是 `<h5>`；按标签取 `note_blocks`。
     """
-    if not note_blocks or "<h5>" not in body_html:
+    if not note_blocks or "<h5" not in body_html:
         return body_html
-    parts = re.split(r"(?=<h5>)", body_html)
+    parts = re.split(r"(?=<h5(?:\s|>))", body_html)
     out: List[str] = []
     for part in parts:
-        m = re.match(r"<h5>(.*?)</h5>", part)
+        m = re.match(r"<h5\b[^>]*>(.*?)</h5>", part)
         if m:
             label = html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
             panel = notes_panel(note_blocks.get(label) or [])
@@ -832,11 +840,11 @@ def _inject_type_notes(body_html: str, notes: Dict[str, Any]) -> str:
     四个类型都有类型级落点（电子结构是占位区块，只有类型级、没有子项级）；
     空注解不产生空壳（`notes_panel` 会返回空串）。
     """
-    if not notes or "<h4>" not in body_html:
+    if not notes or "<h4" not in body_html:
         return body_html
     out: List[str] = []
-    for part in re.split(r"(?=<h4>)", body_html):
-        m = re.match(r"<h4>(.*?)</h4>", part)
+    for part in re.split(r"(?=<h4(?:\s|>))", body_html):
+        m = re.match(r"<h4\b[^>]*>(.*?)</h4>", part)
         if not m:
             out.append(part)
             continue
@@ -867,14 +875,14 @@ def _apply_hidden(section_key: str, body_html: str, hidden: set) -> str:
         return body_html
 
     def _label(chunk: str, tag: str) -> str:
-        m = re.match(rf"<{tag}>(.*?)</{tag}>", chunk, flags=re.S)
+        m = re.match(rf"<{tag}\b[^>]*>(.*?)</{tag}>", chunk, flags=re.S)
         if not m:
             return ""
         return html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
 
     # 1) 类型块（<h4> 起 → 下一个 h4 前）
     kept: List[str] = []
-    for part in re.split(r"(?=<h4>)", body_html):
+    for part in re.split(r"(?=<h4(?:\s|>))", body_html):
         label = _label(part, "h4")
         if label == "关键结果概览":
             def summary_row(match):
@@ -892,7 +900,7 @@ def _apply_hidden(section_key: str, body_html: str, hidden: set) -> str:
 
     # 2) 任务块（<h5> 起 → 下一个 h5/h4 前）+ 电子结构"整任务"
     kept = []
-    for part in re.split(r"(?=<h5>)", body_html):
+    for part in re.split(r"(?=<h5(?:\s|>))", body_html):
         label = _label(part, "h5")
         if label:
             if f"task:{section_key}:{label}" in hidden:
@@ -906,8 +914,8 @@ def _apply_hidden(section_key: str, body_html: str, hidden: set) -> str:
     # 3) 单张图（按章节内 figure 出现顺序编号，与前端一致）
     index = 0
     out: List[str] = []
-    for chunk in re.split(r"(<figure>.*?</figure>)", body_html, flags=re.S):
-        if chunk.startswith("<figure>"):
+    for chunk in re.split(r"(<figure\b[^>]*>.*?</figure>)", body_html, flags=re.S):
+        if chunk.startswith("<figure"):
             if f"figure:{section_key}:{index}" in hidden:
                 index += 1
                 continue
@@ -948,12 +956,13 @@ def render_html(
         if f"section:{section['key']}" in hidden:
             continue  # 章节级隐藏：整章不导出
         title = SECTION_TITLES.get(section["key"], section["title"])
-        body_parts.append(f"<h2>{html_lib.escape(title)}</h2>")
+        body_parts.append(f'<h2 data-layout-anchor="heading" data-layout-section="{html_lib.escape(section["key"], quote=True)}">{html_lib.escape(title)}</h2>')
         section_html = markdown_to_html(
             section.get("markdown", ""),
             chart_loader=chart_loader,
             image_loader=image_loader,
             inline_charts=True,
+            anchor_section=section["key"],
             widget_renderer=widget_renderer_for(doc),
         )
         # 任务级注解：插在每个任务块尾（标签 = markdown 里的 #### 标题）
@@ -962,8 +971,7 @@ def render_html(
         # 类型级注解（只在本章节 = 重点科学结果分析）：插在每个类型标题正下方
         if section["key"] == "science":
             section_html = _inject_type_notes(section_html, doc.get("notes") or {})
-        from report_layout import render_region
-        body_parts.append(section_html + render_region(layout or {}, section["key"]))
+        body_parts.append(section_html)
     dialogs_html = render_dialogs(
         doc.get("dialogs") or [], image_loader=image_loader, chart_loader=chart_loader
     )
@@ -988,11 +996,14 @@ def render_html(
             f"{mol}"
             f"<script>{interactive_js}</script>"
         )
+    from report_layout import render_floating
+    available = set(re.findall(r'data-layout-anchor="([^"]+)" data-layout-section="([^"]+)"', ''.join(body_parts)))
+    floating = render_floating(layout or {}, chosen - {key[8:] for key in hidden if key.startswith('section:')}, available)
     return (
         "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/>"
         f'<meta name="viewport" content="width=device-width, initial-scale=1"/>'
         f"<title>{html_lib.escape(str(meta.get('project_name', '')))} · 项目报告</title>"
-        f"<style>{CSS}</style></head><body>"
+        f"<style>{CSS}\nbody{{container-type:inline-size;}}</style></head><body>"
         f"<h1>{html_lib.escape(str(meta.get('project_name', '')))} · 项目报告</h1>"
         f'<div class="report-meta">{html_lib.escape(str((meta.get("time_window") or {}).get("label", "")))}'
         f" · 生成于 {html_lib.escape(str(meta.get('generated_at', '')))}</div>"
@@ -1001,6 +1012,7 @@ def render_html(
         + dialogs_html
         + f"<script>{VIEWER_SCRIPT}</script>"
         + interactive
+        + floating
         + auto
         + "</body></html>"
     )

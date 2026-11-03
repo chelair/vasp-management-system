@@ -121,7 +121,7 @@ const NOTE_TYPE_KEYS: Record<string, string> = {
  */
 function headingLabel(el: HTMLElement): string {
   const clone = el.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('.report-hide-btn,.report-review-anchor').forEach((btn) => btn.remove());
+  clone.querySelectorAll('.report-hide-btn,.report-review-anchor,.report-manual-object').forEach((btn) => btn.remove());
   return (clone.textContent ?? '').trim();
 }
 
@@ -437,6 +437,7 @@ export default function Report() {
       visibleSections.map((section) => ({
         ...section,
         html: renderMarkdown(section.markdown, {
+          anchorSection: section.key,
           widgetRenderer: (kind, id) => kind === 'review-element' ? detail?.review_elements_html?.[id] : undefined,
           // charts/xxx.svg 与 images/xxx.png 都按报告目录解析（后端两个接口）
           chartResolver: (path) =>
@@ -467,7 +468,10 @@ export default function Report() {
       // —— 关闭的 <dialog> 是 display:none，容器尺寸为 0，直接 init 会画不出来
       const dialogEl = img.closest('dialog');
       const figure = img.closest('figure');
-      if (figure) figure.replaceWith(host);
+      if (figure) {
+        if (figure.dataset.layoutAnchor) { host.dataset.layoutAnchor = figure.dataset.layoutAnchor; host.dataset.layoutSection = figure.dataset.layoutSection; }
+        figure.replaceWith(host);
+      }
       else img.replaceWith(host);
       hosts.push({ key: taskId, taskId, el: host, dialogId: dialogEl?.id ?? null });
     });
@@ -1204,14 +1208,13 @@ export default function Report() {
                   <div className="report-content" ref={contentRef}>
                     {renderedSections.map((s) => (
                       <section key={s.key} id={`report-${s.key}`} data-report-section={s.key}>
-                        <h2 className="report-section-title">{s.title}</h2>
+                        <h2 className="report-section-title" data-layout-anchor="heading" data-layout-section={s.key}>{s.title}</h2>
                         <div
                           className="report-markdown"
                           onClick={handleReportViewerClick}
                           onErrorCapture={handleReportAssetError}
                           dangerouslySetInnerHTML={{ __html: s.html }}
                         />
-                        <div data-manual-host={s.key} />
                       </section>
                     ))}
                     {/* 能量/力收敛曲线：ECharts 组件（替代报告里那张 SVG 图，v0.9.60） */}

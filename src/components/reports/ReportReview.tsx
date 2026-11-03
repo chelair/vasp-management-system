@@ -68,7 +68,7 @@ export function ReportReviewProvider({ reportId, contentRef, version, connection
     const hosts: { key: string; el: HTMLElement }[] = [];
     const headingText = (heading: Element) => {
       const clone = heading.cloneNode(true) as HTMLElement;
-      clone.querySelectorAll('.report-hide-btn,.report-review-anchor').forEach(el => el.remove());
+      clone.querySelectorAll('.report-hide-btn,.report-review-anchor,.report-manual-object').forEach(el => el.remove());
       return clone.textContent?.trim();
     };
     root.querySelectorAll<HTMLElement>('section[data-report-section]').forEach(section => {

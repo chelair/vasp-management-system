@@ -1,5 +1,6 @@
 """One temporary report writer and local mock model for the review browser test."""
 import json
+import os
 import time
 import copy
 from unittest.mock import patch
@@ -33,6 +34,9 @@ case.doc['science']['opt'][0]['structure']={'poscar_cif':cif,'contcar_cif':cif}
 for structure in case.doc['science']['free_energy'][0]['structures']:structure['cif']=cif
 vacancy_fixture.install(case.doc)
 analysis_fixture.install(case.doc)
+if os.environ.get('LAYOUT_BROWSER_FIXTURE'):
+    case.doc['markdown_sections'].insert(0, {'key':'basic_info','title':'项目概况','markdown':'这是报告顶部的原始段落，保留正文布局。\n\n[原有链接](https://example.invalid/original-link)\n\n### 项目说明\n\n第二段原文，用于验证浮层不会挤占正文。'})
+    case.doc['markdown_sections'].append({'key':'actions','title':'下一步工作','markdown':'这是报告末尾的原始段落，允许跨章节拖动批注。\n\n后续研究计划保持原样。'})
 report_store.save_report(case.doc,'browser fixture',{'g_step.svg':'<svg>fallback</svg>','analysis_pdos.svg':analysis_fixture.CHART})
 target=next(m for m in report_review.view(case.doc)['modules'] if m['title']=='Model')
 def result(value):
@@ -55,10 +59,10 @@ def result(value):
     return {'reply':'批注回复专用内容。<script>window.REVIEW_XSS=1</script> ![leak](https://example.invalid/leak)',
             'status':'done','actions':[{'kind':'text','target':target['key'],'text':'浏览器核对后的报告解释，原有结构交互继续保留。'}]}
 fixture.REVIEW_RESULT=result
-def build(pid, *, progress):
-    progress(1,1,'整理已有项目数据')
+def build(pid, *, progress=None, **kwargs):
+    if progress:progress(1,1,'整理已有项目数据')
     return {'report':copy.deepcopy(case.doc),'markdown':'browser generated report','charts':{'g_step.svg':'<svg>fallback</svg>','analysis_pdos.svg':analysis_fixture.CHART}}
-with patch('report_builder.build_report',side_effect=build):
+with patch('report_builder.build_report',side_effect=build), patch('routers.project_reports.build_report',side_effect=build):
     print(json.dumps({'base':case.client.base,'connection':case.connection['id']}),flush=True)
     try:
         while True:time.sleep(1)

@@ -111,8 +111,8 @@ class ReportPresentationTests(unittest.TestCase):
         html = render_html(doc, sections)
         self.assertIn("关键结果概览", html)
         hidden = render_html(doc, sections, hidden={"etask:science:A"})
-        self.assertNotIn("<h5>A · 功函数</h5>", hidden)
-        self.assertIn("<h5>B · 功函数</h5>", hidden)
+        self.assertNotRegex(hidden, r"<h5\b[^>]*>A · 功函数</h5>")
+        self.assertRegex(hidden, r"<h5\b[^>]*>B · 功函数</h5>")
         self.assertNotIn('data-label="模型">A</td>', hidden)
         self.assertIn('data-label="模型">B</td>', hidden)
 

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import test_report_ai_notes as fixture
 import report_store as store
-from report_layout import Layout, LayoutObject
+from report_layout import Layout, LayoutObject, anchor_ids
 
 
 class ReportLayoutTests(unittest.TestCase):
@@ -93,8 +93,8 @@ class ReportLayoutTests(unittest.TestCase):
         self.assertEqual(self.state()['objects'][0]['report_id'],'rpt_p')
 
     def test_input_validation_and_finite_bounds(self):
-        bad=[self.obj(x=959),self.obj(kind='square',height=140),self.obj(kind='circle',height=140),
-             self.obj(kind='arrow',dx=-100),self.obj(kind='text',rotation=180,x=900),
+        bad=[self.obj(x=1000001),self.obj(kind='square',height=140),self.obj(kind='circle',height=140),
+             self.obj(width=0),self.obj(anchor='bad HTML anchor'),
              {**self.obj(), 'kind':'unknown'},self.obj(text='x'*4001),self.obj(region='missing')]
         style=self.obj();style['style']['fill']='url(https://example.invalid)';bad.append(style)
         style=self.obj();style['style']['stroke']='red" onload="alert(1)';bad.append(style)
@@ -149,6 +149,52 @@ class ReportLayoutTests(unittest.TestCase):
         self.put([self.obj()]);self.assertTrue(store._edits_path('rpt_p').exists())
         self.assertEqual(self.client.request('DELETE','/api/reports/project/rpt_p').status_code,200)
         self.assertNotIn('layout',store.read_edits('rpt_p'))
+
+    def test_legacy_objects_keep_ids_and_styles_without_adding_canvas(self):
+        self.put([self.obj()])
+        html=self.client.get('/api/reports/project/rpt_p/export.html?interactive=0').text
+        self.assertIn('report-layout-floating',html)
+        self.assertIn('data-layout-anchor-ref="heading"',html)
+        self.assertNotIn('class="report-manual-region"',html)
+        self.assertEqual(self.state()['objects'][0]['id'],'text')
+
+    def test_floating_objects_can_extend_outside_old_canvas(self):
+        anchor=anchor_ids(self.doc['markdown_sections'][0]['markdown'],'science')[0]
+        obj=self.obj(anchor=anchor,x=-80,y=1250,width=260,height=150)
+        response=self.put([obj]);self.assertEqual(response.status_code,200,response.text)
+        html=self.client.get('/api/reports/project/rpt_p/export.html?interactive=0').text
+        self.assertIn('report-layout-floating',html);self.assertNotIn('class="report-manual-region"',html)
+        self.assertIn('data-layout-anchor-ref="'+anchor+'"',html)
+        self.assertIn('beforeprint',html)
+        self.assertEqual(self.state()['objects'][0]['x'],-80)
+
+    def test_floating_anchor_survives_unrelated_insert_and_hides_with_original(self):
+        source=self.doc['markdown_sections'][0]['markdown']
+        anchor=anchor_ids(source,'science')[-1]
+        self.assertEqual(self.put([self.obj(anchor=anchor)]).status_code,200)
+        self.doc['markdown_sections'][0]['markdown']='前面新插入的段落\n\n'+source
+        store.save_report(self.doc,'updated',{})
+        html=self.client.get('/api/reports/project/rpt_p/export.html?interactive=0').text
+        self.assertIn('data-layout-anchor-ref="'+anchor+'"',html)
+        store.save_edits('rpt_p',[],['task:science:Model'])
+        html=self.client.get('/api/reports/project/rpt_p/export.html?interactive=0').text
+        self.assertNotIn('data-layout-object=',html)
+        self.assertEqual(len(self.state()['objects']),1)
+
+    def test_missing_floating_anchor_is_retained_and_can_be_relocated(self):
+        anchor=anchor_ids(self.doc['markdown_sections'][0]['markdown'],'science')[-1]
+        self.put([self.obj(anchor=anchor)])
+        self.doc['markdown_sections'][0]['markdown']='完全变化的正文'
+        store.save_report(self.doc,'changed',{})
+        objects=self.state()['objects']
+        self.assertEqual(self.put(objects,1).status_code,200)
+        self.assertNotIn('data-layout-object=',self.client.get('/api/reports/project/rpt_p/export.html').text)
+        objects[0]['anchor']='heading'
+        self.assertEqual(self.put(objects,2).status_code,200)
+        self.assertIn('data-layout-object=',self.client.get('/api/reports/project/rpt_p/export.html').text)
+
+    def test_new_floating_object_rejects_unknown_anchor(self):
+        self.assertEqual(self.put([self.obj(anchor='a_00000000_0')]).status_code,400)
 
 
 if __name__=='__main__':unittest.main()

@@ -70,23 +70,6 @@
 .report-layout-editor [role='alert'] {
   color: #b42318;
 }
-.report-manual-region {
-  width: 100%;
-  margin: 12px 0;
-  break-inside: avoid;
-  page-break-inside: avoid;
-  print-color-adjust: exact;
-  -webkit-print-color-adjust: exact;
-}
-.report-manual-region.is-editing {
-  outline: 1px dashed #9fb4d4;
-  background: #fafcff;
-}
-.report-layout-region-label {
-  font-size: 12px;
-  color: #66768e;
-  padding: 4px 8px;
-}
 .layout-object.is-editable {
   cursor: move;
   touch-action: none;
@@ -112,12 +95,18 @@
 }
 @media print {
   .report-layout-editor,
-  .layout-controls,
-  .report-layout-region-label {
+  .layout-controls {
     display: none !important;
   }
-  .report-manual-region.is-editing {
-    outline: none;
-    background: none;
-  }
+}
+.report-content {
+  width: 100%;
+  position: relative;
+  container-type: inline-size;
+  isolation: isolate;
+}
+.report-layout-floating {
+  break-inside: avoid;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }

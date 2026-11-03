@@ -100,11 +100,13 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 ## 完整项目报告自由排版
 
-`GET /api/reports/project/{id}/layout` 返回 `version:1, revision, objects`，旧报告返回空列表和 revision=0；详情 `edits.layout` 为同一保存源。`PUT` 同路径接收完整对象列表及当前整数 revision，成功替换列表并递增 revision，不追加；项目归属沿用原完整报告鉴权。冲突409，归属/无效章节400，字段/边界/重复ID/版本错误422，磁盘保存失败500。写入原 `reports/edits/<id>.json` 的独立 layout，共用保存锁并保留 hidden/review。每份最多500对象，每个文本最多4000字符；created_at/updated_at由服务端维护。
+`GET /api/reports/project/{id}/layout` 返回 `version:1,revision,objects`，旧报告为空列表及 revision=0；详情 `edits.layout` 为同一保存源。`PUT`接收完整对象列表及当前整数revision，成功替换列表并递增revision；项目归属沿用原完整报告鉴权。冲突409，归属/无效章节/新建未知锚点400，字段/尺寸/重复ID/版本错误422，磁盘失败500。继续写原 edits 侧文件、共用锁并保留hidden/review，layout与AI批注修订独立。每份最多500对象、单文本4000字符，时间由服务端维护。
 
-对象字段 `id,report_id,region,kind,x,y,width,height,rotation,dx,dy,text,style,z,created_at,updated_at`。region为稳定章节key，坐标基于每章960×480的局部区域；线条dx/dy为有符号端点偏移。kind为text/rectangle/rounded/square/circle/ellipse/triangle/diamond/line/arrow/double-arrow。style含fill/fill_opacity、stroke/stroke_width/stroke_opacity、dash(solid/dashed/dotted)、arrow_start/arrow_end、color/font_size/font_weight/italic/align/vertical/padding。颜色仅接受六位十六进制，数值有限且受边界约束。
+对象字段 `id,report_id,region,anchor?,kind,x,y,width,height,rotation,dx,dy,text,style,z,created_at,updated_at`。新增可选anchor指向原文段落/标题/表格/图片/组件身份，heading指章标题。region是归属信息，不是移动边界；x/y为相对原文锚点、按报告宽度960归一化的坐标，允许负数和超出原段落/章节，无固定画布。旧对象没有anchor按本章标题解释原坐标，ID/内容/样式保留，不再输出章末占位区域；首次显式移动/重新放置后保存真实原文锚点。
 
-正文重新生成保留layout；已移除章节的旧对象可保留原归属或改到有效章节，不能新建到未知章节。显式删除报告清除layout。layout修订与AI批注修订独立。HTML/PDF导出使用当前layout并过滤隐藏/未选择章节，不附带编辑器；未传hide时使用已保存隐藏状态。保存同步更新当前目录HTML副本，失败通过成功响应中的可选 `snapshot_warning` 明确提示，用户仍可下载动态导出。细节及已验证浏览器见[自由排版说明](docs/report-layout.md)。
+kind与style沿原合同：text/rectangle/rounded/square/circle/ellipse/triangle/diamond/line/arrow/double-arrow；样式含fill/fill_opacity、stroke/stroke_width/stroke_opacity、dash、arrow_start/arrow_end、color/font_size/font_weight/italic/align/vertical/padding。颜色为六位十六进制，数值须有限；封闭形状至少24×24、正方形/圆形等比，线条dx/dy为有符号端点偏移。
+
+原文重生成不删除layout；旧锚点或章节消失时允许保留原归属，前端提示重新放置，新对象不能绑定未知位置。HTML/PDF按保存layout在原文上绘制，隐藏/未选择原文的标注不导出，无编辑UI；PDF不增加正文占位，跨物理页边缘的对象仍有裁切限制。保存同步更新当前目录HTML副本，失败以可选snapshot_warning提示；动态导出仍可用。完整合同及验证见[浮层说明](docs/report-layout.md)。
 
 ## 高级分步专题接口（兼容）
 

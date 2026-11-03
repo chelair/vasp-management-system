@@ -13,7 +13,6 @@ import type { ProjectReportDetail } from '../../types';
 import ReportLayoutShape from './ReportLayoutShape';
 import {
   W,
-  H,
   kinds,
   makeObject,
   newObjectId,
@@ -22,6 +21,7 @@ import {
   fit,
   clamp,
   textHeight,
+  objectBounds,
   type Kind,
   type Layout,
   type LayoutObject,
@@ -57,11 +57,13 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
       [selected, setSelected] = useState(''),
       [typing, setTyping] = useState(''),
       [text, setText] = useState('');
-    const [region, setRegion] = useState(
-      detail.markdown_sections[0]?.key ?? '',
-    );
-    const [hosts, setHosts] = useState<HTMLElement[]>([]),
-      [preview, setPreview] = useState<LayoutObject | null>(null);
+    const [anchorHosts, setAnchorHosts] = useState<HTMLElement[]>([]);
+    const [anchorOffsets, setAnchorOffsets] = useState<
+      Record<string, { left: number; top: number; visible: boolean }>
+    >({});
+    const [armed, setArmed] = useState<Kind | ''>('');
+    const [relocating, setRelocating] = useState('');
+    const [preview, setPreview] = useState<LayoutObject | null>(null);
     const [status, setStatus] = useState(''),
       [saving, setSaving] = useState(false);
     const past = useRef<LayoutObject[][]>([]),
@@ -99,7 +101,7 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
           if (grow && !isLine(next))
             next = {
               ...next,
-              height: Math.max(next.height, Math.min(H, textHeight(next))),
+              height: Math.max(next.height, Math.min(9600, textHeight(next))),
             };
           return fit(next);
         }),
@@ -166,10 +168,59 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
     saveRef.current = save;
     useImperativeHandle(ref, () => ({ save: () => saveRef.current() }));
     useEffect(() => {
-      const list = Array.from(
-        root.current?.querySelectorAll<HTMLElement>('[data-manual-host]') ?? [],
-      );
-      setHosts(list);
+      const element = root.current;
+      if (!element) return;
+      let frame = 0;
+      const schedule = () => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(refresh);
+      };
+      const resize = new ResizeObserver(schedule),
+        watched = new Set<Element>();
+      function refresh() {
+        const anchors = Array.from(
+          element!.querySelectorAll<HTMLElement>('[data-layout-anchor]'),
+        );
+        const base = element!.getBoundingClientRect(),
+          offsets: Record<
+            string,
+            { left: number; top: number; visible: boolean }
+          > = {};
+        for (const anchor of anchors) {
+          const r = anchor.getBoundingClientRect();
+          offsets[
+            anchor.dataset.layoutSection + ':' + anchor.dataset.layoutAnchor
+          ] = {
+            left: r.left - base.left,
+            top: r.top - base.top,
+            visible: r.width > 0 && r.height > 0,
+          };
+          if (!watched.has(anchor)) {
+            resize.observe(anchor);
+            watched.add(anchor);
+          }
+        }
+        setAnchorHosts((old) =>
+          old.length === anchors.length &&
+          old.every((el, i) => el === anchors[i])
+            ? old
+            : anchors,
+        );
+        setAnchorOffsets((old) =>
+          JSON.stringify(old) === JSON.stringify(offsets) ? old : offsets,
+        );
+      }
+      resize.observe(element);
+      refresh();
+      const observer = new MutationObserver(schedule);
+      observer.observe(element, { childList: true, subtree: true });
+      element.addEventListener('scroll', schedule, true);
+      return () => {
+        observer.disconnect();
+        resize.disconnect();
+        cancelAnimationFrame(frame);
+        element.removeEventListener('scroll', schedule, true);
+      };
     }, [root, version]);
     useEffect(() => {
       if (!dirty) return;
@@ -239,9 +290,7 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
     }
     function layer(action: string) {
       if (!active) return;
-      const local = objects
-          .filter((o) => o.region === active.region)
-          .sort((a, b) => a.z - b.z),
+      const local = [...objects].sort((a, b) => a.z - b.z),
         i = local.findIndex((o) => o.id === active.id);
       const target =
         action === 'top'
@@ -260,18 +309,77 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
         message.info('每份报告最多添加500个排版对象');
         return;
       }
-      const next = makeObject(
-        kind,
-        reportId,
-        region,
-        objects.filter((o) => o.region === region).length,
-      );
-      commit([...objects, next]);
-      setSelected(next.id);
-      root.current
-        ?.querySelector(`[data-manual-host="${CSS.escape(region)}"]`)
-        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      setArmed(kind);
+      setRelocating('');
+      setSelected('');
     }
+    function nearestAnchor(x: number, y: number) {
+      const available = anchorHosts.filter(
+        (el) => el.isConnected && el.getBoundingClientRect().height > 0,
+      );
+      let best: HTMLElement | undefined,
+        distance = Infinity;
+      for (const anchor of available) {
+        const r = anchor.getBoundingClientRect();
+        const d = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+        const horizontal =
+          x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+        if (d + horizontal < distance) {
+          distance = d + horizontal;
+          best = anchor;
+        }
+      }
+      return best;
+    }
+    const suppressClick = useRef(false);
+    const placement = useRef<(event: PointerEvent) => void>(() => {});
+    placement.current = (event) => {
+      if (!editing || (!armed && !relocating) || event.button !== 0) return;
+      const anchor = nearestAnchor(event.clientX, event.clientY);
+      if (!anchor) return;
+      event.preventDefault();
+      event.stopPropagation();
+      suppressClick.current = true;
+      const scale = (root.current?.getBoundingClientRect().width ?? W) / W,
+        rect = anchor.getBoundingClientRect();
+      const values = {
+        region: anchor.dataset.layoutSection!,
+        anchor: anchor.dataset.layoutAnchor!,
+        x: (event.clientX - rect.left) / scale,
+        y: (event.clientY - rect.top) / scale,
+      };
+      if (relocating) {
+        change(relocating, values);
+        setSelected(relocating);
+      } else if (armed) {
+        const next = {
+          ...makeObject(armed, reportId, values.region, objects.length),
+          ...values,
+        };
+        commit([...current.current, next]);
+        setSelected(next.id);
+      }
+      setArmed('');
+      setRelocating('');
+    };
+    useEffect(() => {
+      const element = root.current;
+      if (!element) return;
+      const listener = (event: PointerEvent) => placement.current(event);
+      const click = (event: MouseEvent) => {
+        if (suppressClick.current) {
+          event.preventDefault();
+          event.stopPropagation();
+          suppressClick.current = false;
+        }
+      };
+      element.addEventListener('pointerdown', listener, true);
+      element.addEventListener('click', click, true);
+      return () => {
+        element.removeEventListener('pointerdown', listener, true);
+        element.removeEventListener('click', click, true);
+      };
+    }, [root, version]);
     function point(
       svg: SVGSVGElement,
       e: { clientX: number; clientY: number },
@@ -286,7 +394,7 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
       e.preventDefault();
       e.stopPropagation();
       setSelected(object.id);
-      setRegion(object.region);
+
       const svg = (e.target as Element).closest('svg')!;
       const p = point(svg, e);
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -314,13 +422,13 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
         const ex = o.x + o.dx,
           ey = o.y + o.dy;
         if (d.mode === 'start') {
-          next.x = clamp(o.x + dx, 0, W);
-          next.y = clamp(o.y + dy, 0, H);
+          next.x = o.x + dx;
+          next.y = o.y + dy;
           next.dx = ex - next.x;
           next.dy = ey - next.y;
         } else {
-          next.dx = clamp(ex + dx, 0, W) - o.x;
-          next.dy = clamp(ey + dy, 0, H) - o.y;
+          next.dx = ex + dx - o.x;
+          next.dy = ey + dy - o.y;
         }
       } else {
         const r = (o.rotation * Math.PI) / 180,
@@ -381,8 +489,30 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
       if (!d) return;
       if (d.target.hasPointerCapture(d.pointer))
         d.target.releasePointerCapture(d.pointer);
-      if (!cancel && preview)
-        commit(current.current.map((o) => (o.id === preview.id ? preview : o)));
+      if (!cancel && preview) {
+        let next = preview;
+        if (d.mode === 'move') {
+          const matrix = d.svg.getScreenCTM();
+          if (matrix) {
+            const screen = new DOMPoint(preview.x, preview.y).matrixTransform(
+              matrix,
+            );
+            const anchor = nearestAnchor(screen.x, screen.y);
+            if (anchor) {
+              const r = anchor.getBoundingClientRect(),
+                scale = (root.current?.getBoundingClientRect().width ?? W) / W;
+              next = {
+                ...preview,
+                region: anchor.dataset.layoutSection!,
+                anchor: anchor.dataset.layoutAnchor!,
+                x: (screen.x - r.left) / scale,
+                y: (screen.y - r.top) / scale,
+              };
+            }
+          }
+        }
+        commit(current.current.map((o) => (o.id === next.id ? next : o)));
+      }
       drag.current = null;
       setPreview(null);
       e.stopPropagation();
@@ -394,6 +524,8 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
         if (e.key === 'Escape') {
           finishRef.current();
           setSelected('');
+          setArmed('');
+          setRelocating('');
           return;
         }
         if (el.closest('input,textarea,select,[contenteditable="true"]'))
@@ -419,7 +551,7 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
       const outside = (e: PointerEvent) => {
         if (
           !(e.target as Element).closest(
-            '.report-layout-editor,.report-manual-region',
+            '.report-layout-editor,.report-manual-region,.report-manual-object',
           )
         ) {
           finishRef.current();
@@ -433,6 +565,119 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
         document.removeEventListener('pointerdown', outside);
       };
     });
+    function renderObject(item: LayoutObject) {
+      const o = preview?.id === item.id ? preview : item,
+        chosen = editing && selected === o.id;
+      const handles: [string, number, number][] = isLine(o)
+        ? [
+            ['start', 0, 0],
+            ['end', o.dx, o.dy],
+          ]
+        : [
+            ['nw', 0, 0],
+            ['n', o.width / 2, 0],
+            ['ne', o.width, 0],
+            ['e', o.width, o.height / 2],
+            ['se', o.width, o.height],
+            ['s', o.width / 2, o.height],
+            ['sw', 0, o.height],
+            ['w', 0, o.height / 2],
+          ];
+      return (
+        <g
+          key={o.id}
+          data-layout-object={o.id}
+          className={editing ? 'layout-object is-editable' : 'layout-object'}
+          style={{ pointerEvents: editing ? 'auto' : 'none' }}
+          transform={`translate(${o.x} ${o.y}) rotate(${o.rotation} ${o.width / 2} ${o.height / 2})`}
+          onPointerDown={(e) => start(e, o)}
+          onDoubleClick={(e) => {
+            if (editing && !isLine(o)) {
+              e.stopPropagation();
+              setSelected(o.id);
+              setTyping(o.id);
+              setText(o.text);
+              pendingText.current = { id: o.id, text: o.text };
+            }
+          }}
+        >
+          {editing && isLine(o) && (
+            <path
+              d={`M0 0 L${o.dx} ${o.dy}`}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={Math.max(18, o.style.stroke_width)}
+            />
+          )}
+          <ReportLayoutShape o={o}>
+            {typing === o.id ? (
+              <textarea
+                autoFocus
+                aria-label="对象文字"
+                value={text}
+                maxLength={4000}
+                onPointerDown={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  setText(e.target.value);
+                  pendingText.current = {
+                    id: o.id,
+                    text: e.target.value,
+                  };
+                }}
+                onBlur={finishText}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  minHeight: o.style.font_size * 1.5,
+                  border: 'none',
+                  padding: 0,
+                  margin: 0,
+                  resize: 'none',
+                  font: 'inherit',
+                  lineHeight: 'inherit',
+                  textAlign: 'inherit',
+                  color: 'inherit',
+                  background: 'transparent',
+                  outline: '1px dashed #3f6fe0',
+                }}
+              />
+            ) : undefined}
+          </ReportLayoutShape>
+          {chosen && typing !== o.id && (
+            <g className="layout-controls">
+              {!isLine(o) && (
+                <rect
+                  width={o.width}
+                  height={o.height}
+                  fill="none"
+                  stroke="#3f6fe0"
+                  strokeWidth={1.5}
+                  strokeDasharray="5 3"
+                />
+              )}
+              {handles.map(([name, x, y]) => (
+                <rect
+                  key={name}
+                  aria-label={`调整${name}`}
+                  data-handle={name}
+                  x={x - 6}
+                  y={y - 6}
+                  width={12}
+                  height={12}
+                  fill="white"
+                  stroke="#3f6fe0"
+                  strokeWidth={2}
+                  style={{
+                    cursor: isLine(o) ? 'crosshair' : `${name}-resize`,
+                  }}
+                  onPointerDown={(e) => start(e, o, name)}
+                />
+              ))}
+            </g>
+          )}
+        </g>
+      );
+    }
     const style = (patch: Partial<LayoutStyle>) =>
       active &&
       change(active.id, { style: { ...active.style, ...patch } }, true);
@@ -477,7 +722,14 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
     );
     const regions = detail.markdown_sections;
     const missing = objects.filter(
-      (o) => !regions.some((r) => r.key === o.region),
+      (o) =>
+        !regions.some((r) => r.key === o.region) ||
+        (!!o.anchor &&
+          !anchorHosts.some(
+            (a) =>
+              a.dataset.layoutSection === o.region &&
+              a.dataset.layoutAnchor === o.anchor,
+          )),
     );
     return (
       <>
@@ -491,6 +743,8 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
                 finishText();
                 setEditing(!editing);
                 setSelected('');
+                setArmed('');
+                setRelocating('');
               }}
             >
               {editing ? '退出编辑' : '编辑排版'}
@@ -520,23 +774,6 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
           {editing && (
             <>
               <div className="report-layout-toolbar">
-                <label>
-                  所属章节
-                  <select
-                    aria-label="排版章节"
-                    value={region}
-                    onChange={(e) => {
-                      setRegion(e.target.value);
-                      setSelected('');
-                    }}
-                  >
-                    {regions.map((r) => (
-                      <option key={r.key} value={r.key}>
-                        {r.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <button type="button" onClick={() => add('text')}>
                   添加文本框
                 </button>
@@ -587,26 +824,40 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
                     {objects.map((o, i) => (
                       <option key={o.id} value={o.id}>
                         {i + 1}. {kinds[o.kind]} {o.text.slice(0, 16)}
-                        {missing.includes(o) ? '（原章节已移除）' : ''}
+                        {missing.includes(o) ? '（原位置已变化）' : ''}
                       </option>
                     ))}
                   </select>
                 </label>
               </div>
-              <p className="report-layout-help">
-                对象放在各章节末尾的独立排版区；双击写文字，拖动移动，拖动控制点缩放。Shift
-                保持比例。修改会自动保存。
+              <p
+                className="report-layout-help"
+                role={armed || relocating ? 'status' : undefined}
+              >
+                {armed || relocating
+                  ? '在报告任意位置单击放置，按 Escape 取消。'
+                  : '选择文本框或形状后，在报告任意位置单击放置；拖动可跨章节移动。双击写文字，Shift 缩放保持比例。浮层不占正文空间，修改自动保存。'}
               </p>
               {missing.length > 0 && (
                 <p role="alert">
                   {missing.length}{' '}
-                  个对象的原章节已移除，数据仍保留。请在“选择对象”中选中，再更改所属章节。
+                  个对象的原位置已变化，数据仍保留。请在“选择对象”中选中，点击“重新放置”，再在报告中选择位置。
                 </p>
               )}
               {active && (
                 <div className="report-layout-properties">
                   <div className="report-layout-toolbar">
                     <strong>{kinds[active.kind]}</strong>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        finishText();
+                        setRelocating(active.id);
+                        setArmed('');
+                      }}
+                    >
+                      重新放置
+                    </button>
                     <button type="button" onClick={duplicate}>
                       复制对象
                     </button>
@@ -624,12 +875,15 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
                         aria-label="对象所属章节"
                         value={active.region}
                         onChange={(e) => {
-                          change(active.id, { region: e.target.value });
-                          setRegion(e.target.value);
+                          change(active.id, {
+                            region: e.target.value,
+                            anchor: 'heading',
+                            y: 20,
+                          });
                         }}
                       >
                         {missing.includes(active) && (
-                          <option value={active.region}>原章节已移除</option>
+                          <option value={active.region}>原位置已变化</option>
                         )}
                         {regions.map((r) => (
                           <option key={r.key} value={r.key}>
@@ -837,162 +1091,47 @@ const ReportLayoutEditor = forwardRef<LayoutHandle, Props>(
             </>
           )}
         </div>
-        {hosts.map((host) => {
-          const id = host.dataset.manualHost!,
-            items = objects
-              .filter((o) => o.region === id)
-              .sort((a, b) => a.z - b.z);
-          if (!editing && !items.length) return null;
+        {objects.map((item) => {
+          const anchor = anchorHosts.find(
+            (a) =>
+              a.dataset.layoutSection === item.region &&
+              a.dataset.layoutAnchor === (item.anchor || 'heading'),
+          );
+          if (!anchor) return null;
+          const offset =
+            anchorOffsets[item.region + ':' + (item.anchor || 'heading')];
+          const host = root.current;
+          if (!host || !offset?.visible) return null;
+          const o = preview?.id === item.id ? preview : item,
+            b = objectBounds(o);
           return createPortal(
-            <div
-              className={`report-manual-region${editing ? ' is-editing' : ''}`}
-              data-layout-region={id}
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="report-layout-floating report-manual-object"
+              data-layout-region={item.region}
+              data-layout-anchor-ref={item.anchor || 'heading'}
+              viewBox={`${b.x} ${b.y} ${b.width} ${b.height}`}
+              style={{
+                position: 'absolute',
+                display: 'block',
+                left: `calc(${offset.left}px + ${b.x / 9.6}cqw)`,
+                top: `calc(${offset.top}px + ${b.y / 9.6}cqw)`,
+                width: `${b.width / 9.6}cqw`,
+                height: `${b.height / 9.6}cqw`,
+                overflow: 'visible',
+                maxWidth: 'none',
+                maxHeight: 'none',
+                pointerEvents: 'none',
+                zIndex: 100 + item.z,
+              }}
+              onPointerMove={move}
+              onPointerUp={(e) => end(e)}
+              onPointerCancel={(e) => end(e, true)}
             >
-              {editing && (
-                <div className="report-layout-region-label">
-                  {regions.find((r) => r.key === id)?.title} · 排版区
-                </div>
-              )}
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox={`0 0 ${W} ${H}`}
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  height: 'auto',
-                  overflow: 'visible',
-                }}
-                onPointerDown={(e) => {
-                  if (e.target === e.currentTarget) {
-                    finishText();
-                    setSelected('');
-                    setRegion(id);
-                  }
-                }}
-                onPointerMove={move}
-                onPointerUp={(e) => end(e)}
-                onPointerCancel={(e) => end(e, true)}
-              >
-                {items.map((item) => {
-                  const o = preview?.id === item.id ? preview : item,
-                    chosen = editing && selected === o.id;
-                  const handles: [string, number, number][] = isLine(o)
-                    ? [
-                        ['start', 0, 0],
-                        ['end', o.dx, o.dy],
-                      ]
-                    : [
-                        ['nw', 0, 0],
-                        ['n', o.width / 2, 0],
-                        ['ne', o.width, 0],
-                        ['e', o.width, o.height / 2],
-                        ['se', o.width, o.height],
-                        ['s', o.width / 2, o.height],
-                        ['sw', 0, o.height],
-                        ['w', 0, o.height / 2],
-                      ];
-                  return (
-                    <g
-                      key={o.id}
-                      data-layout-object={o.id}
-                      className={
-                        editing ? 'layout-object is-editable' : 'layout-object'
-                      }
-                      transform={`translate(${o.x} ${o.y}) rotate(${o.rotation} ${o.width / 2} ${o.height / 2})`}
-                      onPointerDown={(e) => start(e, o)}
-                      onDoubleClick={(e) => {
-                        if (editing && !isLine(o)) {
-                          e.stopPropagation();
-                          setSelected(o.id);
-                          setTyping(o.id);
-                          setText(o.text);
-                          pendingText.current = { id: o.id, text: o.text };
-                        }
-                      }}
-                    >
-                      {editing && isLine(o) && (
-                        <path
-                          d={`M0 0 L${o.dx} ${o.dy}`}
-                          fill="none"
-                          stroke="transparent"
-                          strokeWidth={Math.max(18, o.style.stroke_width)}
-                        />
-                      )}
-                      <ReportLayoutShape o={o}>
-                        {typing === o.id ? (
-                          <textarea
-                            autoFocus
-                            aria-label="对象文字"
-                            value={text}
-                            maxLength={4000}
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onChange={(e) => {
-                              setText(e.target.value);
-                              pendingText.current = {
-                                id: o.id,
-                                text: e.target.value,
-                              };
-                            }}
-                            onBlur={finishText}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              minHeight: o.style.font_size * 1.5,
-                              border: 'none',
-                              padding: 0,
-                              margin: 0,
-                              resize: 'none',
-                              font: 'inherit',
-                              lineHeight: 'inherit',
-                              textAlign: 'inherit',
-                              color: 'inherit',
-                              background: 'transparent',
-                              outline: '1px dashed #3f6fe0',
-                            }}
-                          />
-                        ) : undefined}
-                      </ReportLayoutShape>
-                      {chosen && typing !== o.id && (
-                        <g className="layout-controls">
-                          {!isLine(o) && (
-                            <rect
-                              width={o.width}
-                              height={o.height}
-                              fill="none"
-                              stroke="#3f6fe0"
-                              strokeWidth={1.5}
-                              strokeDasharray="5 3"
-                            />
-                          )}
-                          {handles.map(([name, x, y]) => (
-                            <rect
-                              key={name}
-                              aria-label={`调整${name}`}
-                              data-handle={name}
-                              x={x - 6}
-                              y={y - 6}
-                              width={12}
-                              height={12}
-                              fill="white"
-                              stroke="#3f6fe0"
-                              strokeWidth={2}
-                              style={{
-                                cursor: isLine(o)
-                                  ? 'crosshair'
-                                  : `${name}-resize`,
-                              }}
-                              onPointerDown={(e) => start(e, o, name)}
-                            />
-                          ))}
-                        </g>
-                      )}
-                    </g>
-                  );
-                })}
-              </svg>
-            </div>,
+              {renderObject(item)}
+            </svg>,
             host,
-            id,
+            item.id,
           );
         })}
       </>

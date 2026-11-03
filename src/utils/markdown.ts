@@ -1,3 +1,5 @@
+import { reportAnchors } from './reportAnchors';
+
 /**
  * 轻量 Markdown 渲染（无第三方依赖）。
  *
@@ -53,6 +55,7 @@ function inline(text: string, chartResolver?: (path: string) => string): string 
 }
 
 interface Options {
+  anchorSection?: string;
   /** Trusted server renderer for structured report cards. */
   widgetRenderer?: (kind: string, id: string) => string | undefined;
   /** 注解/模型草稿只展示文本，防止自动加载模型生成的外部图片。 */
@@ -67,11 +70,15 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
   const { chartResolver, figureClass = 'report-figure', allowImages = true } = options;
   const lines = (markdown || '').split('\n');
   const html: string[] = [];
+  const anchors = options.anchorSection ? reportAnchors(markdown, options.anchorSection) : [];
+  const attr = (index: number) => anchors[index] ? ` data-layout-anchor="${anchors[index]}" data-layout-section="${escapeHtml(options.anchorSection!)}"` : '';
+  const mark = (value: string, index: number) => value.replace(/<(?!style\b|script\b)([a-z][a-z0-9-]*)(?=[\s>])/i, match => match + attr(index));
   let i = 0;
   /** 章节内 <figure> 序号（「隐藏这张图」的 key 用，渲染时即固定） */
   let figureIndex = 0;
 
   while (i < lines.length) {
+    const start = i;
     const raw = lines[i];
     const line = raw.trim();
     if (!line) {
@@ -84,9 +91,9 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
     const hook = /^@\[([a-z0-9-]+):([^\]\s]+)\]$/.exec(line);
     if (hook) {
       html.push(
-        options.widgetRenderer?.(hook[1], hook[2]) ?? `<div class="report-widget" data-report-widget="${hook[1]}" data-task-id="${escapeHtml(
+        mark(options.widgetRenderer?.(hook[1], hook[2]) ?? `<div class="report-widget" data-report-widget="${hook[1]}" data-task-id="${escapeHtml(
           hook[2],
-        )}"></div>`,
+        )}"></div>`, start),
       );
       i += 1;
       continue;
@@ -104,7 +111,7 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
         .map((row) => row.replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
       if (rows.length) {
         const [head, ...body] = rows;
-        html.push('<table class="report-table"><thead><tr>');
+        html.push(`<table class="report-table"${attr(start)}><thead><tr>`);
         head.forEach((c) => html.push(`<th>${inline(c, chartResolver)}</th>`));
         html.push('</tr></thead><tbody>');
         body.forEach((row) => {
@@ -119,7 +126,7 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
 
     // 列表
     if (/^[-*]\s+/.test(line)) {
-      html.push('<ul class="report-list">');
+      html.push(`<ul class="report-list"${attr(start)}>`);
       while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
         let item = lines[i].trim().replace(/^[-*]\s+/, '');
         i += 1;
@@ -155,7 +162,7 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
         // `data-report-figure` = **渲染时就固定**的章节内图序号 —— 「隐藏这张图」的 key 用它，
         // 这样后面把图换成组件（自由能 / NEB / 进度 / PDOS 交互图）也不会让序号错位（v0.9.69）
         figures.push(
-          `<figure class="${figureClass}" data-report-figure="${figureIndex}"><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="eager" decoding="async"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
+          `<figure class="${figureClass}" data-report-figure="${figureIndex}"${attr(i)}><img src="${safeUrl(src)}" alt="${escapeHtml(alt)}" loading="eager" decoding="async"/><figcaption>${escapeHtml(alt)}</figcaption></figure>`,
         );
         figureIndex += 1;
         i += 1;
@@ -172,7 +179,7 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {
       const level = Math.min(heading[1].length + 2, 6);
-      html.push(`<h${level} class="report-md-h${level}">${inline(heading[2], chartResolver)}</h${level}>`);
+      html.push(`<h${level} class="report-md-h${level}"${attr(start)}>${inline(heading[2], chartResolver)}</h${level}>`);
       i += 1;
       continue;
     }
@@ -194,7 +201,7 @@ export function renderMarkdown(markdown: string, options: Options = {}): string 
       paragraph.push(lines[i].trim());
       i += 1;
     }
-    html.push(`<p>${inline(paragraph.join(' '), chartResolver)}</p>`);
+    html.push(`<p${attr(start)}>${inline(paragraph.join(' '), chartResolver)}</p>`);
   }
 
   return html.join('\n');

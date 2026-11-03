@@ -54,6 +54,31 @@ class ElectronicConvergenceTests(unittest.TestCase):
                 self.output(de='-1D-8', deps='2d-8', step=60, nsw=nsw)
                 self.assertEqual(self.run_check()['status'], 'completed')
 
+    def test_algo_all_final_cga_or_sda_step_overrides_initial_dav(self):
+        for algorithm in ('CGA', 'SDA'):
+            for de, deps, expected in (
+                ('-0.86392E-06', '-0.89144E-06', 'completed'),
+                ('-0.10921E-05', '-0.10891E-05', 'unconverged'),
+            ):
+                with self.subTest(algorithm=algorithm, expected=expected):
+                    self.output(step=122)
+                    # FS_Kaolin/model1: a DAV warmup followed by direct minimization.
+                    (self.root / 'OSZICAR').write_text(
+                        'DAV: 5 -327.415760750 -0.18916E+01 -0.18429E+01 1008 1.1\n'
+                        'SDA: 6 23.1673353490 350.58 -1.8429 1008 4700\n'
+                        f'{algorithm}: 122 -285.217571052 {de} {deps} 1008 0.893E-05 0.396E-06\n'
+                        ' 1 F= -295.90602546 E0= -295.87527 d E= -.615175E-01\n')
+                    self.assertEqual(self.run_check()['status'], expected)
+
+    def test_converged_dav_cannot_hide_final_cga_or_sda_failure(self):
+        for algorithm in ('CGA', 'SDA'):
+            with self.subTest(algorithm=algorithm):
+                self.output()
+                (self.root / 'OSZICAR').write_text(
+                    'DAV: 5 -10 1E-8 1E-8\n'
+                    f'{algorithm}: 60 -10 2E-3 -1E-8\n 1 F= -10 E0= -10\n')
+                self.assertEqual(self.run_check()['status'], 'unconverged')
+
     def test_old_cycle_cannot_hide_final_failure(self):
         self.output(de='2E-3', step=60)
         path = self.root / 'OSZICAR'

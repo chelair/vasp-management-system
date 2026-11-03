@@ -1013,7 +1013,7 @@ def electronic_converged(outcar: str, oszicar: str) -> Optional[bool]:
         final = ionic[-1]
         if oszicar[final.end():].strip():return None
         segment = oszicar[ionic[-2].end():final.start()] if len(ionic) > 1 else oszicar[:final.start()]
-        scf = re.findall(r'^\s*(?:DAV|RMM|CG|DMP):\s*\d+\s+\S+\s+(\S+)\s+(\S+)', segment, re.M)
+        scf = re.findall(r'^\s*(?:DAV|RMM|CG|DMP|CGA|SDA):\s*\d+\s+\S+\s+(\S+)\s+(\S+)', segment, re.M)
         if scf and ediff is not None and math.isfinite(ediff) and ediff > 0:
             de, deps = (_to_float(v) for v in scf[-1])
             if all(v is not None and math.isfinite(v) for v in (de, deps)):

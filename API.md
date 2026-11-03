@@ -303,6 +303,8 @@ OPT/NEB运行期间按25个离子步同步结构，目录变化或同目录步�
 | `GET /dashboard/cores-usage` / `cluster-health` / `risk-alerts` / `trend` | `?refresh=1` | 分块数据（风险预警含 `risks[].advice` 与 `actions.items[]`） |
 | `GET /jobs/nodes` | `?refresh=1` | 作业管理节点看板数据（与总览共用一次采集 + TTL 缓存，默认 300s） |
 
+总览“集群健康与资源”的队列列表按所选服务器`node_groups`配置筛选、去重并保持配置顺序，与作业管理使用同一队列范围；`queueTotals`仅汇总这些队列的已获取状态，不再选全校排队最多的前6个队列。配置缺失或未采到对应队列时不混入其他队列。
+
 ### 3.4 任务文件 / 输入状态
 
 | 接口 | 参数 | 说明 |

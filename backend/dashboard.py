@@ -551,8 +551,12 @@ def build_cores_usage(db: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str,
 
 def build_cluster_health(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     nodes = snapshot.get("nodes") or {}
-    queues = snapshot.get("queues") or []
-    top_queues = sorted(queues, key=lambda q: -int(q.get("pending") or 0))[:6]
+    cfg = load_servers().get(snapshot.get("server"), {}) or {}
+    configured_queues = dict.fromkeys(
+        group["queue"] for group in cfg.get("node_groups", []) if group.get("queue")
+    )
+    by_queue = {q["queue"]: q for q in snapshot.get("queues") or []}
+    queues = [by_queue[name] for name in configured_queues if name in by_queue]
     return {
         "nodes": nodes,
         "queues": [
@@ -563,7 +567,7 @@ def build_cluster_health(snapshot: Dict[str, Any]) -> Dict[str, Any]:
                 "suspended": q.get("suspended"),
                 "status": q.get("status"),
             }
-            for q in top_queues
+            for q in queues
         ],
         "queueTotals": {
             "pending": sum(int(q.get("pending") or 0) for q in queues),

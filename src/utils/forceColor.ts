@@ -3,13 +3,12 @@
  *
  * 口径与后端判定一致：每个原子取**合力模长** `sqrt(Fx²+Fy²+Fz²)`，
  * 固定原子（Selective dynamics 任一方向 F）显示灰色，不参与色标上限统计。
- * 低于收敛阈值用浅绿 → 深绿渐变，达到阈值时跳到黄色，再渐变至当前最大受力的红色。
- * 全部达标时只使用绿色系，阈值边界与后端严格小于的判定一致。
+ * 低于收敛阈值统一用浅绿，达到阈值时跳到黄色，再渐变至当前最大受力的红色。
+ * 全部达标时统一显示浅绿，阈值边界与后端严格小于的判定一致。
  */
 import type { AtomicForces } from '../api/inspections';
 
-export const FORCE_OK = '#2FA36B';
-export const FORCE_LOW = '#B8E0C8';
+export const FORCE_OK = '#B8E0C8';
 export const FORCE_MID = '#E8B33A';
 export const FORCE_BAD = '#D9535B';
 export const FORCE_FIXED = '#9AA7B8';
@@ -41,7 +40,7 @@ export function makeForceScale(threshold: number, observedMax: number): ForceCol
   const upper = observedMax;
   const colorFor = (fmax: number, fixed = false) => {
     if (fixed) return FORCE_FIXED;
-    if (fmax < t) return mix(FORCE_LOW, FORCE_OK, fmax / t);
+    if (fmax < t) return FORCE_OK;
     if (upper <= t) return FORCE_BAD;
     return mix(FORCE_MID, FORCE_BAD, (fmax - t) / (upper - t));
   };

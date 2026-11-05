@@ -3,17 +3,20 @@
  *
  * 口径与后端判定一致：每个原子取**合力模长** `sqrt(Fx²+Fy²+Fz²)`，
  * 固定原子（Selective dynamics 任一方向 F）显示灰色，不参与色标上限统计。
- * 其余原子按 0 → 当前结构最大受力映射为绿 → 黄 → 红；最大非零受力始终为红色。
- * 颜色表示相对受力大小，收敛结论仍由原有阈值判定。
+ * 低于收敛阈值用浅绿 → 深绿渐变，达到阈值时跳到黄色，再渐变至当前最大受力的红色。
+ * 全部达标时只使用绿色系，阈值边界与后端严格小于的判定一致。
  */
 import type { AtomicForces } from '../api/inspections';
 
 export const FORCE_OK = '#2FA36B';
+export const FORCE_LOW = '#B8E0C8';
 export const FORCE_MID = '#E8B33A';
 export const FORCE_BAD = '#D9535B';
 export const FORCE_FIXED = '#9AA7B8';
 
 export interface ForceColorScale {
+  /** 收敛阈值（eV/Å） */
+  threshold: number;
   /** 渐变上限（eV/Å） */
   upper: number;
   colorFor: (fmax: number, fixed?: boolean) => string;
@@ -33,17 +36,16 @@ function mix(a: string, b: string, k: number): string {
   return `#${hex(ch(r1, r2))}${hex(ch(g1, g2))}${hex(ch(b1, b2))}`;
 }
 
-export function makeForceScale(observedMax: number): ForceColorScale {
+export function makeForceScale(threshold: number, observedMax: number): ForceColorScale {
+  const t = threshold > 0 ? threshold : 0.02;
   const upper = observedMax;
   const colorFor = (fmax: number, fixed = false) => {
     if (fixed) return FORCE_FIXED;
-    if (upper <= 0) return FORCE_OK;
-    const k = Math.min(1, Math.max(0, fmax / upper));
-    return k <= 0.5
-      ? mix(FORCE_OK, FORCE_MID, k * 2)
-      : mix(FORCE_MID, FORCE_BAD, (k - 0.5) * 2);
+    if (fmax < t) return mix(FORCE_LOW, FORCE_OK, fmax / t);
+    if (upper <= t) return FORCE_BAD;
+    return mix(FORCE_MID, FORCE_BAD, (fmax - t) / (upper - t));
   };
-  return { upper, colorFor };
+  return { threshold: t, upper, colorFor };
 }
 
 export interface AtomColors {
@@ -88,7 +90,7 @@ export function buildAtomColors(
     };
   }
   const observedMax = data.atoms.reduce((m, a) => a.fixed ? m : Math.max(m, a.fmax), 0);
-  const scale = makeForceScale(observedMax);
+  const scale = makeForceScale(data.threshold?.max_force_threshold ?? 0.02, observedMax);
   const colors: Record<number, string> = {};
   data.atoms.forEach((a) => {
     colors[a.index] = scale.colorFor(a.fmax, a.fixed);

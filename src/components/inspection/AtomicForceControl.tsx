@@ -91,7 +91,7 @@ export function AtomicForceControl({ state, disabledReason, note }: Props) {
   }, [state.enabled, note, message]);
   return (
     <span className="atomic-force">
-      <Tooltip title={disabledReason ?? '受力由小到大呈绿→黄→红，当前最大受力为红色，固定原子为灰色'}>
+      <Tooltip title={disabledReason ?? '低于收敛阈值为浅绿→深绿，达到或超过阈值为黄→红，最大未达标受力为红色；固定原子为灰色'}>
         <span className="atomic-force__switch">
           <Switch
             size="small"

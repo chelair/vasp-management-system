@@ -1,7 +1,8 @@
 """逐原子受力读取（巡检详情页 3D 视图「查看原子受力」，v0.9.41）。
 
 数据来源：远端**结构来源目录**里 OUTCAR 的最后一个 `TOTAL-FORCE` 块，元素与固定原子标志取
-同一目录的 CONTCAR。解析**直接复用 `batch_check`**（不复制一套）。
+同一目录的 CONTCAR；NEB 初末态在 CONTCAR 缺失或为空时取同目录 POSCAR。
+解析**直接复用 `batch_check`**（不复制一套）。
 
 **目录口径（关键）**：受力必须与界面显示的 CONTCAR 来自**同一个目录**——所以按巡检同步结构时
 记录的 `task.last_structure_dirs.CONTCAR`（如 `con5`；`""` = 任务主目录）取力，而不是"当前最新 conN"。
@@ -161,17 +162,19 @@ def _work_dir_lines(remote_dir: str, analysis_dirs: List[str]) -> List[str]:
     ]
 
 
-def _image_probe_lines(prefix: str) -> List[str]:
-    """按目录前缀 `prefix`（`"$WORK/"` 或 `"$d/"`）回传指纹 / CONTCAR / 尾部 OUTCAR。
+def _image_probe_lines(prefix: str, structure: str = "CONTCAR") -> List[str]:
+    """按目录前缀回传实际结构来源 / 指纹 / 结构 / 尾部 OUTCAR。
 
     不在这里做 `grep -c TOTAL-FORCE`（要整读 30–57MB 的 OUTCAR，NEB 一张一张读会明显变慢）；
     只 `grep -m1` 取尾部…也不需要——尾部里就有完整块，交给本地解析。
     """
     return [
+        'echo "@@@STRUCTURE"',
+        f'echo "{structure}"',
         "echo \"@@@META\"",
         f"stat -c '%s %Y' \"{prefix}OUTCAR\"",
         'echo "@@@CONTCAR"',
-        f"base64 \"{prefix}CONTCAR\" | tr -d '\\n'",
+        f"base64 \"{prefix}{structure}\" | tr -d '\\n'",
         "echo",
         'echo "@@@TAIL"',
         f"tail -c {TAIL_BYTES} \"{prefix}OUTCAR\" | base64 | tr -d '\\n'",
@@ -231,19 +234,25 @@ def _all_images_script(remote_dir: str, analysis_dirs: List[str]) -> str:
     """NEB：一次 exec 遍历所有映像目录（`00..NN`）。"""
     lines = _work_dir_lines(remote_dir, analysis_dirs)
     lines += [
+        "FIRST=$(find \"$WORK\" -maxdepth 1 -type d -name '[0-9]*' -printf '%f\\n' | sort -n | head -1)",
+        "LAST=$(find \"$WORK\" -maxdepth 1 -type d -name '[0-9]*' -printf '%f\\n' | sort -n | tail -1)",
         "COUNT=0",
         'for d in "$WORK"/[0-9]*; do',
         '  [ -d "$d" ] || continue',
         "  img=$(basename \"$d\")",
         "  COUNT=$((COUNT + 1))",
         f"  [ $COUNT -le {MAX_IMAGES} ] || break",
-        '  if [ ! -s "$d/OUTCAR" ] || [ ! -s "$d/CONTCAR" ]; then',
+        '  STRUCTURE=CONTCAR',
+        '  if [ ! -s "$d/CONTCAR" ] && { [ "$img" = "$FIRST" ] || [ "$img" = "$LAST" ]; }; then',
+        '    STRUCTURE=POSCAR',
+        '  fi',
+        '  if [ ! -s "$d/OUTCAR" ] || [ ! -s "$d/$STRUCTURE" ]; then',
         '    echo "@@@SKIP $img"',
         "    continue",
         "  fi",
         '  echo "@@@IMG $img"',
     ]
-    lines += [f"  {line}" for line in _image_probe_lines('$d/')]
+    lines += [f"  {line}" for line in _image_probe_lines('$d/', '$STRUCTURE')]
     lines += [
         "done",
         'echo "@@@END"',
@@ -275,12 +284,13 @@ def _decode(text: str) -> str:
 
 
 def _probe_of(chunk: str) -> Dict[str, Any]:
-    """把一段探测输出解析成 `{contcar, tail, size, mtime}`。"""
+    """解析探测输出；contcar 字段兼容原协议，实际文件名记录在 structure 中。"""
     meta = _slice(chunk, "@@@META\n", "@@@CONTCAR").split()
     contcar_b64 = _slice(chunk, "@@@CONTCAR\n", "@@@TAIL").strip()
     # 用 _slice 而不是 _after：最后一段后面跟着 "@@@END" 标记，不能混进 base64
     tail_b64 = _slice(chunk, "@@@TAIL\n", "@@@IMGDONE").strip()
     return {
+        "structure": _slice(chunk, "@@@STRUCTURE\n", "@@@META").strip() or "CONTCAR",
         "contcar": _decode(contcar_b64),
         "tail": _decode(tail_b64),
         "size": int(meta[0]) if len(meta) > 0 and meta[0].isdigit() else None,
@@ -381,15 +391,16 @@ def _build_payload(
     if not forces:
         raise AtomicForceError(409, "最后一个 TOTAL-FORCE 块没有原子行")
 
+    structure = probe.get("structure", "CONTCAR")
     layout = parse_poscar_layout(probe["contcar"])
     fixed: List[bool] = list((layout or {}).get("fixed") or [])
     elements = _elements_of(layout)
     warnings: List[str] = []
     if layout is None:
-        warnings.append("CONTCAR 解析失败，无法确定固定原子与元素名")
+        warnings.append(f"{structure} 解析失败，无法确定固定原子与元素名")
     elif layout.get("n_atoms") != len(forces):
         warnings.append(
-            f"CONTCAR 原子数（{layout.get('n_atoms')}）与 OUTCAR 受力行数（{len(forces)}）不一致"
+            f"{structure} 原子数（{layout.get('n_atoms')}）与 OUTCAR 受力行数（{len(forces)}）不一致"
         )
 
     atoms: List[Dict[str, Any]] = []
@@ -418,8 +429,8 @@ def _build_payload(
             "task_type": task_type,
             "image": image,
             "work_dir": work_dir,
-            "structure": "CONTCAR",
-            "fixed_source": "CONTCAR",
+            "structure": structure,
+            "fixed_source": structure,
             "energy": last.get("energy"),
             "force_max": stats[0] if stats else None,
             "force_rms": stats[1] if stats else None,

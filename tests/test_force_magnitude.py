@@ -86,7 +86,58 @@ class ForceMagnitudeTests(unittest.TestCase):
                 self.assertEqual(payload["fixed_count"], 1)
                 self.assertEqual(payload["force_max"], .03)
 
-    def test_missing_contcar_does_not_fall_back_to_poscar(self):
+    def test_neb_endpoint_fallback_and_cache_preserve_actual_structure_source(self):
+        structure = "H\n1\n5 0 0\n0 5 0\n0 0 5\nH\n2\nSelective dynamics\nDirect\n0 0 0 F F F\n0 0 0 T T T\n"
+        outcar = "TOTAL-FORCE (eV/Angst)\n--------\n0 0 0 9 0 0\n0 0 0 .03 0 0\n--------\n free energy TOTEN = -1 eV\n"
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            for label in ("00", "01", "02", "03"):
+                directory = base / label
+                directory.mkdir()
+                (directory / "OUTCAR").write_text(outcar)
+                (directory / "POSCAR").write_text(structure)
+            # 00 缺 CONTCAR，03 的 CONTCAR 为空；01 同时存在但固定标记不同，02 仅有插值 POSCAR。
+            (base / "03" / "CONTCAR").write_text("")
+            (base / "01" / "CONTCAR").write_text(structure.replace("F F F", "T T T"))
+
+            def run_local(_server, encoded_script):
+                script = atomic_forces.base64.b64decode(encoded_script).decode()
+                return subprocess.run(["bash"], input=script, text=True,
+                                      capture_output=True, check=True).stdout
+
+            reports = base / "reports"
+            with patch.object(atomic_forces, "_run", side_effect=run_local) as remote, \
+                 patch.object(atomic_forces, "_thresholds", return_value=atomic_forces.DEFAULT_THRESHOLDS), \
+                 patch.object(atomic_forces, "_deep_block") as deep:
+                payloads, warnings = atomic_forces._fetch_all_images("test", root, [""], "neb", reports)
+            self.assertEqual(remote.call_count, 1)
+            deep.assert_not_called()
+            self.assertEqual(warnings, [])
+            self.assertEqual(set(payloads), {"00", "01", "03"})
+            for label in ("00", "03"):
+                payload = payloads[label]
+                self.assertEqual(payload["structure"], "POSCAR")
+                self.assertEqual(payload["fixed_source"], "POSCAR")
+                self.assertEqual(payload["elements"], ["H", "H"])
+                self.assertEqual(payload["atom_count"], 2)
+                self.assertTrue(payload["atoms"][0]["fixed"])
+                self.assertFalse(payload["atoms"][1]["fixed"])
+                self.assertEqual(payload["force_max"], .03)
+                self.assertEqual(atomic_forces._read_cache(reports, "neb", label)["structure"], "POSCAR")
+            self.assertEqual(payloads["01"]["structure"], "CONTCAR")
+            self.assertEqual(payloads["01"]["fixed_source"], "CONTCAR")
+            self.assertFalse(payloads["01"]["atoms"][0]["fixed"])
+            self.assertEqual(payloads["01"]["force_max"], 9)
+            for label in ("00", "03"):
+                (base / label / "POSCAR").unlink()
+            output = subprocess.run(["bash"], input=atomic_forces._all_images_script(root, [""]),
+                                    text=True, capture_output=True, check=True).stdout
+            self.assertIn("@@@SKIP 00", output)
+            self.assertIn("@@@SKIP 03", output)
+            self.assertNotIn("@@@IMG 00", output)
+            self.assertNotIn("@@@IMG 03", output)
+
+    def test_opt_missing_contcar_does_not_fall_back_to_poscar(self):
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "OUTCAR").write_text("output")
             (Path(root) / "POSCAR").write_text("old flags")

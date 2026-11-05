@@ -266,7 +266,7 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applic
 
 `GET /api/jobs/tasks/{task_id}/file-status?remote=false&presence_only=false&force=false`：固定返回INCAR、KPOINTS、POSCAR、POTCAR、CONTCAR、OUTCAR、OSZICAR七项，接口默认只读本地。作业概览打开及巡检返回时传`remote=true&presence_only=true`，以一次只读SSH查询当前最大conN目录的文件信息，不读取文件内容、不计算摘要、不扫描本地；此模式仅使用remote_status，本地size/count为null，未核对的比较status为unknown。后端将成功、稳定的同任务结果复用60秒（`cached=true`时保留原checked_at），并合并同任务的并发自动查询；任务目录、类型、作业号、状态或current_output.latest_dir变化时失效。点击“刷新状态”额外传`force=true`立即重查。未知、查询失败和changing结果不缓存；缓存过期本身不触发远端请求。remote_status（present/missing/empty/changing/unknown）独立于本地缓存和草稿，changing只表示本次查询前后文件标识、大小或修改时间发生变化，不代表任务运行状态，也不持续监测；概览附目录/读取时间，草稿另行提示。省略presence_only保留原status内容比较（local/local_missing、synced/sampled/different/upload/download/local_only/missing/empty/changing/unknown）：≤1MiB完整哈希，大文件头尾各64KiB，附本地/远端大小与数量，不使用上述缓存。NEB兼容本地neb_images与远端映像目录；超过64映像或读取失败标unknown，部分映像空文件标empty。不传输文件、不提交作业，无定时轮询或窗口聚焦查询，本地草稿变化不重复查远端。每次请求均先沿用task归属校验，通过后才允许读取缓存。
 
-`GET /api/inspections/{task_id}/atomic-forces?image=&refresh=`：逐原子受力取结构来源目录OUTCAR，固定标记和元素从同目录CONTCAR读取（包括NEB各映像）。响应`fixed_source=CONTCAR`、`schema=6`；固定原子灰色显示，排除最大力/RMS统计。缺CONTCAR明确报错，不借用POSCAR标记；旧schema缓存自动失效。部分方向含F仍按现有整原子固定口径处理。
+`GET /api/inspections/{task_id}/atomic-forces?image=&refresh=`：逐原子受力取结构来源目录OUTCAR，固定标记和元素优先从同目录CONTCAR读取。NEB初末态（最小/最大映像编号）在CONTCAR缺失或为空时回退同目录POSCAR，与端点结构展示一致；其他映像及opt/frac仍要求CONTCAR。响应`structure`和`fixed_source`记录实际文件名（CONTCAR或POSCAR），`schema=6`；已有CONTCAR缓存继续有效。固定原子灰色显示，排除最大力/RMS统计。部分方向含F仍按现有整原子固定口径处理。
 
 OPT/NEB力收敛以末步最大力 < |EDIFFG| 判定，RMS仅作统计参考，不再另设半阈值否决收敛。负EDIFFG对应的`force_thresholds.max_force_threshold`取其绝对值，兼容字段`rms_force_threshold`保留同一参考值，不参与判定。
 

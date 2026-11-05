@@ -2,11 +2,9 @@
  * 原子受力着色（巡检详情页 3D 视图「查看原子受力」，v0.9.41）。
  *
  * 口径与后端判定一致：每个原子取**合力模长** `sqrt(Fx²+Fy²+Fz²)`，
- * 阈值取 INCAR 的 `|EDIFFG|`（缺失时后端已退回 registry 0.02）。着色规则（收敛与未收敛**分开**）：
- * - 固定原子（Selective dynamics 任一方向 F）→ 灰色，不参与收敛判据；
- * - `≤ 阈值` → 绿色（达标，纯色不平滑）；
- * - `> 阈值` → **黄→红** 线性渐变（越大越红），不经过绿色，一眼分得出"哪些还没收敛"；
- *   渐变上限取 `max(阈值×4, 该结构实测最大)`，保证最红的确实是受力最大的那个原子。
+ * 固定原子（Selective dynamics 任一方向 F）显示灰色，不参与色标上限统计。
+ * 其余原子按 0 → 当前结构最大受力映射为绿 → 黄 → 红；最大非零受力始终为红色。
+ * 颜色表示相对受力大小，收敛结论仍由原有阈值判定。
  */
 import type { AtomicForces } from '../api/inspections';
 
@@ -16,8 +14,6 @@ export const FORCE_BAD = '#D9535B';
 export const FORCE_FIXED = '#9AA7B8';
 
 export interface ForceColorScale {
-  /** 达标阈值（eV/Å） */
-  threshold: number;
   /** 渐变上限（eV/Å） */
   upper: number;
   colorFor: (fmax: number, fixed?: boolean) => string;
@@ -37,17 +33,17 @@ function mix(a: string, b: string, k: number): string {
   return `#${hex(ch(r1, r2))}${hex(ch(g1, g2))}${hex(ch(b1, b2))}`;
 }
 
-export function makeForceScale(threshold: number, observedMax: number): ForceColorScale {
-  const t = threshold > 0 ? threshold : 0.02;
-  const upper = Math.max(t * 4, observedMax > 0 ? observedMax : t * 4);
+export function makeForceScale(observedMax: number): ForceColorScale {
+  const upper = observedMax;
   const colorFor = (fmax: number, fixed = false) => {
     if (fixed) return FORCE_FIXED;
-    if (!(fmax > t)) return FORCE_OK;
-    const k = (fmax - t) / Math.max(upper - t, 1e-9);
-    // 超阈才上色，且从黄开始 → 不会和"达标绿"混淆
-    return mix(FORCE_MID, FORCE_BAD, Math.min(1, Math.max(0, k)));
+    if (upper <= 0) return FORCE_OK;
+    const k = Math.min(1, Math.max(0, fmax / upper));
+    return k <= 0.5
+      ? mix(FORCE_OK, FORCE_MID, k * 2)
+      : mix(FORCE_MID, FORCE_BAD, (k - 0.5) * 2);
   };
-  return { threshold: t, upper, colorFor };
+  return { upper, colorFor };
 }
 
 export interface AtomColors {
@@ -91,8 +87,8 @@ export function buildAtomColors(
       note: `受力原子数（${data.atoms.length}）与当前结构原子数（${cifElements.length}）不一致，暂不着色`,
     };
   }
-  const observedMax = data.atoms.reduce((m, a) => Math.max(m, a.fmax), 0);
-  const scale = makeForceScale(data.threshold?.max_force_threshold ?? 0.02, observedMax);
+  const observedMax = data.atoms.reduce((m, a) => a.fixed ? m : Math.max(m, a.fmax), 0);
+  const scale = makeForceScale(observedMax);
   const colors: Record<number, string> = {};
   data.atoms.forEach((a) => {
     colors[a.index] = scale.colorFor(a.fmax, a.fixed);

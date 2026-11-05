@@ -650,6 +650,59 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertIsNone(self.gateway._unresolved(self.ledger.read(), 't1'))
         self.assertEqual(self.hpc.submit_count(), 1)
 
+    def test_stop_closes_unknown_action_without_polling_lsf(self):
+        record = self.execute()
+        self.ledger.update(record['id'], status='unknown', reason='对账失败：LSF作业目录与提交快照不符')
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                'exit_code': 0, 'stdout': f'Job <{record["job_id"]}> is being terminated'}), \
+             patch.object(self.unknown, 'jobs', side_effect=AssertionError('停止不应查询LSF')):
+            response = self.jobs.stop_task('t1')
+        self.assertFalse(response['data']['stop_pending'])
+        action = self.ledger.get(record['id'])
+        self.assertEqual(action['status'], 'succeeded')
+        self.assertTrue(action['job_finished'])
+        self.assertEqual(action['scheduler_state'], 'EXIT')
+        self.assertEqual(action['reservation'], 0)
+        self.assertEqual(action['consumed_core_hours'], 24)
+        self.assertIsNone(self.gateway._unresolved(self.ledger.read(), 't1'))
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_reconcile_repairs_saved_stop_receipt_without_touching_newer_job(self):
+        record = self.execute()
+        reason = 'bkill 已确认终止：Job <230001> is being terminated'
+        self.ledger.update(record['id'], status='unknown', job_finished=True, scheduler_state='EXIT',
+                           stop_confirmed_by='bkill', reservation=0, consumed_core_hours=24,
+                           reason=reason)
+        with self.ledger.transaction() as doc:
+            doc['actions']['newer'] = {**copy.deepcopy(record), 'id': 'newer', 'job_id': '230002',
+                                       'status': 'succeeded', 'job_finished': False}
+        db = self.storage.load_db()
+        db['projects'][0]['tasks'][0].update(job_id='230002', status='running')
+        self.storage.save_db(db, backup=False)
+        with patch.object(self.unknown, 'jobs', side_effect=AssertionError('已有停止回执不查询LSF')):
+            repaired = self.gateway.reconcile(record['id'])
+            self.assertEqual(len(repaired), 1)
+            self.assertEqual(self.gateway.reconcile(record['id']), [])
+        action = self.ledger.get(record['id'])
+        self.assertEqual(action['status'], 'succeeded')
+        self.assertEqual(action['reason'], reason)
+        self.assertEqual(action['consumed_core_hours'], 24)
+        self.assertEqual(self.storage.load_db(), db)
+        doc = self.ledger.read()
+        self.assertEqual(self.gateway._unresolved(doc, 't1')['id'], 'newer')
+        del doc['actions']['newer']
+        self.assertIsNone(self.gateway._unresolved(doc, 't1'))
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_reconcile_does_not_release_finished_unknown_without_stop_receipt(self):
+        record = self.execute()
+        self.ledger.update(record['id'], status='unknown', job_finished=True,
+                           scheduler_state='EXIT', reservation=0)
+        with patch.object(self.unknown, 'jobs', side_effect=AssertionError('不重复查询已结束作业')):
+            self.assertEqual(self.gateway.reconcile(record['id']), [])
+        self.assertEqual(self.ledger.get(record['id'])['status'], 'unknown')
+        self.assertIsNotNone(self.gateway._unresolved(self.ledger.read(), 't1'))
+
     def test_stop_accepted_but_running_uses_bkill_result(self):
         record = self.execute()
         response = self._stop_with_rows(self._terminal_rows(record, 'RUN'))
@@ -689,6 +742,7 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
 
     def test_stop_missing_job_finishes_local_state_without_polling_or_science_claim(self):
         record = self.execute()
+        self.ledger.update(record['id'], status='unknown', reason='旧作业待对账')
         with patch.object(self.jobs.ssh, 'run_remote', return_value={
                 'exit_code': 255, 'stderr': f'Job <{record["job_id"]}>: No matching job found'}), \
              patch.object(self.unknown, 'jobs', side_effect=AssertionError('不额外轮询LSF')):
@@ -699,6 +753,7 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertEqual(task['status'], 'pending')
         self.assertIsNone(task['job_id'])
         action = self.ledger.get(record['id'])
+        self.assertEqual(action['status'], 'succeeded')
         self.assertTrue(action['job_finished'])
         self.assertEqual(action['reservation'], 0)
         self.assertEqual(action['scheduler_state'], 'NOT_FOUND')

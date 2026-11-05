@@ -573,7 +573,8 @@ def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
             continue
         if family and record['family_id'] != family:
             continue
-        if (record.get('job_finished') and not record.get('sync_error')) or (record['status'] not in ledger.UNRESOLVED and not record.get('job_id')):
+        if record['status'] not in ledger.UNRESOLVED and (
+                (record.get('job_finished') and not record.get('sync_error')) or not record.get('job_id')):
             continue
         if record['status'] in {'prepared', 'running'} and ledger.owner_alive(record):
             continue
@@ -585,6 +586,13 @@ def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
             continue
         try:
             record = ledger.get(record['id'])
+            # 旧版停止已保存明确回执和结束事实，但可能遗漏收尾动作的 UNKNOWN 状态。
+            if (record.get('job_finished') and record['status'] in ledger.UNRESOLVED
+                    and (record.get('stop_confirmed_by'), record.get('scheduler_state'))
+                    in {('bkill', 'EXIT'), ('bkill_not_found', 'NOT_FOUND')}):
+                record = ledger.update(record['id'], status='succeeded')
+                results.append(record)
+                strict_audit(record, 'success', '根据已保存的停止回执完成动作收尾')
             if record.get('job_finished') and not record.get('sync_error'):
                 continue
             if not record.get('attempted'):
@@ -743,7 +751,7 @@ def confirm_killed(project, task, job_id, raw='', *, not_found=False):
         if (record['family_id'] == family and str(record.get('job_id') or '') == str(job_id)
                 and not record.get('job_finished')):
             # 与 LSF 终态路径同一记账口径：释放预留，核时按最坏情况计入。
-            ledger.update(record['id'], job_finished=True, scheduler_state='NOT_FOUND' if not_found else 'EXIT',
+            ledger.update(record['id'], status='succeeded', job_finished=True, scheduler_state='NOT_FOUND' if not_found else 'EXIT',
                           stop_confirmed_by='bkill_not_found' if not_found else 'bkill', stop_requested_at=requested,
                           reservation=0,
                           consumed_core_hours=record.get('reservation', 0) + record.get('consumed_core_hours', 0),

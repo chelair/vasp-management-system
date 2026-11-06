@@ -6061,7 +6061,7 @@ h6:hover > .report-hide-btn,
   }
 }
 
-/* 只在切换/内容到达时播放，不逐行错峰或持续占用动画层。 */
+/* 入场动画只随挂载播放；错峰数量和总等待时间有上限。 */
 :root {
   --motion-enter: 320ms;
   --motion-content: 240ms;
@@ -6083,6 +6083,34 @@ h6:hover > .report-hide-btn,
 }
 /* 不变更页签挂载规则；图表和编辑器保留自身状态。 */
 .app-content .ant-tabs-tabpane-active { animation: pane-enter var(--motion-content) ease-out; }
+.page-loading { width: 100%; padding: 12px 0; }
+.page-loading--full { min-height: 100svh; padding: 10vh max(24px, calc((100vw - 1100px) / 2)); background: var(--color-bg); }
+.page-loading__label { display: flex; align-items: center; gap: 9px; margin-bottom: 18px; color: var(--color-text-secondary); font-size: 13px; }
+.page-loading__label > span { width: 7px; height: 7px; border-radius: 50%; background: var(--color-primary); }
+.page-loading__panels { display: grid; gap: 14px; }
+.page-loading__panel { position: relative; overflow: hidden; border: 1px solid var(--color-border-soft); border-radius: 11px; padding: 18px; background: #fff; }
+.page-loading__panel::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.78) 50%, transparent 80%); transform: translateX(-100%); animation: loading-sweep 1.6s ease-in-out infinite; }
+.page-loading__heading { width: 28%; height: 13px; margin-bottom: 20px; border-radius: 4px; background: #e6ecf3; }
+.page-loading__row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 24px; margin-top: 14px; }
+.page-loading__row > span { height: 10px; border-radius: 4px; background: #edf1f6; }
+.page-loading__row > span:last-child { width: 65%; }
+@keyframes loading-sweep { to { transform: translateX(100%); } }
+@keyframes inspection-unfold {
+  from { opacity: 0; transform: perspective(1200px) translateY(10px) rotateX(-5deg); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes inspection-slat {
+  from { opacity: 0; transform: perspective(900px) translateY(5px) rotateX(-8deg); }
+  to { opacity: 1; transform: none; }
+}
+.inspection-project--reveal { transform-origin: center top; animation: inspection-unfold 420ms var(--motion-ease) var(--project-delay, 0ms) backwards; }
+.inspection-row--reveal { transform-origin: center top; animation: inspection-slat 340ms var(--motion-ease) calc(var(--project-delay, 0ms) + var(--row-delay, 0ms)) backwards; }
+.report-list > .report-group:nth-child(-n + 6) { animation: content-enter 360ms var(--motion-ease) var(--group-delay, 0ms) backwards; }
+.report-list > .report-group:nth-child(2) { --group-delay: 45ms; }
+.report-list > .report-group:nth-child(3) { --group-delay: 90ms; }
+.report-list > .report-group:nth-child(4) { --group-delay: 135ms; }
+.report-list > .report-group:nth-child(5) { --group-delay: 180ms; }
+.report-list > .report-group:nth-child(6) { --group-delay: 225ms; }
 .animated-collapse {
   display: grid;
   grid-template-rows: 0fr;
@@ -6202,9 +6230,13 @@ html[data-motion="reduced"] {
 }
 html[data-motion="reduced"] :is(.page-transition, .ai-page, .content-enter, .inspection-projects, .report-list, .report-detail, .ai-welcome, .ai-message, .ant-tabs-tabpane-active, .stat-card, .cluster-panel-enter, .cores-legend__row--enter, .ai-live-dot, .ai-typing-cursor) { animation: none; }
 html[data-motion="reduced"] .stat-card--clickable:hover { transform: none; }
+html[data-motion="reduced"] .page-loading__panel::after,
+html[data-motion="reduced"] :is(.inspection-project--reveal, .inspection-row--reveal, .report-list > .report-group) { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-enter: 0ms; --motion-content: 0ms; --motion-collapse: 0ms; }
   :is(.page-transition, .ai-page, .content-enter, .inspection-projects, .report-list, .report-detail, .ai-welcome, .ai-message, .ant-tabs-tabpane-active) { animation: none; }
+  .page-loading__panel::after,
+  :is(.inspection-project--reveal, .inspection-row--reveal, .report-list > .report-group) { animation: none; }
 }
 @media (max-width: 600px) {
   .settings-color { padding: 9px 12px; }

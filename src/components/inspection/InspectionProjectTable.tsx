@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { InspectionResult } from '../../types';
@@ -34,7 +35,9 @@ export default function InspectionProjectTable({ rows, closed, loading, buildCol
   }, [rows, current, pageSize]);
   return <Table
     rowKey="id" dataSource={rows} columns={buildColumns(spans)} loading={loading}
-    size="middle" rowClassName={() => closed ? 'inspection-row--closed' : ''}
+    size="middle"
+    rowClassName={(_, index) => [closed ? 'inspection-row--closed' : '', index < 12 ? 'inspection-row--reveal' : ''].filter(Boolean).join(' ')}
+    onRow={(_, index = 0) => index < 12 ? { style: { '--row-delay': `${index * 20}ms` } as CSSProperties } : {}}
     pagination={{
       current, pageSize, hideOnSinglePage: true, showSizeChanger: true,
       pageSizeOptions: [30, 60, 100], showTotal: total => `共 ${total} 项`,

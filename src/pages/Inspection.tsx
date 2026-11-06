@@ -23,7 +23,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { FilterDropdownProps } from 'antd/es/table/interface';
-import type { Key } from 'react';
+import type { CSSProperties, Key } from 'react';
 import {
   InboxOutlined,
   ClearOutlined,
@@ -47,6 +47,7 @@ import { archiveTask, calculateCorrection, unarchiveTask } from '../api/jobs';
 import CheckErrorsPanel from '../components/inspection/CheckErrorsPanel';
 import PageHeader from '../components/common/PageHeader';
 import PageTransition from '../components/common/PageTransition';
+import PageLoading from '../components/common/PageLoading';
 import OutcarTailDialog from '../components/inspection/OutcarTailDialog';
 import StatusTag from '../components/common/StatusTag';
 
@@ -955,14 +956,16 @@ export default function Inspection() {
           />
         </div>
 
-        <div className={`inspection-projects${loading ? '' : ' content-enter'}`}>
-          {projectBlocks.map((block) => {
+        <div className="inspection-projects" aria-busy={loading}>
+          {loading && results.length === 0 && <PageLoading label="正在读取巡检结果…" />}
+          {projectBlocks.map((block, index) => {
             const defaultExpanded = !block.closed && !block.allArchived;
             const expanded = projectExpansion.get(block.projectName) ?? defaultExpanded;
             return (
               <div
                 key={block.projectName}
-                className={`inspection-project${block.closed ? ' inspection-project--closed' : ''}`}
+                className={`inspection-project inspection-project--reveal${block.closed ? ' inspection-project--closed' : ''}`}
+                style={{ '--project-delay': `${Math.min(index, 6) * 50}ms` } as CSSProperties}
               >
                 <button
                   type="button"
@@ -1016,7 +1019,7 @@ export default function Inspection() {
               </div>
             );
           })}
-          {projectBlocks.length === 0 && (
+          {!loading && projectBlocks.length === 0 && (
             <Empty description="没有符合条件的巡检结果" />
           )}
         </div>

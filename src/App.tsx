@@ -5,6 +5,7 @@ import { Spin } from 'antd';
 import AppLayout from './components/layout/AppLayout';
 import { useAuth } from './context/AuthContext';
 import ErrorBoundary from './components/common/ErrorBoundary';
+import PageLoading from './components/common/PageLoading';
 const Automation = lazy(() => import('./pages/Automation'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Inspection = lazy(() => import('./pages/Inspection'));
@@ -50,7 +51,7 @@ export function AdminRoute({ children }: { children: ReactNode }) {
 
 export default function App() {
   return (
-    <Suspense fallback={<div className="app-loading"><Spin size="large" tip="正在加载页面…" /></div>}>
+    <Suspense fallback={<PageLoading fullPage />}>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route

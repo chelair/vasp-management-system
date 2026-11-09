@@ -610,7 +610,7 @@ body: {
 
 | 分类 | 接口 | 备注 |
 | --- | --- | --- |
-| 作业 | `POST /jobs/tasks/{id}/stop` | 任务族锁内bkill，成功返回后同步本地与台账，不额外轮询；落库失败明确报未同步，再提交仍重查LSF活跃作业；**高风险** |
+| 作业 | `POST /jobs/tasks/{id}/stop` | 任务族锁内按已登记job_id执行bkill，不以本地queued/running状态阻止请求；终止/已结束/不存在回执同步本地与台账，不额外轮询。无job_id时幂等返回`no_job=true,job_id=null,new_status`，不发远端命令；已结束/不存在分别返回`already_finished`/`job_not_found`。保留已有科学状态，落库失败明确报未同步，再提交仍重查LSF活跃作业；**高风险** |
 | 作业 | `POST /jobs/tasks/{id}/archive` · `/unarchive` | 归档/重开（自由能主任务连带 frac） |
 | 作业 | `POST /jobs/tasks/{id}/build-ele-inputs` | ele 输入（`{source_type:"opt"/"external", source_task_id?, ...}`） |
 | 作业 | `POST /jobs/tasks/{id}/create-diff-charge` | **差分电荷分块计算**（ele 附属，v0.9.44）：`{blocks:[{label,atoms}], incar_params?}` → 见 §4.2 ④b |

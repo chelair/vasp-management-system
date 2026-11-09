@@ -650,6 +650,52 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertIsNone(self.gateway._unresolved(self.ledger.read(), 't1'))
         self.assertEqual(self.hpc.submit_count(), 1)
 
+    def test_stop_uses_receipt_when_local_status_is_stale(self):
+        record = self.execute()
+        for status, raw, exit_code in (
+                ('pending', f'Job <{record["job_id"]}>: Job has already finished', 255),
+                ('unconverged', f'Job <{record["job_id"]}> is being terminated', 0)):
+            with self.subTest(status=status):
+                db = self.storage.load_db()
+                db['projects'][0]['tasks'][0].update(status=status, job_id=record['job_id'])
+                self.storage.save_db(db, backup=False)
+                with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                        'exit_code': exit_code, 'stdout': raw}) as remote, \
+                     patch.object(self.unknown, 'jobs', side_effect=AssertionError('停止不额外查询LSF')):
+                    response = self.jobs.stop_task('t1')
+                self.assertFalse(response['data']['stop_pending'])
+                self.assertEqual(response['data']['already_finished'], status == 'pending')
+                self.assertIn('bkill ' + record['job_id'], remote.call_args.args[1])
+                task = self.storage.load_db()['projects'][0]['tasks'][0]
+                self.assertEqual(task['status'], status)
+                self.assertIsNone(task['job_id'])
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_stop_without_recorded_job_is_idempotent_and_does_not_contact_remote(self):
+        db = self.storage.load_db()
+        before = self.ledger.read()
+        with patch.object(self.jobs.ssh, 'run_remote', side_effect=AssertionError('没有作业号不发远端命令')):
+            for _ in range(2):
+                response = self.jobs.stop_task('t1')
+                self.assertTrue(response['data']['no_job'])
+                self.assertIsNone(response['data']['job_id'])
+                self.assertEqual(response['data']['new_status'], 'pending')
+        self.assertEqual(self.storage.load_db(), db)
+        self.assertEqual(self.ledger.read(), before)
+        self.assertEqual(self.hpc.submit_count(), 0)
+
+    def test_stale_status_does_not_hide_stop_failure(self):
+        record = self.execute()
+        db = self.storage.load_db()
+        db['projects'][0]['tasks'][0]['status'] = 'pending'
+        self.storage.save_db(db, backup=False)
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                'exit_code': 1, 'stderr': 'bkill denied'}):
+            response = self.jobs.stop_task('t1')
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(self.storage.load_db(), db)
+        self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+
     def test_stop_closes_unknown_action_without_polling_lsf(self):
         record = self.execute()
         self.ledger.update(record['id'], status='unknown', reason='对账失败：LSF作业目录与提交快照不符')

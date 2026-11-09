@@ -227,12 +227,15 @@ export async function unarchiveTask(taskId: string): Promise<{
   });
 }
 
-/** 停止作业：远程 bkill 终止运行中的作业，任务状态回退为待提交 */
+/** 停止记录中的作业；已结束或已无作业时返回当前状态。 */
 export async function stopTask(taskId: string): Promise<{
-  job_id: string;
+  job_id: string | null;
   new_status: string;
   stop_pending?: boolean;
   sync_warning?: string;
+  already_finished?: boolean;
+  job_not_found?: boolean;
+  no_job?: boolean;
 }> {
   return request(`/jobs/tasks/${encodeURIComponent(taskId)}/stop`, {
     method: 'POST',

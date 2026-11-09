@@ -209,10 +209,10 @@ export default function TaskOverview({
               构建输入文件
             </Button>
           )}
-          {task.job_id && ['queued', 'running'].includes(task.status) && (
+          {task.job_id && (
             <Popconfirm
               title="确认停止该作业？"
-              description={`作业 ${task.job_id} 将被 bkill 终止，状态回到待提交`}
+              description={`将停止作业 ${task.job_id}；若作业已经结束，将刷新任务状态`}
               okText="停止"
               okButtonProps={{ danger: true }}
               cancelText="取消"

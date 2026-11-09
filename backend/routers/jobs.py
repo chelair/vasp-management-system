@@ -1566,11 +1566,10 @@ def _stop_task_locked(task_id: str):
         return JSONResponse(status_code=404, content=fail(str(e)))
 
     job_id = task.get("job_id")
-    if not job_id or task.get("status") not in ("queued", "running"):
-        return JSONResponse(
-            status_code=409,
-            content=fail("作业未在排队/运行中，无法停止"),
-        )
+    if not job_id:
+        return ok("当前没有记录中的作业，已刷新任务状态", {
+            'job_id': None, 'new_status': task['status'], 'stop_pending': False, 'no_job': True,
+        })
 
     server = project.get("server")
     servers = load_servers()
@@ -1625,7 +1624,8 @@ def _stop_task_locked(task_id: str):
                 'OK; bkill 确认停止' if confirmed else 'ACCEPTED; 本地状态更新失败') +
                (('; SYNC_WARN: ' + sync_error) if sync_error else ''))
     _, current_task = _resolve_task(task_id)
-    message = ('作业已不在调度器中，本地状态已更新' if job_not_found else '作业已停止') if confirmed else '停止结果未同步到本地，请重试或对账'
+    message = ('作业已不在调度器中，本地状态已更新' if job_not_found else
+               '作业已结束，本地状态已更新' if already_finished else '作业已停止') if confirmed else '停止结果未同步到本地，请重试或对账'
     return ok(message, {
         'job_id': job_id, 'new_status': current_task['status'], 'already_finished': already_finished,
         'stop_pending': not confirmed, 'sync_warning': sync_error,

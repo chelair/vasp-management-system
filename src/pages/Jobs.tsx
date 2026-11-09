@@ -856,7 +856,7 @@ export default function Jobs() {
     } catch (err) {
       const reason = err instanceof Error ? err.message : '提交作业失败';
       if (reason.includes('仍有活跃作业')) {
-        // 后端已把任务同步回运行中；刷新后提交置灰、停止可点。
+        // 后端已把任务同步回运行中；刷新后按钮切为停止。
         await refreshProjects();
         message.warning(reason);
       } else if (reason.includes('正在进行的提交')) {

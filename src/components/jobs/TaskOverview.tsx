@@ -19,7 +19,6 @@ import type { JobWorkspace, Task, TaskStatus, TaskType } from '../../types';
 import { GROUP_ROLE_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS } from '../../types';
 import { fetchTaskFileStatus, openTaskFolder } from '../../api/jobs';
 import type { TaskFileStatus, TaskInputState } from '../../api/jobs';
-import { INSPECTION_COMPLETED } from '../../api/inspections';
 import StatusTag from '../common/StatusTag';
 import { checkNeedsAttention } from '../../utils/project';
 
@@ -69,8 +68,7 @@ export default function TaskOverview({
   input,
 }: Props) {
   const { message } = App.useApp();
-  const [refreshVersion, setRefreshVersion] = useState(0);
-  const lastManualRefresh = useRef(0);
+  const requestVersion = useRef(0);
   const [remoteFiles, setRemoteFiles] = useState<{
     taskId: string;
     status: 'loading' | 'ready' | 'error';
@@ -81,38 +79,31 @@ export default function TaskOverview({
     error?: string | null;
   } | null>(null);
 
-  // 文件卡片以远端当前计算目录为准；本地草稿变化不触发远端查询。
   useEffect(() => {
-    let disposed = false;
-    let generation = 0;
-    const refresh = async (force = false) => {
-      const version = ++generation;
-      setRemoteFiles({ taskId: task.task_id, status: 'loading', files: [] });
-      try {
-        const data = await fetchTaskFileStatus(task.task_id, true, true, force);
-        if (!disposed && version === generation) {
-          setRemoteFiles({ taskId: task.task_id, status: 'ready', files: data.files,
-            remoteChecked: data.remote_checked, remoteDir: data.remote_dir,
-            checkedAt: data.checked_at, error: data.error });
-        }
-      } catch {
-        if (!disposed && version === generation) {
-          setRemoteFiles({ taskId: task.task_id, status: 'error', files: [] });
-        }
-      }
-    };
-    const force = refreshVersion !== lastManualRefresh.current;
-    lastManualRefresh.current = refreshVersion;
-    void refresh(force);
-    const onInspection = () => void refresh();
-    window.addEventListener(INSPECTION_COMPLETED, onInspection);
+    setRemoteFiles(null);
     return () => {
-      disposed = true;
-      window.removeEventListener(INSPECTION_COMPLETED, onInspection);
+      requestVersion.current += 1;
     };
-  }, [task.task_id, task.remote_dir, task.current_output?.latest_dir, task.job_id, task.status, input?.source?.synced_at, refreshVersion]);
+  }, [task.task_id]);
 
-  const filesStatus = remoteFiles?.taskId === task.task_id ? remoteFiles.status : 'loading';
+  const refreshFiles = async () => {
+    const version = ++requestVersion.current;
+    setRemoteFiles({ taskId: task.task_id, status: 'loading', files: [] });
+    try {
+      const data = await fetchTaskFileStatus(task.task_id, true, true, true);
+      if (version === requestVersion.current) {
+        setRemoteFiles({ taskId: task.task_id, status: 'ready', files: data.files,
+          remoteChecked: data.remote_checked, remoteDir: data.remote_dir,
+          checkedAt: data.checked_at, error: data.error });
+      }
+    } catch {
+      if (version === requestVersion.current) {
+        setRemoteFiles({ taskId: task.task_id, status: 'error', files: [] });
+      }
+    }
+  };
+
+  const filesStatus = remoteFiles?.taskId === task.task_id ? remoteFiles.status : 'idle';
   const filesByName = new Map(
     (filesStatus === 'ready' ? remoteFiles?.files ?? [] : []).map((file) => [file.name, file]),
   );
@@ -128,10 +119,10 @@ export default function TaskOverview({
   const fileStateOf = (name: string) => {
     if (filesStatus !== 'ready') {
       return {
-        key: 'none', label: filesStatus === 'error' ? '状态未知' : '读取中',
+        key: 'none', label: filesStatus === 'error' ? '状态未知' : filesStatus === 'idle' ? '未查询' : '读取中',
         tip: filesStatus === 'error'
           ? '文件状态读取失败，点击「刷新状态」重试。'
-          : '正在读取文件状态。',
+          : filesStatus === 'idle' ? '点击「刷新状态」查询远端文件状态。' : '正在读取文件状态。',
       };
     }
     const file = filesByName.get(name);
@@ -172,6 +163,8 @@ export default function TaskOverview({
     }
   };
 
+  const showStop = Boolean(task.job_id) && !['completed', 'unconverged', 'archived'].includes(task.status);
+
   return (
     <div className="job-overview">
       <Card size="small" title="快捷操作" className="job-card">
@@ -187,29 +180,7 @@ export default function TaskOverview({
           <Button icon={<CodeOutlined />} onClick={onSubmitScript}>
             生成提交脚本
           </Button>
-          <Tooltip
-            title={
-              task.job_id && ['queued', 'running'].includes(task.status)
-                ? '作业已提交/运行中'
-                : undefined
-            }
-          >
-          <Button
-            type="primary"
-            icon={<RocketOutlined />}
-              loading={submitting}
-              disabled={Boolean(task.job_id) && ['queued', 'running'].includes(task.status)}
-              onClick={() => onSubmit(task)}
-            >
-              提交作业
-            </Button>
-          </Tooltip>
-          {task.task_type === 'ele' && (
-            <Button icon={<ToolOutlined />} onClick={() => onBuildEle(task)}>
-              构建输入文件
-            </Button>
-          )}
-          {task.job_id && (
+          {showStop ? (
             <Popconfirm
               title="确认停止该作业？"
               description={`将停止作业 ${task.job_id}；若作业已经结束，将刷新任务状态`}
@@ -218,10 +189,19 @@ export default function TaskOverview({
               cancelText="取消"
               onConfirm={() => onStop(task)}
             >
-              <Button danger icon={<StopOutlined />} loading={stopping}>
+              <Button danger icon={<StopOutlined />} loading={stopping} disabled={submitting}>
                 停止作业
               </Button>
             </Popconfirm>
+          ) : (
+            <Button type="primary" icon={<RocketOutlined />} loading={submitting} disabled={stopping} onClick={() => onSubmit(task)}>
+              提交作业
+            </Button>
+          )}
+          {task.task_type === 'ele' && (
+            <Button icon={<ToolOutlined />} onClick={() => onBuildEle(task)}>
+              构建输入文件
+            </Button>
           )}
           <Button icon={<FolderOpenOutlined />} onClick={() => void handleOpenFolder()}>
             打开文件夹
@@ -349,7 +329,7 @@ export default function TaskOverview({
         className="job-card mt-16"
         extra={
           <Space>
-            <Button size="small" loading={filesStatus === 'loading'} onClick={() => setRefreshVersion((v) => v + 1)}>
+            <Button size="small" loading={filesStatus === 'loading'} onClick={refreshFiles}>
               刷新状态
             </Button>
             <Button type="primary" icon={<FileTextOutlined />} size="small" onClick={onGenerateInputs}>
@@ -380,7 +360,7 @@ export default function TaskOverview({
           })}
         </div>
         <div className="preview-note" style={{ marginTop: 10 }}>
-          显示远端当前计算目录的文件状态，续算时优先查看最新 conN 目录。结果保留1分钟，点击「刷新状态」立即更新。文件存在不代表计算已收敛。
+          仅点击「刷新状态」时查询，结果不会自动刷新。显示上次查询的远端文件状态，续算时优先查看最新 conN 目录。文件存在不代表计算已收敛。
           {remoteFiles?.taskId === task.task_id && remoteFiles.remoteChecked && remoteFiles.checkedAt && (
             <span> 读取时间：{new Date(remoteFiles.checkedAt * 1000).toLocaleString()}；目录：{remoteFiles.remoteDir}。</span>
           )}

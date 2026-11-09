@@ -33,7 +33,7 @@ const http=require('node:http'),assert=require('node:assert/strict'),path=requir
    saved[id]=Object.fromEntries(Object.entries(JSON.parse(body).params).filter(([key,value])=>value&&value!==state(id).files.INCAR.params[key]));data=state(id);
   }else if(req.url.endsWith('/input/sync')){saved[id]={ENCUT:'728'};data=state(id);}
   else if(req.url.endsWith('/submit')){task.status='queued';task.job_id='123';data={job_id:'123',new_status:'queued'};}
-  else if(req.url.endsWith('/stop')){task.status='pending';data={job_id:'123',new_status:'pending',stop_pending:false};}
+  else if(req.url.endsWith('/stop')){task.status='pending';task.job_id=null;data={job_id:'123',new_status:'pending',stop_pending:false};}
   else if(req.url.endsWith('/continuation')){continued=true;saved.calc={};data={action:'created',task_id:'child',con:'con1',remote_dir:'/P/calc/con1',warnings:[]};}
   else if(req.url.startsWith('/api/jobs/nodes'))data={nodes:[],queues:[]};
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify({success:true,data}));

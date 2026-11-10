@@ -71,6 +71,27 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         self.assertEqual(store.load_report('rpt_p')[0],self.original)
         self.assertEqual(set(store.read_edits('rpt_p')['review']['content']),{module['key']})
 
+    def test_review_model_number_comparison_card_saves_and_exports_with_fact_values(self):
+        state,module=self.comment(text='对比模型1234的离子或者电子传导证据。')
+        values=review.facts(self.doc,state['comments'][-1])
+        fid=next(iter(values));fact=values[fid]
+        self.plan([{'kind':'card','target':module['key'],'title':'模型1–4的传导对比',
+                    'text':f'模型1、2、3、4采用报告已有结果比较，参考能量为 [[{fid}]]。'}])
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['data']['comments'][-1]['status'],'done')
+        expected=str(fact['value'])+' '+fact['units']
+        for endpoint in ('markdown','export.html','export.html?print=1'):
+            text=self.client.get('/api/reports/project/rpt_p/'+endpoint).text
+            self.assertIn('模型1–4的传导对比',text);self.assertIn(expected,text)
+        before=store.read_edits('rpt_p')
+        state,module=self.comment(text='补充模型1–4的对比')
+        self.plan([{'kind':'text','target':module['key'],'text':'模型1–4的能垒为1.23 eV。'}])
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertEqual(store.read_edits('rpt_p')['review']['content'],before['review']['content'])
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+
     def test_review_pdos_new_integration_or_using_band_center_as_total_energy_is_rejected(self):
         self.analysis_report()
         state,module=self.comment('PDOS · 态密度（PDOS）','计算新的能窗和轨道积分')

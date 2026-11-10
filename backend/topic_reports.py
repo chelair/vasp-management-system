@@ -290,9 +290,14 @@ def validate_text(text,doc):
     # Model names/chemical formulas and orbital labels are identifiers, not
     # numerical results. Quantities must use [[Fxx]], expanded only by Python.
     for target in doc['request']['model_queries']:remainder=remainder.replace(target,'')
+    remainder=re.sub(
+        r'(?:模型|(?i:model))\s*\d+(?:\s*(?:[、,，/与和及~～–—-]|至|到)\s*(?:(?:模型|(?i:model))\s*)?\d+)*'
+        r'(?!\d|\.\d|\s*(?:eV|meV|Ha|Ry|Å|%))',
+        '',remainder)
+    remainder=re.sub(r'(?m)^\s*(?:\d+[.)、）]|[（(]\d+[)）])\s+','',remainder)
     remainder=re.sub(r'\b[1-7][spdf]\b','',remainder)
     if re.search(r'(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?',remainder) or re.search(r'[零一二三四五六七八九十百千万点]+\s*(?:eV|电子伏|伏特|埃|Å)',remainder):
-        raise ValueError('文字不能自行填写数值，请使用事实引用[[Fxx]]；最终数字由服务端展开')
+        raise ValueError('生成文字包含未关联报告事实的数值，尚未写入报告，请重新处理批注')
     if re.search(r'(?:E_f|E_ads|delta_E|ΔE|E_a|μ_O)\s*=',remainder):raise ValueError('性质公式由注册配方提供，文字不得自定义替代公式')
     return text
 

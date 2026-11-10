@@ -159,6 +159,16 @@ class TopicTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.topics.validate_text('无效输入 [[F01]]',invalid)
         with self.assertRaises(ValueError):self.topics.edit(self.user,doc['topic_id'],{'expected_revision':doc['revision'],'science':{'value':999}})
 
+    def test_model_numbers_are_identifiers_while_result_numbers_still_need_facts(self):
+        doc=self.prepare()
+        for text in ('模型1234的传导对比。','模型1–4的传导对比。','模型1、2、3、4的传导对比。',
+                     '模型 1 与模型 2 的结果为 [[F01]]。','model12与MODEL13的对比。',
+                     '1. 模型1的结果为 [[F01]]。\n2. 模型2用于比较。'):
+            with self.subTest(text=text):self.assertEqual(self.topics.validate_text(text,doc),text)
+        for text in ('模型1–4的能垒是1.23 eV。','模型1的结果为999。','模型1.23 eV。',
+                     '模型12 eV。','模型1、2、3、4的结果为 [[F99]]。','1. 迁移能垒为1.23 eV。'):
+            with self.subTest(text=text),self.assertRaises(ValueError):self.topics.validate_text(text,doc)
+
     def test_unrelated_missing_and_forged_blocks_rejected(self):
         doc=self.prepare()
         bad={'block_id':'blk_wrong','reason':'无关资源','section':'results','order':0,'essential':True}

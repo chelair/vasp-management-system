@@ -20,10 +20,10 @@ from report_export import render_html
 RULES = json.loads((Path(__file__).resolve().parents[1] / "backend/defaults/report_rules.json").read_text())
 
 
-def make_report(*, statuses=None, merged=None):
+def make_report(*, statuses=None, merged=None, tasks=None):
     project = {
         "project_id": "proj_test", "name": "ReportTest", "deadline": "2020-01-01", "server": "",
-        "tasks": [
+        "tasks": tasks if tasks is not None else [
             {"task_id": str(i), "model_name": f"model{i}", "task_type": "opt", "status": status,
              "last_energy": (merged or {}).get(str(i), {}).get("last_energy"),
              "dir_path": f"ReportTest/opt/model{i}", "remote_dir": f"ReportTest/opt/model{i}"}
@@ -53,6 +53,43 @@ def electronic_item(name, task_id):
 
 
 class ReportPresentationTests(unittest.TestCase):
+    def test_neb_endpoints_show_until_their_own_path_has_calculation_data(self):
+        import config
+        import report_interactive
+        config.ensure_data_dirs()
+        def task(tid,group,role,kind='opt',status='completed'):
+            return {'task_id':tid,'model_name':tid,'task_type':kind,'status':status,
+                    'last_energy':-10. if kind=='opt' else None,
+                    'dir_path':f'ReportTest/{group}/{tid}',
+                    'group':{'group_id':group,'name':group,'group_type':'neb' if group!='free' else 'free_energy','group_role':role}}
+        tasks=[task('A_IS','A','initial_opt'),task('A_FS','A','final_opt',status='unconverged'),task('A_NEB','A','neb_images','neb','pending'),
+               task('B_IS','B','initial_opt'),task('B_FS','B','final_opt'),task('B_NEB','B','neb_images','neb','running'),
+               task('free_opt','free','main_structure')]
+        history={'force_converged':False,'force_history':[{'step':1,'energy':-10.,'max_force':.3}]}
+        base={t['task_id']:copy.deepcopy(history) for t in tasks if t['task_type']=='opt'}
+        base['B_NEB']={'neb_barrier':{'images':[{'label':'00','relative':0.,'energy':-10.},{'label':'01','relative':1.,'energy':-9.}]}}
+        cases=[({},True),({'neb_barrier':{'images':[]}},True),
+               ({'neb_barrier':{'images':[{'label':'00','energy':None,'relative':None,'max_force':None}]}},True),
+               ({'neb_band_steps':1},False),
+               ({'neb_barrier':{'images':[{'label':'00','energy':-10.}]}},False),
+               ({'neb_barrier':{'images':[{'label':'00','relative':0.,'energy':-10.}]}},False)]
+        for observation,show in cases:
+            with self.subTest(observation=observation):
+                merged={**base,'A_NEB':observation}
+                with patch.object(builder,'read_or_convert_cif',return_value='data_saved_endpoint'):
+                    doc=make_report(tasks=tasks,merged=merged)
+                ids=[r['task_id'] for r in doc['science']['opt']]
+                self.assertEqual(ids,['A_IS','A_FS'] if show else [])
+                science=next(s['markdown'] for s in doc['markdown_sections'] if s['key']=='science')
+                html=render_html(doc,doc['markdown_sections'])
+                for tid in ('A_IS','A_FS'):
+                    self.assertEqual(f'#### {tid}\n' in science,show)
+                    self.assertEqual(f'data-task-id="{tid}"' in html,show)
+                self.assertNotIn('#### B_IS\n',science);self.assertNotIn('#### B_FS\n',science)
+                self.assertNotIn('#### free_opt\n',science)
+                self.assertEqual(set(report_interactive.interactive_payload(doc)['structure']),{'A_IS','A_FS'} if show else set())
+                if show:self.assertIn('⚠️ 未收敛',science)
+
     def test_unconverged_structures_and_partial_results_remain_in_report(self):
         import config
         config.ensure_data_dirs()

@@ -181,6 +181,29 @@ def _task_category(fact: Dict[str, Any]) -> str:
     return "结构优化"
 
 
+def _opt_report_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    neb_groups_with_data = {
+        (fact.get("group") or {}).get("group_id")
+        for fact in facts if fact["task_type"] == "neb"
+        and (fact.get("steps") or any(
+            image.get(field) is not None
+            for image in (fact.get("neb_barrier") or {}).get("images", [])
+            for field in ("energy", "relative", "max_force")
+        ))
+    } - {None, ""}
+    result = []
+    for fact in facts:
+        if fact["task_type"] != "opt":continue
+        group = fact.get("group") or {}
+        endpoint = (group.get("group_type") == "neb"
+                    and group.get("group_role") in ("initial_opt", "final_opt")
+                    and group.get("group_id") not in neb_groups_with_data)
+        if (_task_category(fact) == "结构优化" or endpoint) and (
+            fact.get("force_history") or fact.get("last_energy") is not None or fact["status"] == "unconverged"
+        ):result.append(fact)
+    return result
+
+
 def _workload_weight(task_type: str, registry: Dict[str, Any]) -> float:
     """任务当量：`task_registry.json` 的 workload_weight（opt/frac 1、neb 5、ele 0.4）。"""
     entry = registry.get(task_type) or {}
@@ -1180,7 +1203,7 @@ def _sections_markdown(report, charts):
         blocks.append("### 结构优化\n")
         blocks.append(
             f"本节展示 {len(opt_items)} 个结构优化任务，列出已有结构及能量/力数据，并标注收敛状态。"
-            "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n\n"
+            "（NEB 尚无计算数据时列出对应 IS、FS 优化；已有 NEB 数据时不再单列。自由能中间体见路径章节。）\n\n"
         )
         skipped_unconverged = int(science.get("opt_skipped_unconverged") or 0)
         if skipped_unconverged:
@@ -1754,9 +1777,7 @@ def build_report(
     # 结构三视图弹窗（点击「结构 N」/「映像 N」打开）与要复制进报告的 PNG 清单
     dialogs: List[Dict[str, Any]] = []
     dialog_images: Dict[str, str] = {}
-    # 只把**独立**结构优化任务（不含自由能路径中间体 / NEB 初末态优化）计入本节
-    opt_facts = [f for f in facts if f["task_type"] == "opt" and _task_category(f) == "结构优化"
-                 and (f.get("force_history") or f.get("last_energy") is not None or f["status"] == "unconverged")]
+    opt_facts = _opt_report_facts(facts)
     opt_total = len(opt_facts)
     progress_total = len(opt_facts) + 5
     for index, fact in enumerate(opt_facts):
@@ -1918,10 +1939,11 @@ def build_report(
                 dialogs.append(dialog)
                 dialog_images.update(pngs)
                 img["dialog"] = dialog["id"]
-        name = f"{item['task_id']}_barrier.svg"
-        # 与巡检详情页的 NEB 能垒看板同版式：统计卡 + 能垒曲线
-        charts[name] = neb_panel(item, title=f"{item['task_name']} NEB 能垒看板")
-        item["chart"] = f"charts/{name}"
+        if item["barrier_ev"] is not None:
+            name = f"{item['task_id']}_barrier.svg"
+            # 与巡检详情页的 NEB 能垒看板同版式：统计卡 + 能垒曲线
+            charts[name] = neb_panel(item, title=f"{item['task_name']} NEB 能垒看板")
+            item["chart"] = f"charts/{name}"
         # 映像结构：**不再画 Python 投影矩阵**（旧的 a-b/b-c/a-c 示意），统一用 VESTA 三视图
         # ——点表格里的「映像 N」弹窗看该映像的 a/b/c（用户口径 2026-10-07）。
         if not views_by_label:

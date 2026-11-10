@@ -164,6 +164,14 @@ export function ReportReviewProvider({ reportId, contentRef, version, connection
         const processing = Boolean(work?.busy && task && task.id === work.run?.id && (task.report_job?.comment_id === comment.id
           || task.report_activity?.slice(-1)[0]?.comment_id === comment.id));
         const failedStep = task?.report_activity?.filter(s => s.comment_id === comment.id && s.report_id === reportId).slice(-1)[0];
+        const failure = failedStep?.state === 'failed' ? failedStep.label : task?.error || '';
+        const stopped = task && ['cancelled', 'interrupted'].includes(task.status);
+        const previousFailure = work?.runs.flatMap(run => run.report_activity ?? [])
+          .find(step => step.comment_id === comment.id && step.report_id === reportId && step.state === 'failed');
+        const numberValidation = /文字不能自行填写数值|未关联报告事实的数值|事实引用/.test(failure || (stopped ? previousFailure?.label ?? '' : ''));
+        const retryHint = comment.status === 'done'
+          ? '先点击“重新打开”，再点击“让AI处理”即可重试。'
+          : '点击“让AI处理”即可重试。';
         const renderReply = (item: Comment['replies'][number], i: number) => <div className={`report-review-reply${item.author === 'AI' ? ' is-ai' : ''}`} key={i}>
           <div className="report-review-reply-meta"><strong>{item.author === 'AI' ? 'AI' : '你'}</strong><time title={item.created_at}>{item.created_at.slice(11, 16)}</time></div>
           <div dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, { allowImages: false }) }} /></div>;
@@ -175,7 +183,16 @@ export function ReportReviewProvider({ reportId, contentRef, version, connection
         <p className="report-review-user">{comment.text}</p>
         {comment.source !== review?.source && <Tag>旧版批注</Tag>}
         {task && <ReportRunActivity key={task.id} run={task} reportId={reportId} commentId={comment.id} />}
-        {(task?.error || failedStep?.state === 'failed') && <Alert type="warning" message={task?.error || failedStep?.label} />}
+        {!processing && (failure || stopped) && <Alert type="warning" showIcon
+          message={stopped ? task?.status === 'interrupted' ? '本次处理已中断' : '本次处理已停止' : numberValidation ? '模型回复未通过数据校验' : '本次处理未完成'}
+          description={<>
+            {numberValidation
+              ? `${stopped ? '上一次' : '这次'}模型已返回内容，但生成内容中的数值未通过报告数据校验。你的提问无需改写。`
+              : failure ? `${failure}。` : '这次处理尚未完成。'}
+            原报告和批注已保留。{retryHint}
+          </>} />}
+        {!processing && !failure && !stopped && comment.status === 'blocked' && <Alert type="info" showIcon
+          message="需要补充信息" description="请根据下方 AI 回复，在输入框补充后点击“回复并继续”。" />}
         {comment.replies.length > 1 && <details className="report-review-history"><summary>查看之前的 {comment.replies.length - 1} 条交流</summary>{comment.replies.slice(0, -1).map(renderReply)}</details>}
         {comment.replies.slice(-1).map(renderReply)}
         <div className="report-review-comment-actions">

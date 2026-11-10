@@ -40,6 +40,12 @@ if os.environ.get('LAYOUT_BROWSER_FIXTURE'):
 report_store.save_report(case.doc,'browser fixture',{'g_step.svg':'<svg>fallback</svg>','analysis_pdos.svg':analysis_fixture.CHART})
 target=next(m for m in report_review.view(case.doc)['modules'] if m['title']=='Model')
 def result(value):
+    replies=[r['text'] for r in value['comment']['replies'] if r['author']!='AI']
+    if '验证批注失败提示' in value['comment']['text'] and not replies:
+        return {'reply':'拟定修改','status':'done','actions':[
+            {'kind':'text','target':value['comment']['target'],'text':'未经事实引用的能垒为1.23 eV。'}]}
+    if '验证需要补充提示' in value['comment']['text'] and not replies:
+        return {'reply':'请说明要比较哪两组模型。','status':'blocked','actions':[]}
     if any(word in value['comment']['text'] for word in ('态密度','吸附能','Bader','功函数')):
         return analysis_fixture.result(value)
     if '只调整外观' in value['comment']['text']:

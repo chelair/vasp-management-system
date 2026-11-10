@@ -23,7 +23,7 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
     const proxy=http.request(config.base+req.url,{method:req.method,headers:{...req.headers,host:new URL(config.base).host}},result=>{res.writeHead(result.statusCode,result.headers);result.pipe(res);});
     proxy.on('error',e=>{res.writeHead(502);res.end(e.message);});req.pipe(proxy);return;
    }
-   res.setHeader('Content-Type','text/html');res.end('<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/app.js"></script>');
+   res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/app.js"></script>');
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const url='http://127.0.0.1:'+server.address().port;
@@ -32,6 +32,66 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.url().startsWith('https://example.invalid'))external.push(r.url());});
   await page.goto(url);await page.locator('.report-content h6').filter({hasText:'Model'}).waitFor();
   await page.locator('.report-3d canvas').first().waitFor();
+  if(process.env.REVIEW_FEEDBACK_ONLY){
+   await page.locator('.report-content h6').filter({hasText:'Model'}).getByRole('button',{name:'批注',exact:true}).click();
+   const add=async text=>{
+    await page.getByLabel('新的报告批注').fill(text);
+    await page.getByRole('button',{name:'保存批注',exact:true}).click();
+    const comment=page.locator('.report-review-comment').filter({hasText:text});
+    await comment.getByText('待处理',{exact:true}).waitFor();return comment;
+   };
+   let failed=await add('验证批注失败提示：比较已有迁移结果');
+   await page.getByRole('combobox',{name:'批注处理模型'}).click();await page.getByText('隔离模型 · mock',{exact:true}).click();
+   await failed.getByRole('button',{name:'让AI处理',exact:true}).click();
+   await failed.getByText('模型回复未通过数据校验',{exact:true}).waitFor().catch(async error=>{
+    console.error('Feedback card:',await failed.innerText());
+    console.error('Alerts:',await failed.locator('.ant-alert').allTextContents());
+    console.error('Fixture backend:',logs.slice(-1800));throw error;
+   });
+   assert.ok((await failed.innerText()).includes('你的提问无需改写'));
+   assert.ok((await failed.innerText()).includes('点击“让AI处理”即可重试'));
+   await page.reload();await page.getByRole('button',{name:/^报告批注/}).click();
+   failed=page.locator('.report-review-comment').filter({hasText:'验证批注失败提示：比较已有迁移结果'});
+   await failed.getByText('模型回复未通过数据校验',{exact:true}).waitFor();
+   await failed.getByRole('button',{name:'标记完成',exact:true}).click();
+   await failed.getByText(/先点击“重新打开”，再点击“让AI处理”即可重试/).waitFor();
+   await failed.getByRole('button',{name:'重新打开',exact:true}).click();
+   await failed.getByText('待处理',{exact:true}).waitFor();
+   const cid=await failed.getAttribute('data-comment-id');
+   await page.route('**/api/reports/assistant/p',async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    const response=await route.fetch();const data=await response.json();
+    const runs=data.data.conversation.runs;
+    runs.unshift({...runs[0],id:'restored-cancelled-attempt',status:'cancelled',error:'',
+     report_job:{action:'comment',report_id:'rpt_p',comment_id:cid},
+     report_activity:[{label:'本次已停止',state:'completed',report_id:'rpt_p',comment_id:cid}]});
+    await route.fulfill({response,json:data});
+   });
+   await page.reload();await page.getByRole('button',{name:/^报告批注/}).click();
+   await failed.locator('.ant-alert').getByText('本次处理已停止',{exact:true}).waitFor();
+   assert.ok((await failed.innerText()).includes('上一次模型已返回内容'));
+   await page.reload();await page.getByRole('button',{name:/^报告批注/}).click();
+   await failed.locator('.ant-alert').getByText('本次处理已停止',{exact:true}).waitFor();
+   await page.unroute('**/api/reports/assistant/p');
+   await page.reload();await page.getByRole('button',{name:/^报告批注/}).click();
+   await failed.locator('textarea').fill('按原问题重新处理');
+   await failed.getByRole('button',{name:'回复并继续',exact:true}).click();
+   await failed.getByText('已完成',{exact:true}).waitFor();
+   assert.equal(await failed.locator('.ant-alert').getByText('本次处理已停止',{exact:true}).count(),0,'success replaces the previous failure guidance');
+   await page.locator('.report-review-drawer').getByRole('button',{name:'Close',exact:true}).click();
+   await page.locator('.report-content h6').filter({hasText:'Model'}).getByRole('button',{name:/^批注/}).click();
+   const blocked=await add('验证需要补充提示：比较模型');
+   await blocked.getByRole('button',{name:'让AI处理',exact:true}).click();
+   await blocked.getByText('需要补充信息',{exact:true}).waitFor();
+   assert.ok((await blocked.innerText()).includes('在输入框补充后点击“回复并继续”'));
+   await blocked.locator('textarea').fill('比较模型一和模型二');
+   await blocked.getByRole('button',{name:'回复并继续',exact:true}).click();
+   await blocked.getByText('已完成',{exact:true}).waitFor();
+   assert.equal(await blocked.getByText('需要补充信息',{exact:true}).count(),0);
+   assert.deepEqual(errors,[]);
+   console.log('PASS report comment feedback: numeric validation, completed/reopen, stopped attempt preserves prior cause, reload, genuine missing information and successful retry.');
+   return;
+  }
   await page.evaluate(()=>window.__original3D=document.querySelector('.report-3d'));
   const toggle=page.getByRole('switch',{name:'AI 批注处理'});
   await toggle.click();await page.getByText('已关闭 AI 批注处理（已有内容保留）',{exact:true}).waitFor();

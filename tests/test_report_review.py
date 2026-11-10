@@ -289,16 +289,94 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         with self.assertRaises(Exception):review.process('rpt_p',self.user,state['comments'][0]['id'],state['revision'],self.connection['id'],control)
         self.assertEqual(self.state()['comments'][0]['status'],'open')
 
-    def test_review_regeneration_preserves_old_comments_without_applying_stale_edits(self):
+    def test_review_regeneration_preserves_completed_content_and_allows_more_comments(self):
         state,module=self.comment();self.plan([{'kind':'text','target':module['key'],'text':'旧版本补充分析'}])
         self.assertEqual(self.process_comment(state).status_code,200)
         changed=copy.deepcopy(self.doc);changed['science']['opt'][0]['final_energy_ev']=-20
         store.save_report(changed,'new data',{})
-        self.assertTrue(self.state()['stale'])
-        self.assertNotIn('旧版本补充分析',export_markdown(review.effective(changed)))
+        self.assertFalse(self.state()['stale'])
+        self.assertIn('旧版本补充分析',export_markdown(review.effective(changed)))
         state,module=self.comment(text='针对新版数据的批注')
         self.assertFalse(state['stale']);self.assertEqual(len(state['comments']),2)
-        self.assertNotEqual(state['comments'][0]['source'],state['source'])
+        self.assertEqual(state['comments'][0]['source'],state['source'])
+
+    def test_review_regeneration_remaps_frozen_cards_and_layout_without_recalculating(self):
+        self.analysis_report();state,module=self.comment('Adsorbed','计算吸附能并保留卡片')
+        self.assertEqual(self.process_comment(state).status_code,200)
+        saved=store.read_edits('rpt_p')['review'];target=module['key']
+        card=next(iter(saved['content'][target]['elements'].values()))
+        saved['content'][target]['layout']={'columns':2,'elements':[card['id']]}
+        card['presentation']={'accent':'violet','show_sources':True}
+        store.save_review('rpt_p',saved,store.note_revision(store.read_edits('rpt_p')))
+        frozen=copy.deepcopy(card);calls=len(fixture.REQUESTS)
+        changed=copy.deepcopy(self.doc)
+        changed['science']['opt'][0]['final_energy_ev']=-200
+        changed['markdown_sections'][0]['markdown']='新版说明\n\n'+changed['markdown_sections'][0]['markdown']
+        with patch('report_review_elements.calculate',side_effect=AssertionError('重新生成不得重算旧卡片')):
+            store.save_report(changed,'new report',{})
+            store.save_report(changed,'generate again with AI disabled',{})
+        current=self.state();new_target=next(m['key'] for m in current['modules'] if m['title']=='Adsorbed')
+        self.assertNotEqual(new_target,target)
+        self.assertEqual(len(fixture.REQUESTS),calls)
+        shown=review.effective(changed)
+        self.assertEqual(shown['review_elements'][card['id']],{**frozen,'target':new_target})
+        self.assertEqual(store.read_edits('rpt_p')['review']['content'][new_target]['layout'],{'columns':2,'elements':[card['id']]})
+        self.assertEqual(current['comments'][0]['status'],'done')
+        self.assertEqual(current['comments'][0]['target'],new_target)
+        html=next(store.report_dir('rpt_p').parent.glob('report_*.html')).read_text(encoding='utf-8')
+        self.assertIn('初步吸附能',html);self.assertIn('-1.50000000',html)
+        for endpoint in ('markdown','export.html','export.html?print=1'):
+            response=self.client.get('/api/reports/project/rpt_p/'+endpoint)
+            self.assertEqual(response.status_code,200,response.text[:400])
+            self.assertIn('-1.5',response.text)
+        reply=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'reply','revision':current['revision'],
+            'comment_id':current['comments'][0]['id'],'text':'把已有卡片标题改为保留结果'})
+        self.assertEqual(reply.status_code,200,reply.text)
+        self.plan([{'kind':'edit','target':new_target,'element_id':card['id'],'operation':'replace','text':'保留结果'}])
+        self.assertEqual(self.process_comment(reply.json()['data']).status_code,200)
+        updated=review.effective(changed)['review_elements'][card['id']]
+        self.assertEqual(updated['title'],'保留结果');self.assertEqual(updated['inputs'],frozen['inputs'])
+
+    def test_review_removed_module_keeps_cards_visible_and_editable(self):
+        state,module=self.comment()
+        self.plan([{'kind':'card','target':module['key'],'title':'持久卡片','text':'已经保存的解释'}])
+        self.assertEqual(self.process_comment(state).status_code,200)
+        card=next(iter(review.effective(self.doc)['review_elements'].values()))
+        changed=copy.deepcopy(self.doc)
+        changed['markdown_sections'][0]['markdown']=changed['markdown_sections'][0]['markdown'].replace(
+            '#### Model\n\n原有模型分析\n\n@[structure-3d:t]\n\n','')
+        store.save_report(changed,'module removed',{})
+        self.assertIn('已经保存的解释',self.client.get('/api/reports/project/rpt_p/markdown').text)
+        state=self.state();orphan=next(m for m in state['modules'] if m['key']==module['key'])
+        self.assertEqual(orphan['section'],'saved_review')
+        self.assertEqual(orphan['title'],'Model')
+        response=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'add','revision':state['revision'],
+            'target':orphan['key'],'text':'补充已有卡片'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.plan([{'kind':'edit','target':orphan['key'],'element_id':card['id'],'operation':'append','text':'继续保存的补充'}])
+        self.assertEqual(self.process_comment(response.json()['data']).status_code,200)
+        for endpoint in ('markdown','export.html','export.html?print=1'):
+            text=self.client.get('/api/reports/project/rpt_p/'+endpoint).text
+            self.assertIn('已保存的报告卡片',text);self.assertIn('继续保存的补充',text)
+
+    def test_review_legacy_stale_cards_are_recovered_on_read_and_can_be_reopened(self):
+        import json
+        state,module=self.comment();self.plan([{'kind':'card','target':module['key'],'title':'历史卡片','text':'原有结果继续保留'}])
+        self.assertEqual(self.process_comment(state).status_code,200)
+        edits=store.read_edits('rpt_p');edits['review'].pop('module_paths',None)
+        store.save_review('rpt_p',edits['review'],store.note_revision(store.read_edits('rpt_p')))
+        changed=copy.deepcopy(self.doc);changed['science']['opt'][0]['final_energy_ev']=-100
+        (store.report_dir('rpt_p')/'report.json').write_text(json.dumps(changed),encoding='utf-8')
+        self.assertIn('原有结果继续保留',self.client.get('/api/reports/project/rpt_p/markdown').text)
+        current=self.state();self.assertFalse(current['stale'])
+        self.assertEqual(store.read_edits('rpt_p')['review']['source'],review.source(changed))
+        response=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'status','revision':current['revision'],
+            'comment_id':current['comments'][0]['id'],'status':'open'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['data']['comments'][0]['source'],current['source'])
+        stale=self.client.post('/api/reports/project/rpt_p/review',json={'operation':'status','revision':current['revision'],
+            'comment_id':current['comments'][0]['id'],'status':'done'})
+        self.assertEqual(stale.status_code,409)
 
     def vacancy_comment(self, text='计算氧空位形成能，氧气分子能量采用 −8.3 eV。'):
         vacancy_fixture.install(self.doc)

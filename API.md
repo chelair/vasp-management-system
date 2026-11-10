@@ -90,9 +90,11 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 完整报告批注：`GET /api/reports/project/{id}/review` 返回当前 `revision/source`、章节/模块目录、元素目录 `elements[{id,type,target,...}]` 及批注；`POST .../review` 接收 `revision`、`operation=add/reply/status`，分别携带 `target+text`、`comment_id+text`、`comment_id+status(open/done/blocked)`。用户回复会重新打开批注。`POST .../review/process` 接收 `revision/comment_id/connection_id`，显式调用本人模型、验证对应模块修改并保存回复/状态；已完成项直接返回，不重复模型调用。项目AI开关及权限、私有连接、科学事实引用和修改范围均由后端检查，版本冲突409。成功响应no-store；失败/取消不覆盖原报告。
 
-批注与展示修改复用 `edits.review`（`report.review.1`），旧PUT edits保留该字段。原report.json与科学快照不改写；详情、Markdown、图表、HTML及打印视图按保存的展示修改生成。批注正文/回复/状态不进入导出或交互数据；报告重新生成后旧版展示修改失效，旧批注保留。支持的修改与计算范围见[报告批注说明](docs/reports.md#完整报告模块批注)。
+批注与展示修改复用 `edits.review`（`report.review.1`），旧PUT edits保留该字段。原report.json与科学快照不改写；详情、Markdown、图表、HTML及打印视图按保存的展示修改生成。批注正文/回复/状态不进入导出或交互数据。报告重新生成时持续保留卡片、补充文字、冻结计算值/输入/来源、卡片排版及删除状态；`review.module_paths`按章节及完整标题路径重新关联全部可对应批注，原模块缺失的卡片置于“已保存的报告卡片”并可继续编辑。旧版失效卡片在读取时恢复存档展示，不重新调用模型或计算；原正文替换/结构筛选/模块排序不覆盖变化后的基础报告。版本冲突仍返回409。支持范围见[报告批注说明](docs/reports.md#完整报告模块批注)。
 
 新增结构化卡片：`review.content[target].elements[id]` 保存type=text/calculation/formula/sources、target/comment_id、公式版本、Python结果及输入来源；`body_edits`保存原正文元素局部替换/删除，history记录修改前content和动作。报告详情的structured.review_elements为有效卡片映射，顶层review_elements_html为同一服务端渲染器生成的页面卡片HTML；markdown_sections中使用`@[review-element:id]`挂点，顶层markdown和Markdown下载已展开卡片。`GET /structured`仍返回原始冻结报告，不把展示修改冒充原科学数据。HTML和打印共用同一卡片渲染。
+
+完整报告生成时，未收敛优化结构同样纳入并标注，保留已有结构、能量及力数据；缺曲线不生成空收敛历史。HTML结构CIF随原交互数据内嵌，3D工具栏“导出 CIF”直接下载当前选中的初始/优化后结构、中间体、Bader结构或NEB映像原文，无新增API或远端读取。
 
 批注模型上下文增加analysis_evidence（原report.science的紧凑只读摘要）；facts新增已保存efermi、band_center_ev、pdos_range_min_ev/max_ev、work_function、vacuum_level和Bader的e单位标量，保留task_id及record_path。文字及来源按fact.units展开，吸附能等能量配方拒绝带中心/费米能级/电荷输入；缺能量按具体角色反馈。沿用/省略单位回复也支持非氧气的用户吸附质参考，完整来源仍存于服务端绑定事实。
 

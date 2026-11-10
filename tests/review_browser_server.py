@@ -57,11 +57,16 @@ def result(value):
         return {'reply':'已经复用原台阶图、结构窗口和表格，按要求显示所选四项。','status':'done',
                 'actions':[{'kind':'structures','target':value['comment']['target'],'tasks':['f4','f2','f1','f0']}]}
     return {'reply':'批注回复专用内容。<script>window.REVIEW_XSS=1</script> ![leak](https://example.invalid/leak)',
-            'status':'done','actions':[{'kind':'text','target':target['key'],'text':'浏览器核对后的报告解释，原有结构交互继续保留。'}]}
+            'status':'done','actions':[{'kind':'text','target':value['comment']['target'],'text':'浏览器核对后的报告解释，原有结构交互继续保留。'}]}
 fixture.REVIEW_RESULT=result
+generation=0
 def build(pid, *, progress=None, **kwargs):
+    global generation
+    generation+=1
     if progress:progress(1,1,'整理已有项目数据')
-    return {'report':copy.deepcopy(case.doc),'markdown':'browser generated report','charts':{'g_step.svg':'<svg>fallback</svg>','analysis_pdos.svg':analysis_fixture.CHART}}
+    doc=copy.deepcopy(case.doc)
+    doc['markdown_sections'][0]['markdown']=f'重新生成后的报告说明（第{generation}次）。'+'\n\n'*generation+doc['markdown_sections'][0]['markdown']
+    return {'report':doc,'markdown':'browser generated report','charts':{'g_step.svg':'<svg>fallback</svg>','analysis_pdos.svg':analysis_fixture.CHART}}
 with patch('report_builder.build_report',side_effect=build), patch('routers.project_reports.build_report',side_effect=build):
     print(json.dumps({'base':case.client.base,'connection':case.connection['id']}),flush=True)
     try:

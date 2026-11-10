@@ -43,7 +43,10 @@ export function ReportReviewProvider({ reportId, contentRef, version, connection
   const load = useCallback(async () => {
     if (!reportId) return;
     const result = await request<Review>(`/reports/project/${encodeURIComponent(reportId)}/review`);
-    if (active.current) setReview(result);
+    if (active.current) {
+      setReview(result);
+      setTarget(current => current && result.modules.some(module => module.key === current) ? current : undefined);
+    }
   }, [reportId]);
   useEffect(() => {
     active.current = true;
@@ -51,6 +54,12 @@ export function ReportReviewProvider({ reportId, contentRef, version, connection
     void load().catch(e => { if (active.current) setError(e.message || '无法加载批注'); });
     return () => { active.current = false; };
   }, [load]);
+  const shownVersion = useRef(version);
+  useEffect(() => {
+    if (shownVersion.current === version) return;
+    shownVersion.current = version;
+    void load().catch(e => setError(e.message));
+  }, [version, load]);
   const finishedRun = work?.run && !work.busy ? work.run.id : '';
   const finishedComment = work?.run?.report_activity?.slice().reverse().find(s => s.comment_id && (s.state === 'completed' || s.state === 'blocked'))?.comment_id;
   useEffect(() => {

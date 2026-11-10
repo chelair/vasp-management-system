@@ -1179,7 +1179,7 @@ def _sections_markdown(report, charts):
     if opt_items:
         blocks.append("### 结构优化\n")
         blocks.append(
-            f"本节展示 {len(opt_items)} 个结构优化任务。每条包含结构三视图与能量/力曲线。"
+            f"本节展示 {len(opt_items)} 个结构优化任务，列出已有结构及能量/力数据，并标注收敛状态。"
             "（自由能路径的中间体与 NEB 的初/末态优化不在此列，见各自章节。）\n\n"
         )
         skipped_unconverged = int(science.get("opt_skipped_unconverged") or 0)
@@ -1755,22 +1755,16 @@ def build_report(
     dialogs: List[Dict[str, Any]] = []
     dialog_images: Dict[str, str] = {}
     # 只把**独立**结构优化任务（不含自由能路径中间体 / NEB 初末态优化）计入本节
-    opt_facts = [f for f in facts if f["task_type"] == "opt" and _task_category(f) == "结构优化"]
-    opt_total = len([f for f in opt_facts if f.get("force_history")])
-    opt_skipped_unconverged = 0
+    opt_facts = [f for f in facts if f["task_type"] == "opt" and _task_category(f) == "结构优化"
+                 and (f.get("force_history") or f.get("last_energy") is not None or f["status"] == "unconverged")]
+    opt_total = len(opt_facts)
     progress_total = len(opt_facts) + 5
     for index, fact in enumerate(opt_facts):
         progress(index + 1, progress_total, '整理结构：' + fact['task_name'])
         history = fact.get("force_history") or []
-        if not history:
-            continue
-        # 用户口径（2026-10-07）：**未收敛的 opt 任务不输出详细内容**，不生成空壳
         converged = (
             bool(fact["converged"]) if fact.get("converged") is not None else fact["status"] in STATUS_DONE
         )
-        if not (converged or fact["status"] == "archived"):
-            opt_skipped_unconverged += 1
-            continue
         points = [
             {
                 "step": p.get("step"),
@@ -1785,7 +1779,7 @@ def build_report(
             title=f"{fact['task_name']} 能量与最大力",
             width=OPT_CURVE_W,
             height=OPT_CURVE_H,
-        )
+        ) if points else None
         # 最终结构三视图（导出用；前端另有 3Dmol 交互视图）
         poscar_cif = contcar_cif = None
         try:
@@ -1812,24 +1806,26 @@ def build_report(
         # ——用户口径 2026-10-07："报告优先用 images 里的，没有就跳过"，
         # 否则同一份报告里有的任务是新三视图、有的是旧版示意（Ag24/Ag111 被问过）。
         # 曲线永远单独出一张。
-        ename = f"{fact['task_id']}_energy_force.svg"
-        charts[ename] = curve_svg
-        chart_refs["energy_force"] = f"charts/{ename}"
         # 收敛历史弹窗（2026-10-15 用户："报告中能量、力曲线放到收敛历史中折叠，点击弹窗展示"）：
         # 曲线不再铺在正文里，正文只留一个「收敛历史」chip，点开在弹窗里看
         # （弹窗内容 = 同一张 energy_force 图：导出时内联 SVG，报告页里换成可交互 ECharts）。
-        conv_dialog_id = f"dlg_conv_{fact['task_id']}"
-        dialogs.append(
-            {
-                "id": conv_dialog_id,
-                "title": f"{fact['task_name']} · 收敛历史（能量 / 最大力）",
-                "chart": f"charts/{ename}",
-                "note": (
-                    f"共 {len(points)} 个离子步 · 能量（蓝，左轴）与最大力（橙，右轴）同图 · "
-                    "红色虚线为力收敛阈值 0.020 eV/Å（EDIFFG）"
-                ),
-            }
-        )
+        conv_dialog_id = None
+        if curve_svg:
+            ename = f"{fact['task_id']}_energy_force.svg"
+            charts[ename] = curve_svg
+            chart_refs["energy_force"] = f"charts/{ename}"
+            conv_dialog_id = f"dlg_conv_{fact['task_id']}"
+            dialogs.append(
+                {
+                    "id": conv_dialog_id,
+                    "title": f"{fact['task_name']} · 收敛历史（能量 / 最大力）",
+                    "chart": f"charts/{ename}",
+                    "note": (
+                        f"共 {len(points)} 个离子步 · 能量（蓝，左轴）与最大力（橙，右轴）同图 · "
+                        "红色虚线为力收敛阈值 0.020 eV/Å（EDIFFG）"
+                    ),
+                }
+            )
         opt_science.append(
             {
                 "task_id": fact["task_id"],
@@ -2310,8 +2306,7 @@ def build_report(
         "science": {
             "opt": opt_science,
             "opt_total": opt_total,
-            # 未收敛（且未归档）的 opt 任务按用户口径不展开（2026-10-07）
-            "opt_skipped_unconverged": opt_skipped_unconverged,
+            "opt_skipped_unconverged": 0,
             "free_energy": free_paths,
             "neb": neb_science,
             "ele": {

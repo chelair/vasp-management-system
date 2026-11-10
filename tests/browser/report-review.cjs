@@ -114,6 +114,17 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await adsorptionCard.waitFor();assert.ok((await adsorptionCard.locator('.rr-value').innerText()).includes('-2.00000000'));
   assert.ok((await adsorptionCard.innerText()).includes('-1.50000000'));
   await page.locator('.report-review-drawer').getByRole('button',{name:'Close',exact:true}).click();
+  const beforeRegeneration=await page.evaluate(async()=> (await (await fetch('/api/reports/project/rpt_p/review')).json()).data);
+  await page.getByRole('button',{name:/生成报告/}).click();
+  await page.locator('.report-content').getByText('重新生成后的报告说明（第2次）。',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Close',exact:true}).last().click();
+  await adsorptionCard.waitFor();
+  assert.ok((await adsorptionCard.locator('.rr-value').innerText()).includes('-2.00000000'),'regeneration preserves saved adsorption result');
+  const afterRegeneration=await page.evaluate(async()=> (await (await fetch('/api/reports/project/rpt_p/review')).json()).data);
+  assert.equal(afterRegeneration.stale,false);
+  assert.equal(afterRegeneration.comments.length,beforeRegeneration.comments.length);
+  assert.ok(afterRegeneration.comments.every(comment=>comment.source===afterRegeneration.source));
+  assert.notEqual(afterRegeneration.comments[0].target,beforeRegeneration.comments[0].target,'changed heading positions rebind saved comments');
   await page.reload();await page.getByRole('button',{name:'报告批注',exact:true}).click();
   await page.getByText(firstCommentText,{exact:true}).waitFor();
   await page.getByText('已完成',{exact:true}).last().waitFor();
@@ -142,6 +153,6 @@ const http=require('node:http'),path=require('node:path'),fs=require('node:fs/pr
   await page.waitForTimeout(500);
   const bounds=await page.locator('.ant-drawer-content').last().boundingBox();assert.ok(bounds.width<=390 && bounds.x>=-1 && bounds.x+bounds.width<=391);
   await page.screenshot({path:path.join(dir,'review-mobile.png')});
-  assert.deepEqual(errors,[]);console.log('PASS report review: scoped DOS analysis, adsorption with unitless reference update, oxygen comparison, AI card layouts, sources, reload/reopen, HTML/PDF and mobile. '+dir);
+  assert.deepEqual(errors,[]);console.log('PASS report review: scoped analysis, calculations, regeneration preserves cards and rebinds comments, continued editing, reload, HTML/PDF and mobile. '+dir);
  }finally{await browser?.close();if(server)await new Promise(r=>server.close(r));python?.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

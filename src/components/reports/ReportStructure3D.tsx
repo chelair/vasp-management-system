@@ -11,7 +11,8 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Segmented, Empty } from 'antd';
+import { Button, Segmented, Empty } from 'antd';
+import { downloadCifFile } from '../../interactive/exportData';
 
 import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 
@@ -76,7 +77,8 @@ export default function ReportStructure3D({
         onClearSelection={() => setSelected([])}
         showSelectedCoords
         toolbarExtra={
-          hasPoscar && hasContcar ? (
+          <>
+          {hasPoscar && hasContcar ? (
             <Segmented
               size="small"
               value={active}
@@ -89,7 +91,9 @@ export default function ReportStructure3D({
                 { label: '初始（POSCAR）', value: 'poscar' },
               ]}
             />
-          ) : null
+          ) : null}
+          <Button size="small" onClick={() => { if (cif) downloadCifFile(`${taskName || 'structure'}_${active.toUpperCase()}`, cif); }}>导出 CIF</Button>
+          </>
         }
       />
     </div>

@@ -12,6 +12,7 @@
 
 import { ELEMENT_COLORS, computeBonds, parseCif, type Structure3D } from '../utils/structure3d';
 import { buildChargeColors } from '../utils/chargeColor';
+import { downloadCifFile } from './exportData';
 
 interface MolAtom {
   index: number;
@@ -153,6 +154,7 @@ export function mountStructure3D(
   const poscar = data.poscar_cif || null;
   const contcar = data.contcar_cif || null;
   let current = data.cif || contcar || poscar || null;
+  let version = data.cif ? 'structure' : contcar ? 'CONTCAR' : 'POSCAR';
   if (!current) return null;
 
   ensureStyle(doc);
@@ -299,11 +301,12 @@ export function mountStructure3D(
     addButton('反应区域', () => { viewer?.zoomTo(focusSelection, 0); viewer?.zoom(1.25, 0); viewer?.render(); });
   }
   if (poscar && contcar) {
-    const showingContcar = () => current === contcar;
+    const showingContcar = () => version === 'CONTCAR';
     modelSwitch = addButton('优化后（CONTCAR）', () => {
       if (showingContcar()) return;
       savedView = null;
       current = contcar;
+      version = 'CONTCAR';
       load(contcar);
       if (modelSwitch) {
         modelSwitch.textContent = '优化后（CONTCAR）';
@@ -314,6 +317,7 @@ export function mountStructure3D(
       if (!showingContcar()) return;
       savedView = null;
       current = poscar;
+      version = 'POSCAR';
       load(poscar);
       if (modelSwitch) {
         modelSwitch.textContent = '优化后（CONTCAR）';
@@ -359,6 +363,9 @@ export function mountStructure3D(
     viewer?.zoomTo({}, 0);
     viewer?.zoom(1.25, 0);
     viewer?.render();
+  });
+  addButton('导出 CIF', () => {
+    if (current) downloadCifFile(`${data.task_name || host.dataset.taskId || 'structure'}_${version}`, current);
   });
   const hint = doc.createElement('span');
   hint.className = 'r3d__label';
@@ -455,7 +462,7 @@ export function mountFreeEnergy3D(
     if (!item || item.index === current) return;
     current = item.index;
     handle?.dispose();
-    handle = mountStructure3D(canvas, { cif: item.cif }, { height: options.height ?? 420 });
+    handle = mountStructure3D(canvas, { cif: item.cif, task_name: `${group || 'path'}_structure_${item.structure_label ?? item.index + 1}` }, { height: options.height ?? 420 });
     paintSwitch();
   }
 
@@ -469,7 +476,7 @@ export function mountFreeEnergy3D(
     buttons.set(item.index, btn);
   });
 
-  handle = mountStructure3D(canvas, { cif: available[0].cif }, { height: options.height ?? 420 });
+  handle = mountStructure3D(canvas, { cif: available[0].cif, task_name: `${group || 'path'}_structure_${available[0].structure_label ?? available[0].index + 1}` }, { height: options.height ?? 420 });
   if (!handle) {
     // eslint-disable-next-line no-console
     console.warn('[structure3d] 自由能中间体 3D 挂载失败（无 3Dmol / WebGL？），保留原内容');

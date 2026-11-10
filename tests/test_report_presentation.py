@@ -25,6 +25,7 @@ def make_report(*, statuses=None, merged=None):
         "project_id": "proj_test", "name": "ReportTest", "deadline": "2020-01-01", "server": "",
         "tasks": [
             {"task_id": str(i), "model_name": f"model{i}", "task_type": "opt", "status": status,
+             "last_energy": (merged or {}).get(str(i), {}).get("last_energy"),
              "dir_path": f"ReportTest/opt/model{i}", "remote_dir": f"ReportTest/opt/model{i}"}
             for i, status in enumerate(statuses if statuses is not None else ["archived", "completed", "running"])
         ],
@@ -52,6 +53,34 @@ def electronic_item(name, task_id):
 
 
 class ReportPresentationTests(unittest.TestCase):
+    def test_unconverged_structures_and_partial_results_remain_in_report(self):
+        import config
+        config.ensure_data_dirs()
+        merged={
+            '0':{'force_converged':True,'force_history':[{'step':1,'energy':-10.,'max_force':.01}]},
+            '1':{'force_converged':False,'last_energy':-11.,'force_history':[{'step':1,'energy':-11.,'max_force':.3}]},
+            '2':{'force_converged':False,'last_energy':-12.,'force_history':[{'step':1,'energy':-12.,'max_force':.2}]},
+            '3':{'force_converged':False,'last_energy':-13.},
+        }
+        with patch.object(builder,'read_or_convert_cif',return_value='data_unconverged_structure'):
+            doc=make_report(statuses=['completed','unconverged','running','unconverged','pending'],merged=merged)
+        items=doc['science']['opt']
+        self.assertEqual([r['task_id'] for r in items],['0','1','2','3'])
+        self.assertEqual([r['converged'] for r in items],[True,False,False,False])
+        self.assertEqual(doc['science']['opt_skipped_unconverged'],0)
+        self.assertEqual(items[3]['final_energy_ev'],-13.)
+        self.assertEqual(items[3]['charts'],{})
+        self.assertIsNone(items[3]['conv_dialog'])
+        science=next(s['markdown'] for s in doc['markdown_sections'] if s['key']=='science')
+        self.assertEqual(science.count('⚠️ 未收敛'),3)
+        self.assertNotIn('其结构与曲线未纳入',science)
+        html=render_html(doc,doc['markdown_sections'])
+        for i in range(4):
+            self.assertIn(f'#### model{i}\n',science)
+            self.assertIn(f'@[structure-3d:{i}]',science)
+            self.assertIn(f'model{i}',html)
+        self.assertIn('未收敛',html)
+
     def test_all_eligible_structures_and_curves_reach_markdown_and_export(self):
         import config
         config.ensure_data_dirs()

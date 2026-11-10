@@ -10,7 +10,8 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Empty } from 'antd';
+import { Button, Empty } from 'antd';
+import { downloadCifFile } from '../../interactive/exportData';
 
 import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 
@@ -98,6 +99,7 @@ export default function ReportFreeEnergy3D({
         }
         onClearSelection={() => setSelected([])}
         showSelectedCoords
+        toolbarExtra={<Button size="small" onClick={() => { if (active.cif) downloadCifFile(`${groupName || 'path'}_structure_${active.structure_label ?? active.index + 1}`, active.cif); }}>导出 CIF</Button>}
       />
     </div>
   );

@@ -63,6 +63,65 @@ def tree(doc):
     return nodes,roots
 
 
+def module_path(key, nodes):
+    node=nodes[key]
+    return (*module_path(node['parent'],nodes),node['title']) if node['parent'] else (node['section'],)
+
+
+def rebase(doc, review, previous=None):
+    """Retain saved cards and their frozen inputs when the base report changes."""
+    if not review:return {}
+    review=copy.deepcopy(review);nodes,_=tree(doc)
+    current_source=source(doc)
+    old_nodes=tree(previous)[0] if previous else {}
+    paths=review.get('module_paths',{}).copy()
+    if previous and review.get('source')==source(previous):
+        paths.update({key:list(module_path(key,old_nodes)) for key in old_nodes})
+    candidates={}
+    for key in nodes:candidates.setdefault(module_path(key,nodes),[]).append(key)
+    keys=set(review.get('content',{})) | {c['target'] for c in review.get('comments',[])}
+    mapping={}
+    for key in keys:
+        matches=candidates.get(tuple(paths[key]),[]) if paths.get(key) else ([key] if key in nodes else [])
+        if len(matches)==1:mapping[key]=matches[0]
+    changed=review.get('source')!=current_source
+    content={}
+    for key,change in review.get('content',{}).items():
+        target=mapping.get(key,key)
+        if changed:
+            change={k:v for k,v in change.items() if k in ('texts','elements','calculations','layout')}
+        if not change:continue
+        for element in change.get('elements',{}).values():element['target']=target
+        content[target]=change
+    for item in review.get('comments',[]):
+        target=mapping.get(item['target'])
+        if target is not None or item['target'] in content:
+            item.update(target=target or item['target'],source=current_source)
+    review.update(source=current_source,content=content)
+    review['module_paths']={}
+    for key in keys:
+        target=mapping.get(key,key)
+        review['module_paths'][target]=list(module_path(target,nodes)) if target in nodes else paths.get(key,[])
+    return review
+
+
+def review_tree(doc, review):
+    nodes,roots=tree(doc)
+    for key,change in review.get('content',{}).items():
+        if key in nodes:continue
+        root='section:saved_review'
+        if root not in nodes:
+            roots.append(root)
+            nodes[root]={'key':root,'title':'已保存的报告卡片','section':'saved_review','level':2,'parent':None,'body':'','children':[]}
+        if key==root:continue
+        path=review.get('module_paths',{}).get(key,[])
+        title=path[-1] if len(path)>1 else '已保存卡片'
+        nodes[key]={'key':key,'title':title,'section':'saved_review','level':3,'parent':root,
+                    'heading':'### '+title+'\n\n','body':'','children':[]}
+        nodes[root]['children'].append(key)
+    return nodes,roots
+
+
 def facts(doc,comment=None,previous_comments=()):
     result={}
     fields={key:'eV' for key in ('final_energy_ev','dft_energy_ev','last_energy_ev','free_energy_ev','energy_ev','barrier_ev','correction_ev',
@@ -176,9 +235,11 @@ def element_catalog(nodes, changes):
 def effective(doc, edits=None):
     """Apply presentation only; comments never enter report data or exports."""
     edits=edits if edits is not None else store.read_edits(doc['metadata']['report_id'])
-    review=edits.get('review') or {}
-    if not review.get('content') or review.get('source')!=source(doc):return doc
-    doc=copy.deepcopy(doc);nodes,roots=tree(doc)
+    review=rebase(doc,edits.get('review') or {})
+    if not review.get('content'):return doc
+    doc=copy.deepcopy(doc);nodes,roots=review_tree(doc,review)
+    if 'section:saved_review' in roots:
+        doc['markdown_sections'].append({'key':'saved_review','title':'已保存的报告卡片','markdown':''})
     changes=review.get('content') or {}
     apply_structure_selection(doc,nodes,changes)
     doc['review_elements']={eid:e for c in changes.values() for eid,e in c.get('elements',{}).items() if not e.get('deleted')}
@@ -239,8 +300,8 @@ def path_for(doc,node):
 
 def view(doc, edits=None):
     edits=edits if edits is not None else store.read_edits(doc['metadata']['report_id'])
-    saved=edits.get('review') or {};nodes,roots=tree(doc)
-    changes=saved.get('content',{}) if saved.get('source')==source(doc) else {}
+    saved=rebase(doc,edits.get('review') or {});nodes,roots=review_tree(doc,saved)
+    changes=saved.get('content',{})
     apply_structure_selection(copy.deepcopy(doc),nodes,changes)
     ordered=[]
     def visit(key):
@@ -254,36 +315,26 @@ def view(doc, edits=None):
                 'layout':changes.get(n['key'],{}).get('layout',{})} for n in ordered]}
 
 
+@store.serialized_notes
 def snapshot(report_id,user):
     doc,_,_=store.load_report(report_id)
     project=ai.project_for(doc,user)
-    return doc,project,store.read_edits(report_id)
+    edits=store.read_edits(report_id)
+    saved=rebase(doc,edits.get('review') or {})
+    if saved and saved!=edits.get('review'):
+        edits=store.save_review(report_id,saved,store.note_revision(edits))
+    return doc,project,edits
 
 
 @store.serialized_notes
 def rebind_pending(doc, previous):
-    """Carry pending requests to the same module, never old computed content."""
+    """Rebind comments and retain completed cards without calling the model."""
     rid=doc['metadata']['report_id'];edits=store.read_edits(rid)
-    review=copy.deepcopy(edits.get('review') or {})
-    nodes,_=tree(doc);old_nodes=tree(previous)[0] if previous else {}
-    def path(key, catalog):
-        node=catalog[key]
-        return (*path(node['parent'],catalog),node['title']) if node['parent'] else (node['section'],)
-    paths={}
-    for key in nodes:paths.setdefault(path(key,nodes),[]).append(key)
-    pending=[];missing=0
-    for item in review.get('comments',[]):
-        if item['status']=='done':continue
-        key=item['target']
-        matches=paths.get(path(key,old_nodes),[]) if key in old_nodes else ([key] if key in nodes else [])
-        if len(matches)!=1:
-            missing+=1;continue
-        item.update(target=matches[0],source=source(doc))
-        pending.append(item['id'])
-    if pending:
-        if review.get('source')!=source(doc):review['content']={}
-        review['source']=source(doc)
+    review=rebase(doc,edits.get('review') or {},previous)
+    if review and review!=edits.get('review'):
         store.save_review(rid,review,store.note_revision(edits))
+    pending=[c['id'] for c in review.get('comments',[]) if c['status']!='done' and c.get('source')==source(doc)]
+    missing=sum(c['status']!='done' and c.get('source')!=source(doc) for c in review.get('comments',[]))
     return pending,missing
 
 
@@ -294,9 +345,7 @@ def update(report_id,user,payload):
     review=copy.deepcopy(edits.get('review') or {'schema_version':'report.review.1','source':source(doc),'comments':[],'content':{}})
     operation=payload['operation'];comment=None
     if operation=='add':
-        if payload['target'] not in tree(doc)[0]:raise ValueError('报告中没有该模块')
-        if state['stale']:
-            review={'schema_version':'report.review.1','source':source(doc),'comments':review['comments'],'content':{}}
+        if payload['target'] not in review_tree(doc,review)[0]:raise ValueError('报告中没有该模块')
         comment={'id':uuid.uuid4().hex,'target':payload['target'],'text':payload['text'],'status':'open','replies':[],
                  'author':str(user['user_id']),'created_at':now_iso(),'source':source(doc)}
         review['comments'].append(comment)
@@ -307,7 +356,7 @@ def update(report_id,user,payload):
             comment['replies'].append({'text':payload['text'],'author':str(user['user_id']),'created_at':now_iso()})
             comment['status']='open'
         elif operation=='status':comment['status']=payload['status']
-    store.save_review(report_id,review,state['revision'])
+    store.save_review(report_id,rebase(doc,review),state['revision'])
     return view(doc)
 
 
@@ -315,7 +364,7 @@ def apply_actions(doc,review,comment,actions,notify=None):
     from topic_reports import validate_text
     from report_review_elements import calculate, SUPPORTED, FORMULAS, MissingCalculation, presentation
     from properties import RECIPES
-    nodes,_=tree(doc);values=facts(doc,comment,review.get('comments',[]));scope=set()
+    nodes,_=review_tree(doc,review);values=facts(doc,comment,review.get('comments',[]));scope=set()
     def descend(key):
         scope.add(key)
         for child in nodes[key]['children']:descend(child)
@@ -435,7 +484,7 @@ def process(report_id,user,comment_id,revision,connection_id,control):
         if comment.get('source')!=source(doc):raise ValueError('这条批注属于旧版报告，请在当前模块重新添加')
         if comment['status']=='done':return state
         control.activity('已读取批注与补充说明')
-        display=copy.deepcopy(doc);nodes,_=tree(display)
+        display=copy.deepcopy(doc);nodes,_=review_tree(display,edits.get('review') or {})
         apply_structure_selection(display,nodes,(edits.get('review') or {}).get('content',{}))
         allowed={comment['target']}
         for module in state['modules']:
@@ -483,7 +532,7 @@ def process(report_id,user,comment_id,revision,connection_id,control):
             after=effective(current,{**current_edits,'review':review})
             hidden=store._remap_hidden_figures(before,after,current_edits['hidden_elements'])
             control.activity('正在保存报告修改与处理结果')
-            control.check();store.save_review(report_id,review,revision,hidden_elements=hidden)
+            control.check();store.save_review(report_id,rebase(current,review),revision,hidden_elements=hidden)
             return view(current)
     finally:
         with ai._busy_lock:ai._busy.discard(owner)

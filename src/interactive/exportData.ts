@@ -68,10 +68,11 @@ export function downloadTextFile(
   filename: string,
   text: string,
   mime = 'text/csv;charset=utf-8',
+  bom = true,
 ): void {
   const doc = typeof document !== 'undefined' ? document : null;
   if (!doc) return;
-  const blob = new Blob(['\ufeff' + text], { type: mime });
+  const blob = new Blob([bom ? '\ufeff' : '', text], { type: mime });
   const url = URL.createObjectURL(blob);
   const link = doc.createElement('a');
   link.href = url;
@@ -82,4 +83,9 @@ export function downloadTextFile(
   link.remove();
   // 立刻回收会让部分浏览器下载中断，延后释放
   window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** Save the embedded CIF verbatim, without the spreadsheet BOM. */
+export function downloadCifFile(name: string, cif: string): void {
+  downloadTextFile(`${safeName(name)}.cif`, cif, 'chemical/x-cif;charset=utf-8', false);
 }

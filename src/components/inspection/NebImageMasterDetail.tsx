@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import use3Dmol from '../../hooks/use3Dmol';
-import { Switch, Tooltip } from 'antd';
+import { Button, Switch, Tooltip } from 'antd';
+import { downloadCifFile } from '../../interactive/exportData';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { InspectionDetail } from '../../types';
 import { ELEMENT_COLORS, parseCif } from '../../utils/structure3d';
@@ -488,6 +489,7 @@ export default function NebImageMasterDetail({ taskId, images, barrier, steps, r
                 toolbarExtra={
                   <span className="nebmd__extra">
                     <span className="fe-chip">映像 {imageLabel(selected)}</span>
+                    {report && current.cif && <Button size="small" onClick={() => downloadCifFile(`${taskId || 'NEB'}_image_${imageLabel(selected)}`, current.cif!)}>导出 CIF</Button>}
                     <span className={`fe-badge ${roleClass}`}>{roleLabel}</span>
                     {current.relative != null && (
                       <span className="fe-num fe-num--strong">

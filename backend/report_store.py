@@ -322,9 +322,11 @@ def save_report(
         with _notes_lock:
             edits = read_edits(report_id)
             old_display, new_display = old_doc, doc
-            if (edits.get('review') or {}).get('content'):
-                from report_review import effective
-                old_display, new_display = effective(old_doc, edits), effective(doc, edits)
+            if edits.get('review'):
+                from report_review import effective, rebind_pending
+                old_display = effective(old_doc, edits)
+                rebind_pending(doc, old_doc)
+                new_display = effective(doc)
             mapped = _remap_hidden_figures(old_display, new_display, edits["hidden_elements"])
             if mapped != edits["hidden_elements"]:
                 save_edits(report_id, edits["hidden_sections"], mapped)
@@ -353,9 +355,11 @@ def save_report(
     # 单文件自包含 HTML（命名带日期，放在项目报告目录下）：用户口径 2026-10-07
     html_path: Optional[Path] = None
     try:
+        from report_review import effective
+        displayed = effective(doc)
         html_text = render_html(
-            doc,
-            doc.get("markdown_sections") or [],
+            displayed,
+            displayed.get("markdown_sections") or [],
             chart_loader=lambda name: (target / "charts" / name).read_text(
                 encoding="utf-8", errors="replace"
             )
@@ -363,7 +367,7 @@ def save_report(
             else None,
             image_loader=lambda rel: image_data_uri(target / rel),
             layout=read_edits(report_id).get("layout"),
-            **interactive_kwargs(doc, interactive=True),
+            **interactive_kwargs(displayed, interactive=True),
         )
         html_path = target.parent / f"report_{date.today().isoformat()}.html"
         html_path.write_text(html_text, encoding="utf-8")

@@ -155,10 +155,10 @@ DEFAULT_WORKLOAD_WEIGHT = 1.0
 
 # 当量 → 核时 → 工期（2026-10-06 用户更新口径）
 #   1 当量（= 一次结构优化）＝ 24 核 × 24 h/天 × 3 天 = **1728 核时**；
-#   服务器最大算力 200 核 × 24 h；实际可用按 70% 折算
+#   服务器最大算力 200 核 × 24 h；实际可用按 62.5% 折算，即 3000 核时/天
 DEFAULT_CORE_HOURS_PER_WEIGHT = 1728.0
 DEFAULT_CLUSTER_MAX_CORES = 200.0
-DEFAULT_CLUSTER_UTILIZATION = 0.7
+DEFAULT_CLUSTER_UTILIZATION = 0.625
 CAPACITY_KEYS = ("core_hours_per_weight", "cluster_max_cores", "cluster_utilization")
 
 
@@ -181,15 +181,19 @@ def _task_category(fact: Dict[str, Any]) -> str:
     return "结构优化"
 
 
+def _neb_has_data(fact: Dict[str, Any]) -> bool:
+    return bool(fact.get("steps") or any(
+        image.get(field) is not None
+        for image in (fact.get("neb_barrier") or {}).get("images", [])
+        for field in ("energy", "relative", "max_force")
+    ))
+
+
 def _opt_report_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     neb_groups_with_data = {
         (fact.get("group") or {}).get("group_id")
         for fact in facts if fact["task_type"] == "neb"
-        and (fact.get("steps") or any(
-            image.get(field) is not None
-            for image in (fact.get("neb_barrier") or {}).get("images", [])
-            for field in ("energy", "relative", "max_force")
-        ))
+        and _neb_has_data(fact)
     } - {None, ""}
     result = []
     for fact in facts:
@@ -258,7 +262,7 @@ def _registry() -> Dict[str, Any]:
 
 
 def _capacity() -> Dict[str, float]:
-    """算力口径（settings.json 可改）：1 当量 = 1728 核时（24 核 × 3 天），200 核 × 24h × 70%。"""
+    """算力口径（settings.json 可改）：1 当量 = 1728 核时，有效产能 3000 核时/天。"""
     try:
         settings = load_settings()
     except Exception:  # noqa: BLE001
@@ -668,16 +672,23 @@ def _neb_details(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ts_label = None
         if rels:
             ts_label = images[rels.index(barrier_value)]["label"]
+        group_id = (fact.get("group") or {}).get("group_id")
+        stages = {role: {"status": None, "status_label": "—"}
+                  for role in ("initial_opt", "final_opt")}
+        if group_id:
+            for endpoint in facts:
+                group = endpoint.get("group") or {}
+                role = group.get("group_role")
+                if endpoint["task_type"] == "opt" and group.get("group_id") == group_id and role in stages:
+                    stages[role] = {key: endpoint[key] for key in ("task_id", "task_name", "status", "status_label")}
         items.append(
             {
                 "task_id": fact["task_id"],
                 "task_name": fact["task_name"],
                 "status": fact["status"],
                 "status_label": fact["status_label"],
-                "stages": {
-                    "initial_opt": {"status": None, "status_label": "—"},
-                    "final_opt": {"status": None, "status_label": "—"},
-                },
+                "stages": stages,
+                "has_calculation_data": _neb_has_data(fact),
                 "images": images,
                 "image_count": len(images),
                 "barrier_ev": barrier_value,
@@ -1199,12 +1210,20 @@ def _sections_markdown(report, charts):
             "\n带中心按所列轨道、自旋与积分区间分别统计；功函数按所列方向计算。详细结果见各模型分析。\n\n",
         ])
     opt_items = science.get("opt") or []
+    endpoint_ids = {
+        stage.get("task_id")
+        for neb in science.get("neb") or []
+        for stage in (neb.get("stages") or {}).values()
+    } - {None}
+    endpoint_entries = {}
+    standalone_count = sum(item["task_id"] not in endpoint_ids for item in opt_items)
     if opt_items:
-        blocks.append("### 结构优化\n")
-        blocks.append(
-            f"本节展示 {len(opt_items)} 个结构优化任务，列出已有结构及能量/力数据，并标注收敛状态。"
-            "（NEB 尚无计算数据时列出对应 IS、FS 优化；已有 NEB 数据时不再单列。自由能中间体见路径章节。）\n\n"
-        )
+        if standalone_count:
+            blocks.append("### 结构优化\n")
+            blocks.append(
+                f"本节展示 {standalone_count} 个结构优化任务，列出已有结构及能量/力数据，并标注收敛状态。"
+                "（NEB 的 IS、FS 优化及自由能中间体见各自路径章节。）\n\n"
+            )
         skipped_unconverged = int(science.get("opt_skipped_unconverged") or 0)
         if skipped_unconverged:
             blocks.append(
@@ -1247,9 +1266,14 @@ def _sections_markdown(report, charts):
                 ]
                 if row_lines:
                     lines.append("\n".join(row_lines))
-            entries.append("\n\n".join(lines))
+            entry = "\n\n".join(lines)
+            if item["task_id"] in endpoint_ids:
+                endpoint_entries[item["task_id"]] = entry.replace("#### ", "##### ", 1)
+            else:
+                entries.append(entry)
         # 任务之间用分隔线隔开，避免上下两个任务的面板图糊成一片
-        blocks.append("\n\n---\n\n".join(entries) + "\n")
+        if entries:
+            blocks.append("\n\n---\n\n".join(entries) + "\n")
     paths = science.get("free_energy") or []
     if paths:
         blocks.append("### 自由能路径\n\n")
@@ -1266,12 +1290,20 @@ def _sections_markdown(report, charts):
         blocks.append("### NEB 过渡态\n\n")
         entries = []
         for item in nebs:
-            lines = [
-                f"#### {item['task_name']}",
-                f"能垒 **{_fmt(item['barrier_ev'])} eV** · "
-                f"过渡态映像 {item['transition_state_image'] or '—'} · "
-                f"{item['image_count']} 个映像",
-            ]
+            lines = [f"#### {item['task_name']}"]
+            if item.get("has_calculation_data", True):
+                lines.append(
+                    f"能垒 **{_fmt(item['barrier_ev'])} eV** · "
+                    f"过渡态映像 {item['transition_state_image'] or '—'} · "
+                    f"{item['image_count']} 个映像"
+                )
+            else:
+                lines.append("NEB 尚无计算数据。")
+                for role in ("initial_opt", "final_opt"):
+                    stage = (item.get("stages") or {}).get(role) or {}
+                    endpoint_entry = endpoint_entries.get(stage.get("task_id"))
+                    if endpoint_entry:
+                        lines.append(endpoint_entry)
             if item.get("chart"):
                 lines.append(f"![{item['task_name']} NEB 能垒看板]({item['chart']})")
             images = item.get("images") or []
@@ -2263,7 +2295,7 @@ def build_report(
             "days_left": deadline_days,
             "deadline": str(project.get("deadline") or ""),
             "current_stage": _current_stage(active_facts, counter),
-            # 预估完成时间：剩余当量 × 1728 核时（24 核 × 3 天）÷（200 核 × 24h × 70%）
+            # 预估完成时间：剩余当量 × 每当量核时 ÷ 配置的每日有效核时
             "estimated_completion": plan["eta_at"],
             "eta_days": plan["eta_days"],
             "stage_breakdown": [

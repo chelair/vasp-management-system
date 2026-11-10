@@ -82,9 +82,18 @@ class ReportPresentationTests(unittest.TestCase):
                 self.assertEqual(ids,['A_IS','A_FS'] if show else [])
                 science=next(s['markdown'] for s in doc['markdown_sections'] if s['key']=='science')
                 html=render_html(doc,doc['markdown_sections'])
+                neb=doc['science']['neb'][0]
+                self.assertEqual(neb['stages']['initial_opt']['task_id'],'A_IS')
+                self.assertEqual(neb['stages']['final_opt']['status'],'unconverged')
+                self.assertEqual(neb['has_calculation_data'],not show)
                 for tid in ('A_IS','A_FS'):
-                    self.assertEqual(f'#### {tid}\n' in science,show)
+                    self.assertEqual(f'\n##### {tid}\n' in science,show)
                     self.assertEqual(f'data-task-id="{tid}"' in html,show)
+                    if show:
+                        self.assertLess(science.index('#### A_NEB\n'),science.index(f'##### {tid}\n'))
+                        self.assertLess(science.index(f'##### {tid}\n'),science.index('#### B_NEB\n'))
+                        self.assertEqual(science.count(f'##### {tid}\n'),1)
+                self.assertNotIn('### 结构优化\n',science)
                 self.assertNotIn('#### B_IS\n',science);self.assertNotIn('#### B_FS\n',science)
                 self.assertNotIn('#### free_opt\n',science)
                 self.assertEqual(set(report_interactive.interactive_payload(doc)['structure']),{'A_IS','A_FS'} if show else set())

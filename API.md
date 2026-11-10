@@ -96,7 +96,7 @@ create/update共用assessment文字合同：background/problem/impact分别用�
 
 完整报告生成时，未收敛优化结构同样纳入并标注，保留已有结构、能量及力数据；缺曲线不生成空收敛历史。HTML结构CIF随原交互数据内嵌，3D工具栏“导出 CIF”直接下载当前选中的初始/优化后结构、中间体、Bader结构或NEB映像原文，无新增API或远端读取。
 
-NEB同组尚无迭代步或映像能量/相对能量/受力数据时，`science.opt`纳入该组已有IS/FS优化结果；有NEB数据后排除相应端点，继续展示NEB路径。按`group_id`分别判断，空映像记录不算计算数据；数值0同样算数据，不依赖任务状态。结构/CIF及Markdown、HTML/PDF沿原链路输出。
+NEB同组尚无迭代步或映像能量/相对能量/受力数据时，`science.opt`纳入该组已有IS/FS优化结果，正文放在对应NEB小节下，不重复列于独立优化章节；有NEB数据后排除相应端点，继续展示NEB路径。`science.neb[].stages`关联同组端点的task_id、task_name及状态，`has_calculation_data`表示该路径是否已有计算数据。按`group_id`分别判断，空映像记录不算计算数据；数值0同样算数据，不依赖任务状态。结构/CIF及Markdown、HTML/PDF沿原链路输出。
 
 批注模型上下文增加analysis_evidence（原report.science的紧凑只读摘要）；facts新增已保存efermi、band_center_ev、pdos_range_min_ev/max_ev、work_function、vacuum_level和Bader的e单位标量，保留task_id及record_path。文字及来源按fact.units展开，吸附能等能量配方拒绝带中心/费米能级/电荷输入；缺能量按具体角色反馈。沿用/省略单位回复也支持非氧气的用户吸附质参考，完整来源仍存于服务端绑定事实。
 

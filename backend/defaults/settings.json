@@ -11,5 +11,5 @@
   "inspection_interval_hours": 2,
   "core_hours_per_weight": 1728,
   "cluster_max_cores": 200,
-  "cluster_utilization": 0.7
+  "cluster_utilization": 0.625
 }

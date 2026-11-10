@@ -610,6 +610,10 @@ export default function Report() {
       | undefined;
     return structured?.science?.neb ?? [];
   }, [detail]);
+  const structurePaths = useMemo(() => [
+    ...freeEnergyPaths,
+    ...nebItems.flatMap(item => item.endpoint_path ? [item.endpoint_path] : []),
+  ], [freeEnergyPaths, nebItems]);
 
   /**
    * 自由能中间体 3D 视图的「切到第 N 个中间体」回调（v0.9.73）：
@@ -1347,7 +1351,7 @@ export default function Report() {
                         );
                       }
                       if (host.kind === 'free-energy-3d') {
-                        const path = freeEnergyPaths.find(
+                        const path = structurePaths.find(
                           (p) =>
                             String(p.group_id ?? '') === host.taskId ||
                             String(p.group_name ?? '') === host.taskId,

@@ -11,8 +11,10 @@ const {execFileSync}=require('node:child_process');
   const doc={metadata:{report_id:'cif_report',project_name:'CIF模型',generated_at:'2026-11-10'},science:{
    opt:[{task_id:'opt',task_name:'模型一',structure:{poscar_cif:poscar,contcar_cif:contcar}}],
    free_energy:[{group_id:'path',structures:[{structure_label:'A',cif:a},{structure_label:'B',cif:b}]}],
+   neb:[{task_id:'migration',endpoint_path:{group_id:'neb_endpoints_migration',structures:[
+    {structure_label:'IS',display_label:'初态-IS',cif:a},{structure_label:'FS',display_label:'末态-FS',cif:b}]}}],
    ele:{tasks:[{task_id:'bader',task_name:'电荷模型',bader_summary:{cif:bader,atoms:[{index:1,element:'C',net_charge:.2}]}}]}},
-   markdown_sections:[{key:'science',title:'结构',markdown:'### 优化结构\n\n@[structure-3d:opt]\n\n### 中间体\n\n@[free-energy-3d:path]\n\n### 电荷结构\n\n@[bader-table:bader]\n'}]};
+   markdown_sections:[{key:'science',title:'结构',markdown:'### 优化结构\n\n@[structure-3d:opt]\n\n### 中间体\n\n@[free-energy-3d:path]\n\n### NEB\n\n#### M1_H_mig_neb\n\n@[free-energy-3d:neb_endpoints_migration]\n\n| 初末态 | 状态 |\n|---|---|\n| [初态-IS](#fe-3d:neb_endpoints_migration:0:is) | 已收敛 |\n| [末态-FS](#fe-3d:neb_endpoints_migration:1:fs) | 未收敛 |\n\n### 电荷结构\n\n@[bader-table:bader]\n'}]};
   await fs.writeFile(path.join(dir,'input.json'),JSON.stringify(doc));
   await build({entryPoints:['src/interactive/reportRuntime.ts'],bundle:true,minify:true,format:'iife',outfile:path.join(dir,'runtime.js'),define:{'process.env.NODE_ENV':'"production"'}});
   execFileSync('.venv/bin/python',['-c',`import json,sys
@@ -36,11 +38,31 @@ text=render_html(doc,doc['markdown_sections'],interactive_data=interactive_paylo
   await check(opt,contcar,'_CONTCAR.cif');
   await opt.getByRole('button',{name:'初始（POSCAR）',exact:true}).click();await check(opt,poscar,'_POSCAR.cif');
   await opt.getByRole('button',{name:'优化后（CONTCAR）',exact:true}).click();await check(opt,contcar,'_CONTCAR.cif');
-  const intermediate=page.locator('[data-report-widget="free-energy-3d"]');
+  const intermediate=page.locator('[data-report-widget="free-energy-3d"][data-task-id="path"]');
   await check(intermediate,a,'_structure_A_structure.cif');
   await intermediate.getByRole('button',{name:'结构 B',exact:true}).click();await check(intermediate,b,'_structure_B_structure.cif');
+  const endpoints=page.locator('[data-report-widget="free-energy-3d"][data-task-id="neb_endpoints_migration"]');
+  assert.equal(await endpoints.count(),1,'one shared endpoint structure window');
+  await check(endpoints,a,'_structure_IS_structure.cif');
+  await endpoints.getByRole('button',{name:'末态-FS',exact:true}).click();await check(endpoints,b,'_structure_FS_structure.cif');
+  await page.locator('[data-fe-3d="neb_endpoints_migration"][data-fe-index="0"]').click();
+  await check(endpoints,a,'_structure_IS_structure.cif');
+  assert.equal(await endpoints.getByRole('button',{name:'初态-IS',exact:true}).count(),1);
+  assert.equal(await page.locator('h4,h5').filter({hasText:'M1_H_mig_IS'}).count(),0);
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await endpoints.evaluate(el=>el.scrollWidth<=el.clientWidth+1));
+  await page.setViewportSize({width:1280,height:900});
   await check(page.locator('[data-source="bader"]'),bader,'_structure.cif');
+  await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import ReportFreeEnergy3D from './src/components/reports/ReportFreeEnergy3D';import './src/styles/global.css';createRoot(document.getElementById('root')).render(<ReportFreeEnergy3D groupName="M1_H_mig_neb" structures={${JSON.stringify(doc.science.neb[0].endpoint_path.structures)}}/>);`,loader:'tsx',resolveDir:process.cwd()},bundle:true,format:'iife',jsx:'automatic',outfile:path.join(dir,'endpoint-component.js'),define:{'process.env.NODE_ENV':'"production"'}});
+  await fs.writeFile(path.join(dir,'endpoint-component.html'),`<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="endpoint-component.css"><script src="file://${path.resolve('public/3dmol/3Dmol-min.js')}"></script><div id="root"></div><script src="endpoint-component.js"></script>`);
+  await page.goto('file://'+path.join(dir,'endpoint-component.html'));
+  const reactEndpoints=page.locator('.report-3d');
+  await reactEndpoints.locator('canvas').first().waitFor();
+  assert.equal(await reactEndpoints.getByRole('button',{name:'初态-IS',exact:true}).count(),1);
+  await check(reactEndpoints,a,'_structure_IS.cif');
+  await reactEndpoints.getByRole('button',{name:'末态-FS',exact:true}).click();
+  await check(reactEndpoints,b,'_structure_FS.cif');
   assert.deepEqual(network,[]);assert.deepEqual(errors,[]);
-  console.log('PASS: standalone HTML exports exact embedded initial/final, selected intermediate and Bader CIF files offline.');
+  console.log('PASS: standalone HTML and actual React endpoint selector, grouped IS/FS labels, table switching, mobile width and exact embedded CIF downloads; no network requests.');
  }finally{await browser?.close();await fs.rm(dir,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);process.exitCode=1;});

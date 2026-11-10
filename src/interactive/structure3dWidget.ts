@@ -41,6 +41,7 @@ export interface Structure3DHandle {
 /** 自由能路径的一个中间体 */
 export interface FreeEnergyStructure3D {
   structure_label?: string;
+  display_label?: string;
   cif?: string | null;
 }
 
@@ -470,7 +471,7 @@ export function mountFreeEnergy3D(
     const btn = doc.createElement('button');
     btn.type = 'button';
     btn.className = 'r3d__chip';
-    btn.textContent = `结构 ${item.structure_label ?? item.index + 1}`;
+    btn.textContent = item.display_label ?? `结构 ${item.structure_label ?? item.index + 1}`;
     btn.addEventListener('click', () => show(item.index));
     switcher.appendChild(btn);
     buttons.set(item.index, btn);

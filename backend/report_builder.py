@@ -1071,6 +1071,38 @@ def _one_line_summary(facts, stats, stage):
     )
 
 
+def _path_structure_cell(group_id, index, structure):
+    label = structure.get("display_label") or f"结构 {structure['structure_label']}"
+    if structure.get("cif"):
+        return f"[{label}](#fe-3d:{group_id}:{index}:{structure.get('opt_task_id') or ''})"
+    if structure.get("dialog"):
+        return f"[{label}](#{structure['dialog']})"
+    return label
+
+
+def _neb_endpoint_path(item, optimizations):
+    if item.get("has_calculation_data", True):
+        return None
+    by_id = {opt["task_id"]: opt for opt in optimizations}
+    structures = []
+    for role, label, display in (("initial_opt", "IS", "初态-IS"), ("final_opt", "FS", "末态-FS")):
+        stage = (item.get("stages") or {}).get(role) or {}
+        opt = by_id.get(stage.get("task_id"))
+        if opt is None:
+            continue
+        structure = opt.get("structure") or {}
+        structures.append({
+            "opt_task_id": opt["task_id"], "structure_label": label, "display_label": display,
+            "cif": structure.get("contcar_cif") or structure.get("poscar_cif"),
+            "dft_energy_ev": opt["final_energy_ev"], "force_max_ev_per_a": opt["force_max_ev_per_a"],
+            "converged": opt["converged"], "status_label": opt["status_label"],
+            "conv_dialog": opt.get("conv_dialog"), "ionic_steps": opt.get("ionic_steps"),
+            "dialog": opt.get("structure_dialog"),
+        })
+    return {"group_id": "neb_endpoints_" + item["task_id"], "group_name": item["task_name"],
+            "structures": structures} if structures else None
+
+
 def free_energy_markdown(path):
     structures = path["structures"]
     with_energy = [s for s in structures if s.get("free_energy_ev") is not None]
@@ -1098,25 +1130,12 @@ def free_energy_markdown(path):
     if any(s.get("cif") for s in structures):
         lines.append(f"@[free-energy-3d:{path['group_id']}]")
 
-    def _structure_cell(index: int, structure: Dict[str, Any]) -> str:
-        """中间体那一格：有 CIF → 点它切换上面的 3D 视图（`#fe-3d:<组>:<下标>:<任务 id>`，
-        任务 id 供报告页在芯片旁挂「注」按钮用）；否则退回旧的 PNG 三视图弹窗链接。"""
-        label = structure["structure_label"]
-        if structure.get("cif"):
-            return (
-                f"[结构 {label}](#fe-3d:{path['group_id']}:{index}:"
-                f"{structure.get('opt_task_id') or ''})"
-            )
-        if structure.get("dialog"):
-            return f"[结构 {label}](#{structure['dialog']})"
-        return f"结构 {label}"
-
     lines.append(
         _md_table(
             ["中间体", "DFT 能量 (eV)", "矫正项 (eV)", "自由能 (eV)", "相对 ΔE (eV)", "状态"],
             [
                 [
-                    _structure_cell(index, s),
+                    _path_structure_cell(path['group_id'], index, s),
                     _fmt(s["dft_energy_ev"]),
                     ("—" if s["correction_ev"] is None else f"{float(s['correction_ev']):+.4f}"),
                     _fmt(s["free_energy_ev"]),
@@ -1215,15 +1234,13 @@ def _sections_markdown(report, charts):
         for neb in science.get("neb") or []
         for stage in (neb.get("stages") or {}).values()
     } - {None}
-    endpoint_entries = {}
-    standalone_count = sum(item["task_id"] not in endpoint_ids for item in opt_items)
+    opt_items = [item for item in opt_items if item["task_id"] not in endpoint_ids]
     if opt_items:
-        if standalone_count:
-            blocks.append("### 结构优化\n")
-            blocks.append(
-                f"本节展示 {standalone_count} 个结构优化任务，列出已有结构及能量/力数据，并标注收敛状态。"
-                "（NEB 的 IS、FS 优化及自由能中间体见各自路径章节。）\n\n"
-            )
+        blocks.append("### 结构优化\n")
+        blocks.append(
+            f"本节展示 {len(opt_items)} 个结构优化任务，列出已有结构及能量/力数据，并标注收敛状态。"
+            "（NEB 的 IS、FS 优化及自由能中间体见各自路径章节。）\n\n"
+        )
         skipped_unconverged = int(science.get("opt_skipped_unconverged") or 0)
         if skipped_unconverged:
             blocks.append(
@@ -1266,11 +1283,7 @@ def _sections_markdown(report, charts):
                 ]
                 if row_lines:
                     lines.append("\n".join(row_lines))
-            entry = "\n\n".join(lines)
-            if item["task_id"] in endpoint_ids:
-                endpoint_entries[item["task_id"]] = entry.replace("#### ", "##### ", 1)
-            else:
-                entries.append(entry)
+            entries.append("\n\n".join(lines))
         # 任务之间用分隔线隔开，避免上下两个任务的面板图糊成一片
         if entries:
             blocks.append("\n\n---\n\n".join(entries) + "\n")
@@ -1299,11 +1312,18 @@ def _sections_markdown(report, charts):
                 )
             else:
                 lines.append("NEB 尚无计算数据。")
-                for role in ("initial_opt", "final_opt"):
-                    stage = (item.get("stages") or {}).get(role) or {}
-                    endpoint_entry = endpoint_entries.get(stage.get("task_id"))
-                    if endpoint_entry:
-                        lines.append(endpoint_entry)
+                path = item.get("endpoint_path")
+                if path:
+                    if any(s.get("cif") for s in path["structures"]):
+                        lines.append(f"@[free-energy-3d:{path['group_id']}]")
+                    lines.append(_md_table(
+                        ["初末态", "DFT 能量 (eV)", "最大力 (eV/Å)", "状态", "收敛历史"],
+                        [[_path_structure_cell(path['group_id'], index, s),
+                          _fmt(s["dft_energy_ev"]), _fmt(s["force_max_ev_per_a"]),
+                          "已收敛" if s["converged"] else "⚠️ 未收敛",
+                          f"[查看（{_fmt(s['ionic_steps'], 0)} 步）](#{s['conv_dialog']})" if s.get("conv_dialog") else "—"]
+                         for index, s in enumerate(path["structures"])],
+                    ))
             if item.get("chart"):
                 lines.append(f"![{item['task_name']} NEB 能垒看板]({item['chart']})")
             images = item.get("images") or []
@@ -1946,6 +1966,9 @@ def build_report(
     progress(len(opt_facts) + 2, progress_total, '生成NEB路径与图表')
     neb_science = _neb_details(facts)
     for item in neb_science:
+        endpoint_path = _neb_endpoint_path(item, opt_science)
+        if endpoint_path:
+            item["endpoint_path"] = endpoint_path
         if not item["images"]:
             continue
         # 每个映像的三视图弹窗（点「映像 N」打开）

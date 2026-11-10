@@ -87,17 +87,36 @@ class ReportPresentationTests(unittest.TestCase):
                 self.assertEqual(neb['stages']['final_opt']['status'],'unconverged')
                 self.assertEqual(neb['has_calculation_data'],not show)
                 for tid in ('A_IS','A_FS'):
-                    self.assertEqual(f'\n##### {tid}\n' in science,show)
-                    self.assertEqual(f'data-task-id="{tid}"' in html,show)
-                    if show:
-                        self.assertLess(science.index('#### A_NEB\n'),science.index(f'##### {tid}\n'))
-                        self.assertLess(science.index(f'##### {tid}\n'),science.index('#### B_NEB\n'))
-                        self.assertEqual(science.count(f'##### {tid}\n'),1)
+                    self.assertNotIn(f'\n##### {tid}\n',science)
+                    self.assertNotIn(f'\n#### {tid}\n',science)
+                    self.assertNotIn(f'data-task-id="{tid}"',html)
+                self.assertEqual('data-task-id="neb_endpoints_A_NEB"' in html,show)
+                payload=report_interactive.interactive_payload(doc)
+                self.assertEqual('neb_endpoints_A_NEB' in payload['free_energy'],show)
+                if show:
+                    path=neb['endpoint_path']
+                    self.assertEqual([s['display_label'] for s in path['structures']],['初态-IS','末态-FS'])
+                    self.assertEqual([s['cif'] for s in path['structures']],['data_saved_endpoint']*2)
+                    self.assertLess(science.index('#### A_NEB\n'),science.index('[初态-IS]'))
+                    self.assertLess(science.index('[末态-FS]'),science.index('#### B_NEB\n'))
+                    self.assertIn('收敛历史',science)
+                    self.assertIn('dlg_conv_A_IS',science)
                 self.assertNotIn('### 结构优化\n',science)
                 self.assertNotIn('#### B_IS\n',science);self.assertNotIn('#### B_FS\n',science)
                 self.assertNotIn('#### free_opt\n',science)
                 self.assertEqual(set(report_interactive.interactive_payload(doc)['structure']),{'A_IS','A_FS'} if show else set())
                 if show:self.assertIn('⚠️ 未收敛',science)
+
+    def test_neb_endpoint_missing_initial_cif_keeps_final_structure_index(self):
+        import report_interactive
+        doc={'science':{'neb':[{'endpoint_path':{'group_id':'endpoints','structures':[
+            {'structure_label':'IS','display_label':'初态-IS','cif':None},
+            {'structure_label':'FS','display_label':'末态-FS','cif':'data_final'}]}}]}}
+        structures=report_interactive.interactive_payload(doc)['free_energy']['endpoints']
+        self.assertEqual(len(structures),2)
+        self.assertIsNone(structures[0]['cif'])
+        self.assertEqual(structures[1]['display_label'],'末态-FS')
+        self.assertEqual(structures[1]['cif'],'data_final')
 
     def test_unconverged_structures_and_partial_results_remain_in_report(self):
         import config

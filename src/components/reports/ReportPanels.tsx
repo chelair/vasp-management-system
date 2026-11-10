@@ -184,6 +184,8 @@ export interface ReportFreeEnergyPath {
   group_name?: string;
   structures?: {
     structure_label?: string;
+    display_label?: string;
+    cif?: string | null;
     opt_task_id?: string;
     dft_energy_ev?: number | null;
     correction_ev?: number | null;
@@ -303,6 +305,7 @@ export interface ReportNebItem {
   barrier_ev?: number | null;
   transition_state_image?: string | null;
   image_count?: number;
+  endpoint_path?: ReportFreeEnergyPath;
   images?: {
     label?: string;
     relative_energy_ev?: number | null;

@@ -133,16 +133,17 @@ def interactive_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
                 "contcar_cif": structure.get("contcar_cif"),
             }
     # 自由能路径的中间体（v0.9.73）：正文里 3D 视图 + 表格「结构 N」切换
-    for path in ((doc.get("science") or {}).get("free_energy") or []):
+    paths = list((doc.get("science") or {}).get("free_energy") or [])
+    paths += [item["endpoint_path"] for item in (doc.get("science") or {}).get("neb") or [] if item.get("endpoint_path")]
+    for path in paths:
         if not isinstance(path, dict):
             continue
         group_id = str(path.get("group_id") or "")
         items = [
-            {"structure_label": s.get("structure_label"), "cif": s.get("cif")}
+            {"structure_label": s.get("structure_label"), "display_label": s.get("display_label"), "cif": s.get("cif")}
             for s in (path.get("structures") or [])
-            if s.get("cif")
         ]
-        if group_id and items:
+        if group_id and any(s.get("cif") for s in items):
             payload["free_energy"][group_id] = items
     from report_neb import has_structures
     for item in (doc.get("science") or {}).get("neb") or []:

@@ -17,6 +17,7 @@ import Structure3DFrame, { type AtomRef } from '../jobs/Structure3DFrame';
 
 export interface FreeEnergyStructure3D {
   structure_label?: string;
+  display_label?: string;
   cif?: string | null;
 }
 
@@ -51,16 +52,16 @@ export default function ReportFreeEnergy3D({
 
   const active = available.find((s) => s.index === index) ?? available[0];
   if (!active) {
-    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该路径的中间体结构缺失" />;
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该路径的结构缺失" />;
   }
 
   return (
     <div className="report-3d">
       <div className="report-3d__head">
-        <span className="report-3d__title">中间体 3D 视图</span>
+        <span className="report-3d__title">路径结构 3D 视图</span>
         {groupName ? <span className="report-3d__task">{groupName}</span> : null}
         <span className="report-3d__hint">
-          点下面表格里的「结构 N」或这里的按钮切换中间体；拖动旋转 · 滚轮缩放 · Shift + 拖拽框选
+          点下面表格或这里的按钮切换结构；拖动旋转 · 滚轮缩放 · Shift + 拖拽框选
         </span>
       </div>
       <div className="report-fe3d__switch">
@@ -74,7 +75,7 @@ export default function ReportFreeEnergy3D({
               setSelected([]);
             }}
           >
-            结构 {item.structure_label ?? item.index + 1}
+            {item.display_label ?? `结构 ${item.structure_label ?? item.index + 1}`}
           </button>
         ))}
       </div>

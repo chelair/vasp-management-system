@@ -172,7 +172,7 @@ def _find_task(
 
 
 def _ensure_scripts(server: str) -> None:
-    """把 batch_check.py / check_registry.json / check_errors.json 上传到服务器（每服务器每轮一次）。"""
+    """把巡检脚本、共享LSF解析器及规则上传到服务器（每服务器每轮一次）。"""
     servers = load_servers()
     cfg = servers.get(server)
     if cfg is None:
@@ -192,6 +192,7 @@ def _ensure_scripts(server: str) -> None:
     # Windows 上 Path.__str__ 会把正斜杠转成反斜杠，远程路径必须统一为正斜杠
     script_dir = str(Path(batch_path).parent).replace("\\", "/")
     ssh.mkdir_remote(server, script_dir)
+    ssh.upload_file(server, str(script_local.with_name('lsf_state.py')), f"{script_dir}/lsf_state.py")
     ssh.upload_file(server, str(script_local), batch_path)
     ssh.upload_file(server, str(registry_local), f"{script_dir}/check_registry.json")
     ssh.upload_file(server, str(errors_local), f"{script_dir}/check_errors.json")
@@ -560,6 +561,10 @@ def _apply_result(
     # 匹配不到时**保留**已有 job_id（提交过的作业号是历史记录，不被巡检清除）
     if result.get("job_id"):
         extra_fields["job_id"] = str(result["job_id"])
+    if (task.get('stop_requested_at') and result.get('scheduler_query_ok')
+            and str(result.get('scheduler_job_id') or '') == str(task.get('stop_requested_job_id') or '')
+            and queue_status in {'DONE', 'EXIT', 'NOT_FOUND'}):
+        extra_fields.update(job_id=None, stop_requested_at=None, stop_requested_job_id=None)
     if notes:
         extra_fields["notes"] = notes
     if current_output:

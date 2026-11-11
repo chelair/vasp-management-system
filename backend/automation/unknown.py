@@ -6,9 +6,8 @@ import json
 
 import ssh
 from config import load_servers
+from lsf_state import ACTIVE, TERMINAL, FORMAT, parse_jobs as parse_lsf_jobs
 
-ACTIVE = {'PEND', 'RUN', 'PSUSP', 'USUSP', 'SSUSP', 'WAIT', 'PROV'}
-TERMINAL = {'DONE', 'EXIT'}
 
 
 def remote(server, script):
@@ -23,7 +22,7 @@ def jobs_script(server):
     profile = load_servers().get(server, {}).get('lsf_profile', '/opt/ibm/lsfsuite/lsf/conf/profile.lsf')
     return '\n'.join([
         'export LC_ALL=C', f'source {shlex.quote(profile)} >/dev/null 2>&1 || true',
-        'OUT=$(bjobs -a -noheader -o \'jobid stat exec_cwd:4096 job_name:128 delimiter="|"\' 2>&1)',
+        'OUT=$(bjobs -a -noheader -o ' + shlex.quote(FORMAT) + ' 2>&1)',
         'RC=$?',
         'if [ "$RC" -ne 0 ]; then',
         '  case "$OUT" in *"No unfinished job found"*|*"No job found"*) OUT="" ;; *) exit 9 ;; esac',
@@ -32,16 +31,12 @@ def jobs_script(server):
 
 
 def parse_jobs(output):
-    result = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        parts = [p.strip() for p in line.strip().strip('|').split('|')]
-        if len(parts) != 4 or not re.fullmatch(r'\d+', parts[0]) or parts[1] not in ACTIVE | TERMINAL | {'UNKWN', 'ZOMBI'}:
-            raise ValueError('LSF输出无法可靠解析，需人工核实')
-        if ssh.mock_enabled() and parts[2].startswith(str(ssh._mock_root())):
-            parts[2] = parts[2][len(str(ssh._mock_root())):]
-        result.append({'job_id': parts[0], 'state': parts[1], 'directory': parts[2], 'name': parts[3]})
+    result = parse_lsf_jobs(output)
+    if ssh.mock_enabled():
+        prefix = str(ssh._mock_root())
+        for row in result:
+            if row['directory'].startswith(prefix):
+                row['directory'] = row['directory'][len(prefix):]
     return result
 
 

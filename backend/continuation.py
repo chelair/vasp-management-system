@@ -173,6 +173,14 @@ def _state_value(state: str, key: str) -> str:
     return ""
 
 
+def _scheduler_check(directory_variable):
+    source = Path(__file__).with_name('lsf_state.py').read_text()
+    return ('LSF_STATE=$(python3 - "$' + directory_variable + '" "$DBJOB" <<\'LSF_CURRENT_STATE\'\n'
+            + source + '\nLSF_CURRENT_STATE\n) || exit 9\n'
+            + 'read -r RUNJOB RUNSTATE <<< "$LSF_STATE"\n'
+            + '[ "$RUNJOB" != "-" ] || RUNJOB=""\n')
+
+
 def _opt_continuation_script(server: str, remote_dir: str, task: Dict[str, Any]) -> str:
     """结构优化续算的单次远程脚本：
     编号计算 -> 运行中检查 -> OUTCAR/CONTCAR 状态检查 -> 输入完整性检查
@@ -195,18 +203,12 @@ while [ -d "$RD/con$N" ]; do N=$((N+1)); done
 CON="con$N"
 LATEST=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/||' | sort -V | tail -1)
 if [ -n "$LATEST" ]; then CUR="$RD/$LATEST"; else CUR="$RD"; fi
-RUNJOB=""
-if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then
-  RUNJOB="$DBJOB"
-else
-  for j in $(bjobs -o 'jobid exec_cwd' 2>/dev/null | awk -v d="$CUR" 'NR>1 && $2==d {{print $1}}'); do
-    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
-  done
-fi
+{_scheduler_check("CUR")}
 echo "===STATE==="
 echo "CON=$CON"
 echo "LATEST=$LATEST"
 echo "RUNJOB=$RUNJOB"
+echo "RUNSTATE=$RUNSTATE"
 [ -s "$CUR/OUTCAR" ] && echo O_OK
 [ -s "$CUR/CONTCAR" ] && echo C_OK
 for f in POSCAR INCAR KPOINTS POTCAR vasp.lsf submit.sh; do
@@ -257,19 +259,13 @@ CON="con$N"
 LATEST=$(ls -d "$RD"/con[0-9]* 2>/dev/null | sed 's|.*/||' | sort -V | tail -1)
 if [ -n "$LATEST" ]; then SRC="$RD/$LATEST"; else SRC="$RD"; fi
 NEW="$RD/$CON"
-RUNJOB=""
-if [ -n "$DBJOB" ] && bjobs -l "$DBJOB" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then
-  RUNJOB="$DBJOB"
-else
-  for j in $(bjobs -o 'jobid exec_cwd' 2>/dev/null | awk -v d="$SRC" 'NR>1 && ($2==d || index($2, d"/")==1) {{print $1}}'); do
-    if bjobs -l "$j" 2>/dev/null | grep -qE '\\b(PEND|RUN|SSUSP|PSUSP|USUSP)\\b'; then RUNJOB="$j"; break; fi
-  done
-fi
+{_scheduler_check("SRC")}
 echo "===STATE==="
 echo "CON=$CON"
 echo "LATEST=$LATEST"
 echo "SRC=$SRC"
 echo "RUNJOB=$RUNJOB"
+echo "RUNSTATE=$RUNSTATE"
 echo "===STATE_END==="
 if [ -n "$RUNJOB" ]; then
   echo "===SKIP==="
@@ -338,7 +334,8 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
                 "current_dir": source_dir,
                 "latest_dir": latest or None,
                 "job_id": running_job,
-                "message": f"当前目录有任务正在运行（作业 {running_job}），请等待完成后再续算",
+                "queue_state": _state_value(state, "RUNSTATE"),
+                "message": f"当前目录作业 {running_job} 的调度状态为 {_state_value(state, 'RUNSTATE')}，确认结束后可创建续算",
                 "warnings": [],
             }
         new_dir = f"{remote_dir}/{con}"
@@ -402,7 +399,8 @@ def create_continuation(server: str, project: Dict[str, Any], task: Dict[str, An
             "current_dir": current_dir,
             "latest_dir": latest or None,
             "job_id": running_job,
-            "message": f"当前目录有任务正在运行（作业 {running_job}），请等待完成后再续算",
+            "queue_state": _state_value(state, "RUNSTATE"),
+            "message": f"当前目录作业 {running_job} 的调度状态为 {_state_value(state, 'RUNSTATE')}，确认结束后可创建续算",
             "warnings": [],
         }
 

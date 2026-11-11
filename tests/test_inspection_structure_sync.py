@@ -31,6 +31,19 @@ class FinalStructureSyncTests(unittest.TestCase):
     def apply(self):
         return runner._apply_result(self.db, self.project, self.task, copy.deepcopy(self.result))
 
+    def test_stop_metadata_clears_only_for_the_same_job_with_confirmed_scheduler_terminal(self):
+        for job, state, reliable, cleared in (
+                ('123','EXIT',True,True),('123','NOT_FOUND',True,True),
+                ('123','RUN',True,False),('123','EXIT',False,False),('456','EXIT',True,False)):
+            with self.subTest(job=job,state=state,reliable=reliable):
+                self.setUp()
+                self.task.update(stop_requested_at='2026-11-10T20:45:32',stop_requested_job_id='123')
+                self.result.update(scheduler_job_id=job,queue_status=state,scheduler_query_ok=reliable)
+                with patch.object(runner,'_sync_neb_image_structures',return_value=([],False)):
+                    self.apply()
+                self.assertEqual(self.task.get('job_id') is None,cleared)
+                self.assertEqual(self.task.get('stop_requested_at') is None,cleared)
+
     def test_finish_below_25_steps_syncs_once_for_opt_and_neb(self):
         for kind in ("opt", "neb"):
             with self.subTest(kind=kind):

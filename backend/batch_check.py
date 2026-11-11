@@ -10,8 +10,8 @@ force_rms / force_converged / force_history / error_messages。
 
 规则要点：
 - job_id 为空 -> OUTCAR 存在则按 OUTCAR 分析，否则 status=pending；
-- job_id 非空 -> bjobs -l（5 秒超时），PEND->queued、RUN->running（不读 OUTCAR）；
-  DONE/EXIT/COMPLETED/FAILED/CANCELLED/作业不存在/超时(UNKNOWN) -> 进入 OUTCAR 分析；
+- 同一批次共用一份 bjobs 当前状态表，按工作目录与作业号绑定；PEND->queued、RUN->running；
+  DONE/EXIT/明确无作业 -> 按 OUTCAR 判定；查询失败保留上次状态，不认定已结束；
 - OUTCAR 成功标记 -> completed；错误关键词 -> zombied；无标记且作业已结束 -> zombied；
 - 能量：取最后一个已输出的离子步总能（含色散修正），不取电子迭代中的 TOTEN；
 - 结构优化：解析 POSCAR Selective dynamics，统计每个 TOTAL-FORCE 块（离子步）的
@@ -57,13 +57,13 @@ DEFAULT_THRESHOLDS = {
 # bjobs 结果缓存（同一轮巡检内复用，避免逐任务起子进程）
 _BJOBS_DETAIL_CACHE: Dict[str, str] = {}
 _BJOBS_CWD_TABLE: Optional[Dict[str, str]] = None
+_BJOBS_CWD_QUERIED = False
 _PRECISION_REQUIREMENTS: Optional[Dict[str, Any]] = None
 SUCCESS_MARKERS = (
     "General timing and accounting informations for this job",
     "reached required accuracy",
 )
 ERROR_KEYWORDS = ("EEEE", "Error", "Segmentation fault", "forrtl: severe")
-ENDED_STATUS_TOKENS = ("DONE", "EXIT", "COMPLETED", "FAILED", "CANCELLED")
 FORCE_HEADER = "TOTAL-FORCE (eV/Angst)"
 CON_DIR_RE = re.compile(r"^con(\d+)$")
 MIN_IONIC_STEPS = 5
@@ -431,109 +431,20 @@ def _neb_latest_output_dir(remote_dir: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _parse_bjobs_detail(output: str, returncode: int) -> str:
-    """把 `bjobs -l`（单个作业，或批量输出里的一段）解析为归一化状态标记。
-
-    标记取值：PEND / RUN / SSUSP（含 PSUSP、USUSP，统一按挂起处理）/
-    DONE / EXIT / COMPLETED / FAILED / CANCELLED / NOT_FOUND / UNKNOWN。
-
-    注意：作业名较长时 bjobs -l 会把 "Status <RUN>" 折行成
-    "Status <RU\\n                     N>"，因此解析前先把输出压缩为单行，
-    再提取 Status <> 字段（避免 \bRUN\b 因折行匹配不到）。
-    """
-    compact = re.sub(r"\s+", " ", output)
-    m = re.search(r"Status\s*<\s*([^>]+?)\s*>", compact)
-    if m:
-        status = re.sub(r"\s+", "", m.group(1)).upper()
-        if status == "PEND":
-            return "PEND"
-        if status == "RUN":
-            return "RUN"
-        if status in ("SSUSP", "PSUSP", "USUSP"):
-            return "SSUSP"
-        if status in ENDED_STATUS_TOKENS:
-            return status
-    # 兜底：压缩文本中的关键字匹配（兼容无 Status<> 字段的输出）
-    if re.search(r"\bPEND\b", compact):
-        return "PEND"
-    if re.search(r"\bRUN\b", compact):
-        return "RUN"
-    if re.search(r"\b(SSUSP|PSUSP|USUSP)\b", compact):
-        return "SSUSP"
-    for token in ENDED_STATUS_TOKENS:
-        if token in compact:
-            return token
-    if returncode != 0 or "not found" in output.lower():
-        return "NOT_FOUND"
-    return "UNKNOWN"
-
-
-def _split_bjobs_detail(output: str) -> Dict[str, str]:
-    """把多个作业的 `bjobs -l` 输出按 `Job <id>` 切成 {job_id: 该作业段落}。"""
-    blocks: Dict[str, str] = {}
-    matches = list(re.finditer(r"(?m)^Job <(\d+)>", output))
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
-        blocks[match.group(1)] = output[match.start() : end]
-    return blocks
+    from lsf_state import parse_detail
+    return parse_detail(output, returncode)
 
 
 def prefetch_bjobs_details(job_ids: Iterable[str]) -> None:
-    """一次性把多个作业的 `bjobs -l` 明细查回来（避免每任务一次子进程）。
-
-    登录节点上每次 `bjobs` 子进程 + 调度器查询 50-500ms，几十个任务就是几十秒。
-    这里按批（40 个一组）查询并缓存，`run_bjobs` 优先命中缓存，
-    未命中的 job_id 仍走原来的单次查询逻辑，行为不变。
-    """
-    if os.environ.get("VASP_BATCH_NO_BJOBS"):
-        return
-    pending: List[str] = []
-    for job_id in job_ids:
-        text = str(job_id or "")
-        if text and text not in _BJOBS_DETAIL_CACHE and text not in pending:
-            pending.append(text)
-    if not pending:
-        return
-    for start in range(0, len(pending), 40):
-        batch = pending[start : start + 40]
-        try:
-            proc = subprocess.run(
-                ["bjobs", "-l", *batch],
-                capture_output=True,
-                text=True,
-                timeout=BJOB_TIMEOUT * 4,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return
-        output = (proc.stdout or "") + (proc.stderr or "")
-        blocks = _split_bjobs_detail(output)
-        if not blocks:
-            # 批量查询不可用（命令不存在/输出异常）：留给单次查询兜底
-            return
-        _BJOBS_DETAIL_CACHE.update(blocks)
-        for job_id in batch:
-            # 批量输出里没有的 job_id 说明调度器已查不到该作业
-            _BJOBS_DETAIL_CACHE.setdefault(job_id, "")
+    """One current-state table per inspection process, shared with cwd matching."""
+    if not os.environ.get("VASP_BATCH_NO_BJOBS"):
+        _bjobs_cwd_table()
 
 
 def run_bjobs(job_id: str) -> str:
-    """执行 bjobs -l，返回归一化的队列状态标记（优先用预取缓存）。"""
-    if os.environ.get("VASP_BATCH_NO_BJOBS"):
+    if os.environ.get("VASP_BATCH_NO_BJOBS") or _bjobs_cwd_table() is None:
         return "UNKNOWN"
-    cached = _BJOBS_DETAIL_CACHE.get(str(job_id))
-    if cached is not None:
-        return _parse_bjobs_detail(cached, 1 if cached == "" else 0)
-    try:
-        proc = subprocess.run(
-            ["bjobs", "-l", job_id],
-            capture_output=True,
-            text=True,
-            timeout=BJOB_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        return "UNKNOWN"
-    output = proc.stdout + proc.stderr
-    _BJOBS_DETAIL_CACHE[str(job_id)] = output
-    return _parse_bjobs_detail(output, proc.returncode)
+    return _BJOBS_DETAIL_CACHE.get(str(job_id), "NOT_FOUND")
 
 
 def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> Tuple[str, bool]:
@@ -558,34 +469,22 @@ def match_job_id_by_cwd(remote_dir: str, work_dir: str) -> Tuple[str, bool]:
 
 
 def _bjobs_cwd_table() -> Optional[Dict[str, str]]:
-    """`bjobs -o "jobid exec_cwd"` 全量列表 → {exec_cwd: job_id}（只查一次）。
-
-    返回 None 表示 bjobs 不可用/超时（与原来的 bjobs_ok=False 等价）。
-    """
-    global _BJOBS_CWD_TABLE
-    if _BJOBS_CWD_TABLE is not None:
-        return _BJOBS_CWD_TABLE or None
+    """Empty table means a successful query; None means scheduler unavailable."""
+    global _BJOBS_CWD_TABLE, _BJOBS_CWD_QUERIED
+    if _BJOBS_CWD_QUERIED:
+        return _BJOBS_CWD_TABLE
+    _BJOBS_CWD_QUERIED = True
+    from lsf_state import query_jobs, normalized, TERMINAL
     try:
-        proc = subprocess.run(
-            ["bjobs", "-o", "jobid exec_cwd"],
-            capture_output=True,
-            text=True,
-            timeout=BJOB_TIMEOUT,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        _BJOBS_CWD_TABLE = {}
+        rows = query_jobs(timeout=BJOB_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError, RuntimeError, ValueError):
+        _BJOBS_CWD_TABLE = None
         return None
-    if proc.returncode != 0:
-        _BJOBS_CWD_TABLE = {}
-        return None
-    table: Dict[str, str] = {}
-    for line in (proc.stdout or "").splitlines()[1:]:
-        if not line.strip():
-            continue
-        parts = line.split(None, 1)
-        if len(parts) < 2:
-            continue
-        table[parts[1].strip().rstrip("/")] = parts[0].strip()
+    table = {}
+    for row in rows:
+        _BJOBS_DETAIL_CACHE[row['job_id']] = normalized(row['state'])
+        if row['state'] not in TERMINAL:
+            table[row['directory'].rstrip('/')] = row['job_id']
     _BJOBS_CWD_TABLE = table
     return table
 
@@ -1559,11 +1458,15 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                 db_status = run_bjobs(db_job)
                 result["queue_status"] = db_status
                 if db_status in ("PEND", "RUN", "SSUSP"):
-                    job_id = db_job
-                    result["job_id"] = db_job
+                    # The complete current table did not match this work dir.
+                    # A registered ID elsewhere cannot describe this output.
+                    bjobs_ok = False
+                    result.setdefault('markers', []).append('登记作业与当前输出目录未匹配，保留上次状态')
                 elif db_status != "UNKNOWN":
                     # bjobs 可查询且该作业已结束（DONE/EXIT/...）：确认无活跃作业
                     bjobs_ok = True
+                else:
+                    bjobs_ok = False
 
         if not job_id:
             # 最新续算目录无对应作业：OUTCAR 为空/不存在 -> 待提交；
@@ -1627,6 +1530,14 @@ def check_task(task: Dict[str, Any], thresholds: Dict[str, float]) -> Dict[str, 
                         poscar_dir=work_dir,
                         allow_running=False,
                     )
+
+        result['scheduler_query_ok'] = bool(bjobs_ok and (not job_id or result['queue_status'] != 'UNKNOWN'))
+        result['scheduler_job_id'] = job_id or str(task.get('job_id') or '') or None
+        if not result['scheduler_query_ok']:
+            result['status'] = task.get('status') or 'pending'
+            result.setdefault('markers', []).append('调度器状态未确认，保留上次任务状态')
+        elif not job_id and result['queue_status'] == 'UNKNOWN':
+            result['queue_status'] = 'NOT_FOUND'
 
         # NEB 过渡态：运行 nebef.pl 解析各映像受力/能量/相对能垒
         if task_type == "neb":

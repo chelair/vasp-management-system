@@ -14,6 +14,7 @@ from config import load_servers
 from paths import resolve_remote_path
 from storage import db_transaction, update_task_status
 from task_paths import is_continuation_task
+from lsf_state import normalized
 
 _CONTEXT = ContextVar('controlled_execution', default=None)
 ALLOWED = {'task.submit', 'task.continuation', 'frac.create'}
@@ -259,14 +260,16 @@ def sync_running_from_lsf(project, task, row):
     作业号按任务族登记在主任务上（与提交/对账同一口径）。
     """
     owner_id = family_id(task['task_id'])
-    status = 'queued' if row['state'] == 'PEND' else 'running'
+    status = 'queued' if normalized(row['state']) == 'PEND' else 'running'
     with db_transaction() as db:
         current = next(t for p in db['projects'] if p['name'] == project['name']
                        for t in p['tasks'] if t['task_id'] == owner_id)
         if current.get('status') == 'archived':
             return False
-        update_task_status(db, project['name'], owner_id, status,
-                           {'job_id': str(row['job_id']), 'stop_requested_at': None, 'stop_requested_job_id': None})
+        fields = {'job_id': str(row['job_id'])}
+        if str(current.get('stop_requested_job_id') or '') != str(row['job_id']):
+            fields.update(stop_requested_at=None, stop_requested_job_id=None)
+        update_task_status(db, project['name'], owner_id, status, fields)
     return True
 
 
@@ -280,7 +283,7 @@ def check_idle_or_sync(project, task, directory, rows):
         synced = sync_running_from_lsf(project, task, row)
     except Exception:  # noqa: BLE001 - 同步失败不改变拒绝提交的事实
         synced = False
-    state = '排队中' if row['state'] == 'PEND' else '运行中'
+    state = '排队中' if normalized(row['state']) == 'PEND' else '运行中'
     raise ValueError(
         f"目录 {str(directory or '').rstrip('/')} 仍有活跃作业（{row['job_id']} {row['state']}）"
         + (f"，已把任务同步为{state}" if synced else '')
@@ -659,10 +662,10 @@ def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
                     if owner_task['status'] in {'queued', 'running'}:
                         update_task_status(db, project['name'], owner_id, 'pending', {'job_id': None, 'stop_requested_at': None, 'stop_requested_job_id': None})
                     else:
-                        owner_task.update(stop_requested_at=None, stop_requested_job_id=None)
+                        owner_task.update(job_id=None, stop_requested_at=None, stop_requested_job_id=None)
                 elif match['state'] in unknown.ACTIVE and not newer and owner_task['status'] != 'archived':
                     if not current_id or same_job:
-                        status = 'queued' if match['state'] == 'PEND' else 'running'
+                        status = 'queued' if normalized(match['state']) == 'PEND' else 'running'
                         update_task_status(db, project['name'], owner_id, status, {'job_id': match['job_id']})
             strict_audit(record, 'success', '只读LSF对账：' + match['state'])
         except Exception as exc:
@@ -698,7 +701,7 @@ def sync_stopped_job(project, task):
     """bkill已接受后锁内调用；只有LSF终态允许清号，查询失败保留阻塞。"""
     job_id = str(task['job_id'])
     family = family_id(task['task_id'])
-    requested_at = now_iso()
+    requested_at = task.get('stop_requested_at') or now_iso()
     records = [a for a in ledger.read()['actions'].values()
                if a['family_id'] == family and str(a.get('job_id') or '') == job_id and not a.get('job_finished')]
     for record in records:
@@ -726,6 +729,8 @@ def _sync_stop_metadata(project, task, rows):
     terminal = terminal and (directory == root or bool(re.fullmatch(re.escape(root) + r'/con[0-9]+', directory)))
     # 有台账时还必须通过唯一执行名、目录和来源校验。
     terminal = terminal and all(ledger.get(a['id']).get('job_finished') for a in records)
+    if not matches:
+        terminal = all(ledger.get(a['id']).get('job_finished') or ledger.get(a['id']).get('released') for a in records)
     if terminal:
         with db_transaction() as db:
             current = next(t for p in db['projects'] if p['name'] == project['name']
@@ -734,16 +739,14 @@ def _sync_stop_metadata(project, task, rows):
                 if current['status'] in {'queued', 'running'}:
                     update_task_status(db, project['name'], task['task_id'], 'pending', {'job_id': None, 'stop_requested_at': None, 'stop_requested_job_id': None})
                 else:
-                    current.update(stop_requested_at=None, stop_requested_job_id=None)
+                    current.update(job_id=None, stop_requested_at=None, stop_requested_job_id=None)
     return terminal
 
 
 def confirm_killed(project, task, job_id, raw='', *, not_found=False):
-    """bkill 明确返回终止/已结束/无匹配作业后收尾本地状态。
+    """收尾已结束/明确不存在的回执；接受停止请求使用sync_stopped_job。
 
-    用户口径（2026-10-21）：拿到 bkill 的 killed 结果就刷新，不再一直停在"等待确认"。
-    LSF 终态通常几秒后才反映到 bjobs；同目录并发仍由 assert_remote_idle 用实时 bjobs 兜底。
-    无匹配仅记录 NOT_FOUND，原结束原因未知，不表示 VASP 正常完成或收敛。
+    无匹配仅记录NOT_FOUND，不表示VASP正常完成或收敛。
     """
     requested = now_iso()
     family = family_id(task['task_id'])

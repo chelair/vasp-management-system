@@ -66,6 +66,8 @@ def map_project(
                 ),
                 "last_check_time": _str(task.get("last_check_time"), "") or None,
                 "job_id": _str(task.get("job_id"), "") or None,
+                "stop_requested_at": task.get("stop_requested_at"),
+                "stop_requested_job_id": task.get("stop_requested_job_id"),
                 "notes": _str(task.get("notes"), ""),
                 "continuation_ready": task.get("continuation_ready") is True,
                 "continuation_dir": _str(task.get("continuation_dir"), "") or None,

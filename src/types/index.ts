@@ -62,6 +62,8 @@ export interface Task {
   last_energy: number | null;
   last_check_time: string | null;
   job_id: string | null;
+  stop_requested_at?: string | null;
+  stop_requested_job_id?: string | null;
   notes: string;
   continuation_ready: boolean;
   continuation_dir: string | null;

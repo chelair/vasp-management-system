@@ -355,6 +355,11 @@ def core_continuation(project: Dict[str, Any], task: Dict[str, Any]) -> Dict[str
 
     result = create_continuation(project.get("server"), project, task)
     if result.get("action") != "created":
+        if result.get('action') == 'running':
+            from automation.gateway import sync_running_from_lsf
+            from lsf_state import ACTIVE
+            if result.get('queue_state') in ACTIVE:
+                sync_running_from_lsf(project, task, {'job_id': result['job_id'], 'state': result['queue_state']})
         _audit_log(
             project["name"],
             task_id,
@@ -1559,7 +1564,7 @@ def stop_task(task_id: str):
 
 
 def _stop_task_locked(task_id: str):
-    """按 bkill 明确的终止/已结束/不存在回执收尾，不额外轮询。"""
+    """停止请求与调度终态分开；只做一次状态核对，不轮询。"""
     try:
         project, task = _resolve_task(task_id)
     except LookupError as e:
@@ -1578,8 +1583,9 @@ def _stop_task_locked(task_id: str):
             "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
         )
     )
+    requested = bool(task.get('stop_requested_at') and str(task.get('stop_requested_job_id')) == str(job_id))
     try:
-        result = ssh.run_remote(
+        result = {'exit_code': 0, 'stdout': '停止请求已登记'} if requested else ssh.run_remote(
             server,
             'bash -c ' + shlex.quote('source ' + shlex.quote(profile) + ' >/dev/null 2>&1; bkill ' + shlex.quote(str(job_id))),
             timeout=60,
@@ -1608,24 +1614,29 @@ def _stop_task_locked(task_id: str):
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
         return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
 
-    # 用户口径：不轮询 LSF。bkill 的返回就是停止依据，直接刷新本地状态；
-    # 同目录并发仍由提交时的实时 bjobs 检查兜底。
+    # "being terminated" is an accepted request. The job can remain RUN while
+    # its MPI processes exit, so retain its identity until LSF confirms absence.
     confirmed = False
     confirmed_by = ''
     sync_error = ''
-    from automation.gateway import confirm_killed
+    from automation.gateway import confirm_killed, sync_stopped_job
     try:
-        confirmed_by = 'bkill_not_found' if job_not_found else 'bkill'
-        confirmed = confirm_killed(project, task, str(job_id), raw, not_found=job_not_found)
+        if job_not_found or already_finished:
+            confirmed_by = 'bkill_not_found' if job_not_found else 'bkill'
+            confirmed = confirm_killed(project, task, str(job_id), raw, not_found=job_not_found)
+        else:
+            confirmed_by = 'bkill_requested'
+            confirmed = sync_stopped_job(project, task)
+            confirmed_by = 'lsf' if confirmed else 'bkill_requested'
     except Exception as exc:  # 落库失败不能伪装已停止
         sync_error = str(exc)
-    _audit_log(project['name'], task_id, str(job_id), 'bkill',
+    _audit_log(project['name'], task_id, str(job_id), 'stop-status' if requested else 'bkill',
                ('OK; bkill 明确无匹配作业' if confirmed and job_not_found else
-                'OK; bkill 确认停止' if confirmed else 'ACCEPTED; 本地状态更新失败') +
+                'OK; LSF 已确认结束' if confirmed else 'ACCEPTED; 等待调度器确认结束') +
                (('; SYNC_WARN: ' + sync_error) if sync_error else ''))
     _, current_task = _resolve_task(task_id)
     message = ('作业已不在调度器中，本地状态已更新' if job_not_found else
-               '作业已结束，本地状态已更新' if already_finished else '作业已停止') if confirmed else '停止结果未同步到本地，请重试或对账'
+               '作业已结束，本地状态已更新' if already_finished else '作业已停止') if confirmed else '停止请求已接受，调度器尚未确认结束；可刷新状态核对'
     return ok(message, {
         'job_id': job_id, 'new_status': current_task['status'], 'already_finished': already_finished,
         'stop_pending': not confirmed, 'sync_warning': sync_error,

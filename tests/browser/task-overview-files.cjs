@@ -128,6 +128,18 @@ const path = require('node:path');
     await page.waitForFunction(()=>document.querySelector('.ant-btn-loading')?.textContent.includes('停止作业'));
     assert.deepEqual(await page.evaluate(()=>window.actions),['submit:c','stop:c']);
     assert.equal(requests.length,8,'button state changes must not trigger file queries');
+    await page.evaluate(()=>{window.setBusy({});window.setMetadata({status:'running',job_id:'352424',stop_requested_at:'2026-11-10T20:45:32',stop_requested_job_id:'352424'});});
+    await page.getByRole('button',{name:'核对停止状态',exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:/创建续算/}).isDisabled(),true);
+    assert.equal(await page.getByRole('button',{name:/提交作业/}).count(),0);
+    assert.equal(await page.getByRole('button',{name:/停止作业/}).count(),0);
+    assert.ok((await page.getByRole('alert').innerText()).includes('正在等待调度器确认结束'));
+    await page.getByRole('button',{name:'核对停止状态',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.actions),['submit:c','stop:c','stop:c']);
+    await page.evaluate(()=>window.setMetadata({status:'pending',job_id:null}));
+    await page.getByRole('button',{name:/提交作业/}).waitFor();
+    assert.equal(await page.getByRole('button',{name:/创建续算/}).isEnabled(),true);
+    assert.equal(requests.length,8,'stop intent and completion do not add file queries');
     assert.deepEqual(errors,[]);
     console.log('PASS manual-only file queries, no automatic reads, seven remote states, failure retry/stale response protection; single submit/stop button across task states, confirmation/cancel and loading feedback');
   }finally{await browser.close();await new Promise(r=>server.close(r));}

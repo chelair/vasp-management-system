@@ -47,7 +47,7 @@ class OptTests(unittest.TestCase):
         directory = directory or self.remote
         rows = [r for r in self.unknown.jobs('server1') if r['job_id'] != record['job_id']]
         rows.append({'job_id':record['job_id'],'state':'EXIT' if kind == 'walltime' else 'DONE',
-                     'directory':record['plan']['work_dir'], 'name':record['execution_name']})
+                     'directory':record['plan']['work_dir'], 'name':'script-defined-name'})
         self.hpc.set_jobs([[r[k] for k in ('job_id','state','directory','name')] for r in rows])
         if kind == 'walltime':
             os.environ['MOCK_LSF_REASON_JOB_ID'] = record['job_id']
@@ -552,7 +552,7 @@ class OptTests(unittest.TestCase):
     def test_unknown_lsf_exit_cannot_use_nsw_strategy_as_bypass(self):
         run = self.start(nsw_increment=2,nsw_max=6)
         action = self.output(run,'nsw',(.12,.08))
-        self.hpc.set_jobs([[action['job_id'],'EXIT',action['plan']['work_dir'],action['execution_name']]])
+        self.hpc.set_jobs([[action['job_id'],'EXIT',action['plan']['work_dir'],'script-defined-name']])
         run = self.loop.step(run['id'])
         self.assertEqual(run['status'],'PAUSED')
         self.assertEqual(self.hpc.submit_count(),1)
@@ -572,7 +572,7 @@ class OptTests(unittest.TestCase):
         execute = self.gateway.execute
         def queued(**kwargs):
             action = execute(**kwargs)
-            self.hpc.set_jobs([[action['job_id'],'PEND',action['plan']['work_dir'],action['execution_name']]])
+            self.hpc.set_jobs([[action['job_id'],'PEND',action['plan']['work_dir'],'script-defined-name']])
             return action
         run = self.new()
         with patch.object(self.gateway,'execute',side_effect=queued):
@@ -582,7 +582,7 @@ class OptTests(unittest.TestCase):
         self.assertFalse(run['started_verified'])
         self.assertEqual(run['scheduler_state'],'PEND')
         action = self.ledger.get(run['action_id'])
-        self.hpc.set_jobs([[action['job_id'],'RUN',action['plan']['work_dir'],action['execution_name']]])
+        self.hpc.set_jobs([[action['job_id'],'RUN',action['plan']['work_dir'],'script-defined-name']])
         run = self.loop.step(run['id'])
         self.assertTrue(run['started_verified'])
         self.assertEqual(self.hpc.submit_count(),1)

@@ -79,7 +79,7 @@ def collect(project, root_task):
     records = [a for a in ledger.read()['actions'].values() if a.get('job_id') == value['job_id'] and a.get('family_id') == root_task['task_id']]
     if records:
         record = records[-1]
-        if not row or row['name'] != record.get('execution_name'):
+        if not unknown.find(record, [row] if row else []):
             value['scheduler'] = 'UNKNOWN'
         value['submitted_at'] = record['created_at']
     # 证据身份只包含目录/作业/文件内容，不包含每次查询都会变化的时刻。

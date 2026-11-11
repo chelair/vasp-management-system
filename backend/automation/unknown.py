@@ -26,7 +26,7 @@ def jobs_script(server):
         'RC=$?',
         'if [ "$RC" -ne 0 ]; then',
         '  case "$OUT" in *"No unfinished job found"*|*"No job found"*) OUT="" ;; *) exit 9 ;; esac',
-        'fi', 'printf "%s\\n" "$OUT"',
+        'fi', r'OUT=${OUT//\$HOME/$HOME}', 'printf "%s\\n" "$OUT"',
     ])
 
 
@@ -45,11 +45,18 @@ def jobs(server):
 
 
 def find(record, rows):
-    matches = [row for row in rows if row['name'] == record.get('execution_name') and
-               (not record.get('job_id') or row['job_id'] == str(record['job_id']))]
-    if len(matches) != 1:
+    """已知作业号按 ID 和目录匹配；丢失回执时查找目标目录唯一作业。"""
+    directory = str((record.get('plan') or {}).get('work_dir') or '').rstrip('/')
+    if not directory:
         return None
-    return matches[0]
+    matches = [row for row in rows if row['directory'].rstrip('/') == directory]
+    if record.get('job_id'):
+        matches = [row for row in matches if row['job_id'] == str(record['job_id'])]
+    else:
+        active = [row for row in matches if row['state'] not in TERMINAL]
+        if active:
+            matches = active
+    return matches[0] if len(matches) == 1 else None
 
 
 def prior_job_receipts(server, root, job_id):

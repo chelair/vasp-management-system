@@ -432,8 +432,7 @@ def _task_index(db: Dict[str, Any]) -> Tuple[Dict[str, Tuple[Dict, Dict]], Dict[
 
     续算子任务也参与索引：自动化提交后作业号会登记在 conN 子任务上，跳过它们
     会让总览把真实作业显示成"未登记任务"（2026-10-21 用户反馈 FS@Kaolin_con8）。
-    另外执行台账里的 `execution_name`（`模型_vm_动作ID`）才是 LSF 里看到的作业名，
-    这里补一层 action → task 的映射，避免受控提交的作业匹配不到。
+    作业号优先关联；历史版本的 `execution_name` 名称回退继续兼容旧作业。
     """
     by_job: Dict[str, Tuple[Dict, Dict]] = {}
     by_name: Dict[str, Tuple[Dict, Dict]] = {}

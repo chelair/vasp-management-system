@@ -76,6 +76,64 @@ class GatewayTests(unittest.TestCase):
         args.update(changes)
         return self.gateway.execute(**args)
 
+    def test_manual_and_controlled_submissions_keep_script_job_name(self):
+        from dashboard import build_running_tasks
+        script = (self.remote/'vasp.lsf').read_text().replace('#BSUB -n 24', '#BSUB -J "PATH1_neb"\n#BSUB -n 24')
+        (self.remote/'vasp.lsf').write_text(script)
+        controlled = self.execute()
+        self.assertEqual(self.unknown.jobs('server1')[0]['name'], 'PATH1_neb')
+        self.assertNotIn(' -J ', self.hpc.calls()[0])
+        self.assertEqual((self.hpc.root/'_mock_bsub_stdin').read_text(), script)
+        self.hpc.set_jobs([[controlled['job_id'], 'EXIT', controlled['plan']['work_dir'], 'PATH1_neb']])
+        self.gateway.reconcile(controlled['id'])
+        os.environ['MOCK_BSUB_JOB_ID'] = '230002'
+        self.addCleanup(lambda: os.environ.pop('MOCK_BSUB_JOB_ID', None))
+        project, task = self.gateway.actions.load_task('t1')
+        result = self.gateway.safe_submit(project, task)
+        self.assertEqual(result['job_id'], '230002')
+        self.assertNotIn(' -J ', self.hpc.calls()[1])
+        rows = self.unknown.jobs('server1')
+        self.assertTrue(all(row['name'] == 'PATH1_neb' for row in rows))
+        dashboard = build_running_tasks(self.storage.load_db(), {'jobs': [
+            {'job_id': '230002', 'name': 'PATH1_neb', 'status': 'RUN', 'cores': 24}]})
+        self.assertEqual(dashboard[0]['task_id'], 't1')
+        self.assertEqual(dashboard[0]['project_name'], 'STAGE1')
+
+    def test_recover_lost_receipt_from_directory_ignores_same_name_elsewhere(self):
+        self.hpc.install_bsub('lost')
+        with self.assertRaises(self.jobs.ActionError):
+            self.execute()
+        record = next(iter(self.ledger.read()['actions'].values()))
+        rows = self.unknown.jobs('server1')
+        rows += [dict(rows[0], job_id='999', directory=rows[0]['directory']+'/other'),
+                 dict(rows[0], job_id='888', state='EXIT')]
+        self.hpc.set_jobs([[r[k] for k in ('job_id','state','directory','name')] for r in rows])
+        recovered = self.gateway.reconcile(record['id'])[0]
+        self.assertEqual(recovered['job_id'], '230001')
+        self.assertEqual(recovered['scheduler_state'], 'RUN')
+        self.assertEqual(self.hpc.submit_count(), 1)
+
+    def test_pending_jobs_use_submission_directory_until_execution_starts(self):
+        from lsf_state import parse_jobs
+        output = '123|PEND|-|/project/neb/con2|PATH1_neb\n124|RUN|/project/con3|/project|other\n'
+        rows = parse_jobs(output)
+        record = {'job_id': '123', 'plan': {'work_dir': '/project/neb/con2'}}
+        self.assertEqual(self.unknown.find(record, rows)['state'], 'PEND')
+        self.assertEqual(self.unknown.find(dict(record, job_id=None), rows)['job_id'], '123')
+        self.assertEqual(rows[1]['directory'], '/project/con3')
+
+    def test_job_identity_requires_exact_directory_and_unique_recovery(self):
+        directory = '/project/neb/con2'
+        record = {'job_id': '123', 'plan': {'work_dir': directory}, 'execution_name': 'legacy_vm_id'}
+        row = {'job_id': '123', 'state': 'RUN', 'directory': directory, 'name': '脚本名称'}
+        self.assertEqual(self.unknown.find(record, [row]), row)
+        self.assertIsNone(self.unknown.find(record, [dict(row, directory=directory+'/other')]))
+        self.assertIsNone(self.unknown.find(record, [dict(row, job_id='456')]))
+        lost = dict(record, job_id=None)
+        self.assertEqual(self.unknown.find(lost, [row]), row)
+        self.assertIsNone(self.unknown.find(lost, [row, dict(row, job_id='456')]))
+        self.assertIsNone(self.unknown.find(lost, [dict(row, state='EXIT'), dict(row, job_id='456', state='DONE')]))
+
     def test_normal_and_ten_identical_requests(self):
         first = self.execute()
         self.assertEqual(first['status'], 'succeeded')
@@ -349,14 +407,14 @@ except scheduler._TaskBusy:
         self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'], '230001')
         self.assertEqual(self.hpc.submit_count(), 1)
 
-    def test_pending_and_exit_lsf_states_and_wrong_marker(self):
+    def test_pending_and_exit_lsf_states_use_id_and_directory_not_name(self):
         record = self.execute()
         root = self.paths.remote_root('server1')+'/STAGE1/T1'
         self.hpc.set_jobs([['230001', 'PEND', root, record['execution_name']]])
         self.assertEqual(self.gateway.reconcile(record['id'])[0]['scheduler_state'], 'PEND')
-        self.hpc.set_jobs([['230001', 'EXIT', root, 'different-execution']])
+        self.hpc.set_jobs([['230001', 'EXIT', root+'/wrong', 'different-execution']])
         self.assertEqual(self.gateway.reconcile(record['id'])[0]['status'], 'unknown')
-        self.hpc.set_jobs([['230001', 'EXIT', root, record['execution_name']]])
+        self.hpc.set_jobs([['230001', 'EXIT', root, 'script-defined-name']])
         self.assertTrue(self.gateway.reconcile(record['id'])[0]['job_finished'])
         # 调度器退出没有被当作VASP科学收敛。
         self.assertNotEqual(self.storage.load_db()['projects'][0]['tasks'][0]['status'], 'completed')

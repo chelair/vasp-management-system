@@ -534,7 +534,7 @@ def safe_submit(project, task, *, dry_run=False):
             raise
     ledger.update(record['id'], plan=plan, status='running', attempted=True, submission_attempted=True)
     try:
-        result = core(project, task, execution={**plan, 'execution_name': record['execution_name']})
+        result = core(project, task, execution=plan)
     except Exception as exc:
         data = getattr(exc, 'data', {})
         rejected = bool(data.get('not_submitted') or (data.get('bsub_rc') and str(data['bsub_rc']) != '0'))
@@ -614,11 +614,10 @@ def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
                 rows = rows_by_server[record['server']]
                 if record.get('job_id'):
                     same_job = [row for row in rows if row['job_id'] == str(record['job_id'])]
-                    matches = [row for row in same_job if row['name'] == record.get('execution_name')]
                 else:
-                    matches = [row for row in rows if row['name'] == record.get('execution_name')]
-                    same_job = matches
-                match = matches[0] if len(matches) == 1 else None
+                    directory = str((record.get('plan') or {}).get('work_dir') or '').rstrip('/')
+                    same_job = [row for row in rows if row['directory'].rstrip('/') == directory]
+                match = unknown.find(record, rows)
             if not match:
                 if not same_job:
                     # bjobs 查询成功却完全没有这个作业：说明未提交成功或早已结束/清理。

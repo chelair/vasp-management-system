@@ -1,4 +1,5 @@
 """LSF current-state parsing shared by inspection, reconciliation and continuation."""
+import os
 import re
 import subprocess
 import sys
@@ -6,7 +7,7 @@ import sys
 ACTIVE = {'PEND', 'RUN', 'PSUSP', 'USUSP', 'SSUSP', 'WAIT', 'PROV'}
 TERMINAL = {'DONE', 'EXIT'}
 UNCERTAIN = {'UNKWN', 'ZOMBI'}
-FORMAT = 'jobid stat exec_cwd:4096 job_name:128 delimiter="|"'
+FORMAT = 'jobid stat exec_cwd:4096 sub_cwd:4096 job_name:128 delimiter="|"'
 
 
 def empty_jobs(output):
@@ -19,6 +20,9 @@ def parse_jobs(output):
         if not line.strip():
             continue
         parts = [part.strip() for part in line.strip().strip('|').split('|')]
+        if len(parts) == 5:
+            directory = parts[2] if parts[2] not in {'', '-'} else parts[3]
+            parts = [parts[0], parts[1], directory, parts[4]]
         if len(parts) != 4 or not re.fullmatch(r'\d+', parts[0]) or parts[1] not in ACTIVE | TERMINAL | UNCERTAIN:
             raise ValueError('LSF输出无法可靠解析，作业状态尚未确认')
         rows.append(dict(zip(('job_id', 'state', 'directory', 'name'), parts)))
@@ -32,7 +36,10 @@ def query_jobs(timeout=5):
         return []
     if proc.returncode:
         raise RuntimeError('调度器查询失败，作业状态尚未确认：' + output.strip()[:300])
-    return parse_jobs(proc.stdout or '')
+    rows = parse_jobs(proc.stdout or '')
+    for row in rows:
+        row['directory'] = os.path.expandvars(row['directory'])
+    return rows
 
 
 def normalized(state):

@@ -532,7 +532,7 @@ def _core_submit(
             'for F in INCAR KPOINTS; do [ -f "$F" ] && [ "$(stat -c %s "$F")" -le 65536 ] && echo "@@@INPUT_${F}=$(base64 -w0 "$F")"; done',
             'echo "@@@BSUB"',
             "source " + shlex.quote(profile) + " >/dev/null 2>&1 || true",
-            ('printf \'%s\' "$SCRIPT_B64" | base64 -d | bsub -J ' + shlex.quote(execution['execution_name'])) if execution else 'bsub < "' + submit_script + '"',
+            ('printf \'%s\' "$SCRIPT_B64" | base64 -d | bsub') if execution else 'bsub < "' + submit_script + '"',
             'echo "@@@BSUB_RC=$?"',
         ]
     script = "\n".join(lines)

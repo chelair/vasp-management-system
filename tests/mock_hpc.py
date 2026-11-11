@@ -37,7 +37,18 @@ cat > "${MOCK_BSUB_STDIN_FILE:-/dev/null}" 2>&1
 
 case "${MOCK_BSUB_MODE:-ok}" in
   ok|lost)
-    JOBNAME=""
+    JOBNAME=$(python3 - "${MOCK_BSUB_STDIN_FILE}" <<'MOCK_JOB_NAME'
+import shlex,sys
+from pathlib import Path
+name = 'vasp.lsf'
+for line in Path(sys.argv[1]).read_text().splitlines():
+    if line.strip().startswith('#BSUB'):
+        args = shlex.split(line.strip()[5:], comments=True)
+        if '-J' in args:
+            name = args[args.index('-J') + 1]
+print(name)
+MOCK_JOB_NAME
+)
     while [ "$#" -gt 0 ]; do
       if [ "$1" = "-J" ]; then shift; JOBNAME="$1"; fi
       shift

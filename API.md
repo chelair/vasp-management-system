@@ -614,6 +614,8 @@ body: {
 | `POST /inspections/run-single/{task_id}` | — | 单任务巡检（约 12–15s）；归档任务返回 `400` |
 | `PUT /inspections/auto` | `{enabled: bool, interval_hours?: number}` | 自动巡检开关（写 `settings.json`，后台 60s 轮询判定） |
 
+作业提交保留 `vasp.lsf` 的 `#BSUB -J`，不再传命令行 `-J` 覆盖名称。状态关联按已保存的 job_id 和实际目录；回执丢失时按目标目录唯一当前作业恢复，旧长名称作业兼容。具体影响见[执行说明](docs/execution.md#作业命名与识别)。
+
 ### 4.3 其他写接口（简表）
 
 | 分类 | 接口 | 备注 |

@@ -487,11 +487,6 @@ def _core_submit(
     **不执行 bsub、不改状态**，返回 `{dry_run, will_submit, work_dir}`。
     """
     task_id = str(task.get("task_id") or "")
-    status = task.get("status")
-    job_id = task.get("job_id")
-    if job_id and status in ("queued", "running"):
-        raise ActionError(409, "作业已提交/运行中，请勿重复操作")
-
     server = project.get("server")
     remote_dir = resolve_remote_path(server, task.get("remote_dir", "")).rstrip("/")
     if not remote_dir:
@@ -1564,7 +1559,7 @@ def stop_task(task_id: str):
 
 
 def _stop_task_locked(task_id: str):
-    """停止请求与调度终态分开；只做一次状态核对，不轮询。"""
+    """按 bkill 回执更新本地状态；提交时再检查目标目录占用。"""
     try:
         project, task = _resolve_task(task_id)
     except LookupError as e:
@@ -1583,9 +1578,8 @@ def _stop_task_locked(task_id: str):
             "lsf_profile", "/opt/ibm/lsfsuite/lsf/conf/profile.lsf"
         )
     )
-    requested = bool(task.get('stop_requested_at') and str(task.get('stop_requested_job_id')) == str(job_id))
     try:
-        result = {'exit_code': 0, 'stdout': '停止请求已登记'} if requested else ssh.run_remote(
+        result = ssh.run_remote(
             server,
             'bash -c ' + shlex.quote('source ' + shlex.quote(profile) + ' >/dev/null 2>&1; bkill ' + shlex.quote(str(job_id))),
             timeout=60,
@@ -1600,7 +1594,7 @@ def _stop_task_locked(task_id: str):
     raw = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
     # LSF：对已结束/不存在的作业执行 bkill 会输出 "Job <id>: Job has already
     # finished" 且退出码非 0 —— 作业实际上已停止，按停止成功处理（归档为待提交）
-    already_finished = bool(re.search(r"already finished", raw, re.IGNORECASE))
+    already_finished = bool(re.search(r"(?:already|has)\s+finished", raw, re.IGNORECASE))
     # 指定 job 的不存在回执属于幂等停止成功，不能与 SSH/权限/命令失败混淆。
     # 若带 job 前缀，必须与本次请求相符；只接受完整回执，不泛匹配 "not found"。
     job_not_found = bool(re.fullmatch(
@@ -1614,34 +1608,20 @@ def _stop_task_locked(task_id: str):
         _audit_log(project["name"], task_id, str(job_id), "bkill", f"FAILED: {raw}")
         return JSONResponse(status_code=500, content=fail(f"停止作业失败：{raw or '未知错误'}"))
 
-    # "being terminated" is an accepted request. The job can remain RUN while
-    # its MPI processes exit, so retain its identity until LSF confirms absence.
-    confirmed = False
-    confirmed_by = ''
-    sync_error = ''
-    from automation.gateway import confirm_killed, sync_stopped_job
+    from automation.gateway import confirm_killed
     try:
-        if job_not_found or already_finished:
-            confirmed_by = 'bkill_not_found' if job_not_found else 'bkill'
-            confirmed = confirm_killed(project, task, str(job_id), raw, not_found=job_not_found)
-        else:
-            confirmed_by = 'bkill_requested'
-            confirmed = sync_stopped_job(project, task)
-            confirmed_by = 'lsf' if confirmed else 'bkill_requested'
-    except Exception as exc:  # 落库失败不能伪装已停止
-        sync_error = str(exc)
-    _audit_log(project['name'], task_id, str(job_id), 'stop-status' if requested else 'bkill',
-               ('OK; bkill 明确无匹配作业' if confirmed and job_not_found else
-                'OK; LSF 已确认结束' if confirmed else 'ACCEPTED; 等待调度器确认结束') +
-               (('; SYNC_WARN: ' + sync_error) if sync_error else ''))
+        confirm_killed(project, task, str(job_id), raw, not_found=job_not_found)
+    except Exception as exc:
+        _audit_log(project['name'], task_id, str(job_id), 'bkill', f'ACCEPTED; 本地状态更新失败: {exc}')
+        return JSONResponse(status_code=500, content=fail(f"服务器已接受停止作业，本地状态更新失败，请重试：{exc}"))
+    _audit_log(project['name'], task_id, str(job_id), 'bkill', f'OK: {raw}')
     _, current_task = _resolve_task(task_id)
     message = ('作业已不在调度器中，本地状态已更新' if job_not_found else
-               '作业已结束，本地状态已更新' if already_finished else '作业已停止') if confirmed else '停止请求已接受，调度器尚未确认结束；可刷新状态核对'
+               '作业已结束，本地状态已更新' if already_finished else '停止请求已接受，本地状态已更新')
     return ok(message, {
         'job_id': job_id, 'new_status': current_task['status'], 'already_finished': already_finished,
-        'stop_pending': not confirmed, 'sync_warning': sync_error,
-        'confirmed_by': confirmed_by, 'bkill_output': raw[:2000],
-        'job_not_found': job_not_found,
+        'stop_pending': False, 'confirmed_by': 'bkill_not_found' if job_not_found else 'bkill',
+        'bkill_output': raw[:2000], 'job_not_found': job_not_found,
     })
 
 

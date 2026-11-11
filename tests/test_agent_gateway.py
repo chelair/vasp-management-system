@@ -639,7 +639,7 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
              patch.object(self.unknown, 'jobs', return_value=rows):
             return self.jobs.stop_task('t1')
 
-    def test_stop_updates_ledger_and_task_after_lsf_terminal(self):
+    def test_stop_updates_ledger_and_task_from_receipt(self):
         record = self.execute()
         response = self._stop_with_rows(self._terminal_rows(record))
         self.assertFalse(response['data']['stop_pending'])
@@ -696,7 +696,7 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertEqual(self.storage.load_db(), db)
         self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
 
-    def test_stop_closes_unknown_action_after_lsf_terminal(self):
+    def test_stop_closes_unknown_action_from_receipt(self):
         record = self.execute()
         self.ledger.update(record['id'], status='unknown', reason='对账失败：LSF作业目录与提交快照不符')
         with patch.object(self.jobs.ssh, 'run_remote', return_value={
@@ -749,47 +749,47 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertEqual(self.ledger.get(record['id'])['status'], 'unknown')
         self.assertIsNotNone(self.gateway._unresolved(self.ledger.read(), 't1'))
 
-    def test_stop_accepted_but_running_retains_job_and_budget_until_terminal(self):
+    def test_stop_receipt_updates_state_without_query_and_submit_checks_directory(self):
         record = self.execute()
-        response = self._stop_with_rows(self._terminal_rows(record, 'RUN'))
-        self.assertTrue(response['data']['stop_pending'])
-        self.assertEqual(response['data']['confirmed_by'], 'bkill_requested')
-        action = self.ledger.get(record['id'])
-        self.assertFalse(action.get('job_finished'))
-        self.assertEqual(action['reservation'],24)
-        task = self.storage.load_db()['projects'][0]['tasks'][0]
-        self.assertEqual(task['status'], 'running')
-        self.assertEqual(task['job_id'],record['job_id'])
-        self.assertEqual(task['stop_requested_job_id'],record['job_id'])
-        project, current = self.gateway.actions.load_task('t1')
-        with self.assertRaisesRegex(ValueError, '同一作业目录'):
-            self.gateway.assert_remote_idle(project, current, record['plan']['work_dir'],
-                                            self._terminal_rows(record, 'RUN'))
-        with patch.object(self.jobs.ssh,'run_remote',return_value={'exit_code':0,'stdout':''}) as remote, \
-             patch.object(self.unknown,'jobs',return_value=self._terminal_rows(record)) as query:
-            response=self.jobs.stop_task('t1')
-        query.assert_called_once()
-        self.assertFalse(any('bkill' in call.args[1] for call in remote.call_args_list))
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                'exit_code': 0, 'stdout': 'Job <230001> is being terminated'}) as remote, \
+             patch.object(self.unknown, 'jobs', side_effect=AssertionError('停止不查询LSF')) as query:
+            response = self.jobs.stop_task('t1')
+        remote.assert_called_once()
+        query.assert_not_called()
         self.assertFalse(response['data']['stop_pending'])
-        task=self.storage.load_db()['projects'][0]['tasks'][0]
-        self.assertIsNone(task['job_id']);self.assertIsNone(task.get('stop_requested_at'))
-        action=self.ledger.get(record['id'])
-        self.assertTrue(action['job_finished']);self.assertEqual(action['reservation'],0)
-        self.assertEqual(action['consumed_core_hours'],24)
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        self.assertEqual(task['status'], 'pending')
+        self.assertIsNone(task['job_id'])
+        action = self.ledger.get(record['id'])
+        self.assertTrue(action['job_finished'])
+        self.assertEqual(action['reservation'], 0)
+        self.assertEqual(action['consumed_core_hours'], 24)
+        project, current = self.gateway.actions.load_task('t1')
+        with patch.object(self.unknown, 'jobs', return_value=self._terminal_rows(record, 'RUN')) as query:
+            with self.assertRaisesRegex(ValueError, '仍有活跃作业'):
+                self.gateway.safe_submit(project, current)
+        query.assert_called_once()
         self.assertEqual(self.hpc.submit_count(), 1)
+        # 当前目录无作业即可提交，旧本地作业号、停止标记和其他目录作业不阻止。
+        rows = self._terminal_rows(record, 'RUN'); rows[0]['directory'] += '/other'
+        project, current = self.gateway.actions.load_task('t1')
+        with patch.object(self.unknown, 'jobs', return_value=rows) as query:
+            result = self.gateway.safe_submit(project, current)
+        query.assert_called_once()
+        self.assertTrue(result['job_id'])
+        self.assertEqual(self.hpc.submit_count(), 2)
 
-    def test_stop_query_failure_preserves_stop_intent_and_job_identity(self):
+    def test_stop_does_not_depend_on_lsf_query_availability(self):
         record = self.execute()
-        with patch.object(self.jobs.ssh, 'run_remote', return_value={'exit_code': 0, 'stdout': 'Job <230001> is being terminated'}), \
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                'exit_code': 0, 'stdout': 'Job <230001> is being terminated'}), \
              patch.object(self.unknown, 'jobs', side_effect=ValueError('LSF unavailable')) as query:
             response = self.jobs.stop_task('t1')
-        query.assert_called_once()
-        self.assertTrue(response['data']['stop_pending'])
-        task = self.storage.load_db()['projects'][0]['tasks'][0]
-        self.assertEqual(task['job_id'],record['job_id'])
-        self.assertEqual(task.get('stop_requested_job_id'),record['job_id'])
-        self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
-        self.assertEqual(self.hpc.submit_count(), 1)
+        query.assert_not_called()
+        self.assertFalse(response['data']['stop_pending'])
+        self.assertIsNone(self.storage.load_db()['projects'][0]['tasks'][0]['job_id'])
+        self.assertTrue(self.ledger.get(record['id'])['job_finished'])
 
     def test_stop_rejected_does_not_reset_task_or_release_ledger(self):
         record = self.execute()
@@ -940,19 +940,20 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
                 self.gateway.reconcile()
             self.assertEqual(self.storage.load_db()['projects'][0]['tasks'][0]['status'], 'queued')
 
-    def test_bkill_receipt_is_only_a_request_while_lsf_still_runs(self):
+    def test_previous_stop_intent_does_not_skip_bkill_receipt(self):
         record = self.execute()
-        with patch.object(self.jobs.ssh, 'run_remote',return_value={
-                'exit_code':0,'stdout':f'Job <{record["job_id"]}> is being terminated'}), \
-             patch.object(self.unknown,'jobs',return_value=self._terminal_rows(record,'RUN')) as query:
-            response=self.jobs.stop_task('t1')
-        query.assert_called_once()
-        self.assertTrue(response['data']['stop_pending'])
-        self.assertEqual(response['data']['confirmed_by'],'bkill_requested')
-        task=self.storage.load_db()['projects'][0]['tasks'][0]
-        self.assertEqual(task['status'],'running')
-        self.assertEqual(task['job_id'],record['job_id'])
-        self.assertFalse(self.ledger.get(record['id']).get('job_finished'))
+        with self.storage.db_transaction() as db:
+            db['projects'][0]['tasks'][0].update(stop_requested_at='old', stop_requested_job_id=record['job_id'])
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                'exit_code': 255, 'stdout': f'Job <{record["job_id"]}>: Job has finished'}) as remote, \
+             patch.object(self.unknown, 'jobs', side_effect=AssertionError('停止不查询LSF')):
+            response = self.jobs.stop_task('t1')
+        remote.assert_called_once()
+        self.assertIn('bkill '+record['job_id'], remote.call_args.args[1])
+        self.assertTrue(response['data']['already_finished'])
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        self.assertIsNone(task['job_id'])
+        self.assertIsNone(task.get('stop_requested_at'))
 
     def test_bkill_failure_keeps_local_state(self):
         record = self.execute()
@@ -991,16 +992,18 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertEqual(result['reservation'], 0)
         self.assertEqual(result['consumed_core_hours'], 24)
 
-    def test_manual_submit_refreshes_finished_record_before_guard(self):
+    def test_manual_submit_only_checks_current_directory_not_old_records(self):
         # 普通人工提交路径不会因为旧台账仍未更新而永久阻塞。
         record = self.execute()
         db = self.storage.load_db(); db['projects'][0]['tasks'][0].update(status='pending', job_id=None)
         self.storage.save_db(db, backup=False)
         self.hpc.set_jobs([[record['job_id'], 'EXIT', record['plan']['work_dir'], record['execution_name']]])
-        with self.jobs._task_action_lock('t1'):
+        with self.jobs._task_action_lock('t1'), \
+             patch.object(self.gateway, 'reconcile', side_effect=AssertionError('提交不先对账历史记录')), \
+             patch.object(self.unknown, 'jobs', wraps=self.unknown.jobs) as query:
             project, task = self.gateway.actions.load_task('t1')
             result = self.jobs.core_submit(project, task)
-        self.assertTrue(self.ledger.get(record['id'])['job_finished'])
+        query.assert_called_once()
         self.assertEqual(result['new_status'], 'queued')
         self.assertEqual(self.hpc.submit_count(), 2)
 
@@ -1047,19 +1050,17 @@ gateway.execute(user=auth.find_user('agent'),session=auth.get_session({self.sess
         self.assertTrue(self.ledger.get(record['id'])['job_finished'])
         self.assertEqual(self.hpc.submit_count(), 1)
 
-    def test_legacy_stop_without_ledger_retains_active_job_until_lsf_terminal(self):
+    def test_legacy_stop_without_ledger_updates_from_receipt(self):
         db = self.storage.load_db(); db['projects'][0]['tasks'][0].update(status='running', job_id='751321')
         self.storage.save_db(db, backup=False)
-        rows = [{'job_id': '751321', 'state': 'RUN', 'directory': self.paths.remote_root('server1')+'/STAGE1/T1', 'name': 'old'}]
-        response = self._stop_with_rows(rows)
-        self.assertTrue(response['data']['stop_pending'])
-        task = self.storage.load_db()['projects'][0]['tasks'][0]
-        self.assertEqual(task['status'], 'running');self.assertEqual(task['job_id'],'751321')
-        rows[0]['state']='EXIT'
-        response=self._stop_with_rows(rows)
+        with patch.object(self.jobs.ssh, 'run_remote', return_value={
+                'exit_code': 0, 'stdout': 'Job <751321> is being terminated'}), \
+             patch.object(self.unknown, 'jobs', side_effect=AssertionError('停止不查询LSF')):
+            response = self.jobs.stop_task('t1')
         self.assertFalse(response['data']['stop_pending'])
-        task=self.storage.load_db()['projects'][0]['tasks'][0]
-        self.assertEqual(task['status'],'pending');self.assertIsNone(task['job_id'])
+        task = self.storage.load_db()['projects'][0]['tasks'][0]
+        self.assertEqual(task['status'], 'pending')
+        self.assertIsNone(task['job_id'])
         self.assertEqual(self.hpc.submit_count(), 0)
 
     def test_terminal_sync_failure_retries_without_losing_finish_or_double_charging(self):

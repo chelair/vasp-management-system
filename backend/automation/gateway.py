@@ -515,8 +515,7 @@ def safe_submit(project, task, *, dry_run=False):
         else:
             check_idle_or_sync(project, task, plan['work_dir'], unknown.jobs(project['server']))
     else:
-        # 调用方已持有任务族锁；只读核实历史记录，不重放提交。
-        reconcile(task_id=task['task_id'], _lock_held=True)
+        # 提交前仅按实际目标目录查询当前活跃作业。
         project, task = actions.load_task(task['task_id'])
         target_dir = resolve_remote_path(project['server'], task.get('remote_dir') or '').rstrip('/')
         with ledger.transaction() as doc:
@@ -697,26 +696,6 @@ def reconcile(action_id=None, *, task_id=None, _lock_held=False, _rows=None):
     return results
 
 
-def sync_stopped_job(project, task):
-    """bkill已接受后锁内调用；只有LSF终态允许清号，查询失败保留阻塞。"""
-    job_id = str(task['job_id'])
-    family = family_id(task['task_id'])
-    requested_at = task.get('stop_requested_at') or now_iso()
-    records = [a for a in ledger.read()['actions'].values()
-               if a['family_id'] == family and str(a.get('job_id') or '') == job_id and not a.get('job_finished')]
-    for record in records:
-        ledger.update(record['id'], stop_requested_at=requested_at)
-    with db_transaction() as db:
-        current = next(t for p in db['projects'] if p['name'] == project['name']
-                       for t in p['tasks'] if t['task_id'] == task['task_id'])
-        if str(current.get('job_id') or '') != job_id:
-            raise ValueError('停止期间任务作业号变化，保留原状态并要求对账')
-        current.update(stop_requested_at=requested_at, stop_requested_job_id=job_id)
-    rows = unknown.jobs(project['server'])
-    reconcile(task_id=task['task_id'], _lock_held=True, _rows={project['server']: rows})
-    return _sync_stop_metadata(project, task, rows)
-
-
 def _sync_stop_metadata(project, task, rows):
     job_id = str(task['job_id'])
     family = family_id(task['task_id'])
@@ -744,7 +723,7 @@ def _sync_stop_metadata(project, task, rows):
 
 
 def confirm_killed(project, task, job_id, raw='', *, not_found=False):
-    """收尾已结束/明确不存在的回执；接受停止请求使用sync_stopped_job。
+    """按 bkill 成功回执清理作业登记和预留；不再额外查询 LSF。
 
     无匹配仅记录NOT_FOUND，不表示VASP正常完成或收敛。
     """

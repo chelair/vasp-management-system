@@ -922,10 +922,9 @@ export default function Jobs() {
     setStoppingTaskId(task.task_id);
     try {
       const r = await stopTask(task.task_id);
-      if (r.stop_pending) message.warning(`作业 ${r.job_id} 停止请求已发出，等待确认结束；暂不可重新提交`);
-      else if (r.no_job) message.info('当前没有记录中的作业，已刷新任务状态');
+      if (r.no_job) message.info('当前没有记录中的作业，已刷新任务状态');
       else if (r.already_finished || r.job_not_found) message.info(`作业 ${r.job_id} 已结束或已不在调度器中，状态已刷新`);
-      else message.success(`作业 ${r.job_id} 已停止`);
+      else message.success(`作业 ${r.job_id} 停止请求已接受，状态已更新`);
       await refreshProjects();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '停止作业失败');

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, Card, Descriptions, Empty, Popconfirm, Space, Tag, Tooltip } from 'antd';
+import { App, Button, Card, Descriptions, Empty, Popconfirm, Space, Tag, Tooltip } from 'antd';
 import {
   CheckCircleFilled,
   InboxOutlined,
@@ -163,8 +163,7 @@ export default function TaskOverview({
     }
   };
 
-  const stopPending = Boolean(task.stop_requested_at && task.stop_requested_job_id === task.job_id);
-  const showStop = Boolean(task.job_id) && (stopPending || !['completed', 'unconverged', 'archived'].includes(task.status));
+  const showStop = Boolean(task.job_id) && !['completed', 'unconverged', 'archived'].includes(task.status);
 
   return (
     <div className="job-overview">
@@ -174,18 +173,14 @@ export default function TaskOverview({
             生成输入文件
           </Button>
           {['opt', 'neb'].includes(task.task_type) && (
-            <Button icon={<RedoOutlined />} onClick={onContinuation} disabled={stopPending}>
+            <Button icon={<RedoOutlined />} onClick={onContinuation}>
               创建续算
             </Button>
           )}
           <Button icon={<CodeOutlined />} onClick={onSubmitScript}>
             生成提交脚本
           </Button>
-          {stopPending ? (
-            <Button loading={stopping} disabled={submitting} onClick={() => onStop(task)}>
-              核对停止状态
-            </Button>
-          ) : showStop ? (
+          {showStop ? (
             <Popconfirm
               title="确认停止该作业？"
               description={`将停止作业 ${task.job_id}；若作业已经结束，将刷新任务状态`}
@@ -262,9 +257,7 @@ export default function TaskOverview({
             </Tag>
           )}
         </Space>
-        {stopPending && <Alert type="info" showIcon style={{ marginTop: 12 }}
-          message={`作业 ${task.job_id} 的停止请求已接受，正在等待调度器确认结束。`}
-          description="点击“核对停止状态”或执行巡检可更新结果；确认结束后即可提交或创建续算。" />}
+
       </Card>
 
       <Card size="small" title="任务信息" className="job-card">

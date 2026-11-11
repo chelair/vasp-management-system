@@ -618,7 +618,7 @@ body: {
 
 | 分类 | 接口 | 备注 |
 | --- | --- | --- |
-| 作业 | `POST /jobs/tasks/{id}/stop` | 任务族锁内按已登记job_id执行bkill，不以本地queued/running状态阻止请求；接受停止请求后查询一次LSF，仍活跃或查询失败返回`stop_pending=true`并保留job_id、资源预留及`stop_requested_at/stop_requested_job_id`。重复请求只核对状态，不重复bkill；明确结束/不存在后才清理作业登记和预留，不额外轮询。无job_id时幂等返回`no_job=true,job_id=null,new_status`，不发远端命令；已结束/不存在分别返回`already_finished`/`job_not_found`。保留已有科学状态，落库失败明确报未同步，再提交仍重查LSF活跃作业；**高风险** |
+| 作业 | `POST /jobs/tasks/{id}/stop` | 任务族锁内按已登记job_id执行一次bkill，成功回执直接清理job_id、旧停止标记和资源预留，更新本地状态；不追加LSF查询、不要求核对停止状态，兼容返回`stop_pending=false`。识别being terminated、has finished/already finished及明确无匹配回执；无job_id返回`no_job=true`且不发远端命令。保留已有科学状态；SSH/bkill或落库失败明确报错。重新提交仅查询实际目标目录当前活跃作业，不先对账历史记录；**高风险** |
 | 作业 | `POST /jobs/tasks/{id}/archive` · `/unarchive` | 归档/重开（自由能主任务连带 frac） |
 | 作业 | `POST /jobs/tasks/{id}/build-ele-inputs` | ele 输入（`{source_type:"opt"/"external", source_task_id?, ...}`） |
 | 作业 | `POST /jobs/tasks/{id}/create-diff-charge` | **差分电荷分块计算**（ele 附属，v0.9.44）：`{blocks:[{label,atoms}], incar_params?}` → 见 §4.2 ④b |
@@ -976,7 +976,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 当前M0可保存计划和预览资源，尚未接通整轮候选仲裁、运行中异常分流和自动执行。单OPT也不是跨任务科研工作流，具体适用/停止条件见 [执行](docs/execution.md) 与 [托管](docs/managed-compute.md)。
 
-动作成功不等于计算收敛；bsub结果未知先对账，人工停止区分bkill接受请求与LSF确认退出，等待确认期间保留作业身份和停止标记，停止不代表科学收敛，再提交仍须通过实时活跃检查。调用方须同时看HTTP、业务状态和记录身份。
+动作成功不等于计算收敛；bsub结果未知先对账，人工停止按bkill成功回执直接更新本地状态，停止不代表科学收敛，再提交仅按实际目标目录检查当前活跃作业。调用方须同时看HTTP、业务状态和记录身份。
 
 ## 6. 维护约定
 
@@ -1093,7 +1093,7 @@ python3 scripts/log_error_case.py --project FS_Kaolin --task task_1789455573013_
 
 ## 旧作业历史缺失的人工处理（2026-10-20）
 
-2026-10-22人工停止补充：指定job的bkill明确返回`No matching job found`/`No job found`也按幂等停止收尾，返回`job_not_found=true`、`confirmed_by=bkill_not_found`。清理本地运行状态和对应预留，台账记`NOT_FOUND`，不记科学完成。带job前缀的回执须匹配请求ID；SSH、权限、命令失败仍报错且保留状态。接受终止请求时单次查询当前LSF；已结束/不存在的明确回执直接收尾，不额外轮询。后续提交与续算仍实时检查活跃作业。
+2026-10-22人工停止补充：指定job的bkill明确返回`No matching job found`/`No job found`也按幂等停止收尾，返回`job_not_found=true`、`confirmed_by=bkill_not_found`。清理本地运行状态和对应预留，台账记`NOT_FOUND`，不记科学完成。带job前缀的回执须匹配请求ID；SSH、权限、命令失败仍报错且保留状态。所有停止成功回执均直接收尾，不追加LSF查询。后续提交按实际目标目录实时检查活跃作业。
 
 - `GET /api/agent-execution/tasks/{task_id}/prior-job`：项目owner/admin/已有归属Agent只读，返回当前LSF状态、task族阻塞、可确认标志、身份review_fingerprint、固定旧job_id.out回执摘要和建议核实依据。只在报错弹窗打开时查询，无定时轮询。读取任务根目录/最多100个conN目录的最多3份定名回执，每份只取头尾有界文本；回执不直接提供执行授权。
 - `POST /api/agent-execution/tasks/{task_id}/prior-job/confirm-finished`：仅人工owner/admin，必须四字段 `{confirmed_finished:true, expected_job_id, review_fingerprint, evidence}`。核实依据20–4000字，确认时重查LSF并检查任务族锁、旧job ID/服务器签名/目录/归属未变化、无未完成或UNKNOWN动作；活跃或未知目录/LSF失败一律拒绝。写原agent_execution台账和严格审计，不改job_id、科学状态、预算开关，不提交/续算远端。

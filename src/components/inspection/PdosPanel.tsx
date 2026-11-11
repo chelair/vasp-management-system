@@ -3,7 +3,7 @@
  * 「电子结构分析」一级标签页里 —— 用户口径："PDOS 放到巡检的一级菜单中，切到那个加载那个"）。
  *
  * 链路：面板挂载 → 查一次本地状态（快）→
- *   · 已有整合数据：先给"上次分析"小结，点「查看图表」才画（不拖慢详情打开）；
+ *   · 已有整合数据：自动读取本地结果并展示图表；
  *   · 没有：给「开始分析」按钮 → 后端异步跑远端 vaspkit（整合数据回传本地）→ 轮询 → 出图。
  * 图表：三级轨道菜单（悬浮卡片）/ ECharts 折线；横轴相对费米能级、零点竖直虚线；
  * 自旋默认镜像布局（up 上 / down 下）、up 实线 down 虚线；底部 E_F + 范围 + 重置 + 导出 + 重新分析。
@@ -48,9 +48,10 @@ export default function PdosPanel({ taskId, taskName }: Props) {
 
   const [view, setView] = useState<PdosView | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
-  /** 有数据但还没点「查看图表」：先只显示小结，避免一进详情就加载 1MB+ 数据并画图 */
+  /** 已有结果读取失败时，保留手动重试入口。 */
   const [hasData, setHasData] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const [loadingData, setLoadingData] = useState(false);
   const [error, setError] = useState('');
   const [checkedKeys, setCheckedKeys] = useState<string[]>(['total']);
   const [mirror, setMirror] = useState(true);
@@ -133,7 +134,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
   );
 
   // 面板挂载（= 切到这个标签页）：先查一次本地状态（很快，纯本地）
-  //   · 已有数据 → 只显示"上次分析"小结，点「查看图表」才拉数据画图；
+  //   · 已有数据 → 自动读取本地结果并画图；
   //   · 上次失败 → 直接把原因摆出来等用户点重试（不自动重跑，别反复占远端算力）；
   //   · 没有 → 显示「开始分析」按钮等用户点。
   useEffect(() => {
@@ -146,7 +147,14 @@ export default function PdosPanel({ taskId, taskName }: Props) {
         if (cancelled) return;
         if (st.has_data) {
           setHasData(true);
-          setStatus('idle');
+          setLoadingData(true);
+          try {
+            await loadData();
+          } catch (e) {
+            if (!cancelled) message.error(e instanceof Error ? e.message : '读取 PDOS 数据失败');
+          } finally {
+            if (!cancelled) setLoadingData(false);
+          }
           return;
         }
         setHasData(false);
@@ -291,8 +299,9 @@ export default function PdosPanel({ taskId, taskName }: Props) {
             </div>
           </div>
         )}
-        {/* 已有数据但还没点「查看图表」：只给小结 + 按钮，不加载数据也不画图 */}
-        {showChart === false && hasData && status === 'idle' && (
+        {loadingData && <Spin tip="正在加载 PDOS 结果…"><div style={{ minHeight: 100 }} /></Spin>}
+        {/* 读取失败后可手动重试。 */}
+        {!loadingData && showChart === false && hasData && status === 'idle' && (
           <div className="pdos-empty">
             <p>该任务已有 PDOS 分析结果。</p>
             <div className="pdos-empty__actions">
@@ -321,7 +330,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
               </Button>
             </div>
             <p className="pdos-menu__hint">
-              点「查看图表」再拉取数据并渲染（约 1–2 MB），避免拖慢详情打开速度
+              读取已有结果失败，可点击「查看图表」重试。
             </p>
           </div>
         )}
@@ -428,7 +437,7 @@ export default function PdosPanel({ taskId, taskName }: Props) {
             )}
           </div>
         )}
-        {/* 没有数据时才给「开始分析」—— 注意要排除"已有结果但还没点查看图表"那种情况（上面那块） */}
+        {/* 没有数据时才给「开始分析」。 */}
         {status === 'idle' && !view && !hasData && (
           <div className="pdos-empty">
             <p>该任务还没有 PDOS 分析结果。</p>

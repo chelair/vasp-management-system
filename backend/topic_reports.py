@@ -38,6 +38,10 @@ SECTIONS = [('question','研究问题'),('methods','方法及性质定义'),('so
             ('analysis','对比分析'),('discussion','讨论'),('gaps','数据缺口与局限性'),('conclusion','结论')]
 
 
+class FactCitationError(ValueError):
+    pass
+
+
 class RevisionConflict(ValueError):
     def __init__(self,current):
         self.current=current
@@ -284,20 +288,21 @@ def validate_text(text,doc):
     if not isinstance(text,str) or not text.strip() or len(text)>4000:raise ValueError('单段文字必须是1至4000字符')
     facts={f['fact_id']:f for f in doc['data']['facts']}
     cited=re.findall(r'\[\[?(F\d+)\]?\]',text)
-    if any(key not in facts for key in cited):raise ValueError('文字引用了不存在的可信数值')
+    if any(key not in facts for key in cited):raise FactCitationError('文字引用了不存在的可信数值，请使用facts中已有的事实引用[[Fxx]]')
     if any(facts[key]['validation_status'] not in ('AVAILABLE','CONDITIONAL','PRELIMINARY') for key in cited):raise ValueError('未通过校验的原始数值仅可在来源表追溯，不能作为科研段落的数值结论')
     remainder=re.sub(r'\[\[?F\d+\]?\]','',text)
     # Model names/chemical formulas and orbital labels are identifiers, not
     # numerical results. Quantities must use [[Fxx]], expanded only by Python.
     for target in doc['request']['model_queries']:remainder=remainder.replace(target,'')
     remainder=re.sub(
-        r'(?:模型|(?i:model))\s*\d+(?:\s*(?:[、,，/与和及~～–—-]|至|到)\s*(?:(?:模型|(?i:model))\s*)?\d+)*'
+        r'(?:模型|路径|(?i:model|path))\s*\d+(?:\s*(?:[、,，/与和及~～–—-]|至|到)\s*(?:(?:模型|路径|(?i:model|path))\s*)?\d+)*'
         r'(?!\d|\.\d|\s*(?:eV|meV|Ha|Ry|Å|%))',
         '',remainder)
     remainder=re.sub(r'(?m)^\s*(?:\d+[.)、）]|[（(]\d+[)）])\s+','',remainder)
     remainder=re.sub(r'\b[1-7][spdf]\b','',remainder)
-    if re.search(r'(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?',remainder) or re.search(r'[零一二三四五六七八九十百千万点]+\s*(?:eV|电子伏|伏特|埃|Å)',remainder):
-        raise ValueError('生成文字包含未关联报告事实的数值，尚未写入报告，请重新处理批注')
+    uncited=re.search(r'(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?',remainder) or re.search(r'[零一二三四五六七八九十百千万点]+\s*(?:eV|电子伏|伏特|埃|Å)',remainder)
+    if uncited:
+        raise FactCitationError(f'生成文字包含未关联报告事实的数值“{uncited[0]}”，尚未写入报告；结果数值须使用对应事实引用[[Fxx]]')
     if re.search(r'(?:E_f|E_ads|delta_E|ΔE|E_a|μ_O)\s*=',remainder):raise ValueError('性质公式由注册配方提供，文字不得自定义替代公式')
     return text
 

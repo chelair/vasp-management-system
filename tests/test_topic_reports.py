@@ -169,6 +169,16 @@ class TopicTests(unittest.TestCase):
                      '模型12 eV。','模型1、2、3、4的结果为 [[F99]]。','1. 迁移能垒为1.23 eV。'):
             with self.subTest(text=text),self.assertRaises(ValueError):self.topics.validate_text(text,doc)
 
+    def test_path_identifiers_do_not_bypass_result_citations(self):
+        doc=self.prepare()
+        for text in ('路径1和2的势垒分别为 [[F01]]。','PATH1和2的比较。',
+                     'PATH12、PATH13的结果为 [[F01]]。','路径1–4的对比。'):
+            with self.subTest(text=text):self.assertEqual(self.topics.validate_text(text,doc),text)
+        for text in ('路径1和2的势垒为0.7391 eV。','路径12 eV。','PATH1.23 eV。',
+                     'PATH1和2的结果为 [[F99]]。','路径1的势垒降低了2倍。'):
+            with self.subTest(text=text),self.assertRaises(self.topics.FactCitationError):
+                self.topics.validate_text(text,doc)
+
     def test_unrelated_missing_and_forged_blocks_rejected(self):
         doc=self.prepare()
         bad={'block_id':'blk_wrong','reason':'无关资源','section':'results','order':0,'essential':True}

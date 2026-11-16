@@ -92,6 +92,110 @@ class ReportReviewTests(fixture.ReportAINotesTests):
         self.assertEqual(store.read_edits('rpt_p')['review']['content'],before['review']['content'])
         self.assertEqual(store.load_report('rpt_p')[0],self.original)
 
+    def test_review_path_barrier_comparison_saves_and_exports(self):
+        self.doc['science']['neb']=[{'task_id':'n1','task_name':'PATH1_neb','barrier_ev':.7391},
+                                    {'task_id':'n2','task_name':'PATH2_neb','barrier_ev':3.6625}]
+        self.doc['markdown_sections'][0]['markdown']+='\n### NEB 过渡态\n\n#### PATH1_neb\n\n已有路径\n\n#### PATH2_neb\n\n已有路径\n'
+        store.save_report(self.doc,'neb comparison',{})
+        original=copy.deepcopy(self.doc)
+        state,module=self.comment('NEB 过渡态','帮我对比下PATH1和2的势垒')
+        barriers={f['value']:fid for fid,f in review.facts(self.doc).items() if f['field']=='barrier_ev'}
+        self.plan([{'kind':'card','target':module['key'],'title':'路径1和2的势垒比较',
+                    'text':'PATH1和2的势垒分别为 0.7391 eV 和 3.6625 eV，前者更低。'}])
+        count=len(fixture.REQUESTS)
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(len(fixture.REQUESTS)-count,1)
+        for endpoint in ('markdown','export.html','export.html?print=1'):
+            text=self.client.get('/api/reports/project/rpt_p/'+endpoint).text
+            for expected in ('路径1和2的势垒比较','0.7391 eV','3.6625 eV'):
+                self.assertIn(expected,text)
+        self.assertEqual(store.load_report('rpt_p')[0],original)
+        history=store.read_edits('rpt_p')['review']['history'][-1]
+        self.assertIn(f"[[{barriers[.7391]}]]",history['actions'][0]['text'])
+        self.assertIn(f"[[{barriers[3.6625]}]]",history['actions'][0]['text'])
+
+    def test_review_exact_quantity_binding_requires_unit_and_unique_source(self):
+        values={'F01':{'value':.7391,'units':'eV'},'F02':{'value':3.6625,'units':'eV'},
+                'F03':{'value':-10.,'units':'eV'},'F04':{'value':-10.,'units':'eV'}}
+        from topic_reports import validate_text,FactCitationError
+        validation={'data':{'facts':[{'fact_id':fid,'validation_status':'AVAILABLE'} for fid in values]},
+                    'request':{'model_queries':[]}}
+        for text,expected in (('势垒为0.739100 eV。','势垒为[[F01]]。'),
+                              ('势垒为7.391e-1 电子伏。','势垒为[[F01]]。'),
+                              ('能量为−10.0 eV [F03]。','能量为[[F03]]。')):
+            with self.subTest(text=text):
+                bound=review.bind_text_facts(text,values)
+                self.assertEqual(bound,expected)
+                self.assertEqual(validate_text(bound,validation),expected)
+        for text in ('未知数值为0.739 eV。','势垒为0.7391 meV。','势垒为0.7391。',
+                     '来源含糊的能量为-10.0 eV。','值与来源冲突0.7391 eV [F02]。',
+                     '失效引用0.7391 eV [F99]。','符号不符-0.7391 eV。','不是能量0.7391 eV/Å。'):
+            with self.subTest(text=text),self.assertRaises(FactCitationError):
+                validate_text(review.bind_text_facts(text,values),validation)
+
+    def test_review_uncited_number_is_corrected_once_without_partial_writes(self):
+        import json
+        state,module=self.comment()
+        fid=next(iter(review.facts(self.doc)))
+        attempts=[]
+        def response(context):
+            attempts.append(context)
+            if len(attempts)==1:
+                actions=[{'kind':'text','target':module['key'],'text':'这份失败草稿不能留下。'},
+                         {'kind':'card','target':module['key'],'title':'已有能量','text':'结果为 999.123 eV。'}]
+            else:
+                self.assertEqual(store.read_edits('rpt_p')['review']['content'],{})
+                actions=[{'kind':'card','target':module['key'],'title':'已有能量','text':f'已有能量为 [[{fid}]]。'}]
+            return {'reply':'已处理','status':'done','actions':actions}
+        fixture.REVIEW_RESULT=response
+        result=self.process_comment(state)
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(len(attempts),2)
+        messages=fixture.REQUESTS[-1]['messages']
+        self.assertIn('999.123',messages[-1]['content'])
+        self.assertIn('[[Fxx]]',messages[-1]['content'])
+        self.assertEqual(json.loads(messages[1]['content'])['facts'],attempts[0]['facts'])
+        saved=store.read_edits('rpt_p')['review']
+        self.assertEqual(len(saved['history']),1)
+        self.assertTrue(saved['history'][0]['citation_repaired'])
+        self.assertEqual(len(saved['content'][module['key']]['elements']),1)
+        text=export_markdown(review.effective(self.doc))
+        self.assertNotIn('这份失败草稿不能留下',text)
+        self.assertIn('-10.0 eV',text)
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+
+    def test_review_failed_correction_stops_at_two_and_preserves_comment(self):
+        state,module=self.comment()
+        before=store.read_edits('rpt_p')
+        self.plan([{'kind':'text','target':module['key'],'text':'结果为999.123 eV。'}])
+        count=len(fixture.REQUESTS)
+        response=self.process_comment(state)
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertIn('999.123',response.text)
+        self.assertEqual(len(fixture.REQUESTS)-count,2)
+        self.assertEqual(store.read_edits('rpt_p'),before)
+        self.assertEqual(store.load_report('rpt_p')[0],self.original)
+
+    def test_review_report_change_during_correction_is_not_overwritten(self):
+        state,module=self.comment()
+        attempts=[]
+        def response(context):
+            attempts.append(context)
+            if len(attempts)==2:
+                current=store.read_edits('rpt_p')
+                store.save_review('rpt_p',{**current['review'],'content':{module['key']:{'summary':'用户后来补充的内容'}}},store.note_revision(current))
+            return {'reply':'已处理','status':'done','actions':[{'kind':'text','target':module['key'],
+                     'text':'结果为999.123 eV。' if len(attempts)==1 else '已有结果。'}]}
+        fixture.REVIEW_RESULT=response
+        result=self.process_comment(state)
+        self.assertEqual(result.status_code,409,result.text)
+        self.assertEqual(len(attempts),2)
+        saved=store.read_edits('rpt_p')['review']
+        self.assertEqual(saved['content'][module['key']]['summary'],'用户后来补充的内容')
+        self.assertEqual(saved['comments'][0]['status'],'open')
+        self.assertFalse(saved.get('history'))
+
     def test_review_pdos_new_integration_or_using_band_center_as_total_energy_is_rejected(self):
         self.analysis_report()
         state,module=self.comment('PDOS · 态密度（PDOS）','计算新的能窗和轨道积分')

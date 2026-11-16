@@ -1,5 +1,6 @@
 """Scoped report comments and presentation edits over the saved report snapshot."""
 import copy
+from decimal import Decimal
 import json
 import re
 import uuid
@@ -18,7 +19,7 @@ PROMPT = '''你是报告局部编辑助手，只执行本次批注和用户回�
 仅返回 {"reply":"一句执行确认或一个具体缺口问题（不超过200字）", "status":"done或blocked", "actions":[...]}。
 不要默认科研审查、Results/Discussion、NEB/PDOS汇总或补算建议；科学分析由用户主动另行触发。
 用户在批注主动要求态密度、NEB、自由能、Bader或功函数分析时，使用analysis_evidence中的已保存摘要及facts完成指定范围的解释/比较，用card或text写入报告。已有带中心/功函数/能垒等只读事实可直接引用，不需要新建calculate配方；没有提供的峰形、带隙、杂化/电荷转移机制不能凭摘要断言。新能窗/新轨道积分缺数据时准确说明缺口，不重跑HPC。
-模型编号及“模型1–4”“模型1、2、3、4”等指代可直接写。能量、能垒、带中心等结果数值必须使用对应[[Fxx]]，不要自行填写差值、倍数或把带中心解释为电导率。
+模型、路径编号及“模型1–4”“路径1和2”“PATH1、PATH2”等指代可直接写。能量、能垒、带中心等结果数值优先使用对应[[Fxx]]；原样引用已有数值须保留单位，由后端匹配唯一事实。差值、倍数等派生数值只能由已支持的Python配方产生，不能自行填写，也不能把带中心解释为电导率。
 动作：
 {"kind":"text","target":"模块key","text":"局部补充，数值使用[[Fxx]]事实引用"}；
 {"kind":"order","target":"模块key","children":["全部直接子模块key，按新顺序"]}；
@@ -361,6 +362,25 @@ def update(report_id,user,payload):
     return view(doc)
 
 
+_QUANTITY = re.compile(
+    r'(?<![A-Za-z_\d.])([-+−]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?)'
+    r'\s*(eV|电子伏特|电子伏|e)(?![A-Za-z/])(?:\s*\[\[?(F\d+)\]?\])?')
+
+
+def bind_text_facts(text,values):
+    # Exact quantities only: rounding and ambiguous sources go back to the model.
+    def replace(match):
+        value=Decimal(match[1].replace('−','-'))
+        units='eV' if match[2] in ('电子伏','电子伏特') else match[2]
+        candidates=[fid for fid,fact in values.items()
+                    if fact['units']==units and Decimal(str(fact['value']))==value]
+        cited=match[3]
+        if cited:
+            return f'[[{cited}]]' if cited in candidates else match[0]
+        return f'[[{candidates[0]}]]' if len(candidates)==1 else match[0]
+    return _QUANTITY.sub(replace,text)
+
+
 def apply_actions(doc,review,comment,actions,notify=None):
     from topic_reports import validate_text
     from report_review_elements import calculate, SUPPORTED, FORMULAS, MissingCalculation, presentation
@@ -375,11 +395,14 @@ def apply_actions(doc,review,comment,actions,notify=None):
     apply_structure_selection(copy.deepcopy(doc),nodes,content)
     catalog=element_catalog(nodes,content)
     gaps=[];applied=0;calculations=0
-    def validated(text):
+    def validated(action,field='text'):
+        text=action.get(field)
         if not isinstance(text,str) or not text.strip() or len(text)>10000 or re.search(r'@\[|!\[|\]\(|^\s*#|<',text,re.M):
             raise ValueError('文字不能包含组件、HTML、图片、链接或新增标题')
+        text=bind_text_facts(text,values)
         validation={'data':{'facts':[{'fact_id':k,'validation_status':'AVAILABLE'} for k in values]},'request':{'model_queries':[n['title'] for n in nodes.values()]}}
         validate_text(text,validation)
+        action[field]=text
         return re.sub(r'\[\[?(F\d+)\]?\]',lambda m:str(values[m[1]]['value'])+' '+values[m[1]]['units'],text)
     for index,action in enumerate(actions):
         if not isinstance(action,dict) or action.get('target') not in scope:raise ValueError('AI修改超出批注所在模块')
@@ -393,11 +416,11 @@ def apply_actions(doc,review,comment,actions,notify=None):
         element=None
         if kind=='text':
             if set(action)!={'kind','target','text'}:raise ValueError('文字修改字段无效')
-            element={'type':'text','text':validated(action['text'])}
+            element={'type':'text','text':validated(action)}
             change.get('texts',{}).pop(comment['id'],None)
         elif kind=='card':
             if set(action)-{'kind','target','title','text','presentation'}:raise ValueError('摘要卡片字段无效')
-            element={'type':'callout','title':validated(action.get('title')),'text':validated(action.get('text')),
+            element={'type':'callout','title':validated(action,'title'),'text':validated(action),
                      'presentation':presentation(action.get('presentation',{}))}
         elif kind=='presentation':
             if set(action)!={'kind','target','element_id','presentation'}:raise ValueError('卡片展示字段无效')
@@ -450,7 +473,7 @@ def apply_actions(doc,review,comment,actions,notify=None):
                 if 'text' in action:raise ValueError('删除元素不需要文字')
                 edit={'deleted':True}
             else:
-                text=validated(action.get('text'))
+                text=validated(action)
                 if old['type']=='original':
                     if operation=='append':text=old['text']+'\n\n'+text
                     edit={'text':text,'deleted':False}
@@ -506,34 +529,46 @@ def process(report_id,user,comment_id,revision,connection_id,control):
         if len(json.dumps(context,ensure_ascii=False))>100000:raise ValueError('本报告内容过多，请缩小到具体模块处理')
         control.activity(f'已整理 {len(context["facts"])} 项报告数据，保留原图表与结构')
         control.activity('正在根据批注拟定局部修改')
-        result,model=ai.service.readonly_json_completion(owner,connection_id,[{'role':'system','content':PROMPT},{'role':'user','content':json.dumps(context,ensure_ascii=False)}],control)
-        control.activity('已收到修改方案，正在核对范围与数据引用')
-        if not isinstance(result,dict) or set(result)!={'reply','status','actions'} or result['status'] not in ('done','blocked') or not isinstance(result['reply'],str) or not result['reply'].strip() or len(result['reply'])>400:raise ValueError('AI批注处理结果格式无效')
-        if not isinstance(result['actions'],list) or len(result['actions'])>20:raise ValueError('一次最多处理20项报告修改')
-        if result['status']=='done' and not result['actions']:raise ValueError('AI没有返回实际修改，批注仍待处理')
-        control.check()
-        with store._notes_lock:
-            current,project,current_edits=snapshot(report_id,user)
-            if source(current)!=source(doc) or store.note_revision(current_edits)!=revision:raise ReviewConflict('生成期间报告已变化，修改未写入，请刷新后重试')
-            if project.get('ai_report_notes_enabled') is not True:raise ValueError('AI批注处理已关闭，修改未写入')
-            review=copy.deepcopy(edits['review'])
-            outcome=apply_actions(current,review,comment,result['actions'],control.activity)
-            if outcome['gaps']:
-                result['status']='blocked';result['reply']=outcome['gaps'][0]
-                if outcome['applied']:result['reply']='已保留能完成的修改。'+result['reply']
-            elif outcome['calculations'] and result['status']=='done':
-                result['reply']=f'已在指定模块添加计算卡片，包含 {outcome["calculations"]} 组结果、公式及能量来源。'
-            elif result['status']=='done':
-                result['reply']=f'已在指定模块完成 {outcome["applied"]} 项修改。'
-            review.setdefault('history',[]).append({'comment_id':comment_id,'created_at':now_iso(),'model':model,
-                'revision':revision,'actions':copy.deepcopy(result['actions']),'before_content':copy.deepcopy(edits['review'].get('content',{}))})
-            saved=next(c for c in review['comments'] if c['id']==comment_id)
-            saved['status']=result['status'];saved['replies'].append({'text':result['reply'],'author':'AI','model':model,'created_at':now_iso()})
-            before=effective(current,current_edits)
-            after=effective(current,{**current_edits,'review':review})
-            hidden=store._remap_hidden_figures(before,after,current_edits['hidden_elements'])
-            control.activity('正在保存报告修改与处理结果')
-            control.check();store.save_review(report_id,rebase(current,review),revision,hidden_elements=hidden)
-            return view(current)
+        from topic_reports import FactCitationError
+        messages=[{'role':'system','content':PROMPT},{'role':'user','content':json.dumps(context,ensure_ascii=False)}]
+        for attempt in range(2):
+            result,model=ai.service.readonly_json_completion(owner,connection_id,messages,control)
+            control.activity('已收到修改方案，正在核对范围与数据引用')
+            if not isinstance(result,dict) or set(result)!={'reply','status','actions'} or result['status'] not in ('done','blocked') or not isinstance(result['reply'],str) or not result['reply'].strip() or len(result['reply'])>400:raise ValueError('AI批注处理结果格式无效')
+            if not isinstance(result['actions'],list) or len(result['actions'])>20:raise ValueError('一次最多处理20项报告修改')
+            if result['status']=='done' and not result['actions']:raise ValueError('AI没有返回实际修改，批注仍待处理')
+            control.check()
+            with store._notes_lock:
+                current,project,current_edits=snapshot(report_id,user)
+                if source(current)!=source(doc) or store.note_revision(current_edits)!=revision:raise ReviewConflict('生成期间报告已变化，修改未写入，请刷新后重试')
+                if project.get('ai_report_notes_enabled') is not True:raise ValueError('AI批注处理已关闭，修改未写入')
+                review=copy.deepcopy(edits['review'])
+                try:
+                    outcome=apply_actions(current,review,comment,result['actions'],control.activity)
+                except FactCitationError as exc:
+                    if attempt:raise
+                    correction=str(exc)
+                else:
+                    if outcome['gaps']:
+                        result['status']='blocked';result['reply']=outcome['gaps'][0]
+                        if outcome['applied']:result['reply']='已保留能完成的修改。'+result['reply']
+                    elif outcome['calculations'] and result['status']=='done':
+                        result['reply']=f'已在指定模块添加计算卡片，包含 {outcome["calculations"]} 组结果、公式及能量来源。'
+                    elif result['status']=='done':
+                        result['reply']=f'已在指定模块完成 {outcome["applied"]} 项修改。'
+                    review.setdefault('history',[]).append({'comment_id':comment_id,'created_at':now_iso(),'model':model,
+                        'revision':revision,'citation_repaired':bool(attempt),'actions':copy.deepcopy(result['actions']),'before_content':copy.deepcopy(edits['review'].get('content',{}))})
+                    saved=next(c for c in review['comments'] if c['id']==comment_id)
+                    saved['status']=result['status'];saved['replies'].append({'text':result['reply'],'author':'AI','model':model,'created_at':now_iso()})
+                    before=effective(current,current_edits)
+                    after=effective(current,{**current_edits,'review':review})
+                    hidden=store._remap_hidden_figures(before,after,current_edits['hidden_elements'])
+                    control.activity('正在保存报告修改与处理结果')
+                    control.check();store.save_review(report_id,rebase(current,review),revision,hidden_elements=hidden)
+                    return view(current)
+            control.check()
+            control.activity('正在自动纠正数据引用，原报告尚未改动')
+            messages.extend([{'role':'assistant','content':json.dumps(result,ensure_ascii=False)},
+                             {'role':'user','content':'上一个方案未写入报告。校验错误：'+correction+'。请仅纠正数据引用并返回完整JSON方案；使用facts中对应的[[Fxx]]，不得删去用户要求的比较、编造来源或自行计算差值/倍数。'}])
     finally:
         with ai._busy_lock:ai._busy.discard(owner)

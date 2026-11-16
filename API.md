@@ -104,7 +104,7 @@ NEB同组尚无迭代步或映像能量/相对能量/受力数据时，`science.
 
 批注内部action支持text/order/structures/calculate/formula/sources/edit，以及card/presentation/layout。card接收title/text和可选presentation，添加摘要/说明卡；presentation接收element_id及展示设置（layout=cards/table/compact、accent=blue/teal/violet、show_sources布尔、show_warnings布尔），calculate也可带同样设置；layout接收columns=1/2/3、可选elements（本模块全部未删除卡片ID的顺序），不能跨模块挪用。展示设置不能携带公式/结果，默认隐藏核实提示并保留底层警告和检查，来源默认显示；现有卡片即读即升级，HTML/PDF同款、手机单栏。calculate仅接受注册支持的`relative_energy`（reference/model事实）、`adsorption.estimate`（complex/surface/adsorbate事实）或`oxygen_vacancy.neutral_single`（inputs.oxygen事实，targets[{label,pristine,defect}]）。后者核对冻结CIF实际单O组成差，用户明确O₂能量除2、每O化学势直接采用，最新明确参考优先，同报告先前批注的用户氧参考可沿用，短回复从明确用户来源继承单位/角色并留原话和上下文；模型上下文含oxygen_references[{fact_id,value_ev,reference_kind}]。已知用户参考先于模型氧引用解析，禁止凭AI旧回复生成能量事实；缺必要结构/能量、已知带电或组成不符只阻止对应组。模型不提供公式或结果数值。edit携带element_id/operation=replace|append|delete，局限于目标模块；卡片replace改标题、append补说明、delete删展示。结果PRELIMINARY，原话在来源审计保留，导出只展示给定值与单位；成功回复由后端生成一句确认，模型回复最多400字符。
 
-批注和专题正文允许模型编号（如模型1234、模型1–4、模型1、2、3、4）及行首列表编号，标题适用同一规则；计算结果数值仍须绑定有效事实引用。未引用数值或失效引用拒绝写入，保留原报告和批注状态。
+批注和专题正文允许模型/路径编号（如模型1234、模型1–4、PATH1和2、路径1、2）及行首列表编号，标题适用同一规则。批注text/card/edit中的数值与单位若精确且唯一对应冻结事实，后端先规范为[[Fxx]]再校验/展开；已有显式引用也须与数值一致。无单位、舍入、来源歧义或单位不符不自动绑定。未绑定数值或失效引用在同次批注处理内携原方案和具体错误向所选模型纠正一次；仍失败拒绝全部候选写入，保留原报告和批注状态，普通连接/范围错误不自动重试。成功history.actions保留规范化引用，history.citation_repaired记录是否纠正；沿用report_activity、取消和版本冲突检查。详见[事实绑定](docs/reports.md#完整报告模块批注)。
 
 ## 完整项目报告自由排版
 

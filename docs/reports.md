@@ -74,7 +74,7 @@ R2 schema `r2.1.0`，实现于 `backend/report_blocks.py`、`report_block_scienc
 
 HTML内嵌已有CIF结构数据，优化结构、中间体、Bader结构及NEB映像的3D工具栏提供“导出 CIF”。导出当前选中的初始/优化后结构、中间体或映像，文件名保留模型/结构版本或映像编号；直接保存内嵌CIF原文，不添加表格用BOM、不重新生成结构、不访问服务器，客户离线打开HTML即可下载。旧HTML需重新导出后获得该按钮。
 
-`src/interactive/reportRuntime.ts` 打包为 `dist/report/report-interactive.js`，由后端内联。部署需一并携带本地 3Dmol 和运行时；缺运行时允许静态降级，不声称交互完整。3D 需要 WebGL，PDF 以已有 PNG/静态图为准，缺图不生成假结构。
+`src/interactive/reportRuntime.ts` 打包为 `dist/report/report-interactive.js`，由后端内联。构建使用 `npm run build:report-runtime -- /tmp/vasp-release/report/report-interactive.js`，与完整构建共用自动JSX转换设置；NEB含React组件，不能用遗漏此设置的裸esbuild产物替换。发布后需实际用浏览器打开离线HTML核对NEB结构，不能只查数据和挂点存在。部署需一并携带本地 3Dmol 和运行时；缺运行时允许静态降级，不声称交互完整。3D 需要 WebGL，PDF 以已有 PNG/静态图为准，缺图不生成假结构。
 
 所有模型/用户文字转义或用现有安全 Markdown/SVG 路径，禁止模型生成任意 HTML/JS 组件。导出不携带被隐藏/删除块的独占证据。
 

@@ -1,8 +1,10 @@
 # 当前状态、接手与运维
 
-维护日期：2026-11-16。应用版本 **1.1.4**（package.json），完整报告 schema 1.2.0、R2 schema r2.1.0 是独立版本体系。长期准则见 [AGENTS](AGENTS.md)，重要发布结果见 [变更摘要](docs/changelog.md)，完整历史查 Git。
+维护日期：2026-11-17。应用版本 **1.1.4**（package.json），完整报告 schema 1.2.0、R2 schema r2.1.0 是独立版本体系。长期准则见 [AGENTS](AGENTS.md)，重要发布结果见 [变更摘要](docs/changelog.md)，完整历史查 Git。
 
 ## 当前状态
+
+- 2026-11-17 修复离线HTML的NEB 3D空白：已保存CIF和挂点完整，旧发布命令遗漏自动JSX转换，导致导出运行时报“React is not defined”。报告构建脚本支持指定临时输出，发布指令和NEB浏览器回归统一使用该脚本。组合/专题离线浏览器回归通过；用rpt_proj_1792162930753实际快照验证两条路径的3D、映像切换、原文CIF下载及已有批注卡片，无页面错误和网络请求。已仅原子更新报告运行时，发布文件与已验证产物hash一致，health通过；后端未重启，报告/注解/批注hash未变，未调用模型或操作HPC。重新导出即可获得修复；旧下载文件需替换。
 
 - 2026-11-16 修复批注过度依赖模型引用格式：已有数值+单位由后端精确匹配唯一冻结事实并规范为引用，路径编号单独识别；来源歧义/未知值不猜测，同次处理最多向模型纠正一次具体引用错误，失败无部分写入。78项批注/专题隔离测试通过（HTTP/模型Mock），覆盖原样数值、单位/符号/精度/来源冲突、自动纠正、两次失败及纠正期间版本变化；当前Li3lnCl6_InCI6快照的三种输出写法在内存核对通过，生产报告和批注未改。已仅重启原后端发布，health、报告页入口及两项私有API鉴权通过，原报告/批注hash不变；未调用付费模型或操作HPC。规则和观察字段见[报告批注](docs/reports.md#完整报告模块批注)。
 
@@ -180,8 +182,10 @@ curl -fsS http://127.0.0.1:3001/api/health
 ```bash
 npm run typecheck
 npx vite build --outDir /tmp/vasp-release
-npx esbuild src/interactive/reportRuntime.ts --bundle --minify --format=iife --target=es2019 --platform=browser --outfile=/tmp/vasp-release/report/report-interactive.js
+npm run build:report-runtime -- /tmp/vasp-release/report/report-interactive.js
 ```
+
+报告运行时统一使用上述脚本构建（含自动JSX转换），不要改用裸esbuild命令；NEB含React组件，遗漏转换会在离线HTML中报“React is not defined”。仅改报告运行时可只构建/发布该文件，无需重建站内页面。
 
 3. 授权发布时复制新资源，保留旧hash资源，一并携带本地3Dmol与report runtime，最后原子切换index。`npm run build`默认直接写dist，只能在确实要切换产物的发布环境使用。
 4. 后端有变更时重启原服务；用户明确要求完整重启时按要求执行。仅静态变更不需要启动第二个后端。权限不足如实说明，不创建并行writer绕过。

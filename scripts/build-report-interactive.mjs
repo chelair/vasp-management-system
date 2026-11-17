@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const outfile = resolve(root, 'dist/report/report-interactive.js');
+const outfile = resolve(root, process.argv[2] ?? 'dist/report/report-interactive.js');
 
 mkdirSync(dirname(outfile), { recursive: true });
 

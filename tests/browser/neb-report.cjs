@@ -1,5 +1,4 @@
 // Frozen fixture and actual report runtime, including offline HTML and real WebGL.
-const {build}=require('esbuild');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright-core');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
 const {execFileSync}=require('node:child_process');
@@ -10,7 +9,7 @@ const {execFileSync}=require('node:child_process');
   let prefix=process.env.NEB_PREVIEW_PREFIX;
   if(!prefix){
    const runtime=path.join(temp,'runtime.js');prefix=path.join(temp,'preview');
-   await build({entryPoints:['src/interactive/reportRuntime.ts'],bundle:true,minify:true,jsx:'automatic',format:'iife',outfile:runtime,define:{'process.env.NODE_ENV':'"production"'}});
+   execFileSync(process.execPath,['scripts/build-report-interactive.mjs',runtime],{stdio:'pipe'});
    execFileSync('.venv/bin/python',['-c',`import sys
 sys.path[:0]=['tests','backend']
 from test_report_neb import ReportNebTests

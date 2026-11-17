@@ -25,8 +25,8 @@ interface Props {
   copyDefaultProjectId?: string;
   /** 输入文件状态：POSCAR/CONTCAR 的 CIF 与结构摘要都来自这里 */
   input: TaskInputState | null;
-  onImport: (content: string) => void;
-  onCopyFromTask: (taskId: string) => void;
+  onImport: (content: string) => Promise<boolean>;
+  onCopyFromTask: (taskId: string) => Promise<boolean>;
   /** 远端文件变化（上传 POSCAR / 生成 POTCAR）后刷新本地文件清单 */
   onRemoteChanged?: () => void;
   /** 同步到远端成功后回传刷新过的输入状态 */
@@ -51,6 +51,7 @@ export default function PoscarPanel({
   const { message } = App.useApp();
   const [showRaw, setShowRaw] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
+  const [copying, setCopying] = useState(false);
   /** POSCAR = 提交时的输入结构（不会变）；CONTCAR = 这次计算的最新结构 */
   const [view, setView] = useState<'poscar' | 'contcar'>('poscar');
   const [selectedAtoms, setSelectedAtoms] = useState<AtomRef[]>([]);
@@ -178,11 +179,7 @@ export default function PoscarPanel({
     if (looksLikeCif(file.name, text)) {
       try {
         const converted = await convertCifToPoscar(text);
-        if (!parsePoscar(converted.poscar)) {
-          message.error('CIF 转换结果无法解析，请把该文件发给管理员排查');
-          return;
-        }
-        onImport(converted.poscar);
+        if (!await onImport(converted.poscar)) return;
         const note = converted.warnings.length ? `；注意：${converted.warnings[0]}` : '';
         message.success(
           `CIF 已转换为 POSCAR 并导入（${converted.atoms} 个原子：${converted.elements.join('/')}）${note}`,
@@ -192,12 +189,7 @@ export default function PoscarPanel({
       }
       return;
     }
-    if (!parsePoscar(text)) {
-      message.error('无法解析该文件，请确认是合法的 POSCAR / VASP 结构文件或 CIF 文件');
-      return;
-    }
-    onImport(text);
-    message.success('POSCAR 已导入并保存到本地任务目录');
+    if (await onImport(text)) message.success('POSCAR 已导入并保存到本地任务目录');
   };
 
   return (
@@ -372,7 +364,7 @@ export default function PoscarPanel({
             </Button>
           </Upload>
           <div className="job-import-sep">或</div>
-          <Button icon={<CopyOutlined />} onClick={() => setCopyOpen(true)}>
+          <Button icon={<CopyOutlined />} disabled={copying} onClick={() => setCopyOpen(true)}>
             从其他任务复制
           </Button>
         </div>
@@ -394,11 +386,18 @@ export default function PoscarPanel({
         defaultExpandedIds={copyDefaultProjectId ? [copyDefaultProjectId] : []}
         hint="选择结构来源作业（只取该任务的 POSCAR，不改动其他输入文件）"
         okText="复制"
-        onCancel={() => setCopyOpen(false)}
-        onConfirm={(ids) => {
-          setCopyOpen(false);
-          onCopyFromTask(ids[0]);
-          message.success('已从选中任务复制 POSCAR');
+        confirmLoading={copying}
+        onCancel={() => { if (!copying) setCopyOpen(false); }}
+        onConfirm={async (ids) => {
+          setCopying(true);
+          try {
+            if (await onCopyFromTask(ids[0])) {
+              setCopyOpen(false);
+              message.success('已从选中任务复制 POSCAR 并保存到本地任务目录');
+            }
+          } finally {
+            setCopying(false);
+          }
         }}
       />
 

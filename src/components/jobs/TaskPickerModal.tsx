@@ -18,6 +18,7 @@ interface Props {
   okText?: string | ((count: number) => string);
   defaultExpandedIds?: string[];
   initialSelectedIds?: string[];
+  confirmLoading?: boolean;
 }
 
 /**
@@ -36,6 +37,7 @@ export default function TaskPickerModal({
   okText,
   defaultExpandedIds,
   initialSelectedIds,
+  confirmLoading = false,
 }: Props) {
   const { message } = App.useApp();
   const [selected, setSelected] = useState<Set<string>>(() => new Set(initialSelectedIds ?? []));
@@ -88,7 +90,8 @@ export default function TaskPickerModal({
       onCancel={onCancel}
       onOk={confirm}
       okText={okLabel}
-      okButtonProps={{ disabled: selected.size === 0 }}
+      okButtonProps={{ disabled: selected.size === 0 || confirmLoading }}
+      confirmLoading={confirmLoading}
       cancelText="取消"
       width={560}
       destroyOnClose

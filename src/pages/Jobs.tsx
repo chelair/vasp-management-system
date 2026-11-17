@@ -1049,45 +1049,36 @@ export default function Jobs() {
     }
   };
 
-  /** 导入 POSCAR：写入本地任务目录 files/POSCAR，并同步会话状态 */
-  const handleImportPoscar = async (content: string, task?: Task | null) => {
+  /** 导入 POSCAR：保存成功后才更新结构和文件状态。 */
+  const handleImportPoscar = async (content: string, task?: Task | null): Promise<boolean> => {
     const t = task ?? selectedTask;
-    if (!t) return;
-    const info = parsePoscar(content);
-    let path = `${t.local_dir}/files/POSCAR`;
+    if (!t) return false;
+    if (!parsePoscar(content)) {
+      message.error('无法解析来源 POSCAR，请检查所选任务的结构文件');
+      return false;
+    }
     try {
       const r = await saveTaskFile(t.task_id, 'POSCAR', content);
-      path = r.path;
       upsertLocalFile(t.task_id, 'POSCAR', r.size);
-      // 结构文件写入后端时已重算 CIF，直接用返回的状态刷新（否则 3D 视图要等刷新页面才更新）
       if (r.state) applyInputState(t, r.state);
-      message.success(`POSCAR 已保存：${r.path}`);
+      patchWorkspace(t.task_id, { poscarContent: content, poscarPath: r.path });
+      return true;
     } catch (err) {
-      message.warning(
-        err instanceof Error
-          ? `后端写入失败，仅更新当前会话：${err.message}`
-          : '后端写入失败，仅更新当前会话',
-      );
+      message.error(err instanceof Error ? `POSCAR 保存失败：${err.message}` : 'POSCAR 保存失败');
+      return false;
     }
-    patchWorkspace(t.task_id, {
-      poscarContent: content,
-      poscarPath: path,
-      kpointsContent: info
-        ? buildKpoints(t.model_name, 'Gamma', recommendKgrid(info.lengths, 20), 20)
-        : null,
-    });
   };
 
-  const handleCopyPoscar = (sourceTaskId: string, task?: Task | null) => {
+  const handleCopyPoscar = async (sourceTaskId: string, task?: Task | null): Promise<boolean> => {
     const t = task ?? selectedTask;
-    if (!t) return;
-    const source = projects
-      .flatMap((p) => p.tasks)
-      .find((t) => t.task_id === sourceTaskId);
-    if (!source) return;
-    const content =
-      workspaces[sourceTaskId]?.poscarContent ?? buildInputFiles(source.model_name).POSCAR;
-    void handleImportPoscar(content, t);
+    if (!t) return false;
+    try {
+      const { content } = await fetchTaskFile(sourceTaskId, 'POSCAR');
+      return await handleImportPoscar(content, t);
+    } catch (err) {
+      message.error(err instanceof Error ? `读取来源 POSCAR 失败：${err.message}` : '读取来源 POSCAR 失败');
+      return false;
+    }
   };
 
   const handleGenerateKpoints = async (content: string, task?: Task | null) => {
@@ -1245,7 +1236,7 @@ export default function Jobs() {
                         taskId={task.task_id}
                         poscarContent={ws.poscarContent}
                         poscarPath={ws.poscarPath}
-                        copyTargets={copyTargets}
+                        copyTargets={copyTargets.filter((source) => source.taskId !== task.task_id)}
                         copyDefaultProjectId={selectedProjectId ?? undefined}
                         input={inputStates[task.task_id] ?? null}
                         onRemoteChanged={() => void handleRemoteFilesChanged(task)}

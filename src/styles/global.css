@@ -3097,7 +3097,9 @@ p {
   /* 打印 / PDF 用静态图兜底（用户口径 2026-10-15"不可交互的图留给 PDF"）：
      屏幕上的交互组件不打印，被它们顶掉的静态图在打印时显示 */
   .report-pdos,
-  .report-wf {
+  .report-wf,
+  .report-panel-host,
+  .report-ef-chart {
     display: none !important;
   }
 }

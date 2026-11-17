@@ -16,7 +16,7 @@ const {execFileSync}=require('node:child_process');
    ele:{tasks:[{task_id:'bader',task_name:'电荷模型',bader_summary:{cif:bader,atoms:[{index:1,element:'C',net_charge:.2}]}}]}},
    markdown_sections:[{key:'science',title:'结构',markdown:'### 优化结构\n\n@[structure-3d:opt]\n\n### 中间体\n\n@[free-energy-3d:path]\n\n### NEB\n\n#### M1_H_mig_neb\n\n@[free-energy-3d:neb_endpoints_migration]\n\n| 初末态 | 状态 |\n|---|---|\n| [初态-IS](#fe-3d:neb_endpoints_migration:0:is) | 已收敛 |\n| [末态-FS](#fe-3d:neb_endpoints_migration:1:fs) | 未收敛 |\n\n### 电荷结构\n\n@[bader-table:bader]\n'}]};
   await fs.writeFile(path.join(dir,'input.json'),JSON.stringify(doc));
-  await build({entryPoints:['src/interactive/reportRuntime.ts'],bundle:true,minify:true,format:'iife',outfile:path.join(dir,'runtime.js'),define:{'process.env.NODE_ENV':'"production"'}});
+  execFileSync(process.execPath,['scripts/build-report-interactive.mjs',path.join(dir,'runtime.js')],{stdio:'pipe'});
   execFileSync('.venv/bin/python',['-c',`import json,sys
 from pathlib import Path
 sys.path.insert(0,'backend')

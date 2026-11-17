@@ -92,7 +92,14 @@ interface ReportWorkload {
   eta_at: string | null;
 }
 
-/** 报告注解面板的挂载点（2026-10-13）：**只在「重点科学结果分析」章节内**用 portal 渲染 */
+interface ReportOptimization {
+  task_id?: string;
+  task_name?: string;
+  energy_force_series?: EnergyForcePoint[];
+  structure?: { poscar_cif?: string | null; contcar_cif?: string | null };
+}
+
+/** 只在「重点科学结果分析」章节内挂载注解。 */
 interface NoteTarget {
   element: HTMLElement;
   /** 注解 key：`type_opt` / `task_id` / `path:<group_id>` */
@@ -131,7 +138,7 @@ function headingLabel(el: HTMLElement): string {
  * 屏幕上看 3D，打印 / PDF 才显示这些 PNG（`.report-static-fallback` 的打印反向规则）。
  * 只吃 `.report-img-row` / `<figure>` 这两种相邻块，遇到标题/分隔线/别的挂点就停。
  */
-function markFollowingImagesPrintOnly(anchor: HTMLElement): void {
+function markFollowingImagesPrintOnly(anchor: HTMLElement, ready: boolean): void {
   let node: Element | null = anchor.nextElementSibling;
   while (node) {
     const isImages =
@@ -139,7 +146,7 @@ function markFollowingImagesPrintOnly(anchor: HTMLElement): void {
       node.tagName === 'FIGURE' ||
       node.classList.contains('img-row');
     if (!isImages) break;
-    node.classList.add('report-static-fallback');
+    node.classList.toggle('report-static-fallback', ready);
     node = node.nextElementSibling;
   }
 }
@@ -420,16 +427,9 @@ export default function Report() {
     [detail],
   );
 
-  /**
-   * 能量/力收敛曲线：**用 ECharts 组件替换报告里那张 SVG 图**（v0.9.60 迁移）。
-   *
-   * 后端仍会生成 `<task_id>_energy_force.svg`（导出单文件 HTML 时用它当静态图），
-   * 但页面上更希望是**可交互的组件**（悬停十字线 + 两图联动）——与巡检详情同一套配置
-   * （`components/common/EnergyForceCharts.tsx`）。做法与注解面板一致：渲染后按
-   * `<task_id>_energy_force.svg` 找到那张图，就地换成 host div，再用 portal 挂组件。
-   */
+  /** 保留原SVG，数据可用时在旁边挂交互曲线；弹窗曲线由React直接渲染。 */
   const [efHosts, setEfHosts] = useState<
-    { key: string; taskId: string; el: HTMLElement; dialogId: string | null }[]
+    { key: string; taskId: string; el: HTMLElement }[]
   >([]);
 
   const renderedSections = useMemo(
@@ -451,36 +451,39 @@ export default function Report() {
     [visibleSections, detail],
   );
 
-  /** 把报告里那张能量/力 SVG 图换成 ECharts 组件（渲染后按文件名找图，就地替换 + portal 挂载） */
+  const optimizations = useMemo(() =>
+    (detail?.structured as { science?: { opt?: ReportOptimization[] } } | undefined)?.science?.opt ?? [],
+  [detail]);
+
+  /** 按保留的原图重新定位宿主，报告刷新时复用节点，不重复追加。 */
   useEffect(() => {
     const root = contentRef.current;
     if (!root) return;
-    const hosts: { key: string; taskId: string; el: HTMLElement; dialogId: string | null }[] = [];
-    root.querySelectorAll('img').forEach((img) => {
-      const src = img.getAttribute('src') || '';
-      const matched = /([^/\\]+)_energy_force\.svg/.exec(src);
+    const hosts: { key: string; taskId: string; el: HTMLElement }[] = [];
+    root.querySelectorAll<HTMLImageElement>('.report-markdown img').forEach((img) => {
+      const matched = /([^/\\]+)_energy_force\.svg/.exec(img.getAttribute('src') || '');
       if (!matched) return;
       const taskId = matched[1];
-      const host = document.createElement('div');
-      host.className = 'report-ef-chart';
-      host.setAttribute('data-ef-task', taskId);
-      // 收敛历史弹窗里那张图（2026-10-15）：记下所属 dialog，**弹窗打开时才挂 ECharts**
-      // —— 关闭的 <dialog> 是 display:none，容器尺寸为 0，直接 init 会画不出来
-      const dialogEl = img.closest('dialog');
-      const figure = img.closest('figure');
-      if (figure) {
-        if (figure.dataset.layoutAnchor) { host.dataset.layoutAnchor = figure.dataset.layoutAnchor; host.dataset.layoutSection = figure.dataset.layoutSection; }
-        figure.replaceWith(host);
+      const points = optimizations.find(item => item.task_id === taskId)?.energy_force_series;
+      const ready = !!points?.length;
+      img.classList.toggle('report-static-fallback', ready);
+      let host = img.nextElementSibling as HTMLElement | null;
+      if (!host?.matches('.report-ef-chart')) {
+        if (!ready) return;
+        host = document.createElement('div');
+        host.className = 'report-ef-chart';
+        host.dataset.efTask = taskId;
+        img.after(host);
       }
-      else img.replaceWith(host);
-      hosts.push({ key: taskId, taskId, el: host, dialogId: dialogEl?.id ?? null });
+      host.hidden = !ready;
+      if (ready) hosts.push({ key: taskId, taskId, el: host });
     });
     setEfHosts(hosts);
     // Portal 子节点由 React 卸载；不要在 effect 清理中删除宿主或清空其内容。
     // 切换报告后旧宿主随 Markdown 脱离文档，React 仍需完成其子树的卸载。
   }, [renderedSections, detail]);
 
-  /** 哪些弹窗是打开的（`toggle` 事件）：弹窗里的图表只在打开时挂载（见上） */
+  /** 打开时直接记状态；close兼容旧浏览器，toggle兼容其他原生打开方式。 */
   const [openDialogs, setOpenDialogs] = useState<Record<string, boolean>>({});
   useEffect(() => {
     const root = contentRef.current;
@@ -492,8 +495,14 @@ export default function Report() {
         prev[el.id] === el.open ? prev : { ...prev, [el.id]: el.open },
       );
     };
-    dialogs.forEach((dialog) => dialog.addEventListener('toggle', onToggle));
-    return () => dialogs.forEach((dialog) => dialog.removeEventListener('toggle', onToggle));
+    dialogs.forEach((dialog) => {
+      dialog.addEventListener('toggle', onToggle);
+      dialog.addEventListener('close', onToggle);
+    });
+    return () => dialogs.forEach((dialog) => {
+      dialog.removeEventListener('toggle', onToggle);
+      dialog.removeEventListener('close', onToggle);
+    });
   }, [renderedSections, detail]);
 
   /**
@@ -524,13 +533,10 @@ export default function Report() {
       // 功函数曲线挂上就是交互版（曲线数值内联在报告里），静态图直接收起来
       // （用 class 而不是纯 inline 隐藏：打印/PDF 时 CSS 会把它重新显示出来，见 global.css）
       if (kind === 'work-function-chart' && figure) {
-        figure.classList.add('report-static-fallback');
+        const tasks = (detail?.structured as { science?: { ele?: { tasks?: { task_id?: string; work_function_summary?: WorkFunctionSummary }[] } } })?.science?.ele?.tasks ?? [];
+        const summary = tasks.find(item => item.task_id === taskId)?.work_function_summary;
+        figure.classList.toggle('report-static-fallback', !!summary?.z?.length && !!summary?.potential?.length);
       }
-      // PDOS：屏幕上一律显示交互图，**静态兜底图只在打印/PDF 里出现**
-      //（否则会"先闪一张静态图，滚到了才换成交互图" —— 用户 2026-10-15 反馈）
-      if (kind === 'pdos-chart' && figure) figure.classList.add('report-static-fallback');
-      // 结构 3D（2026-10-16）：3D 视图后面那几行三视图 PNG 是**仅打印**的（屏幕上看 3D）
-      if (kind === 'structure-3d') markFollowingImagesPrintOnly(el);
       hosts.push({ kind, taskId, el, figure });
     });
     setWidgetHosts(hosts);
@@ -540,7 +546,7 @@ export default function Report() {
   /**
    * 自由能台阶图 / NEB 能垒曲线（v0.9.62）：报告里那两张后端看板 SVG
    * （`<group_id>_step.svg` / `<task_id>_barrier.svg`）就地换成 ECharts 看板 ——
-   * 做法与能量/力曲线一致：渲染后按文件名找到 `<img>`，换成 host div 再 portal 挂组件。
+   * 保留原图作为兜底，旁边的交互宿主按原图幂等定位。
    * 图注（figcaption）保留，图的版式与读数对齐原静态图。
    */
   const [panelHosts, setPanelHosts] = useState<
@@ -555,38 +561,37 @@ export default function Report() {
       key: string;
       el: HTMLElement;
     }[] = [];
-    root.querySelectorAll('img').forEach((img) => {
+    root.querySelectorAll<HTMLImageElement>('.report-markdown img').forEach((img) => {
       const src = img.getAttribute('src') || '';
-      // 项目进度条（`charts/progress.svg`）：换成 DOM 版进度看板
-      if (/(^|\/)progress\.svg$/.test(src)) {
-        const host = document.createElement('div');
-        host.className = 'report-panel-host';
-        host.setAttribute('data-panel', 'progress');
-        img.replaceWith(host);
-        hosts.push({ kind: 'progress', key: 'progress', el: host });
-        return;
-      }
+      const progress = /(^|\/)progress\.svg$/.test(src);
       const fe = /([^/\\]+)_step\.svg/.exec(src);
       const neb = /([^/\\]+)_barrier\.svg/.exec(src);
-      const matched = fe ?? neb;
-      if (!matched) return;
-      if (neb) {
-        const item = (detail?.structured as { science?: { neb?: ReportNebItem[] } })?.science?.neb
-          ?.find(item => String(item.task_id ?? '') === neb[1]);
-        const has3DHost = Array.from(root.querySelectorAll<HTMLElement>('[data-report-widget="neb-3d"]'))
-          .some(el => el.dataset.taskId === neb[1]);
-        if (has3DHost && item?.images?.some(image => image.cif)) {
-          img.closest('figure')?.classList.add('report-static-fallback');
-          return;
-        }
+      if (!progress && !fe && !neb) return;
+      const kind = progress ? 'progress' : fe ? 'fe' : 'neb';
+      const key = progress ? 'progress' : (fe ?? neb)![1];
+      const structured = detail?.structured as {
+        basic_info?: { progress_segments?: ReportProgressSegment[] };
+        science?: { free_energy?: ReportFreeEnergyPath[]; neb?: ReportNebItem[] };
+      } | undefined;
+      const item = structured?.science?.neb?.find(item => item.task_id === key);
+      const neb3D = kind === 'neb' && item?.images?.some(image => image.cif) &&
+        Array.from(root.querySelectorAll<HTMLElement>('[data-report-widget="neb-3d"]'))
+          .some(el => el.dataset.taskId === key);
+      const ready = kind === 'progress' ? !!structured?.basic_info?.progress_segments?.length
+        : kind === 'fe' ? !!structured?.science?.free_energy?.find(path => path.group_id === key || path.group_name === key)?.structures?.length
+        : !!item?.images?.length;
+      img.classList.toggle('report-static-fallback', ready);
+      let host = img.nextElementSibling as HTMLElement | null;
+      if (!host?.matches('.report-panel-host')) {
+        if (!ready || neb3D) return;
+        host = document.createElement('div');
+        host.className = 'report-panel-host';
+        host.dataset.panel = kind === 'fe' ? 'free-energy' : kind;
+        host.dataset.panelKey = key;
+        img.after(host);
       }
-      const host = document.createElement('div');
-      host.className = 'report-panel-host';
-      host.setAttribute('data-panel', fe ? 'free-energy' : 'neb');
-      host.setAttribute('data-panel-key', matched[1]);
-      // 只替换图片本身：figcaption（图注）留在原处，版式观感与原来一致
-      img.replaceWith(host);
-      hosts.push({ kind: fe ? 'fe' : 'neb', key: matched[1], el: host });
+      host.hidden = !ready || !!neb3D;
+      if (ready && !neb3D) hosts.push({ kind, key, el: host });
     });
     setPanelHosts(hosts);
   }, [renderedSections, detail]);
@@ -594,7 +599,10 @@ export default function Report() {
   /** 打开报告里某个结构三视图弹窗（与点击 `.report-chip[data-dialog]` 同一行为） */
   const openReportDialog = useCallback((dialogId: string) => {
     const dialog = document.getElementById(dialogId);
-    if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
+    if (dialog instanceof HTMLDialogElement && !dialog.open) {
+      dialog.showModal();
+      setOpenDialogs(prev => ({ ...prev, [dialogId]: true }));
+    }
   }, []);
 
   /** 报告里的自由能路径 / NEB 任务（结构化数据，按 group_id / task_id 索引） */
@@ -810,8 +818,7 @@ export default function Report() {
     }
     const trigger = target.closest('[data-dialog]') as HTMLElement | null;
     if (trigger) {
-      const dialog = document.getElementById(trigger.dataset.dialog ?? '');
-      if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
+      openReportDialog(trigger.dataset.dialog ?? '');
       return;
     }
     const closeBtn = target.closest('[data-close]') as HTMLElement | null;
@@ -827,7 +834,7 @@ export default function Report() {
     if (imageDialog instanceof HTMLDialogElement && target === imageDialog) {
       setImageViewer(null);
     }
-  }, []);
+  }, [openReportDialog]);
 
   /**
    * 图片兜底：`<img src="/api/reports/...">` 只带 Cookie 不带 Authorization，
@@ -1224,17 +1231,7 @@ export default function Report() {
                     {/* 能量/力收敛曲线：ECharts 组件（替代报告里那张 SVG 图，v0.9.60） */}
                     {efHosts.map((host) => {
                       if (!contentRef.current?.contains(host.el)) return null;
-                      // 弹窗里的图：等弹窗打开再挂（关闭时容器 0 尺寸，ECharts 画不出来）
-                      if (host.dialogId && !openDialogs[host.dialogId]) return null;
-                      const item = (
-                        ((detail?.structured as { science?: { opt?: unknown[] } } | undefined)
-                          ?.science?.opt ?? []) as {
-                          task_id?: string;
-                          task_name?: string;
-                          energy_force_series?: EnergyForcePoint[];
-                        }[]
-                      ).find((x) => String(x?.task_id ?? '') === host.taskId);
-                      const points = item?.energy_force_series ?? [];
+                      const points = optimizations.find(item => item.task_id === host.taskId)?.energy_force_series ?? [];
                       if (!points.length) return null;
                       return createPortal(
                         <EnergyForceCharts points={points} height={260} />,
@@ -1330,14 +1327,7 @@ export default function Report() {
                         );
                       }
                       if (host.kind === 'structure-3d') {
-                        const opt = (
-                          ((detail?.structured as { science?: { opt?: unknown[] } } | undefined)
-                            ?.science?.opt ?? []) as {
-                            task_id?: string;
-                            task_name?: string;
-                            structure?: { poscar_cif?: string | null; contcar_cif?: string | null };
-                          }[]
-                        ).find((x) => String(x?.task_id ?? '') === host.taskId);
+                        const opt = optimizations.find(item => item.task_id === host.taskId);
                         const structure = opt?.structure;
                         if (!structure?.poscar_cif && !structure?.contcar_cif) return null;
                         return createPortal(
@@ -1345,6 +1335,7 @@ export default function Report() {
                             poscarCif={structure.poscar_cif}
                             contcarCif={structure.contcar_cif}
                             taskName={opt?.task_name}
+                            onReady={ready => markFollowingImagesPrintOnly(host.el, ready)}
                           />,
                           host.el,
                           `structure-3d:${host.taskId}`,
@@ -1369,7 +1360,7 @@ export default function Report() {
                       }
                       if (host.kind === 'work-function-chart') {
                         const summary = item?.work_function_summary;
-                        if (!summary?.z?.length) return null;
+                        if (!summary?.z?.length || !summary?.potential?.length) return null;
                         return createPortal(
                           <WorkFunctionReportChart summary={summary} taskName={item?.task_name} />,
                           host.el,
@@ -1381,6 +1372,7 @@ export default function Report() {
                           <PdosReportChart
                             taskId={host.taskId}
                             taskName={item?.task_name}
+                            onLoaded={() => host.figure?.classList.add('report-static-fallback')}
                           />,
                           host.el,
                           `${host.kind}:${host.taskId}`,
@@ -1433,7 +1425,10 @@ export default function Report() {
                     />
 
                     {/* 结构三视图弹窗：与导出的单文件 HTML 同一份数据（detail.dialogs） */}
-                    {(detail?.dialogs ?? []).map((dialog) => (
+                    {(detail?.dialogs ?? []).map((dialog) => {
+                      const taskId = /([^/\\]+)_energy_force\.svg/.exec(dialog.chart ?? '')?.[1];
+                      const points = optimizations.find(item => item.task_id === taskId)?.energy_force_series ?? [];
+                      return (
                       <dialog
                         key={dialog.id}
                         id={dialog.id}
@@ -1448,17 +1443,21 @@ export default function Report() {
                           </button>
                         </header>
                         <div className="body">
-                          {/* 图表弹窗（收敛历史，v0.9.67）：正文页里这张 SVG 会被换成可交互 ECharts */}
+                          {/* 旧快照无曲线数组时保留SVG；弹窗内容由React直接管理。 */}
                           {dialog.chart ? (
                             <>
                               {dialog.note ? <p className="row-label">{dialog.note}</p> : null}
-                              <figure className="report-figure">
-                                <img
-                                  src={reportChartUrl(detail.meta.report_id, dialog.chart)}
-                                  alt={dialog.title}
-                                  decoding="async"
-                                />
-                              </figure>
+                              {points.length && openDialogs[dialog.id] ? (
+                                <EnergyForceCharts points={points} height={260} />
+                              ) : (
+                                <figure className="report-figure">
+                                  <img
+                                    src={reportChartUrl(detail.meta.report_id, dialog.chart)}
+                                    alt={dialog.title}
+                                    decoding="async"
+                                  />
+                                </figure>
+                              )}
                             </>
                           ) : null}
                           {(dialog.rows ?? []).map((row) => (
@@ -1483,7 +1482,8 @@ export default function Report() {
                           ))}
                         </div>
                       </dialog>
-                    ))}
+                      );
+                    })}
                     {renderedSections.length === 0 && (
                       <Empty description="未勾选任何章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                     )}

@@ -23,6 +23,7 @@ interface Props {
   contcarCif?: string | null;
   taskName?: string;
   height?: number;
+  onReady?: (ready: boolean) => void;
 }
 
 export default function ReportStructure3D({
@@ -30,6 +31,7 @@ export default function ReportStructure3D({
   contcarCif,
   taskName,
   height = 420,
+  onReady,
 }: Props) {
   const hasPoscar = Boolean(poscarCif);
   const hasContcar = Boolean(contcarCif);
@@ -58,6 +60,7 @@ export default function ReportStructure3D({
       <Structure3DFrame
         cif={cif}
         height={height}
+        onViewerReady={viewer => onReady?.(Boolean(viewer))}
         selected={selected}
         onClickAtom={(atom, additive) =>
           setSelected((prev) => {

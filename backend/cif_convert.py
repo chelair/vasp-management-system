@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 VASP2CIF_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "vasp2cif.py"
 
@@ -22,14 +23,14 @@ def convert_structure_to_cif(src: Path, out: Path, overwrite: bool = False) -> b
     """用 vasp2cif 把结构文件转为 CIF；成功返回 True。
 
     - 已有非空 CIF 且不强制覆盖 → 直接返回 True（有 CIF 就用 CIF）；
-    - 转换先写 <out>.tmp，成功后再 os.replace 原子覆盖，失败清理临时文件，
+    - 每次转换写独立临时文件，成功后再 os.replace 原子覆盖，失败清理临时文件，
       旧 CIF（若有）保持原样。
     """
     if out.is_file() and out.stat().st_size > 0 and not overwrite:
         return True
     if not src.is_file() or src.stat().st_size == 0:
         return False
-    tmp = out.with_name(out.name + ".tmp")
+    tmp = out.with_name(f".{out.name}.{uuid4().hex}.tmp")
     try:
         proc = subprocess.run(
             [sys.executable, str(VASP2CIF_SCRIPT), "-o", str(tmp), str(src)],
@@ -53,10 +54,10 @@ def convert_structure_to_cif(src: Path, out: Path, overwrite: bool = False) -> b
 
 def structure_report_dir(project: Dict[str, Any], task: Dict[str, Any]) -> Path:
     """结构 CIF 输出目录：<任务目录>/reports/structure/。"""
-    from task_paths import task_files_dir
+    from task_paths import task_dir
 
-    files_dir = task_files_dir(project["name"], task)
-    return files_dir.parent / "reports" / "structure"
+    # flat 分块没有 files/ 层，不能对文件目录取 parent，否则所有分块会共用缓存。
+    return task_dir(project["name"], task) / "reports" / "structure"
 
 
 def refresh_structure_cif(
